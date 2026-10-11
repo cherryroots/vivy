@@ -38,6 +38,9 @@ effort = "medium"
 max_tokens = 32000
 # Let it run code in Anthropic's sandbox, which also lets it open attached files.
 code_execution = true
+# The most web searches one request may make ($0.01 each). Past it, she answers with what
+# she found. 0 means no limit.
+web_search_max_uses = 5
 # Anthropic's skills in the sandbox, for making spreadsheets, documents, slides and PDFs.
 skills = ["xlsx", "docx", "pptx", "pdf"]
 # When Claude declines a request, retry it on another Claude model.
