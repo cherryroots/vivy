@@ -3186,7 +3186,6 @@ dependencies = [
  "fastrand",
  "image",
  "image_hasher",
- "log",
  "poise",
  "reqwest",
  "resvg",

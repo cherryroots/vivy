@@ -127,7 +127,8 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
         if allowed {
             lines.push(format!(
                 "#{} {} {}",
-                channel_name(ctx, guild, channel),
+                ctx.channel_name(guild, channel)
+                    .unwrap_or_else(|| "unknown".to_string()),
                 format_message(ctx, message, zone),
                 message_link(Some(guild), channel, message.id)
             ));
@@ -262,19 +263,6 @@ fn find_channel(ctx: &BotCtx, asker: &Asker, guild: GuildId, text: &str) -> Opti
         .chain(guild.threads.iter())
         .find(|c| c.name.to_lowercase() == name)
         .map(|c| c.id)
-}
-
-/// A channel's or thread's name, from the cache.
-fn channel_name(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> String {
-    ctx.cache
-        .guild(guild)
-        .and_then(|g| {
-            g.channels
-                .get(&channel)
-                .or_else(|| g.threads.iter().find(|t| t.id == channel))
-                .map(|c| c.name.clone())
-        })
-        .unwrap_or_else(|| "unknown".to_string())
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
-use chrono::{DateTime, Datelike, Utc};
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use serenity::all::CreateAttachment;
@@ -27,6 +27,7 @@ use tracing::info;
 
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
+use crate::util::{env_key, month_start};
 
 const KEY_VAR: &str = "ELEVENLABS_API_KEY";
 const TOOL: &str = "send_voice_message";
@@ -69,19 +70,7 @@ impl Default for Settings {
 
 /// The ElevenLabs key from .env, if it's set.
 fn key() -> Option<String> {
-    std::env::var(KEY_VAR)
-        .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
-}
-
-/// The start of this month in UTC, as a Unix timestamp.
-fn month_start(now: DateTime<Utc>) -> i64 {
-    now.date_naive()
-        .with_day(1)
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .map(|start| start.and_utc().timestamp())
-        .unwrap_or_else(|| now.timestamp())
+    env_key(KEY_VAR)
 }
 
 pub struct Voice;
@@ -225,17 +214,6 @@ The voice message is your whole answer, so usually write no text with it.",
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn month_starts_on_the_first() {
-        let now = DateTime::parse_from_rfc3339("2026-10-10T21:40:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
-        let start = DateTime::parse_from_rfc3339("2026-10-01T00:00:00Z")
-            .unwrap()
-            .timestamp();
-        assert_eq!(month_start(now), start);
-    }
 
     #[test]
     fn settings_have_defaults() {

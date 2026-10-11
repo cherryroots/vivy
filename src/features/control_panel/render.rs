@@ -19,7 +19,7 @@ use crate::core::timers::TimerState;
 use crate::core::{Panel, Stat};
 use crate::util::shorten;
 use crate::util::svg::{
-    ACCENT, AMBER, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, esc, text_width,
+    ACCENT, AMBER, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, esc, pill_width, text_width,
 };
 
 /// Width of the picture in SVG units.
@@ -299,7 +299,14 @@ fn ai(svg: &mut Svg, d: &Dashboard) {
     } else {
         ("MAIN", GREEN)
     };
-    pill(svg, RIGHT - 16.0, y + 11.0, state, color);
+    // Right-aligned.
+    svg.pill(
+        RIGHT - 16.0 - pill_width(state),
+        y + 11.0,
+        state,
+        color,
+        10.0,
+    );
     if let Some(fallback) = &ai.fallback {
         svg.text(
             32.0,
@@ -488,7 +495,7 @@ fn spend_card(
     } else {
         ("ESTIMATE", DIM)
     };
-    pill(svg, right, y + 9.0, tag, tag_color);
+    svg.pill(right - pill_width(tag), y + 9.0, tag, tag_color, 10.0);
 
     // "$12.34 of $100" with a bar.
     let total = format!("${:.2}", spend.usd);
@@ -992,23 +999,6 @@ fn card_title(svg: &mut Svg, x: f32, y: f32, text: &str) {
         y + 22.0,
         text,
         Style::new(10.0, DIM).weight(700).spaced(),
-    );
-}
-
-/// A rounded label like "BILLED", right-aligned at `right`.
-fn pill(svg: &mut Svg, right: f32, y: f32, text: &str, color: &'static str) {
-    let width = 9.0 + text.len() as f32 * 7.4;
-    svg.rect(
-        [right - width, y, width, 20.0],
-        color,
-        10.0,
-        "fill-opacity=\"0.18\"",
-    );
-    svg.text(
-        right - width / 2.0,
-        y + 14.5,
-        text,
-        Style::new(10.0, color).weight(700).middle().spaced(),
     );
 }
 

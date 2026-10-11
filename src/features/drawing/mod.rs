@@ -19,7 +19,7 @@ mod store;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use chrono::{DateTime, Datelike, Utc};
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, Message};
@@ -28,6 +28,7 @@ use tracing::{info, warn};
 use crate::ai::{PictureRequest, ToolDef};
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
 use crate::util::media::{self, MediaKind, ModelImage};
+use crate::util::{env_key, month_start};
 
 const TOOL: &str = "draw_picture";
 /// The most pictures sent along to draw from.
@@ -66,16 +67,7 @@ impl Default for Settings {
 
 /// Whether `OPENAI_TOKEN` is set, which the Image API needs.
 fn has_key() -> bool {
-    std::env::var("OPENAI_TOKEN").is_ok_and(|key| !key.trim().is_empty())
-}
-
-/// The start of this month in UTC, as a Unix timestamp.
-fn month_start(now: DateTime<Utc>) -> i64 {
-    now.date_naive()
-        .with_day(1)
-        .and_then(|day| day.and_hms_opt(0, 0, 0))
-        .map(|start| start.and_utc().timestamp())
-        .unwrap_or_else(|| now.timestamp())
+    env_key("OPENAI_TOKEN").is_some()
 }
 
 /// The size for a shape the model asks for. Anything else is square.

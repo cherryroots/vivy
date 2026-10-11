@@ -148,7 +148,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | `db` | The SQLite database (see below) |
 | `config` | `config.toml` |
 | `ai` | The AI providers. `ctx.ai.chat()` gives the one to use for this answer (the fallback while the main one is down). Any feature can use it, not just chat. |
-| `web` | A shared `reqwest` HTTP client for API calls. Links from messages use `util::media::safe_client` instead. |
+| `web` | A shared `reqwest` HTTP client for API calls, built from `util::http::client_builder`. Links from messages use `util::media::safe_client` instead. |
 | `events` | Where `BotEvent`s are published (`ctx.publish(...)`) |
 | `shutdown` | A `CancellationToken`, cancelled when the bot stops |
 | `tasks` | A `TaskTracker`: tasks spawned on it are waited for at shutdown |
@@ -156,7 +156,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | `features` | Every feature, in the order of `features::all()` |
 | `bot_id`, `started_at` | The bot's own user ID, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.is_admin(user)` (listed in `admins`), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 
@@ -180,7 +180,7 @@ let pending: i64 = ctx.db.call(|conn| {
 }).await?;
 ```
 
-Inside the closure everything is ordinary synchronous Rust, and the connection is never held across an `.await`. That's why store functions are plain `fn`s taking `&Connection`: they are easy to test.
+Inside the closure everything is ordinary synchronous Rust, and the connection is never held across an `.await`. Keep these closures short (a few queries, no slow work like hashing pictures or calling an API): there is one connection thread for every feature, so while one closure runs, every other feature's database call waits. That's why store functions are plain `fn`s taking `&Connection`: they are easy to test.
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
@@ -230,9 +230,10 @@ Since features never import each other, the core gives them four ways to work to
 | `reply.rs` | `LiveReply`: a reply that can span several messages and change over time. `show(parts)` edits, sends or deletes messages until Discord matches. Chat streams answers through it. |
 | `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network |
 | `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames |
-| `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in. The wheel and the status picture use it. |
+| `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in, plus the parts both pictures draw, like the rounded `pill` label. The wheel and the status picture use it. |
+| `http.rs` | `client_builder`: the user agent and timeouts every HTTP client starts from |
 | `text.rs` | Text from text-file attachments and embeds, for chat |
-| `mod.rs` | `shorten`: cut text to a number of characters, ending in "…" |
+| `mod.rs` | `shorten`: cut text to a number of characters, ending in "…"; `env_key`: a key from `.env`, `None` when missing or empty; `month_start`: where this month's limits start counting |
 
 ## Importing from voltgpt
 
@@ -304,7 +305,7 @@ A path through the code for learning it, from small to large:
 | `reqwest` | HTTP: the AI APIs, ElevenLabs, downloads |
 | `serde`, `serde_json`, `toml`, `serde_ignored` | JSON and config, and finding unread config keys |
 | `anyhow` | Errors with a chain of causes |
-| `tracing`, `tracing-subscriber` | Logging |
+| `tracing`, `tracing-subscriber`, `tracing-log` | Logging; `tracing-log` passes on lines from crates that log with `log` instead |
 | `chrono`, `chrono-tz` | Times and timezones |
 | `winnow` | The reminder time grammar |
 | `text-splitter` | Splitting long messages |

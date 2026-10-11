@@ -301,6 +301,11 @@ impl Style {
     }
 }
 
+/// How wide [`Svg::pill`] draws `text`.
+pub fn pill_width(text: &str) -> f32 {
+    9.0 + text.len() as f32 * 7.4
+}
+
 /// A picture being built, top to bottom. `y` is where the next part goes.
 pub struct Svg {
     parts: Vec<String>,
@@ -341,6 +346,21 @@ impl Svg {
         self.parts.push(format!(
             "<rect x=\"{x}\" y=\"{y}\" width=\"{w}\" height=\"{h}\" rx=\"{radius}\" fill=\"{fill}\" {extra}/>"
         ));
+    }
+
+    /// A rounded label like "OPEN" or "BILLED": spaced capitals in `color` on a tint of it,
+    /// 20 high, with its left edge at `x`. [`pill_width`] says how wide it is, for placing
+    /// one by its right edge.
+    pub fn pill(&mut self, x: f32, y: f32, text: &str, color: &'static str, size: f32) {
+        let width = pill_width(text);
+        self.rect([x, y, width, 20.0], color, 10.0, "fill-opacity=\"0.18\"");
+        self.text(
+            x + width / 2.0,
+            // The baseline: just under halfway down, lower for bigger letters.
+            y + 9.5 + size / 2.0,
+            text,
+            Style::new(size, color).weight(700).middle().spaced(),
+        );
     }
 
     /// Any other SVG element, like a `<path>` or `<circle>`. The caller escapes it.

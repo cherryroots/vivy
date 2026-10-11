@@ -184,7 +184,7 @@ fn open(svg: &mut Svg, view: &View) {
                 .filter(|b| b.on == option)
                 .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
                 .collect();
-            let lines = wrap(&pieces, &plain, WIDTH - 32.0 - 300.0, 13.0);
+            let lines = wrap_pieces(&pieces, &plain, WIDTH - 32.0 - 300.0, 13.0);
             let height = 30.0 + 20.0 * (lines.len().max(1) - 1) as f32;
             let y = svg.y;
             if pieces.is_empty() {
@@ -260,7 +260,7 @@ fn open(svg: &mut Svg, view: &View) {
             for (label, names) in groups {
                 let names: Vec<String> = names.iter().map(|n| short(n)).collect();
                 let pieces: Vec<String> = names.iter().map(|n| markup(n)).collect();
-                for (n, line) in wrap(&pieces, &names, WIDTH - 32.0 - 180.0, 13.0)
+                for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 180.0, 13.0)
                     .into_iter()
                     .enumerate()
                 {
@@ -448,14 +448,7 @@ fn header(svg: &mut Svg, view: &View, state: &str, color: &'static str, sub: &st
     let title = format!("Round {}", view.season.rounds[view.index].number);
     svg.text(24.0, 44.0, &title, Style::new(26.0, TEXT).weight(700));
     let x = 24.0 + text_width(&title, 26.0) + 14.0;
-    let width = 9.0 + state.len() as f32 * 7.4;
-    svg.rect([x, 26.0, width, 20.0], color, 10.0, "fill-opacity=\"0.18\"");
-    svg.text(
-        x + width / 2.0,
-        41.0,
-        state,
-        Style::new(11.0, color).weight(700).middle().spaced(),
-    );
+    svg.pill(x, 26.0, state, color, 11.0);
     let season = format!("Season {}", view.season.number);
     svg.text(
         WIDTH - 24.0,
@@ -485,7 +478,7 @@ fn sorted_by_money<'a>(view: &View, standings: &'a [Standing]) -> Vec<&'a Standi
 
 /// Joins `pieces` with " · " into lines that fit `width`. `plain` is the same text without
 /// markup, for measuring.
-fn wrap(pieces: &[String], plain: &[String], width: f32, size: f32) -> Vec<String> {
+fn wrap_pieces(pieces: &[String], plain: &[String], width: f32, size: f32) -> Vec<String> {
     let mut lines: Vec<(String, String)> = Vec::new();
     for (piece, text) in pieces.iter().zip(plain) {
         match lines.last_mut() {
@@ -671,11 +664,11 @@ mod tests {
             .map(String::from)
             .into();
         assert_eq!(
-            wrap(&pieces, &pieces, 1000.0, 13.0),
+            wrap_pieces(&pieces, &pieces, 1000.0, 13.0),
             ["Alice 10 · Bob 20 · Charlie 30"]
         );
         assert_eq!(
-            wrap(&pieces, &pieces, 150.0, 13.0),
+            wrap_pieces(&pieces, &pieces, 150.0, 13.0),
             ["Alice 10 · Bob 20", "Charlie 30"]
         );
         assert_eq!(short("Bartholomew the Third"), "Bartholomew t…");

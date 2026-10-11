@@ -3,6 +3,11 @@
 //! Features never call each other. When something happens that another feature might care
 //! about, the feature publishes a [`BotEvent`] with `ctx.publish(...)`, and every feature's
 //! `on_bot_event` receives it. Nobody has to listen.
+//!
+//! **No feature listens yet.** Reminders publishes `ReminderFired` and the wheel publishes
+//! `WheelRoundResolved`, but every feature still has the default `on_bot_event`, which does
+//! nothing. The events are kept so the next feature that needs to react to them can just
+//! implement `on_bot_event`, without touching reminders or the wheel.
 
 use serenity::all::{ChannelId, GuildId, UserId};
 
