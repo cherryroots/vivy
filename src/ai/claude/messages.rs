@@ -204,8 +204,18 @@ fn file_blocks(
 pub fn tools(defs: &[ToolDef], web: bool, code_execution: bool) -> Vec<Value> {
     let mut tools = Vec::new();
     if web {
-        tools.push(json!({"type": "web_search_20260209", "name": "web_search"}));
-        tools.push(json!({"type": "web_fetch_20260209", "name": "web_fetch"}));
+        // Results her code already filtered stay out of the answer, so they aren't kept in
+        // the history and sent again with every later message.
+        tools.push(json!({
+            "type": "web_search_20260318",
+            "name": "web_search",
+            "response_inclusion": "excluded",
+        }));
+        tools.push(json!({
+            "type": "web_fetch_20260318",
+            "name": "web_fetch",
+            "response_inclusion": "excluded",
+        }));
     }
     if code_execution {
         tools.push(json!({"type": "code_execution_20260521", "name": "code_execution"}));
@@ -477,6 +487,8 @@ mod tests {
             ]
         );
         assert_eq!(tools[4]["eager_input_streaming"], true);
+        assert_eq!(tools[0]["type"], "web_search_20260318");
+        assert_eq!(tools[1]["response_inclusion"], "excluded");
         assert_eq!(super::tools(&defs, true, false).len(), 4);
         // A job without the web or code gets only the bot's tools.
         assert_eq!(super::tools(&defs, false, false).len(), 2);
