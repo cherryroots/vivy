@@ -123,6 +123,8 @@ Both work the same way: send the request, read events until `Done`, and if `Done
 - With a `continuation` (OpenAI), the next input is `Input::After` with only the tool results. OpenAI remembers its own output.
 - Without one (Claude), it is the whole conversation again, plus an assistant turn holding this round's `Part::Native` output, plus a user turn with the tool results. Claude needs its own tool calls (and the thinking before them) back, exactly as written.
 
+A tool result can carry pictures as well as text (`ToolOutput::images`, from a `ToolReply`), like the profile picture from `look_at_profile_picture`. Claude gets them as `image` blocks inside the `tool_result`; OpenAI gets a `function_call_output` whose output is a list of `input_text` and `input_image`. The pictures aren't saved with the answer's rounds, so when a conversation is read back later only the text is there.
+
 ## Jobs
 
 Every request names its job, and each job runs with its own settings (`Job` in `mod.rs`): a model, an effort, and whether it gets the web (web search and fetch) and code (code execution, and on Claude the skills). `job_settings` takes them from `[ai.<provider>.jobs.<job>]` in config.toml, then from `Job::builtin`, then from the provider's own settings:

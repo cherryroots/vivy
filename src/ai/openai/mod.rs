@@ -37,6 +37,7 @@ use super::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, ModelFile,
     Part, Role, ToolCall, Turn, job_settings,
 };
+use crate::util::media::ModelImage;
 
 /// File types the model reads itself when sent as `input_file`: PDFs (text and page images),
 /// Word, PowerPoint and Excel (text only; spreadsheets the first 1000 rows). CSV and other
@@ -360,10 +361,17 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                     let upload = uploads.next().and_then(|id| id.as_deref());
                     content.extend(file_content(file, upload, &mut readable_bytes));
                 }
-                (Part::ToolResult { call_id, output }, _) => items.push(json!({
+                (
+                    Part::ToolResult {
+                        call_id,
+                        output,
+                        images,
+                    },
+                    _,
+                ) => items.push(json!({
                     "type": "function_call_output",
                     "call_id": call_id,
-                    "output": output,
+                    "output": tool_output(output, images),
                 })),
                 // OpenAI remembers its own answers; the turn's text is enough.
                 (Part::Native { .. }, _) => {}
@@ -378,6 +386,22 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
         }
     }
     items
+}
+
+/// A tool's answer: plain text, or a list of the text and its pictures.
+fn tool_output(output: &str, images: &[ModelImage]) -> Value {
+    if images.is_empty() {
+        return json!(output);
+    }
+    let mut content = vec![json!({"type": "input_text", "text": output})];
+    for image in images {
+        content.push(json!({
+            "type": "input_image",
+            "image_url": image.data_url(),
+            "detail": "auto",
+        }));
+    }
+    Value::Array(content)
 }
 
 /// Turns one streamed event into a [`ChatEvent`], or `None` for the many we don't need.
@@ -632,6 +656,7 @@ mod tests {
                         parts: vec![Part::ToolResult {
                             call_id: "call_1".into(),
                             output: "12:00".into(),
+                            images: Vec::new(),
                         }],
                     },
                 ],
@@ -671,6 +696,22 @@ mod tests {
         assert!(body.get("service_tier").is_none());
         assert_eq!(body["reasoning"]["effort"], "low");
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tool_results_can_carry_pictures() {
+        let picture = ModelImage {
+            mime: "image/png",
+            data: vec![1],
+        };
+        assert_eq!(tool_output("12:00", &[]), json!("12:00"));
+        assert_eq!(
+            tool_output("Cherry's picture.", &[picture]),
+            json!([
+                {"type": "input_text", "text": "Cherry's picture."},
+                {"type": "input_image", "image_url": "data:image/png;base64,AQ==", "detail": "auto"},
+            ])
+        );
     }
 
     #[test]

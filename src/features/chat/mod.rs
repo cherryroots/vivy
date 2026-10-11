@@ -15,6 +15,7 @@
 //! and deletes it once it's done, 🔁 writes it again.
 
 mod answer;
+mod avatar;
 mod chime;
 mod emoji;
 mod follow_up;
@@ -36,7 +37,7 @@ use tracing::{error, info, warn};
 
 use self::answer::{End, Job};
 use self::store::{NewTurn, StoredPart};
-use crate::ai::{ChatProvider, Input, Part, Role, ToolDef};
+use crate::ai::{ChatProvider, Input, Part, Role, ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Feature, Mention, Panel, Result, Stat, user_error};
 use crate::util::media;
 use crate::util::reply::LiveReply;
@@ -105,6 +106,7 @@ impl Feature for Chat {
 
     fn tools(&self) -> Vec<ToolDef> {
         let mut defs = tools::defs();
+        defs.push(avatar::def());
         defs.push(emoji::def());
         defs.push(follow_up::def());
         defs
@@ -115,6 +117,7 @@ impl Feature for Chat {
             "get_current_time" => "🕒 Checking the time…",
             "get_channel_info" | "list_channels" => "🧭 Looking around the server…",
             "get_user_info" => "👤 Looking someone up…",
+            avatar::TOOL => "🖼️ Looking at a profile picture…",
             "read_recent_messages" => "📜 Reading the chat…",
             "get_message" => "🔗 Opening a message…",
             "search_messages" => "🔍 Searching messages…",
@@ -138,6 +141,19 @@ impl Feature for Chat {
             "list_server_emoji" => emoji::list(ctx, asker).await,
             "schedule_follow_up" => follow_up::schedule(ctx, asker, args, &self.follow_ups).await,
             _ => tools::run(ctx, asker, name, args).await,
+        }
+    }
+
+    async fn run_tool_with_pictures(
+        &self,
+        ctx: &BotCtx,
+        asker: &Asker,
+        name: &str,
+        args: &Value,
+    ) -> Result<ToolReply> {
+        match name {
+            avatar::TOOL => avatar::run(ctx, asker, args).await,
+            _ => Ok(self.run_tool(ctx, asker, name, args).await?.into()),
         }
     }
 

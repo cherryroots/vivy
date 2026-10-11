@@ -361,9 +361,15 @@ impl ToolRunner for Runner {
                     user: self.ctx.bot_id,
                     ..self.asker.clone()
                 };
-                answer::run_tool(&self.ctx, &herself, &self.owners, &call).await
+                answer::run_tool(&self.ctx, &herself, &self.owners, &call)
+                    .await
+                    .text
             }
-            Ok(call) => answer::run_tool(&self.ctx, &self.asker, &self.owners, &call).await,
+            Ok(call) => {
+                answer::run_tool(&self.ctx, &self.asker, &self.owners, &call)
+                    .await
+                    .text
+            }
             Err(text) => text,
         }
     }

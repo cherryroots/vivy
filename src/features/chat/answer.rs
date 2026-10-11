@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::ai::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, NativeRound,
-    ToolCall, ToolDef, ToolOutput, next_input,
+    ToolCall, ToolDef, ToolOutput, ToolReply, next_input,
 };
 use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Feature};
@@ -281,13 +281,14 @@ async fn stream_answer(
         for call in &done.tool_calls {
             screen.status = Some(tool_status(&owners, &call.name));
             screen.show(ctx).await?;
-            let output = tokio::select! {
-                output = run_tool(ctx, asker, &owners, call) => output,
+            let reply = tokio::select! {
+                reply = run_tool(ctx, asker, &owners, call) => reply,
                 () = cancel.cancelled() => return Ok(None),
             };
             results.push(ToolOutput {
                 call_id: call.id.clone(),
-                output,
+                output: reply.text,
+                images: reply.images,
             });
         }
         screen.status = Some(activity_status(&Activity::Thinking));
@@ -348,20 +349,23 @@ pub(super) async fn run_tool(
     asker: &Asker,
     owners: &HashMap<&'static str, Arc<dyn Feature>>,
     call: &ToolCall,
-) -> String {
+) -> ToolReply {
     let Some(feature) = owners.get(call.name.as_str()) else {
-        return format!("Error: there is no tool named {}.", call.name);
+        return format!("Error: there is no tool named {}.", call.name).into();
     };
-    match feature.run_tool(ctx, asker, &call.name, &call.args).await {
-        Ok(output) => {
+    match feature
+        .run_tool_with_pictures(ctx, asker, &call.name, &call.args)
+        .await
+    {
+        Ok(reply) => {
             info!(tool = call.name, "ran a chat tool");
-            output
+            reply
         }
         Err(err) => {
             if !is_user_error(&err) {
                 warn!(tool = call.name, "chat tool failed: {err:#}");
             }
-            format!("Error: {err:#}")
+            format!("Error: {err:#}").into()
         }
     }
 }

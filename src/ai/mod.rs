@@ -46,6 +46,8 @@ pub enum Part {
     ToolResult {
         call_id: String,
         output: String,
+        /// Pictures that go with the answer (see [`ToolOutput::images`]).
+        images: Vec<ModelImage>,
     },
     /// An answer as the provider wrote it, round by round. A provider that has no memory of
     /// its own (Claude) sends this instead of the turn's text when it wrote the answer with
@@ -95,6 +97,26 @@ impl NativeRound {
 pub struct ToolOutput {
     pub call_id: String,
     pub output: String,
+    /// Pictures shown to the model with the text, like a profile picture. They aren't
+    /// saved: when the conversation is read back later, only the text is there.
+    #[serde(skip)]
+    pub images: Vec<ModelImage>,
+}
+
+/// What one of the bot's tools answers: text, and sometimes pictures for the model to see.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ToolReply {
+    pub text: String,
+    pub images: Vec<ModelImage>,
+}
+
+impl From<String> for ToolReply {
+    fn from(text: String) -> Self {
+        ToolReply {
+            text,
+            images: Vec::new(),
+        }
+    }
 }
 
 /// One message in the conversation.
@@ -406,6 +428,7 @@ pub fn next_input(
             .map(|r| Part::ToolResult {
                 call_id: r.call_id.clone(),
                 output: r.output.clone(),
+                images: r.images.clone(),
             })
             .collect(),
     };
@@ -475,6 +498,7 @@ mod tests {
         vec![ToolOutput {
             call_id: "c1".into(),
             output: "12:00".into(),
+            images: Vec::new(),
         }]
     }
 
@@ -494,6 +518,7 @@ mod tests {
                     parts: vec![Part::ToolResult {
                         call_id: "c1".into(),
                         output: "12:00".into(),
+                        images: Vec::new(),
                     }],
                 }],
             }
