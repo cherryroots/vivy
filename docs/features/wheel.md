@@ -5,7 +5,7 @@ The movie wheel is a betting game for movie night. Admins put people (the "optio
 ## Using it
 
 - **`/wheel_status [round] [season]`**: posts the status picture of a round (default: the current one) of a season (default: the one being played; seasons count from 1 per server). If the server has no game yet, this starts one. Past seasons are shown without buttons.
-- **`/wheel_add user [remove]`** (admins): puts someone on the wheel, or takes them off with `remove:true`.
+- **`/wheel_add user [user2 … user5] [remove]`** (admins): puts up to five people on the wheel at once, or takes them off with `remove:true`. The answer has a line per person.
 - **`/insert_bet by on amount round`** (admins): sets a bet in any round of the current season by round number; `amount:0` removes it. This is for fixing mistakes, so it skips the betting rules.
 - **`/reset_wheel [keep_options]`** (admins): asks for confirmation, then ends the season and starts a new one, empty or with the same options.
 - **Buttons under an open round**: Claim!, Place Bet!, Remove Bet!, Set Winner! (admins), and in a second row Change Name and Help.
@@ -66,12 +66,12 @@ Each season has **rules** (`Rules` in `ledger.rs`, stored as `classic` or `pool`
 
 ### One action, one transaction
 
-Every handler in `actions.rs` and `commands.rs` loads the season, checks the action and writes the change inside one database transaction, and only talks to Discord after it committed. Nothing about the game is kept in memory between actions, so there is no global game lock. Buttons carry the round's database ID, and `open_round` refuses any button whose round is no longer the open, latest round of the active season ("Only the current round can be changed from this message."). So a button on an old message can never change a newer round.
+Every handler in `actions.rs` and `commands.rs` loads the season, checks the action and writes the change inside one database transaction, and only talks to Discord after it committed. Nothing about the game is kept in memory between actions, so there is no global game lock. Buttons carry the round's database ID, and `open_round` refuses any button whose round is no longer the open, latest round of the active season ("Only the current round can be changed from this message."). So a button on an old message can never change a newer round. That error comes with a **View Current Round** button (`wheel:refresh`), which shows the current round on the status message the press was about.
 
 ### Playing a round
 
 - **Claim!** adds a claim and redraws the status message. A private follow-up says how much the player has this round and the smallest bet that avoids the tax.
-- **Place Bet!** needs money above 0 (otherwise "Press Claim!"). It opens a private menu of the options left, sorted by name (Discord shows at most 25). Picking one opens the **bet slip**: a private message with the option's current payout and pot (pool) or multiplier (classic), the player's money, what they already bet and can still bet, their current bet on this option and what it would return now, and a tax hint. It has buttons for 10%, 25% and 50% of the round's money (classic: also 100%), each showing its amount. A button is disabled when that bet isn't allowed, and the button matching the current bet is green and disabled. Each click places the bet, redraws the slip and redraws the public status message. "Other amount…" opens a modal (a plain serenity `CreateModal`, since it opens from a button) whose label shows the limit. Betting on the same option again changes that bet (`INSERT ... ON CONFLICT DO UPDATE`).
+- **Place Bet!** needs money above 0 (otherwise "Press Claim!"). It opens a private menu of the options left, sorted by name. Discord fits 25 options in a menu, so a bigger wheel gets up to five menus (one per row), each placeholder naming the first and last name it holds, like "(Alice … Dana)"; past 125 the message says how many didn't fit. Remove Bet! and Set Winner! work the same. Picking one opens the **bet slip**: a private message with the option's current payout and pot (pool) or multiplier (classic), the player's money, what they already bet and can still bet, their current bet on this option and what it would return now, and a tax hint. It has buttons for 10%, 25% and 50% of the round's money (classic: also 100%), each showing its amount. A button is disabled when that bet isn't allowed, and the button matching the current bet is green and disabled. Each click places the bet, redraws the slip and redraws the public status message. "Other amount…" opens a modal (a plain serenity `CreateModal`, since it opens from a button) whose label shows the limit. Betting on the same option again changes that bet (`INSERT ... ON CONFLICT DO UPDATE`).
 - **Remove Bet!** opens a private menu of your bets in this round; picking one deletes it.
 - **Set Winner!** (admins) opens a menu of the options left. Picking one sets the winner and starts the next round. Nobody has to have bet. The public status message then shows the resolved round, and `BotEvent::WheelRoundResolved` is published.
 - **Undo Winner** (admins) is shown on a resolved round while it is the round before the latest and nobody has bet in the latest round yet. It deletes the latest round (with its claims) and reopens the resolved one. The check runs again on press.
@@ -112,6 +112,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | `migrations` | `store::MIGRATIONS`. |
 | `legacy_import` | The `wheel` part, run by `import::import`. |
 | `tools`, `run_tool` | `get_wheel_status`. |
+| `tool_status` | "🎡 Checking the wheel…" in chat's status line. |
 | `start` | Loads the fonts and looks up the players' names in the background, so the first button press is fast. |
 | `stats` | Control panel lines: Games (active seasons), Open bets (in open rounds of active seasons), Rounds played (resolved rounds of active seasons). |
 | `on_component` | Every button and select menu (`actions::on_component`). |
@@ -133,7 +134,8 @@ Built and parsed only in `ui::Action`. The dispatcher strips the `wheel:` prefix
 | `wheel:unbet:<round>` | Remove Bet!: opens the menu of your bets. |
 | `wheel:winner:<round>` | Set Winner!: opens the winner menu. |
 | `wheel:undo:<round>` | Undo Winner. |
-| `wheel:pick:<place\|remove\|winner>:<round>:<message>` | The three select menus; the picked user ID is the selected value. |
+| `wheel:pick:<place\|remove\|winner>:<round>:<message>:<part>` | The three select menus; the picked user ID is the selected value. `<part>` (0 to 4) tells apart the menus of a big wheel. Menus from before it had no `<part>` still work. |
+| `wheel:refresh:<message>` | View Current Round under the "Only the current round" error. |
 | `wheel:stake:<round>:<on>:<message>:<percent>` | A bet slip percentage button. |
 | `wheel:other:<round>:<on>:<message>` | The bet slip's "Other amount…" button. |
 | `wheel:amount:<round>:<on>:<message>` | The bet amount modal. |

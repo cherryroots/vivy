@@ -73,10 +73,17 @@ pub enum Action {
         round: i64,
     },
     /// A menu from [`Action::Bet`], [`Action::Unbet`] or [`Action::Winner`]. The picked user
-    /// is the selected value.
+    /// is the selected value. A big wheel needs several menus; `part` is which one (0 to 4),
+    /// since the menus of one message need different IDs.
     Pick {
         kind: PickKind,
         round: i64,
+        message: u64,
+        part: u8,
+    },
+    /// The button under "Only the current round can be changed": shows the current round on
+    /// status message `message`.
+    Refresh {
         message: u64,
     },
     /// A bet slip button: bet `percent`% of the round's money on `on`.
@@ -138,7 +145,9 @@ impl Action {
                 kind,
                 round,
                 message,
-            } => format!("wheel:pick:{}:{round}:{message}", kind.as_str()),
+                part,
+            } => format!("wheel:pick:{}:{round}:{message}:{part}", kind.as_str()),
+            Action::Refresh { message } => format!("wheel:refresh:{message}"),
             Action::Stake {
                 round,
                 on,
@@ -183,9 +192,20 @@ impl Action {
             ["undo", round] => Action::Undo {
                 round: round.parse().ok()?,
             },
+            ["pick", kind, round, message, part] => Action::Pick {
+                kind: PickKind::parse(kind)?,
+                round: round.parse().ok()?,
+                message: message.parse().ok()?,
+                part: part.parse().ok()?,
+            },
+            // Menus from before there could be several.
             ["pick", kind, round, message] => Action::Pick {
                 kind: PickKind::parse(kind)?,
                 round: round.parse().ok()?,
+                message: message.parse().ok()?,
+                part: 0,
+            },
+            ["refresh", message] => Action::Refresh {
                 message: message.parse().ok()?,
             },
             ["stake", round, on, message, percent] => Action::Stake {
@@ -345,8 +365,13 @@ pub fn status_buttons(view: &View) -> Vec<CreateActionRow> {
     ]
 }
 
-/// The menu after Place Bet, Remove Bet or Set Winner. `users` are the choices; Discord
-/// shows at most 25.
+/// Options in one Discord select menu, and menus (rows) in one message.
+const MENU_OPTIONS: usize = 25;
+const MAX_MENUS: usize = 5;
+
+/// The menus after Place Bet, Remove Bet or Set Winner. `users` are the choices, sorted by
+/// name. Discord shows at most 25 in a menu, so a big wheel gets several menus, each saying
+/// which names it holds; past 125 the rest are left out and the text says so.
 pub fn pick_menu(
     kind: PickKind,
     round: i64,
@@ -354,26 +379,66 @@ pub fn pick_menu(
     users: &[u64],
     names: &Names,
 ) -> (String, Vec<CreateActionRow>) {
-    let (content, placeholder) = match kind {
+    let (title, placeholder) = match kind {
         PickKind::Place => ("Place a Bet", "Select an option to bet on"),
         PickKind::Remove => ("Remove a Bet", "Select a bet to remove"),
         PickKind::Winner => ("Pick a Winner", "Select the winner"),
     };
     let mut sorted: Vec<u64> = users.to_vec();
     sorted.sort_by(|a, b| name(names, *a).cmp(name(names, *b)));
-    let options = sorted
-        .iter()
-        .take(25)
-        .map(|&user| CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string()))
-        .collect();
-    let action = Action::Pick {
-        kind,
-        round,
-        message,
-    };
-    let menu = CreateSelectMenu::new(action.custom_id(), CreateSelectMenuKind::String { options })
-        .placeholder(placeholder);
-    (content.to_string(), vec![CreateActionRow::SelectMenu(menu)])
+    let shown = sorted.len().min(MENU_OPTIONS * MAX_MENUS);
+    let groups: Vec<&[u64]> = sorted[..shown].chunks(MENU_OPTIONS).collect();
+
+    let mut rows = Vec::new();
+    for (part, group) in groups.iter().enumerate() {
+        let options = group
+            .iter()
+            .map(|&user| {
+                CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string())
+            })
+            .collect();
+        // With several menus, each placeholder says which names it holds: "(Alice … Dana)".
+        let placeholder = match (groups.len(), group.first(), group.last()) {
+            (2.., Some(&first), Some(&last)) => format!(
+                "{placeholder} ({} … {})",
+                shorten(name(names, first), 20),
+                shorten(name(names, last), 20)
+            ),
+            _ => placeholder.to_string(),
+        };
+        let action = Action::Pick {
+            kind,
+            round,
+            message,
+            part: part as u8,
+        };
+        let menu =
+            CreateSelectMenu::new(action.custom_id(), CreateSelectMenuKind::String { options })
+                .placeholder(placeholder);
+        rows.push(CreateActionRow::SelectMenu(menu));
+    }
+
+    let mut content = title.to_string();
+    if shown < sorted.len() {
+        content.push_str(&format!(
+            "\n-# Discord's menus only fit {shown} of the {} names.",
+            sorted.len()
+        ));
+    }
+    (content, rows)
+}
+
+/// The answer to a button on a status message that shows an old round: the error, and a
+/// button that shows the current round on that message.
+pub fn not_current(text: &str, message: u64) -> (String, Vec<CreateActionRow>) {
+    let button = CreateButton::new(Action::Refresh { message }.custom_id())
+        .label("View Current Round")
+        .emoji('🎯')
+        .style(ButtonStyle::Primary);
+    (
+        text.to_string(),
+        vec![CreateActionRow::Buttons(vec![button])],
+    )
 }
 
 /// The bet slip: a private message about betting on one option, with a button per share
@@ -712,7 +777,9 @@ mod tests {
                 kind: PickKind::Remove,
                 round: 3,
                 message: 99,
+                part: 4,
             },
+            Action::Refresh { message: u64::MAX },
             Action::Amount {
                 round: 3,
                 on: 7,
@@ -751,9 +818,58 @@ mod tests {
             assert_eq!(Action::parse(rest), Some(action));
         }
         assert_eq!(Action::parse("pick:steal:1:2"), None);
+        // Menus from before there were several menus.
+        assert_eq!(
+            Action::parse("pick:place:1:2"),
+            Some(Action::Pick {
+                kind: PickKind::Place,
+                round: 1,
+                message: 2,
+                part: 0,
+            })
+        );
         assert_eq!(Action::parse("claim"), None);
         // Reset buttons from before the confirm modal carry no season.
         assert_eq!(Action::parse("reset:1"), None);
+    }
+
+    #[test]
+    fn big_wheels_get_several_menus() {
+        let users: Vec<u64> = (1..=130).collect();
+        let names: Names = users.iter().map(|&u| (u, format!("P{u:03}"))).collect();
+        let (text, rows) = pick_menu(PickKind::Place, 3, 99, &users, &names);
+        let rows = serde_json::to_value(rows).unwrap();
+        let menus: Vec<&serde_json::Value> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| &row["components"][0])
+            .collect();
+        assert_eq!(menus.len(), 5);
+        let sizes: Vec<usize> = menus
+            .iter()
+            .map(|m| m["options"].as_array().unwrap().len())
+            .collect();
+        assert_eq!(sizes, [25, 25, 25, 25, 25]);
+        // Every menu has its own ID, and they all parse.
+        let ids: Vec<&str> = menus
+            .iter()
+            .map(|m| m["custom_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids[0], "wheel:pick:place:3:99:0");
+        assert_eq!(ids[4], "wheel:pick:place:3:99:4");
+        assert_eq!(
+            menus[1]["placeholder"].as_str().unwrap(),
+            "Select an option to bet on (P026 … P050)"
+        );
+        assert!(text.contains("only fit 125 of the 130"), "{text}");
+
+        // A small wheel: one menu, no note.
+        let (text, rows) = pick_menu(PickKind::Winner, 3, 99, &users[..3], &names);
+        assert_eq!(text, "Pick a Winner");
+        let rows = serde_json::to_value(rows).unwrap();
+        assert_eq!(rows.as_array().unwrap().len(), 1);
+        assert_eq!(rows[0]["components"][0]["placeholder"], "Select the winner");
     }
 
     #[test]

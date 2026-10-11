@@ -15,6 +15,7 @@ use tracing::{info, warn};
 use super::ledger::{self, CLAIM, Season, TAX_THRESHOLD, check_bet, ledger};
 use super::ui::{self, Action, PickKind, View};
 use super::{names, render, store};
+use crate::core::errors::UserError;
 use crate::core::{BotCtx, BotEvent, Result, user_error};
 
 const SERVER_ONLY: &str = "The wheel only works in a server.";
@@ -130,8 +131,56 @@ fn require_admin(ctx: &BotCtx, user: UserId, what: &str) -> Result<()> {
 
 pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) -> Result<()> {
     let guild = i.guild_id.ok_or_else(|| user_error(SERVER_ONLY))?;
-    match Action::parse(action) {
+    let parsed = Action::parse(action);
+    // The status message a press is about: the message of a status button, or the one a
+    // private menu or bet slip remembers. Used for the button under the stale-round error.
+    let status = match &parsed {
+        Some(
+            Action::Claim { .. }
+            | Action::Bet { .. }
+            | Action::Unbet { .. }
+            | Action::Winner { .. },
+        ) => Some(i.message.id.get()),
+        Some(
+            Action::Pick { message, .. }
+            | Action::Stake { message, .. }
+            | Action::Other { message, .. },
+        ) => Some(*message),
+        _ => None,
+    };
+    let result = handle_component(ctx, i, guild, parsed, action).await;
+    match (result, status) {
+        // The round on that message is over: say so, with a button to the current one.
+        (Err(err), Some(message)) if is_not_current(&err) => {
+            let (text, button) = ui::not_current(NOT_CURRENT, message);
+            let response = CreateInteractionResponseMessage::new()
+                .content(text)
+                .components(button)
+                .ephemeral(true);
+            i.create_response(&ctx.http, CreateInteractionResponse::Message(response))
+                .await?;
+            Ok(())
+        }
+        (result, _) => result,
+    }
+}
+
+/// Whether `err` is the [`NOT_CURRENT`] error.
+fn is_not_current(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<UserError>()
+        .is_some_and(|e| e.0 == NOT_CURRENT)
+}
+
+async fn handle_component(
+    ctx: &BotCtx,
+    i: &ComponentInteraction,
+    guild: GuildId,
+    parsed: Option<Action>,
+    action: &str,
+) -> Result<()> {
+    match parsed {
         Some(Action::Current) => current(ctx, i, guild).await,
+        Some(Action::Refresh { message }) => refresh(ctx, i, guild, MessageId::new(message)).await,
         Some(Action::Claim { round }) => claim(ctx, i, guild, round).await,
         Some(Action::Bet { round }) => open_menu(ctx, i, guild, PickKind::Place, round).await,
         Some(Action::Unbet { round }) => open_menu(ctx, i, guild, PickKind::Remove, round).await,
@@ -141,6 +190,7 @@ pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) 
             kind,
             round,
             message,
+            ..
         }) => picked(ctx, i, guild, kind, round, MessageId::new(message)).await,
         Some(Action::Reset {
             keep_options,
@@ -341,6 +391,30 @@ async fn current(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId) -> Resu
     i.defer(&ctx.http).await?;
     let status = status_message(ctx, guild, &game, game.latest()).await?;
     i.edit_response(&ctx.http, status.update()).await?;
+    Ok(())
+}
+
+/// "View Current Round" under the stale-round error: shows the current round on the status
+/// message the error was about, and replaces the error with a short note.
+async fn refresh(
+    ctx: &BotCtx,
+    i: &ComponentInteraction,
+    guild: GuildId,
+    message: MessageId,
+) -> Result<()> {
+    let game = ctx
+        .db
+        .call(move |conn| active_game(conn, guild.get()))
+        .await?;
+    // Looking up names and drawing can take longer than Discord waits for an answer.
+    i.defer(&ctx.http).await?;
+    let index = game.latest();
+    edit_status(ctx, i.channel_id, message, guild, &game, index).await;
+    let number = game.season.rounds[index].number;
+    let note = EditInteractionResponse::new()
+        .content(format!("The wheel message now shows round {number}."))
+        .components(Vec::new());
+    i.edit_response(&ctx.http, note).await?;
     Ok(())
 }
 
