@@ -201,16 +201,23 @@ fn file_blocks(
 /// Claude's built-in tools, then the bot's, always in the same order (they're part of the
 /// cached prefix). The bot's `memory` tool is sent as a normal tool, not as Claude's own
 /// memory tool: that one comes with Anthropic's instruction to log task progress in memory.
-pub fn tools(defs: &[ToolDef], web: bool, code_execution: bool) -> Vec<Value> {
+/// `max_searches` caps web searches per request (0 means no cap).
+pub fn tools(defs: &[ToolDef], web: bool, max_searches: u32, code_execution: bool) -> Vec<Value> {
     let mut tools = Vec::new();
     if web {
         // Results her code already filtered stay out of the answer, so they aren't kept in
         // the history and sent again with every later message.
-        tools.push(json!({
+        let mut search = json!({
             "type": "web_search_20260318",
             "name": "web_search",
             "response_inclusion": "excluded",
-        }));
+        });
+        if max_searches > 0 {
+            // Past the cap, a search comes back as a `max_uses_exceeded` error and she
+            // answers with what she found.
+            search["max_uses"] = json!(max_searches);
+        }
+        tools.push(search);
         tools.push(json!({
             "type": "web_fetch_20260318",
             "name": "web_fetch",
@@ -474,7 +481,7 @@ mod tests {
     #[test]
     fn built_in_tools_come_first() {
         let defs = [def("get_current_time"), def("memory")];
-        let tools = tools(&defs, true, true);
+        let tools = tools(&defs, true, 5, true);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -488,10 +495,13 @@ mod tests {
         );
         assert_eq!(tools[4]["eager_input_streaming"], true);
         assert_eq!(tools[0]["type"], "web_search_20260318");
+        assert_eq!(tools[0]["max_uses"], 5);
         assert_eq!(tools[1]["response_inclusion"], "excluded");
-        assert_eq!(super::tools(&defs, true, false).len(), 4);
+        assert_eq!(tools[1].get("max_uses"), None);
+        assert_eq!(super::tools(&defs, true, 0, true)[0].get("max_uses"), None);
+        assert_eq!(super::tools(&defs, true, 5, false).len(), 4);
         // A job without the web or code gets only the bot's tools.
-        assert_eq!(super::tools(&defs, false, false).len(), 2);
+        assert_eq!(super::tools(&defs, false, 5, false).len(), 2);
 
         let blocks = system("Be nice.", "5m");
         assert_eq!(blocks.len(), 1);

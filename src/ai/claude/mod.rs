@@ -88,6 +88,9 @@ pub struct ClaudeConfig {
     pub max_tokens: u32,
     /// Let it run code, which also lets it open attached files.
     pub code_execution: bool,
+    /// The most web searches one request may make ($0.01 each). Past it, she answers with
+    /// what she found. 0 means no limit.
+    pub web_search_max_uses: u32,
     /// When the model declines, let the API retry on another Claude model.
     pub fallbacks: bool,
     /// USD a month; the log channel gets a warning at 80% and 100%. 0 turns that off.
@@ -125,6 +128,7 @@ impl Default for ClaudeConfig {
             effort: "medium".to_string(),
             max_tokens: 32_000,
             code_execution: true,
+            web_search_max_uses: 5,
             fallbacks: true,
             monthly_budget: 100.0,
             billed_spend: true,
@@ -317,7 +321,7 @@ impl Claude {
             "stream": true,
             "system": messages::system(&request.system, run.cache_ttl),
             "messages": conversation,
-            "tools": messages::tools(&request.tools, run.web, run.code),
+            "tools": messages::tools(&request.tools, run.web, config.web_search_max_uses, run.code),
             // Thinking can't be turned off; effort sets how much. When an earlier turn
             // changed, the thinking after it is left out instead of failing the request.
             "thinking": {
@@ -455,7 +459,12 @@ impl Claude {
         let run = self.run_for(request);
         let setup = messages::setup(
             &json!(messages::system(&request.system, run.cache_ttl)),
-            &json!(messages::tools(&request.tools, run.web, run.code)),
+            &json!(messages::tools(
+                &request.tools,
+                run.web,
+                self.config.web_search_max_uses,
+                run.code
+            )),
         );
         let conversation = messages::to_messages(turns, &run.model, &setup, &uploaded, run.code);
         (self.request_body(request, &run, conversation), uploaded)

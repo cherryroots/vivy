@@ -142,6 +142,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #35 | | Vivy's progress notes between tool calls, in her own voice, show above the chat status line |
 | | | Chat status names the web search query and the site being read; text after a search starts a new paragraph |
 | #38 | | OpenAI: one prompt cache key for chat in every channel, so a quiet channel reads what a busy one cached |
+| #39 | | Claude: at most 5 web searches per request (`web_search_max_uses`) |
 
 ## Not built yet
 
