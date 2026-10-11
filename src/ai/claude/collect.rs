@@ -127,6 +127,14 @@ impl Collector {
                 if let Some(raw) = self.partial.remove(&index)
                     && let Some(block) = self.content.get_mut(index)
                 {
+                    // Some blocks come with their whole input in `content_block_start` and
+                    // no deltas (Claude's built-in tools can). That input stays as it is:
+                    // it goes back to Claude later, and changing it would make Claude
+                    // leave out all thinking after it.
+                    let given = block["input"].as_object().is_some_and(|o| !o.is_empty());
+                    if raw.trim().is_empty() && given {
+                        return Ok(events);
+                    }
                     // Tool arguments stream unchecked, so they may not be JSON (or may
                     // have been cut off).
                     match parse_input(&raw) {
@@ -356,6 +364,25 @@ mod tests {
             .iter()
             .flat_map(|e| collector.push(e).unwrap())
             .collect()
+    }
+
+    #[test]
+    fn keeps_an_input_given_whole() {
+        let mut collector = Collector::default();
+        let input = json!({"command": "ls -la", "restart": false});
+        push_all(
+            &mut collector,
+            &[
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "s1", "name": "bash_code_execution", "input": input}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1, "content_block": {"type": "server_tool_use", "id": "s2", "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{\"query\": \"rust\"}"}}),
+                json!({"type": "content_block_stop", "index": 1}),
+            ],
+        );
+        let content = collector.finish().content;
+        assert_eq!(content[0]["input"], input);
+        assert_eq!(content[1]["input"], json!({"query": "rust"}));
     }
 
     #[test]
