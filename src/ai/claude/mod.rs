@@ -359,9 +359,14 @@ impl Claude {
         turns: &[Turn],
     ) -> (Value, HashMap<ContentKey, String>) {
         let uploaded = self.upload_all(turns).await;
+        let setup = messages::setup(
+            &json!(messages::system(&request.system)),
+            &json!(messages::tools(&request.tools, self.config.code_execution)),
+        );
         let conversation = messages::to_messages(
             turns,
             &self.config.model,
+            &setup,
             &uploaded,
             self.config.code_execution,
         );
@@ -644,6 +649,7 @@ async fn read_answer(
         tool_calls: finished.tool_calls,
         files,
         native: Value::Array(finished.content),
+        setup: Some(messages::setup(&body["system"], &body["tools"])),
     };
     Ok(Some((done, container)))
 }

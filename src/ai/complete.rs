@@ -61,6 +61,7 @@ pub async fn complete(
             completed.rounds.push(NativeRound {
                 output: done.native,
                 results: Vec::new(),
+                setup: done.setup,
             });
             return Ok(completed);
         }
@@ -75,6 +76,7 @@ pub async fn complete(
         completed.rounds.push(NativeRound {
             output: done.native,
             results,
+            setup: done.setup,
         });
     }
     anyhow::bail!("the model kept calling tools ({max_rounds} rounds)")

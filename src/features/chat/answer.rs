@@ -259,6 +259,7 @@ async fn stream_answer(
             rounds.push(NativeRound {
                 output: done.native.clone(),
                 results: Vec::new(),
+                setup: done.setup.clone(),
             });
             return Ok(Some((done, rounds, files)));
         }
@@ -282,6 +283,7 @@ async fn stream_answer(
         rounds.push(NativeRound {
             output: done.native,
             results,
+            setup: done.setup,
         });
     }
     Err(anyhow!(
