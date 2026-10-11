@@ -119,12 +119,13 @@ fn render(text: &str, note: Option<&str>, status: Option<&str>) -> Vec<String> {
 
 fn activity_status(activity: &Activity) -> String {
     match activity {
-        Activity::Thinking => "💭 Thinking…",
-        Activity::SearchingWeb => "🔎 Searching the web…",
-        Activity::RunningCode => "🐍 Running code…",
-        Activity::Writing => "✍️ Writing…",
+        Activity::Thinking => "💭 Thinking…".to_string(),
+        Activity::SearchingWeb => "🔎 Searching the web…".to_string(),
+        Activity::Searching(query) => format!("🔎 Searching “{}”…", shorten(query, 60)),
+        Activity::Reading(site) => format!("📖 Reading {site}…"),
+        Activity::RunningCode => "🐍 Running code…".to_string(),
+        Activity::Writing => "✍️ Writing…".to_string(),
     }
-    .to_string()
 }
 
 /// The status line while a tool runs: the label its feature gives it
@@ -281,6 +282,11 @@ async fn stream_answer(
                         screen.status = Some(activity_status(&Activity::Writing));
                     }
                     Some(Ok(ChatEvent::Activity(activity))) => {
+                        // Text after a search or code starts a new paragraph, like text
+                        // after the bot's tools.
+                        if activity != Activity::Writing {
+                            first_delta = true;
+                        }
                         screen.status = Some(activity_status(&activity));
                     }
                     Some(Ok(ChatEvent::Progress(note))) => screen.note = Some(note),
@@ -495,6 +501,18 @@ mod tests {
                 Some("🔧 Read recent messages…")
             ),
             ["-# 💬 Found it. Now checking\n-# 🔧 Read recent messages…"]
+        );
+    }
+
+    #[test]
+    fn web_status_names_what_she_looks_at() {
+        assert_eq!(
+            activity_status(&Activity::Searching("dino decks 2017".into())),
+            "🔎 Searching “dino decks 2017”…"
+        );
+        assert_eq!(
+            activity_status(&Activity::Reading("ygoprodeck.com".into())),
+            "📖 Reading ygoprodeck.com…"
         );
     }
 

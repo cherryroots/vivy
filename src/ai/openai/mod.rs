@@ -420,6 +420,11 @@ fn parse_event(event: &SseEvent) -> anyhow::Result<Option<ChatEvent>> {
             Some("message") => Some(ChatEvent::Activity(Activity::Writing)),
             _ => None,
         },
+        // OpenAI says what a web search looked for only once it's done.
+        "response.output_item.done" => data["item"]["action"]["query"]
+            .as_str()
+            .filter(|_| data["item"]["type"] == "web_search_call")
+            .map(|query| ChatEvent::Activity(Activity::Searching(query.to_string()))),
         // "incomplete" means it stopped early (for example at the output limit); what it
         // wrote so far is still the answer.
         "response.completed" | "response.incomplete" => {
@@ -829,6 +834,10 @@ mod tests {
             )
             .unwrap(),
             Some(ChatEvent::Activity(Activity::SearchingWeb))
+        );
+        assert_eq!(
+            event(json!({"type": "response.output_item.done", "item": {"type": "web_search_call", "action": {"type": "search", "query": "dinos"}}})).unwrap(),
+            Some(ChatEvent::Activity(Activity::Searching("dinos".into())))
         );
         assert_eq!(
             event(json!({"type": "response.in_progress"})).unwrap(),

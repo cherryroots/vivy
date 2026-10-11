@@ -133,6 +133,11 @@ impl Collector {
             }
             "content_block_stop" => {
                 let index = self.index(data);
+                if let Some(note) = self.content.get(index).and_then(|b| b["thinking"].as_str())
+                    && !note.trim().is_empty()
+                {
+                    info!("Claude progress note: {note}");
+                }
                 if let Some(raw) = self.partial.remove(&index)
                     && let Some(block) = self.content.get_mut(index)
                 {
@@ -141,18 +146,21 @@ impl Collector {
                     // it goes back to Claude later, and changing it would make Claude
                     // leave out all thinking after it.
                     let given = block["input"].as_object().is_some_and(|o| !o.is_empty());
-                    if raw.trim().is_empty() && given {
-                        return Ok(events);
-                    }
-                    // Tool arguments stream unchecked, so they may not be JSON (or may
-                    // have been cut off).
-                    match parse_input(&raw) {
-                        Some(input) => block["input"] = input,
-                        None => {
-                            block["input"] = json!({});
-                            let id = block["id"].as_str().unwrap_or_default().to_string();
-                            self.invalid.insert(id, raw);
+                    if !(raw.trim().is_empty() && given) {
+                        // Tool arguments stream unchecked, so they may not be JSON (or may
+                        // have been cut off).
+                        match parse_input(&raw) {
+                            Some(input) => block["input"] = input,
+                            None => {
+                                block["input"] = json!({});
+                                let id = block["id"].as_str().unwrap_or_default().to_string();
+                                self.invalid.insert(id, raw);
+                            }
                         }
+                    }
+                    // Now that its input is complete, what a web search looks for.
+                    if let Some(activity) = web_activity(block) {
+                        events.push(ChatEvent::Activity(activity));
                     }
                 }
             }
@@ -296,6 +304,25 @@ fn activity(block: &Value) -> Option<Activity> {
             "web_search" | "web_fetch" => Some(Activity::SearchingWeb),
             _ => Some(Activity::RunningCode),
         },
+        _ => None,
+    }
+}
+
+/// What a finished web search or fetch looks at: its query, or the site it reads.
+fn web_activity(block: &Value) -> Option<Activity> {
+    if block["type"] != "server_tool_use" {
+        return None;
+    }
+    let input = &block["input"];
+    match block["name"].as_str()? {
+        "web_search" => Some(Activity::Searching(input["query"].as_str()?.to_string())),
+        "web_fetch" => {
+            let url = input["url"].as_str()?;
+            let site = url.split("://").nth(1).unwrap_or(url).split('/').next()?;
+            Some(Activity::Reading(
+                site.trim_start_matches("www.").to_string(),
+            ))
+        }
         _ => None,
     }
 }
@@ -531,7 +558,10 @@ mod tests {
                 json!({"type": "content_block_start", "index": 1, "content_block": {"type": "bash_code_execution_tool_result", "tool_use_id": "s1", "content": {"type": "bash_code_execution_result", "stdout": "", "stderr": "", "return_code": 0, "content": [{"type": "bash_code_execution_output", "file_id": "file_plot"}]}}}),
                 json!({"type": "content_block_stop", "index": 1}),
                 json!({"type": "content_block_start", "index": 2, "content_block": {"type": "server_tool_use", "id": "s2", "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 2, "delta": {"type": "input_json_delta", "partial_json": "{\"query\": \"dino decks 2017\"}"}}),
                 json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "content_block_start", "index": 3, "content_block": {"type": "server_tool_use", "id": "s3", "name": "web_fetch", "input": {"url": "https://www.ygoprodeck.com/card/1"}}}),
+                json!({"type": "content_block_stop", "index": 3}),
                 json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "container": {"id": "container_1", "expires_at": "x"}}}),
             ],
         );
@@ -540,6 +570,9 @@ mod tests {
             [
                 ChatEvent::Activity(Activity::RunningCode),
                 ChatEvent::Activity(Activity::SearchingWeb),
+                ChatEvent::Activity(Activity::Searching("dino decks 2017".into())),
+                ChatEvent::Activity(Activity::SearchingWeb),
+                ChatEvent::Activity(Activity::Reading("ygoprodeck.com".into())),
             ]
         );
         assert_eq!(collector.container.as_deref(), Some("container_1"));

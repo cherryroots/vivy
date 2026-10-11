@@ -139,7 +139,8 @@ The port went in stages, one pull request each, all merged into `main`.
 | #32 | | Wheel: the movie each person picked, set with `/wheel_add` or `/wheel_movie`, shown on the picture and in the menus |
 | #36 | | Newer web search and fetch tools: filtered results stay out of the chat history |
 | | | Chat's prompt cache kept warm with a ping 58 minutes after the last use; savings on the status picture |
-| | | Vivy's progress notes between tool calls, in her own voice, show above the chat status line |
+| #35 | | Vivy's progress notes between tool calls, in her own voice, show above the chat status line |
+| | | Chat status names the web search query and the site being read; text after a search starts a new paragraph |
 
 ## Not built yet
 
