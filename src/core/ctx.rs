@@ -49,7 +49,7 @@ impl BotCtx {
         let _ = self.events.send(event);
     }
 
-    pub fn gate(&self, feature: &str) -> Gate {
+    pub fn gate(&self, feature: &str) -> &Gate {
         self.config.gate(feature)
     }
 
@@ -65,6 +65,16 @@ impl BotCtx {
         let guild = self.cache.guild(guild?)?;
         let thread = guild.threads.iter().find(|t| t.id == channel)?;
         thread.parent_id
+    }
+
+    /// A channel's or thread's name, from the cache. `None` when the cache doesn't know it.
+    pub fn channel_name(&self, guild: GuildId, channel: ChannelId) -> Option<String> {
+        let guild = self.cache.guild(guild)?;
+        guild
+            .channels
+            .get(&channel)
+            .or_else(|| guild.threads.iter().find(|t| t.id == channel))
+            .map(|c| c.name.clone())
     }
 
     /// Sets the bot's custom status, the line under its name, on every gateway connection.

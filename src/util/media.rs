@@ -247,11 +247,7 @@ pub async fn with_previews(http: &Http, msg: &Message) -> Message {
 /// The client every download uses, with the checks above. It skips the system proxy: through
 /// a proxy, the bot can't see which address a name really leads to.
 static SAFE_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .user_agent(concat!("Vivy/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(10))
-        // Same as the main client in main.rs: a server that goes quiet this long fails.
-        .read_timeout(Duration::from_secs(5 * 60))
+    super::http::client_builder()
         .dns_resolver(Arc::new(PublicOnly))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {

@@ -20,10 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use poise::{BoxFuture, CreateReply, FrameworkError};
 use serenity::all::{
-    ChannelId, ComponentInteraction, CreateAllowedMentions, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage, FullEvent,
-    GuildId, Interaction, Message, MessageId, MessageUpdateEvent, ModalInteraction, Reaction,
-    UserId,
+    Builder as _, ChannelId, ComponentInteraction, CreateAllowedMentions,
+    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
+    CreateMessage, FullEvent, GuildId, Interaction, InteractionId, Message, MessageId,
+    MessageUpdateEvent, ModalInteraction, Reaction, UserId,
 };
 use tracing::{Instrument as _, Span, debug, error, info, info_span, warn};
 
@@ -81,9 +81,10 @@ fn on_message(bot: &BotCtx, msg: &Message) {
         return;
     }
     let msg = Arc::new(msg.clone());
+    let allowed = enabled_features(bot, msg.guild_id, msg.channel_id);
 
-    for feature in enabled_features(bot, msg.guild_id, msg.channel_id) {
-        let (bot2, msg2) = (bot.clone(), msg.clone());
+    for feature in &allowed {
+        let (bot2, feature, msg2) = (bot.clone(), feature.clone(), msg.clone());
         run(
             bot,
             feature.name(),
@@ -99,7 +100,6 @@ fn on_message(bot: &BotCtx, msg: &Message) {
     let text = strip_mentions(&msg.content, bot.bot_id);
     // Only features that are on here can claim a mention, so a turned-off feature's
     // prefix ("remind me ...") falls through to chat instead of getting no answer.
-    let allowed = enabled_features(bot, msg.guild_id, msg.channel_id);
     let Some((feature, rest)) = route_mention(&allowed, &text) else {
         debug!("no feature claimed the mention {text:?}");
         return;
@@ -206,12 +206,15 @@ fn on_messages_deleted(
 }
 
 async fn on_component(bot: &BotCtx, i: &ComponentInteraction) {
+    let reply = ReplyTo::Interaction {
+        id: i.id,
+        token: i.token.clone(),
+    };
     let Some((feature, action)) = route_custom_id(bot, &i.data.custom_id) else {
         // Most likely a button on a message from voltgpt.
-        tell_user(bot, &ReplyTo::Component(Box::new(i.clone())), STALE).await;
+        tell_user(bot, &reply, STALE).await;
         return;
     };
-    let reply = ReplyTo::Component(Box::new(i.clone()));
     if !bot.allows(feature.name(), i.guild_id, i.channel_id) {
         tell_user(bot, &reply, TURNED_OFF).await;
         return;
@@ -232,7 +235,10 @@ async fn on_component(bot: &BotCtx, i: &ComponentInteraction) {
 }
 
 async fn on_modal(bot: &BotCtx, i: &ModalInteraction) {
-    let reply = ReplyTo::Modal(Box::new(i.clone()));
+    let reply = ReplyTo::Interaction {
+        id: i.id,
+        token: i.token.clone(),
+    };
     let Some((feature, action)) = route_custom_id(bot, &i.data.custom_id) else {
         tell_user(bot, &reply, STALE).await;
         return;
@@ -295,8 +301,11 @@ const TURNED_OFF: &str = "This is turned off here.";
 enum ReplyTo {
     Nobody,
     Message(ChannelId, MessageId),
-    Component(Box<ComponentInteraction>),
-    Modal(Box<ModalInteraction>),
+    /// A button, select menu or modal: its ID and token are all a response needs.
+    Interaction {
+        id: InteractionId,
+        token: String,
+    },
 }
 
 /// Runs a handler in its own task. A slow or failing handler never blocks the others, and
@@ -355,20 +364,17 @@ async fn tell_user(bot: &BotCtx, reply: &ReplyTo, text: &str) {
             )
             .await
             .map(|_| ()),
-        ReplyTo::Component(i) => match i
-            .create_response(http, CreateInteractionResponse::Message(message()))
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(_) => i.create_followup(http, followup()).await.map(|_| ()),
-        },
-        ReplyTo::Modal(i) => match i
-            .create_response(http, CreateInteractionResponse::Message(message()))
-            .await
-        {
-            Ok(()) => Ok(()),
-            Err(_) => i.create_followup(http, followup()).await.map(|_| ()),
-        },
+        // The same as `interaction.create_response(..)` and `.create_followup(..)`, which
+        // only need the interaction's ID and token.
+        ReplyTo::Interaction { id, token } => {
+            match CreateInteractionResponse::Message(message())
+                .execute(http, (*id, token))
+                .await
+            {
+                Ok(()) => Ok(()),
+                Err(_) => followup().execute(http, (None, token)).await.map(|_| ()),
+            }
+        }
     };
     if let Err(err) = result {
         warn!("couldn't tell the user what went wrong: {err}");
@@ -390,14 +396,17 @@ fn message_span(feature: &'static str, msg: &Message) -> Span {
 // Routing (pure functions, tested below)
 // ---------------------------------------------------------------------------------------
 
+/// The features allowed in this server and channel. The same check as [`BotCtx::allows`],
+/// with a thread's parent channel looked up once for all features instead of once each.
 fn enabled_features(
     bot: &BotCtx,
     guild: Option<GuildId>,
     channel: ChannelId,
 ) -> Vec<Arc<dyn Feature>> {
+    let parent = bot.thread_parent(guild, channel);
     bot.features
         .iter()
-        .filter(|f| bot.allows(f.name(), guild, channel))
+        .filter(|f| bot.gate(f.name()).allows(guild, channel, parent))
         .cloned()
         .collect()
 }

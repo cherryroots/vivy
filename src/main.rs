@@ -23,6 +23,7 @@ use crate::core::db::{self, Db};
 use crate::core::legacy::{self, Outcome};
 use crate::core::logging::{self, LogLine};
 use crate::core::{BotCtx, Feature, Timers, dispatcher};
+use crate::util::env_key;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,13 +45,8 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         std::env::var("DISCORD_TOKEN").context("DISCORD_TOKEN is not set (put it in .env)")?;
     let config = Arc::new(config);
     let features = Arc::new(features::all());
-    let web = reqwest::Client::builder()
-        .user_agent(concat!("Vivy/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(10))
-        // A response that sends nothing for this long fails instead of hanging forever.
-        // Generous, since AI streams can go quiet while the model thinks (Claude sends a
-        // ping now and then). Links from messages are downloaded with `media::safe_client`.
-        .read_timeout(Duration::from_secs(5 * 60))
+    // Links from messages are downloaded with `media::safe_client` instead.
+    let web = util::http::client_builder()
         .build()
         .context("creating the HTTP client")?;
 
@@ -129,7 +125,6 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
             .iter()
             .map(|&id| serenity::UserId::new(id))
             .collect(),
-        initialize_owners: false,
         // There are no prefix commands: mentions go to the features through the dispatcher.
         // Without this, poise also reads "@Vivy remind me ..." as a command and warns that
         // it doesn't know "remind".
@@ -146,7 +141,8 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     let setup_tasks = tasks.clone();
     let framework = poise::Framework::builder()
         .options(options)
-        // Owners come from `admins` in config.toml, not from the Discord application.
+        // Owners come from `admins` in config.toml, not from the Discord application. This
+        // has to be set here: the builder overwrites `initialize_owners` in the options.
         .initialize_owners(false)
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
@@ -236,8 +232,6 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     Ok(())
 }
 
-/// Registers the slash commands globally, and removes per-server commands that voltgpt
-/// registered under the same application, so they don't show up twice.
 /// Marks `command` and its subcommands as `feature`'s. The gate check looks at the command
 /// that runs, which for `/memory show` is `show`, so subcommands need it too.
 fn set_category(command: &mut poise::Command<BotCtx, crate::core::Error>, feature: &'static str) {
@@ -247,6 +241,8 @@ fn set_category(command: &mut poise::Command<BotCtx, crate::core::Error>, featur
     }
 }
 
+/// Registers the slash commands globally, and removes per-server commands that voltgpt
+/// registered under the same application, so they don't show up twice.
 async fn register_commands(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
@@ -261,14 +257,6 @@ async fn register_commands(
         }
     }
     Ok(())
-}
-
-/// A key from `.env`, trimmed. `None` when it's missing or empty.
-fn env_key(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|key| key.trim().to_string())
-        .filter(|key| !key.is_empty())
 }
 
 /// Sets up the AI providers for chat: the one `provider` under `[ai]` names, and the

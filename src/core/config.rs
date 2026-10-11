@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::Context as _;
 use serde::Deserialize;
@@ -108,6 +108,10 @@ impl Default for Gate {
         }
     }
 }
+
+/// The gate of a feature without a config section, so [`Config::gate`] can always hand out
+/// a reference instead of a copy.
+static DEFAULT_GATE: LazyLock<Gate> = LazyLock::new(Gate::default);
 
 impl Gate {
     /// Whether the feature may run in this server at all, for work that isn't tied to a
@@ -248,8 +252,8 @@ Copy config.example.toml to start one.",
     }
 
     /// The gate of a feature. Features without a config section are enabled everywhere.
-    pub fn gate(&self, feature: &str) -> Gate {
-        self.gates.get(feature).cloned().unwrap_or_default()
+    pub fn gate(&self, feature: &str) -> &Gate {
+        self.gates.get(feature).unwrap_or(&DEFAULT_GATE)
     }
 
     /// Reads a feature's `[features.<name>]` section into its own settings struct.

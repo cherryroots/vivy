@@ -131,6 +131,10 @@ The port went in stages, one pull request each, all merged into `main`.
 | #23 | | Docs: the feature map as an overview, a page per feature |
 | #24 | | Drawing with GPT Image 2.5; OpenAI spend and bill next to Claude's |
 | #25 | | Claude's thinking survives bot updates that change the prompt or tools |
+| #26 | | Background AI jobs run cheaper (settings per job); chime-ins share the chat cache; hour-long prompt cache |
+| #27 | | Speed and reliability: shared retries with Retry-After, parallel loading, snail scan off the database thread |
+| #28 | | Wheel menus past 25 names, reminder Cancel and Snooze… buttons, repeating reminders, friendly tool status lines, `/snails` leaderboard |
+| #29 | | Code cleanup: big files split, shared helpers, tracing-log, less work per message |
 
 ## Not built yet
 

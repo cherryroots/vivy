@@ -30,7 +30,7 @@ use tracing_subscriber::layer::{Context, SubscriberExt as _};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer, filter};
 
-use tracing_log::AsLog as _;
+use tracing_log::{AsLog as _, LogTracer};
 
 use super::config::LoggingConfig;
 
@@ -79,8 +79,7 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
         .with(stdout.with_filter(env_filter))
         .with(discord);
     tracing::subscriber::set_global_default(subscriber)?;
-    log::set_boxed_logger(Box::new(LogBridge))?;
-    log::set_max_level(tracing::level_filters::LevelFilter::current().as_log());
+    bridge_log_crate()?;
 
     // Log panics like errors, with the span they happened in.
     std::panic::set_hook(Box::new(|info| {
@@ -95,24 +94,15 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
     Ok(receiver)
 }
 
-/// Passes lines from crates that use `log` instead of `tracing` on to `tracing`. usvg, which
-/// draws the wheel picture, is left out: it warns about every character its first font lacks,
-/// even when another font draws it. The wheel's renderer picks the fonts itself and warns
-/// once about a character no installed font has.
-struct LogBridge;
-
-impl log::Log for LogBridge {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::max_level() && !metadata.target().starts_with("usvg")
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            let _ = tracing_log::format_trace(record);
-        }
-    }
-
-    fn flush(&self) {}
+/// Passes lines from crates that use `log` instead of `tracing` on to `tracing`, at the level
+/// tracing is set to. usvg, which draws the wheel picture, is left out: it warns about every
+/// character its first font lacks, even when another font draws it. The wheel's renderer picks
+/// the fonts itself and warns once about a character no installed font has.
+fn bridge_log_crate() -> Result<(), tracing_log::log::SetLoggerError> {
+    LogTracer::builder()
+        .with_max_level(tracing::level_filters::LevelFilter::current().as_log())
+        .ignore_crate("usvg")
+        .init()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -512,16 +502,18 @@ mod tests {
 
     #[test]
     fn usvg_lines_are_left_out() {
-        use log::Log as _;
-        log::set_max_level(log::LevelFilter::Info);
+        use tracing_log::log;
+        bridge_log_crate().unwrap();
         let meta = |target| {
             log::Metadata::builder()
                 .target(target)
                 .level(log::Level::Warn)
                 .build()
         };
-        assert!(!LogBridge.enabled(&meta("usvg::text::layout")));
-        assert!(LogBridge.enabled(&meta("reqwest::connect")));
+        tracing::subscriber::with_default(tracing_subscriber::registry(), || {
+            assert!(!log::logger().enabled(&meta("usvg::text::layout")));
+            assert!(log::logger().enabled(&meta("reqwest::connect")));
+        });
     }
 
     /// A writer that keeps what the formatter wrote, for the test below.
