@@ -90,6 +90,8 @@ pub const MIGRATIONS: &[&str] = &[
         count INTEGER NOT NULL,
         PRIMARY KEY (guild_id, host)
     );",
+    // 5: `/snails`, the leaderboard, counts a server's snails since a time.
+    "CREATE INDEX snail_caught_guild ON snail_caught (guild_id, caught_at);",
 ];
 
 /// A failed picture is tried this many times in all, then dropped: the retry loop takes it
@@ -403,6 +405,25 @@ pub fn caught_since(conn: &Connection, since: i64) -> rusqlite::Result<u64> {
         [since],
         |row| row.get(0),
     )
+}
+
+/// The server's top snailers since `since` (0 for all time): (author, snails), most first,
+/// at most `limit`.
+pub fn top_snailers(
+    conn: &Connection,
+    guild: u64,
+    since: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<(u64, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT author_id, count(*) AS snails FROM snail_caught
+         WHERE guild_id = ?1 AND caught_at >= ?2
+         GROUP BY author_id ORDER BY snails DESC, author_id LIMIT ?3",
+    )?;
+    stmt.query_map(params![guild, since, limit as i64], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?
+    .collect()
 }
 
 /// Forgets a message that no longer exists: its links, pictures and failed pictures. A
@@ -738,6 +759,26 @@ pub fn stats(conn: &Connection) -> rusqlite::Result<(u64, u64, u64, u64)> {
 mod tests {
     use super::*;
     use crate::core::db::test_connection;
+
+    #[test]
+    fn leaderboard_counts_per_server() {
+        let conn = test_connection("snails", MIGRATIONS);
+        // Author 7 caught twice in server 1, once long ago; author 8 once; server 2 apart.
+        for (message, guild, author, at) in [
+            (1, 1, 7, 1000),
+            (2, 1, 7, 2000),
+            (3, 1, 7, 10),
+            (4, 1, 8, 2000),
+            (5, 2, 9, 2000),
+        ] {
+            record_caught(&conn, guild, message, author, at).unwrap();
+        }
+        assert_eq!(top_snailers(&conn, 1, 0, 10).unwrap(), [(7, 3), (8, 1)]);
+        assert_eq!(top_snailers(&conn, 1, 500, 10).unwrap(), [(7, 2), (8, 1)]);
+        assert_eq!(top_snailers(&conn, 1, 0, 1).unwrap(), [(7, 3)]);
+        assert_eq!(top_snailers(&conn, 2, 0, 10).unwrap(), [(9, 1)]);
+        assert!(top_snailers(&conn, 1, 5000, 10).unwrap().is_empty());
+    }
 
     fn fp(byte: u8) -> Fingerprint {
         Fingerprint {
