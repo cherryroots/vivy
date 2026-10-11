@@ -210,7 +210,7 @@ impl OpenAi {
             "truncation": "auto",
             "store": true,
             "stream": true,
-            "prompt_cache_key": request.cache_key,
+            "prompt_cache_key": prompt_cache_key(request),
         });
         if let Some(previous) = previous {
             body["previous_response_id"] = json!(previous);
@@ -606,6 +606,18 @@ impl ChatProvider for OpenAi {
     }
 }
 
+/// OpenAI's routing key for the prompt cache. Answers and chime-ins in every channel start
+/// with the same instructions and tools, so they share one key and a quiet channel reads
+/// what a busy one cached. (`request.cache_key` stays per channel: Claude keys its code
+/// containers by it.) Other jobs have prompts of their own.
+fn prompt_cache_key(request: &ChatRequest) -> String {
+    if matches!(request.job, "chat" | "chime") {
+        "vivy:chat".to_string()
+    } else {
+        request.cache_key.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -678,6 +690,7 @@ mod tests {
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["instructions"], "Be nice.");
         assert_eq!(body["service_tier"], "fast");
+        assert_eq!(body["prompt_cache_key"], "vivy:chat");
         assert_eq!(
             body["input"],
             json!([
@@ -699,6 +712,7 @@ mod tests {
         };
         let body = client().request_body(&mood, &[]);
         assert!(body.get("service_tier").is_none());
+        assert_eq!(body["prompt_cache_key"], "discord:1");
         assert_eq!(body["reasoning"]["effort"], "low");
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);
     }

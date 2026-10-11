@@ -141,6 +141,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | | | Chat's prompt cache kept warm with a ping 58 minutes after the last use; savings on the status picture |
 | #35 | | Vivy's progress notes between tool calls, in her own voice, show above the chat status line |
 | | | Chat status names the web search query and the site being read; text after a search starts a new paragraph |
+| #38 | | OpenAI: one prompt cache key for chat in every channel, so a quiet channel reads what a busy one cached |
 
 ## Not built yet
 
