@@ -10,7 +10,7 @@
 //! others use `edit_model` (Sunburst: the most precise at edits). Each one's cost counts
 //! toward OpenAI's spend as the job "drawing".
 //!
-//! - `store.rs`: what was drawn, for the monthly limit and the status
+//! - `store.rs`: what was drawn, for the monthly limits and the status
 //!
 //! It needs `OPENAI_TOKEN` in .env, whichever provider chats. Without it the tool isn't
 //! offered.
@@ -49,6 +49,9 @@ pub struct Settings {
     pub moderation: String,
     /// The most pictures a month, all servers together. 0 for no limit.
     pub monthly_pictures: u64,
+    /// The most pictures a month for one person, so nobody can use up `monthly_pictures`
+    /// alone. 0 for no limit per person.
+    pub per_user_monthly_pictures: u64,
 }
 
 impl Default for Settings {
@@ -60,6 +63,7 @@ impl Default for Settings {
             format: "png".to_string(),
             moderation: "auto".to_string(),
             monthly_pictures: 100,
+            per_user_monthly_pictures: 20,
         }
     }
 }
@@ -76,6 +80,24 @@ fn month_start(now: DateTime<Utc>) -> i64 {
         .and_then(|day| day.and_hms_opt(0, 0, 0))
         .map(|start| start.and_utc().timestamp())
         .unwrap_or_else(|| now.timestamp())
+}
+
+/// Why no picture can be drawn now: the month's pictures are used up, for everyone or for
+/// the asker. `drawn` is this month's count and `by_asker` the asker's part of it.
+fn over_limit(settings: &Settings, drawn: u64, by_asker: u64) -> Option<String> {
+    let limit = settings.monthly_pictures;
+    if limit > 0 && drawn >= limit {
+        return Some(format!(
+            "you've drawn {drawn} of {limit} pictures this month, which is all of them. Say so in text."
+        ));
+    }
+    let own = settings.per_user_monthly_pictures;
+    if own > 0 && by_asker >= own {
+        return Some(format!(
+            "you've drawn {by_asker} pictures for the asker this month, which is as many as one person gets ({own}). Say so in text; it starts again next month."
+        ));
+    }
+    None
 }
 
 /// The size for a shape the model asks for. Anything else is square.
@@ -117,7 +139,7 @@ impl Feature for Drawing {
         }
         vec![ToolDef {
             name: TOOL,
-            description: "Draw a picture and post it as a reply to the asker. Use it when someone asks you to draw, paint, make or change a picture, or when a picture says it better than words. \
+            description: "Draw a picture and post it as a reply to the asker. Use it when someone asks you for a picture (to draw, paint or make one) or to change one they show you; not on your own. It makes real pictures: don't draw with code instead. \
 Write the prompt in English as a clear description of the whole picture: the subject, what's happening, the style (photo, anime, watercolor, pixel art...), colors, light and framing. Put any words that should appear in the picture in quotes. \
 To change a picture or draw from one (\"put a hat on this\", \"me as a knight\", a reply to a picture you drew: \"make it night\"), set use_pictures: the pictures in the asker's message and in the message it replies to are sent along, and the prompt says what to do with them. \
 Drawing takes up to a minute. The picture is your answer, so write at most a short line with it.",
@@ -131,6 +153,10 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                 "required": ["prompt"]
             }),
         }]
+    }
+
+    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+        Some("🎨 Drawing, this can take a minute…")
     }
 
     async fn run_tool(
@@ -154,15 +180,18 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             .ok_or_else(|| user_error("give a prompt: what to draw"))?
             .to_string();
         let since = month_start(Utc::now());
-        let (drawn, _) = ctx
+        let user = asker.user.get();
+        let ((drawn, _), by_asker) = ctx
             .db
-            .call(move |conn| Ok(store::drawn_since(conn, since)?))
+            .call(move |conn| {
+                Ok((
+                    store::drawn_since(conn, since)?,
+                    store::drawn_for_since(conn, user, since)?,
+                ))
+            })
             .await?;
-        let limit = settings.monthly_pictures;
-        if limit > 0 && drawn >= limit {
-            return Err(user_error(format!(
-                "you've drawn {drawn} of {limit} pictures this month, which is all of them. Say so in text."
-            )));
+        if let Some(refusal) = over_limit(&settings, drawn, by_asker) {
+            return Err(user_error(refusal));
         }
 
         let mut pictures: Vec<ModelImage> = Vec::new();
@@ -284,6 +313,30 @@ mod tests {
         let urls: Vec<String> = pictures_in(&msg).into_iter().map(|m| m.url).collect();
         assert_eq!(urls, ["https://cdn/a.png", "https://cdn/c.webp"]);
         assert!(pictures_in(&Message::default()).is_empty());
+    }
+
+    #[test]
+    fn limits_for_everyone_and_each_person() {
+        let settings = Settings::default();
+        assert_eq!(over_limit(&settings, 0, 0), None);
+        assert_eq!(over_limit(&settings, 99, 19), None);
+        assert!(
+            over_limit(&settings, 100, 0)
+                .unwrap()
+                .contains("all of them")
+        );
+        assert!(
+            over_limit(&settings, 50, 20)
+                .unwrap()
+                .contains("one person")
+        );
+        // 0 turns a limit off.
+        let open = Settings {
+            monthly_pictures: 0,
+            per_user_monthly_pictures: 0,
+            ..Settings::default()
+        };
+        assert_eq!(over_limit(&open, 1000, 1000), None);
     }
 
     #[test]

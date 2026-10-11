@@ -28,7 +28,7 @@ pub fn defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "get_current_time",
-            description: "The current date and time. Uses the asker's timezone (set with /timezone) unless one is given.",
+            description: "The current date and time. Use it when the date or time matters. Uses the asker's timezone (set with /timezone) unless one is given. Don't mention the time unless asked or clearly needed; when you do, say it naturally.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -58,7 +58,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "read_recent_messages",
-            description: "The messages in this channel just before the one you're answering, oldest first.",
+            description: "The messages in this channel just before the one you're answering, oldest first. Use it to see what was said before.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -68,7 +68,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_message",
-            description: "One Discord message from its link (https://discord.com/channels/...).",
+            description: "One Discord message from its link (https://discord.com/channels/...). Use it when someone links a message.",
             parameters: json!({
                 "type": "object",
                 "properties": {"link": {"type": "string"}},

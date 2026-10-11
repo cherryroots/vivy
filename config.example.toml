@@ -166,6 +166,9 @@ moderation = "auto"
 # The most pictures a month, all servers together (0 for no limit). The status picture
 # shows how many were drawn and what they cost.
 monthly_pictures = 100
+# The most pictures a month for one person, so nobody uses up the month's pictures alone
+# (0 for no limit per person).
+per_user_monthly_pictures = 20
 
 [features.snails]
 # Repost detection. New messages' links and pictures are saved as they arrive; right-click a

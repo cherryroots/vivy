@@ -110,8 +110,20 @@ fn activity_status(activity: &Activity) -> String {
     .to_string()
 }
 
+/// The status line while a tool runs: the label its feature gives it
+/// ([`Feature::tool_status`]), or the tool's name as words.
+fn tool_status(owners: &HashMap<&'static str, Arc<dyn Feature>>, name: &str) -> String {
+    match owners
+        .get(name)
+        .and_then(|feature| feature.tool_status(name))
+    {
+        Some(label) => label.to_string(),
+        None => plain_tool_status(name),
+    }
+}
+
 /// "read_recent_messages" → "🔧 Read recent messages…"
-fn tool_status(name: &str) -> String {
+fn plain_tool_status(name: &str) -> String {
     let words = name.replace('_', " ");
     let mut chars = words.chars();
     let label: String = match chars.next() {
@@ -267,7 +279,7 @@ async fn stream_answer(
         // Run the tools, then continue the answer with their results.
         let mut results = Vec::new();
         for call in &done.tool_calls {
-            screen.status = Some(tool_status(&call.name));
+            screen.status = Some(tool_status(&owners, &call.name));
             screen.show(ctx).await?;
             let output = tokio::select! {
                 output = run_tool(ctx, asker, &owners, call) => output,
@@ -448,7 +460,7 @@ mod tests {
     #[test]
     fn tool_labels() {
         assert_eq!(
-            tool_status("read_recent_messages"),
+            plain_tool_status("read_recent_messages"),
             "🔧 Read recent messages…"
         );
     }

@@ -176,6 +176,7 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 - `commands`: `/memory`.
 - `migrations`: `store::MIGRATIONS`.
 - `tools` and `run_tool`: `memory` and `set_mood`; `run_tool` sends `set_mood` to `set_mood::run` and everything else to `tool::run`.
+- `tool_status`: "📝 Remembering…" for `memory` and "💭 Thinking…" for `set_mood` in chat's status line.
 - `chat_context`: faces, `<vivy_self>`, `<vivy_mood>` and `<memory_files>`, as described above.
 - `start`: warns about unknown `[features.memory]` keys and starts the hourly loop (`reflect::spawn`). The section is read in parts (`config.feature_part`) by several `Settings` structs (in `banner.rs`, `diary.rs`, `face.rs`, `mood.rs`, `name.rs`), so a key counts as a typo only when none of them reads it (`config.ignored_by`).
 - `stats`: Files, Folders, Changes today (last 24 hours), and Last reflection.

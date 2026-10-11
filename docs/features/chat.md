@@ -29,7 +29,7 @@ All under `src/features/chat/`, in a good reading order:
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `emoji.rs` | The `list_server_emoji` tool and the task that describes each custom emoji once |
-| `prompt.md` | The system prompt, built into the binary with `include_str!` |
+| `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid); what each tool is for and when to use it is in the tool's own description, so the two can't disagree |
 
 Chat also leans on a few helpers in `src/util/` (described in [architecture](../architecture.md)): `util::reply::LiveReply` (a reply that spans several messages and is edited in place), `util::split::split_message` (Discord-sized parts that keep code blocks intact), `util::media` (finding and loading pictures, GIFs, videos and files) and `util::text` (attachment and embed text).
 
@@ -70,7 +70,8 @@ The reply's last line is a small status in Discord's `-#` subtext markdown, redr
 | `-# 🔎 Searching the web…` | The provider's web search or fetch |
 | `-# 🐍 Running code…` | The code interpreter or code execution |
 | `-# ✍️ Writing…` | While text streams |
-| `-# 🔧 Read recent messages…` | One of the bot's tools runs, named after the tool (`tool_status` turns `read_recent_messages` into "Read recent messages") |
+| `-# 🎨 Drawing, this can take a minute…` | One of the bot's tools runs. The feature that owns the tool names the label (`Feature::tool_status`), like "🔍 Searching messages…", "📝 Remembering…" or "🎙️ Recording a voice message…". `schedule_follow_up` and `set_mood` show "💭 Thinking…", so a planned check-in stays a surprise |
+| `-# 🔧 Read recent messages…` | A tool whose feature gives no label: the tool's name as words (`plain_tool_status`) |
 
 When the answer is done the line goes away, or becomes `-# ⏹️ Stopped` (❌) or `-# ⚠️ Something went wrong: <short reason>`. Only the last message of a long answer carries it; `render` keeps 100 characters free there (`STATUS_ROOM`). `LiveReply::show` only edits messages whose text changed, so a tick with nothing new costs no API call.
 
@@ -180,6 +181,7 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | `panels` | The next planned check-in in a server, in the box about Vivy on the status message |
 | `tools` | Chat's tools (`tools::defs`, plus `emoji::def` and `follow_up::def`) |
 | `run_tool` | Runs them: `list_server_emoji` and `schedule_follow_up` directly, the rest through `tools::run` |
+| `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the follow-up and emoji tasks |
 | `on_mention` | Answers a question |
 | `on_message` | Maybe chimes in |
