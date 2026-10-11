@@ -149,8 +149,89 @@ pub struct ChatRequest {
     pub tools: Vec<ToolDef>,
     /// Requests with the same key share a cache, for example one per channel.
     pub cache_key: String,
-    /// What the request is for ("chat", "diary", ...), for what each job costs.
+    /// What the request is for ("chat", "diary", ...): picks the job's settings (see
+    /// [`Job`]) and is what each job costs on the status picture.
     pub job: &'static str,
+}
+
+/// How one kind of request runs: `[ai.claude.jobs.<job>]` or `[ai.openai.jobs.<job>]` in
+/// config.toml. Anything left out comes from the job's built-in default, and then from the
+/// provider's own settings, so background work can run cheaper than chat answers.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Job {
+    /// Another model for this job.
+    pub model: Option<String>,
+    /// How much it thinks ("low", "medium", ...).
+    pub effort: Option<String>,
+    /// Whether it gets web search and web fetch.
+    pub web: Option<bool>,
+    /// Whether it gets code execution (and, on Claude, the document skills).
+    pub code: Option<bool>,
+}
+
+impl Job {
+    /// The built-in settings of a job, before config.toml. Chat answers and chime-ins use
+    /// the provider's own settings and every tool, so they share the prompt cache.
+    /// Background jobs nobody waits on get only what they use:
+    /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
+    ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
+    /// - "mood": a short rewrite of her mood file, at low effort, in her own model;
+    /// - "reflection", "diary": her own model and effort (they're her judgement and her
+    ///   voice), with the web for looking things up, but no code.
+    pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
+        let off = Some(false);
+        match job {
+            "emoji" => Job {
+                model: cheap_model.map(str::to_string),
+                effort: Some("low".to_string()),
+                web: off,
+                code: off,
+            },
+            "mood" => Job {
+                model: None,
+                effort: Some("low".to_string()),
+                web: off,
+                code: off,
+            },
+            "reflection" | "diary" => Job {
+                model: None,
+                effort: None,
+                web: Some(true),
+                code: off,
+            },
+            _ => Job::default(),
+        }
+    }
+
+    /// `self` (from config.toml) with the gaps filled from `defaults`.
+    pub fn or(self, defaults: Job) -> Job {
+        Job {
+            model: self.model.or(defaults.model),
+            effort: self.effort.or(defaults.effort),
+            web: self.web.or(defaults.web),
+            code: self.code.or(defaults.code),
+        }
+    }
+}
+
+/// The settings `job` runs with: what config.toml says in `jobs`, then the built-in
+/// default (see [`Job::builtin`]). Chat answers and chime-ins always use the provider's
+/// own model: their history is saved and continued with it.
+pub fn job_settings(
+    jobs: &std::collections::HashMap<String, Job>,
+    job: &str,
+    cheap_model: Option<&str>,
+) -> Job {
+    let mut settings = jobs
+        .get(job)
+        .cloned()
+        .unwrap_or_default()
+        .or(Job::builtin(job, cheap_model));
+    if matches!(job, "chat" | "chime") {
+        settings.model = None;
+    }
+    settings
 }
 
 /// Something the model is busy with, shown in the reply's status line.
@@ -183,6 +264,9 @@ pub struct Done {
     /// A fingerprint of the system prompt and tools it was written with, for a provider
     /// whose earlier output only stays valid with the same ones (Claude's thinking).
     pub setup: Option<String>,
+    /// The model the request asked for, when a job ran on another model than the
+    /// provider's own (see [`Job`]), so its rounds go back to that model.
+    pub model: Option<String>,
 }
 
 #[async_trait]
@@ -338,7 +422,10 @@ pub fn next_input(
         role: Role::Assistant,
         parts: vec![Part::Native {
             provider: provider.name().to_string(),
-            model: provider.model().to_string(),
+            model: done
+                .model
+                .clone()
+                .unwrap_or_else(|| provider.model().to_string()),
             rounds: vec![NativeRound {
                 output: done.native.clone(),
                 results: Vec::new(),

@@ -43,7 +43,10 @@ pub struct Collector {
 pub struct Usage {
     pub input: u64,
     pub cache_read: u64,
+    /// Everything written to the cache, ...
     pub cache_write: u64,
+    /// ... of which this much for an hour (it costs more than for five minutes).
+    pub cache_write_1h: u64,
     pub output: u64,
     pub web_searches: u64,
 }
@@ -233,6 +236,9 @@ impl Collector {
         if let Some(n) = get("cache_creation_input_tokens") {
             self.usage.cache_write = n;
         }
+        if let Some(n) = usage["cache_creation"]["ephemeral_1h_input_tokens"].as_u64() {
+            self.usage.cache_write_1h = n;
+        }
         if let Some(n) = get("output_tokens") {
             self.usage.output = n;
         }
@@ -392,6 +398,7 @@ mod tests {
                 cache_write: 0,
                 output: 50,
                 web_searches: 1,
+                ..Usage::default()
             }
         );
         let finished = collector.finish();

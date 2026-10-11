@@ -118,10 +118,10 @@ On a hit, `speak`:
 
 1. Reads the last 25 messages (`read_along`) into a `<recent_messages>` transcript.
 2. Builds one question: the transcript plus `INSTRUCTIONS` (pass, react, or one short line; or a short question when she doesn't know what people mean). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
-3. Runs it with `ai::complete` (the tool loop without Discord output, at most 4 rounds) and `job: "chime"`.
+3. Runs it with `ai::complete` (the tool loop without Discord output, at most 4 rounds) and `job: "chime"`. The request carries every tool, like an answer, so it starts the same way and reads the system prompt and tools from the prompt cache; `Runner` turns down any tool outside `UNPROMPTED_TOOLS`.
 4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel.
 
-Nobody asked and the line is public, so she only gets `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). The `Runner` keeps `get_message` and `search_messages` to the current channel (`here_only`). Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
+Nobody asked and the line is public, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). The `Runner` keeps `get_message` and `search_messages` to the current channel (`here_only`). Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
 
 A posted line is saved as a question turn (the transcript, exactly as the model read it) and an answer turn, so replying to her line continues the conversation. The question's author is the bot, so nobody can 🔁 or ❌ her line as if it were their answer.
 
@@ -133,7 +133,7 @@ The delivery task sleeps until the next one is due (at most an hour), takes ever
 
 ### Server emoji
 
-`emoji.rs`. A task waits 30 seconds after start (so the cache has the servers), then once a day describes every custom emoji that has no row in `chat_emoji` yet, in every server where chat is enabled. It loads the picture from Discord's CDN (frames for an animated one) and asks the model for one line with a small system prompt of its own, no tools and `job: "emoji"`. So every emoji is described on the first start, and later only new ones. `list_server_emoji` returns the server's emoji codes (at most 250) with their descriptions.
+`emoji.rs`. A task waits 30 seconds after start (so the cache has the servers), then once a day describes every custom emoji that has no row in `chat_emoji` yet, in every server where chat is enabled. It loads the picture from Discord's CDN (frames for an animated one) and asks the model for one line with a small system prompt of its own, no tools and `job: "emoji"` (Claude Haiku at low effort, see [Jobs](../ai.md#jobs)). So every emoji is described on the first start, and later only new ones. An emoji that fails isn't tried again until the bot restarts. `list_server_emoji` returns the server's emoji codes (at most 250) with their descriptions.
 
 ## Chat tools
 

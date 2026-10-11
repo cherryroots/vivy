@@ -185,9 +185,17 @@ async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
             format!("- {path} (by {who}, {times})")
         })
         .collect();
+    // The changed files' text, so she only has to view a file for more than that.
+    let mut paths: Vec<&String> = changes.iter().map(|(path, _, _)| path).collect();
+    paths.dedup();
+    let contents: Vec<(String, Option<String>)> = paths
+        .into_iter()
+        .map(|path| (path.clone(), folder.get(path).cloned()))
+        .collect();
     let mut text = format!(
-        "{listing}\n\nChanged since your last reflection:\n{}",
-        changed.join("\n")
+        "{listing}\n\nChanged since your last reflection:\n{}\n\nThe changed files now:\n{}",
+        changed.join("\n"),
+        diary::render_changes(&contents)
     );
     if let Some(notes) = tool::self_notes_in(ctx, scope.to_string()).await? {
         text = format!("{notes}\n{text}");

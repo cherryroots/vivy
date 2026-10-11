@@ -294,6 +294,22 @@ pub fn changed_since(
     rows.collect()
 }
 
+/// Whether anyone but the bot itself (`bot`) changed a note in `scope` since `since`. Her
+/// mood file doesn't count: the mood checks rewrite it every few hours.
+pub fn people_changed_since(
+    conn: &Connection,
+    scope: &str,
+    since: i64,
+    bot: u64,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM memory_changes
+         WHERE scope = ?1 AND at > ?2 AND user_id != ?3 AND path != '/memories/vivy/mood.md')",
+        params![scope, since, bot],
+        |row| row.get(0),
+    )
+}
+
 /// When the diary was last posted in `channel`.
 pub fn diary_posted_at(conn: &Connection, channel: u64) -> rusqlite::Result<Option<i64>> {
     conn.query_row(
@@ -480,6 +496,11 @@ mod tests {
             vec![("/memories/a.md".to_string(), None)]
         );
         assert_eq!(changed_since(&conn, "server:1", 0).unwrap().len(), 2);
+        // The diary only counts changes by people, and not to her mood.
+        assert!(people_changed_since(&conn, "server:1", 120, 9).unwrap());
+        assert!(!people_changed_since(&conn, "server:1", 120, 0).unwrap());
+        assert!(!people_changed_since(&conn, "server:1", 160, 9).unwrap());
+        assert!(!people_changed_since(&conn, "server:2", 0, 9).unwrap());
 
         assert_eq!(diary_posted_at(&conn, 5).unwrap(), None);
         set_diary_posted(&conn, 5, 1000).unwrap();

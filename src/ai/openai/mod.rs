@@ -19,6 +19,7 @@ pub mod billing;
 pub mod images;
 mod price;
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
@@ -32,8 +33,8 @@ use super::fallback::ApiError;
 use super::spend::Spend;
 use super::sse::{SseEvent, SseParser};
 use super::{
-    Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, ModelFile, Part,
-    Role, ToolCall, Turn,
+    Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, ModelFile,
+    Part, Role, ToolCall, Turn, job_settings,
 };
 
 /// File types the model reads itself when sent as `input_file`: PDFs (text and page images),
@@ -80,7 +81,8 @@ pub struct OpenAiConfig {
     pub reasoning_effort: String,
     /// How long answers are: "low", "medium" or "high".
     pub verbosity: String,
-    /// Leave out for the account's default.
+    /// The service tier of chat answers ("fast" costs twice as much). Leave out for the
+    /// account's default. Background jobs nobody waits on always use the default.
     pub service_tier: Option<String>,
     /// USD a month for everything on the OpenAI key (chat and pictures); the log channel
     /// gets a warning at 80% and 100%. 0 turns that off.
@@ -92,6 +94,8 @@ pub struct OpenAiConfig {
     pub show_cache_hits: bool,
     /// Show on the status message what each job (chat, drawing, ...) cost this month.
     pub show_job_costs: bool,
+    /// Settings per job, like `[ai.openai.jobs.mood]` (see [`Job`]).
+    pub jobs: HashMap<String, Job>,
 }
 
 impl Default for OpenAiConfig {
@@ -106,6 +110,7 @@ impl Default for OpenAiConfig {
             billed_spend: true,
             show_cache_hits: true,
             show_job_costs: true,
+            jobs: HashMap::new(),
         }
     }
 }
@@ -173,10 +178,14 @@ impl OpenAi {
         if !file_ids.is_empty() {
             container["file_ids"] = json!(file_ids);
         }
-        let mut tools = vec![
-            json!({"type": "web_search"}),
-            json!({"type": "code_interpreter", "container": container}),
-        ];
+        let job = job_settings(&self.config.jobs, request.job, None);
+        let mut tools = Vec::new();
+        if job.web.unwrap_or(true) {
+            tools.push(json!({"type": "web_search"}));
+        }
+        if job.code.unwrap_or(true) {
+            tools.push(json!({"type": "code_interpreter", "container": container}));
+        }
         tools.extend(request.tools.iter().map(|tool| {
             json!({
                 "type": "function",
@@ -188,13 +197,13 @@ impl OpenAi {
         }));
 
         let mut body = json!({
-            "model": self.config.model,
+            "model": job.model.as_deref().unwrap_or(&self.config.model),
             "instructions": request.system,
             "input": input,
             "tools": tools,
             "tool_choice": "auto",
             "parallel_tool_calls": true,
-            "reasoning": {"effort": self.config.reasoning_effort},
+            "reasoning": {"effort": job.effort.as_deref().unwrap_or(&self.config.reasoning_effort)},
             "text": {"verbosity": self.config.verbosity},
             "truncation": "auto",
             "store": true,
@@ -204,10 +213,18 @@ impl OpenAi {
         if let Some(previous) = previous {
             body["previous_response_id"] = json!(previous);
         }
-        if let Some(tier) = &self.config.service_tier {
+        if let Some(tier) = self.tier(request.job) {
             body["service_tier"] = json!(tier);
         }
         body
+    }
+
+    /// The service tier `job` asks for: the configured one for chat answers, the
+    /// account's default for everything else.
+    fn tier(&self, job: &str) -> Option<String> {
+        (job == "chat")
+            .then(|| self.config.service_tier.clone())
+            .flatten()
     }
 
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
@@ -511,7 +528,7 @@ impl ChatProvider for OpenAi {
 
         let (sender, receiver) = mpsc::channel(64);
         let spend = self.spend.clone().map(|spend| (spend, request.job));
-        let tier = self.config.service_tier.clone();
+        let tier = self.tier(request.job);
         tokio::spawn(async move {
             let mut parser = SseParser::default();
             loop {
@@ -660,6 +677,16 @@ mod tests {
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 3);
         assert_eq!(tools[2]["name"], "get_time");
+
+        // Background jobs use the default tier, and only the tools they need.
+        let mood = ChatRequest {
+            job: "mood",
+            ..request
+        };
+        let body = client().request_body(&mood, &[]);
+        assert!(body.get("service_tier").is_none());
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["tools"].as_array().unwrap().len(), 1);
     }
 
     #[test]

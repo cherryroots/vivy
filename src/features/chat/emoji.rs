@@ -4,6 +4,8 @@
 //! (`chat_emoji`): every emoji at the first start, then only new ones, checked at each
 //! start and once a day ([`CHECK`]), since new emoji are rare. The `list_server_emoji` tool lists them with their descriptions.
 
+use std::collections::HashSet;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,6 +21,9 @@ use crate::util::shorten;
 
 /// How often to look for new emoji.
 const CHECK: Duration = Duration::from_secs(24 * 60 * 60);
+/// Emoji that couldn't be described since the bot started (a picture the model can't read,
+/// a refusal), so they aren't tried again every day. They get another try after a restart.
+static FAILED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 /// The most emoji `list_server_emoji` returns.
 const MAX_LISTED: usize = 250;
 
@@ -115,7 +120,7 @@ async fn describe_new(ctx: &BotCtx) -> Result<()> {
             .await?;
         let new: Vec<Emoji> = server_emoji(ctx, guild)
             .into_iter()
-            .filter(|e| !described.contains_key(&e.id.get()))
+            .filter(|e| !described.contains_key(&e.id.get()) && !failed_before(e))
             .collect();
         if !new.is_empty() {
             info!("describing {} new emoji", new.len());
@@ -135,11 +140,22 @@ async fn describe_new(ctx: &BotCtx) -> Result<()> {
                         })
                         .await?;
                 }
-                Err(err) => warn!("couldn't describe :{}: {err:#}", emoji.name),
+                Err(err) => {
+                    warn!("couldn't describe :{}: {err:#}", emoji.name);
+                    let mut failed = FAILED.lock().unwrap();
+                    failed.get_or_insert_default().insert(emoji.id.get());
+                }
             }
         }
     }
     Ok(())
+}
+
+fn failed_before(emoji: &Emoji) -> bool {
+    let failed = FAILED.lock().unwrap();
+    failed
+        .as_ref()
+        .is_some_and(|ids| ids.contains(&emoji.id.get()))
 }
 
 /// Shows the model the emoji's picture (frames, for an animated one) and returns its line.
