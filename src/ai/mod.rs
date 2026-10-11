@@ -262,6 +262,10 @@ pub fn job_settings(
 pub enum Activity {
     Thinking,
     SearchingWeb,
+    /// A web search for this, once its query is known.
+    Searching(String),
+    /// Reading a page from this site.
+    Reading(String),
     RunningCode,
     Writing,
 }
