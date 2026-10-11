@@ -60,6 +60,7 @@ fn read_reminder(row: &Row) -> anyhow::Result<NewReminder> {
         source_message_id: None,
         missing_images: 0,
         images: decode_images(images.as_deref()).context("images")?,
+        repeat: None,
     })
 }
 
@@ -161,7 +162,7 @@ mod tests {
         assert_eq!(cat.message, "feed the cat");
         assert_eq!((cat.fire_at, cat.created_at), (2000, 1000));
         assert_eq!(
-            cat.images,
+            store::images(&new, cat.id).unwrap(),
             vec![Image {
                 filename: "cat.png".into(),
                 data: vec![1, 2, 3]

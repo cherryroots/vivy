@@ -1,5 +1,13 @@
 //! The buttons, menus and bet modal. Each handler checks and changes the game in one
 //! database transaction, and only talks to Discord after it committed.
+//!
+//! Redrawing a status message after a change reads the season again, draws it and edits the
+//! message while holding the server's redraw lock ([`redraw_lock`]). When two people bet at
+//! once, the second redraw waits for the first and then shows both bets; without the lock,
+//! the slower drawing could land last and show the older state.
+
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::{Context as _, bail};
 use chrono::Utc;
@@ -15,6 +23,7 @@ use tracing::{info, warn};
 use super::ledger::{self, CLAIM, Season, TAX_THRESHOLD, check_bet, ledger};
 use super::ui::{self, Action, PickKind, View};
 use super::{names, render, store};
+use crate::core::errors::UserError;
 use crate::core::{BotCtx, BotEvent, Result, user_error};
 
 const SERVER_ONLY: &str = "The wheel only works in a server.";
@@ -98,6 +107,59 @@ pub async fn status_message(
     })
 }
 
+/// One lock per server, held while a status message is read, drawn and edited.
+static REDRAWS: LazyLock<Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(Mutex::default);
+
+/// The server's redraw lock (made the first time it's needed).
+fn redraw_lock(guild: GuildId) -> Arc<tokio::sync::Mutex<()>> {
+    REDRAWS
+        .lock()
+        .unwrap()
+        .entry(guild.get())
+        .or_default()
+        .clone()
+}
+
+/// Round `index` of `game` as it is now: the season is read again, so a change someone else
+/// saved after `game` was loaded shows too. Call it holding the [`redraw_lock`].
+async fn fresh_status(ctx: &BotCtx, guild: GuildId, game: &Game, index: usize) -> Result<Status> {
+    let (season, round) = (game.season.id, game.season.rounds[index].id);
+    let game = ctx
+        .db
+        .call(move |conn| {
+            Ok(Game {
+                season: store::load_season(conn, season)?,
+                active: store::active_season(conn, guild.get())? == Some(season),
+            })
+        })
+        .await?;
+    // An undone winner removes the round after it: then the latest round is shown.
+    let index = game
+        .season
+        .rounds
+        .iter()
+        .position(|r| r.id == round)
+        .unwrap_or(game.latest());
+    status_message(ctx, guild, &game, index).await
+}
+
+/// Shows round `index` on the status message the button was on, after
+/// [`ComponentInteraction::defer`].
+async fn update_status(
+    ctx: &BotCtx,
+    i: &ComponentInteraction,
+    guild: GuildId,
+    game: &Game,
+    index: usize,
+) -> Result<()> {
+    let lock = redraw_lock(guild);
+    let _turn = lock.lock().await;
+    let status = fresh_status(ctx, guild, game, index).await?;
+    i.edit_response(&ctx.http, status.update()).await?;
+    Ok(())
+}
+
 /// Loads the server's game. Fails with [`NO_GAME`] if there is none.
 pub fn active_game(conn: &Connection, guild: u64) -> Result<Game> {
     let id = store::active_season(conn, guild)?.ok_or_else(|| user_error(NO_GAME))?;
@@ -130,8 +192,56 @@ fn require_admin(ctx: &BotCtx, user: UserId, what: &str) -> Result<()> {
 
 pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) -> Result<()> {
     let guild = i.guild_id.ok_or_else(|| user_error(SERVER_ONLY))?;
-    match Action::parse(action) {
+    let parsed = Action::parse(action);
+    // The status message a press is about: the message of a status button, or the one a
+    // private menu or bet slip remembers. Used for the button under the stale-round error.
+    let status = match &parsed {
+        Some(
+            Action::Claim { .. }
+            | Action::Bet { .. }
+            | Action::Unbet { .. }
+            | Action::Winner { .. },
+        ) => Some(i.message.id.get()),
+        Some(
+            Action::Pick { message, .. }
+            | Action::Stake { message, .. }
+            | Action::Other { message, .. },
+        ) => Some(*message),
+        _ => None,
+    };
+    let result = handle_component(ctx, i, guild, parsed, action).await;
+    match (result, status) {
+        // The round on that message is over: say so, with a button to the current one.
+        (Err(err), Some(message)) if is_not_current(&err) => {
+            let (text, button) = ui::not_current(NOT_CURRENT, message);
+            let response = CreateInteractionResponseMessage::new()
+                .content(text)
+                .components(button)
+                .ephemeral(true);
+            i.create_response(&ctx.http, CreateInteractionResponse::Message(response))
+                .await?;
+            Ok(())
+        }
+        (result, _) => result,
+    }
+}
+
+/// Whether `err` is the [`NOT_CURRENT`] error.
+fn is_not_current(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<UserError>()
+        .is_some_and(|e| e.0 == NOT_CURRENT)
+}
+
+async fn handle_component(
+    ctx: &BotCtx,
+    i: &ComponentInteraction,
+    guild: GuildId,
+    parsed: Option<Action>,
+    action: &str,
+) -> Result<()> {
+    match parsed {
         Some(Action::Current) => current(ctx, i, guild).await,
+        Some(Action::Refresh { message }) => refresh(ctx, i, guild, MessageId::new(message)).await,
         Some(Action::Claim { round }) => claim(ctx, i, guild, round).await,
         Some(Action::Bet { round }) => open_menu(ctx, i, guild, PickKind::Place, round).await,
         Some(Action::Unbet { round }) => open_menu(ctx, i, guild, PickKind::Remove, round).await,
@@ -141,6 +251,7 @@ pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) 
             kind,
             round,
             message,
+            ..
         }) => picked(ctx, i, guild, kind, round, MessageId::new(message)).await,
         Some(Action::Reset {
             keep_options,
@@ -339,8 +450,31 @@ async fn current(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId) -> Resu
         .await?;
     // Looking up names and drawing can take longer than Discord waits for an answer.
     i.defer(&ctx.http).await?;
-    let status = status_message(ctx, guild, &game, game.latest()).await?;
-    i.edit_response(&ctx.http, status.update()).await?;
+    update_status(ctx, i, guild, &game, game.latest()).await?;
+    Ok(())
+}
+
+/// "View Current Round" under the stale-round error: shows the current round on the status
+/// message the error was about, and replaces the error with a short note.
+async fn refresh(
+    ctx: &BotCtx,
+    i: &ComponentInteraction,
+    guild: GuildId,
+    message: MessageId,
+) -> Result<()> {
+    let game = ctx
+        .db
+        .call(move |conn| active_game(conn, guild.get()))
+        .await?;
+    // Looking up names and drawing can take longer than Discord waits for an answer.
+    i.defer(&ctx.http).await?;
+    let index = game.latest();
+    edit_status(ctx, i.channel_id, message, guild, &game, index).await;
+    let number = game.season.rounds[index].number;
+    let note = EditInteractionResponse::new()
+        .content(format!("The wheel message now shows round {number}."))
+        .components(Vec::new());
+    i.edit_response(&ctx.http, note).await?;
     Ok(())
 }
 
@@ -370,8 +504,7 @@ async fn claim(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, round: i6
 
     // Looking up names and drawing can take longer than Discord waits for an answer.
     i.defer(&ctx.http).await?;
-    let status = status_message(ctx, guild, &game, game.latest()).await?;
-    i.edit_response(&ctx.http, status.update()).await?;
+    update_status(ctx, i, guild, &game, game.latest()).await?;
     let followup = CreateInteractionResponseFollowup::new()
         .content(claimed_text(&game, user))
         .ephemeral(true);
@@ -554,8 +687,7 @@ async fn undo(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, round: i64
     );
     // Looking up names and drawing can take longer than Discord waits for an answer.
     i.defer(&ctx.http).await?;
-    let status = status_message(ctx, guild, &game, game.latest()).await?;
-    i.edit_response(&ctx.http, status.update()).await?;
+    update_status(ctx, i, guild, &game, game.latest()).await?;
     Ok(())
 }
 
@@ -736,7 +868,9 @@ async fn edit_status(
     game: &Game,
     index: usize,
 ) {
-    let edit = match status_message(ctx, guild, game, index).await {
+    let lock = redraw_lock(guild);
+    let _turn = lock.lock().await;
+    let edit = match fresh_status(ctx, guild, game, index).await {
         Ok(status) => status.edit(),
         Err(err) => {
             warn!("couldn't draw the wheel status: {err:#}");

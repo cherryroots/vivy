@@ -71,6 +71,9 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     let ai = ai_from_env(&config, &web, &db);
     // Made before the bot connects, so the bill reader below can report to it too.
     let timers = Timers::default();
+    // Cancelled when the bot stops; tasks spawned on `tasks` are waited for then.
+    let shutdown = CancellationToken::new();
+    let tasks = TaskTracker::new();
     // With an Admin API key, a provider's spend comes from its real bill (see ai/spend.rs).
     for spend in &ai.spends {
         let (var, billed) = match spend.provider() {
@@ -84,10 +87,18 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
             spend.set_admin_key(ai::AdminKey::Unused);
         } else if spend.provider() == "claude" {
             let billing = ai::claude::billing::Billing::new(web.clone(), admin_key);
-            tokio::spawn(spend.clone().follow_bill(billing, timers.clone()));
+            tasks.spawn(
+                spend
+                    .clone()
+                    .follow_bill(billing, timers.clone(), shutdown.clone()),
+            );
         } else {
             let billing = ai::openai::billing::Billing::new(web.clone(), admin_key);
-            tokio::spawn(spend.clone().follow_bill(billing, timers.clone()));
+            tasks.spawn(
+                spend
+                    .clone()
+                    .follow_bill(billing, timers.clone(), shutdown.clone()),
+            );
         }
     }
 
@@ -100,8 +111,6 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         }
     }
 
-    let shutdown = CancellationToken::new();
-    let tasks = TaskTracker::new();
     let (events, _) = broadcast::channel(100);
 
     let options = poise::FrameworkOptions {

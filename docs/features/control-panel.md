@@ -55,7 +55,7 @@ The layer also counts errors for the status picture: `record_error` keeps the ti
 
 Each tick:
 
-1. `gather` reads everything into a `Dashboard`: uptime, server count, gateway latency (the slowest shard), the process's memory (with the `sysinfo` crate), the database file size plus its `-wal` file, the error stats, the AI view, the spend view, every enabled feature's `stats()` and `panels()`, the timers, and the graph history.
+1. `gather` reads everything into a `Dashboard`: uptime, server count, gateway latency (the slowest shard), the process's memory (with the `sysinfo` crate), the database file size plus its `-wal` file, the error stats, the AI view, the spend view, every enabled feature's `stats()` and `panels()`, and the timers. `run` adds the graph history it keeps (see "Graph history" below).
 2. Once per 15-minute slot, `save_samples` saves the numbers for the graphs (see below).
 3. `online` draws the picture with `render::online_svg` and `svg::to_png` inside `spawn_blocking` (it takes CPU and reads font files, so it runs on a separate thread pool, not on the async threads that answer Discord). The fallback embed is built first, so if drawing fails, or even panics, the message shows the same information as an embed.
 4. `show` edits the message: it replaces the text and removes the old picture or embed. If the message was deleted (Discord error 10008, Unknown Message), it posts a new one.
@@ -83,7 +83,7 @@ From top to bottom, as `online_svg` draws it:
 
 The first refresh in each 15-minute slot (`EVERY_SECS`) saves one sample per number in `control_panel_samples`: `latency_ms`, `memory_mb`, `database_mb`, `spend:claude` and `spend:openai` (this month's spend, from `spend_key`), and `stat:<feature>:<stat name>` for every feature stat that parses as a number. All samples of a slot get the slot's start time, so they line up. Samples older than 32 days (`KEEP_DAYS`) are deleted.
 
-Each refresh loads only what the graphs draw (`load_for_graphs`): the last 7 days of everything, plus this month's spend samples. A graph needs two points (the current value counts as one), so a new install shows plain numbers for its first 15 minutes. A stat's history is keyed by its name, so renaming a stat starts its graph over.
+The samples only change every 15 minutes, so the loop keeps them between refreshes and reads them again (`load_for_graphs`) right after saving new ones: the last 7 days of everything, plus this month's spend samples. A graph needs two points (the current value counts as one), so a new install shows plain numbers for its first 15 minutes. A stat's history is keyed by its name, so renaming a stat starts its graph over.
 
 ### Timers (`src/core/timers.rs`)
 

@@ -309,13 +309,16 @@ enum ReplyTo {
 }
 
 /// Runs a handler in its own task. A slow or failing handler never blocks the others, and
-/// a panic ends only that task (the panic hook in `logging` logs it).
+/// a panic ends only that task (the panic hook in `logging` logs it). The task is on the
+/// shutdown tracker, so stopping the bot waits for it (up to 10 seconds) instead of cutting
+/// off an answer or a database write halfway.
 fn run<F>(bot: &BotCtx, feature: &'static str, span: Span, reply: ReplyTo, handler: F)
 where
     F: Future<Output = Result<()>> + Send + 'static,
 {
     let bot = bot.clone();
-    tokio::spawn(
+    let tasks = bot.tasks.clone();
+    tasks.spawn(
         async move {
             if let Err(err) = handler.await {
                 report(&bot, feature, &reply, &err).await;

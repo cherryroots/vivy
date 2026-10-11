@@ -28,6 +28,7 @@ pub fn def() -> ToolDef {
     ToolDef {
         name: "memory",
         description: "Your long-term memory: a folder of text files under /memories that stays between conversations. In a server, everyone in that server shares it; in DMs it is private to that person. \
+The newest message ends with <memory_files>, the files you have saved: view the ones that matter to the conversation before answering, especially the asker's own files, and save lasting knowledge as you go. \
 Save lasting knowledge, things that will still be true and useful in a month: who people are, what they like, what they do (work, school, hobbies, ongoing projects in one line), how they like to be treated, anything someone asks you to remember, and what you learn about the server itself. Keep notes short and factual, and update them when they change. \
 Memory is not a log of what happened. Don't save tasks people asked you to do, files they shared, things you made or answered for them, or one-off events: the bot keeps conversation history, and people can reply to old messages to continue. If a task shows something lasting about a person, save only that: \"helped with a fish-sales spreadsheet\" is not worth a note, \"runs a youth company selling fish\" might be. Don't save secrets, passwords or things said in passing. \
 People: one folder per person, /memories/users/<user id>/, with about.md (their name first, then basics) and one file per topic, like games.md or movies.md. \

@@ -60,7 +60,7 @@ A Discord voice message can't have text. It needs the message flag `IS_VOICE_MES
 
 ## Chat tools
 
-- **`send_voice_message`**: `script` (required). Offered only with `ELEVENLABS_API_KEY` set. The chat system prompt (`src/features/chat/prompt.md`) also mentions it: when someone asks to hear her, and now and then when saying it fits better than typing it.
+- **`send_voice_message`**: `script` (required). Offered only with `ELEVENLABS_API_KEY` set. Its description says when to use it: when someone asks to hear her, and now and then when saying it fits better than typing it. The chat system prompt (`src/features/chat/prompt.md`) doesn't repeat it: it only says each tool's description tells what it's for.
 
 ## Feature hooks it uses
 
@@ -69,6 +69,7 @@ A Discord voice message can't have text. It needs the message flag `IS_VOICE_MES
 - `name`: "voice".
 - `migrations`: `store::MIGRATIONS`.
 - `tools`: `send_voice_message`, or nothing without the key.
+- `tool_status`: "🎙️ Recording a voice message…" in chat's status line.
 - `run_tool`: the steps above.
 - `stats`: "Sent this month" and "Characters" (used, or used / limit), for the control panel. Nothing without the key.
 

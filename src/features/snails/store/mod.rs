@@ -104,6 +104,8 @@ pub const MIGRATIONS: &[&str] = &[
         count INTEGER NOT NULL,
         PRIMARY KEY (guild_id, host)
     );",
+    // 5: `/snails`, the leaderboard, counts a server's snails since a time.
+    "CREATE INDEX snail_caught_guild ON snail_caught (guild_id, caught_at);",
 ];
 
 /// A fingerprinted picture of a message.

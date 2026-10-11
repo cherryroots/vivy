@@ -110,6 +110,23 @@ impl Feature for Chat {
         defs
     }
 
+    fn tool_status(&self, tool: &str) -> Option<&'static str> {
+        Some(match tool {
+            "get_current_time" => "🕒 Checking the time…",
+            "get_channel_info" | "list_channels" => "🧭 Looking around the server…",
+            "get_user_info" => "👤 Looking someone up…",
+            "read_recent_messages" => "📜 Reading the chat…",
+            "get_message" => "🔗 Opening a message…",
+            "search_messages" => "🔍 Searching messages…",
+            "get_pinned_messages" => "📌 Reading the pins…",
+            "list_server_events" => "📅 Checking the events…",
+            "list_server_emoji" => "😀 Looking at the emoji…",
+            // Check-ins are a quiet surprise, so the status doesn't give them away.
+            "schedule_follow_up" => "💭 Thinking…",
+            _ => return None,
+        })
+    }
+
     async fn run_tool(
         &self,
         ctx: &BotCtx,

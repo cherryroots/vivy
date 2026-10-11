@@ -27,12 +27,12 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Feature | Folder | What it does | How people use it |
 |---|---|---|---|
 | Chat | `chat/` | Answers when someone @-mentions Vivy, with web search, code, files and the bot's own tools; chimes in now and then; checks in on people later; knows the server's emoji | @-mention, reply to an answer, ❌ and 🔁 reactions |
-| Reminders | `reminders/` | Pings you at a time you name, in plain words, with the pictures you attached | `@Vivy remind me ...`, `/reminders`, `/timezone`, snooze buttons, chat tools |
+| Reminders | `reminders/` | Pings you at a time you name, in plain words, with the pictures you attached, once or on repeat | `@Vivy remind me ...`, `/reminders`, `/timezone`, Cancel and snooze buttons, chat tools |
 | Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel_status`, `/wheel_add`, `/insert_bet`, `/reset_wheel`, buttons |
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
-| Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snail_backfill` |
+| Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails`, `/snail_backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).

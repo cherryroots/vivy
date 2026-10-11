@@ -69,46 +69,68 @@ pub async fn wheel_status(
     Ok(())
 }
 
-/// Add a user to the wheel, or take them off (admins)
+/// Add users to the wheel, or take them off (admins)
 #[poise::command(slash_command, guild_only, ephemeral)]
 pub async fn wheel_add(
     ctx: Context<'_>,
     #[description = "User to add to the wheel"] user: User,
-    #[description = "Remove the user from the wheel"] remove: Option<bool>,
+    #[description = "Another user"] user2: Option<User>,
+    #[description = "Another user"] user3: Option<User>,
+    #[description = "Another user"] user4: Option<User>,
+    #[description = "Another user"] user5: Option<User>,
+    #[description = "Remove the users from the wheel"] remove: Option<bool>,
 ) -> Result<()> {
     require_admin(ctx)?;
     let guild = guild(ctx)?;
     let remove = remove.unwrap_or(false);
-    let id = user.id.get();
+    // Each user once, in the order given.
+    let mut ids: Vec<u64> = Vec::new();
+    for user in [Some(user), user2, user3, user4, user5]
+        .into_iter()
+        .flatten()
+    {
+        if !ids.contains(&user.id.get()) {
+            ids.push(user.id.get());
+        }
+    }
     let now = Utc::now().timestamp();
-    let changed = ctx
+    let list = ids.clone();
+    // Whether each user was changed (added or removed), in the same order.
+    let changed: Vec<bool> = ctx
         .data()
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
             let season = store::ensure_season(&tx, guild.get(), now)?;
-            let changed = if remove {
-                store::remove_option(&tx, season, id)?
-            } else {
-                store::add_option(&tx, season, id)?
-            };
+            let mut changed = Vec::new();
+            for id in list {
+                changed.push(if remove {
+                    store::remove_option(&tx, season, id)?
+                } else {
+                    store::add_option(&tx, season, id)?
+                });
+            }
             tx.commit()?;
             Ok(changed)
         })
         .await?;
 
-    let names = names::lookup(ctx.data(), guild, &[id]).await;
-    let name = ui::name(&names, id);
-    let text = match (remove, changed) {
-        (false, true) => format!("Added {name} to the wheel!"),
-        (false, false) => format!("{name} is already on the wheel."),
-        (true, true) => format!("Removed {name} from the wheel!"),
-        (true, false) => format!("{name} isn't on the wheel."),
-    };
-    if changed {
-        info!("{text}");
+    let names = names::lookup(ctx.data(), guild, &ids).await;
+    let mut lines = Vec::new();
+    for (&id, &changed) in ids.iter().zip(&changed) {
+        let name = ui::name(&names, id);
+        let line = match (remove, changed) {
+            (false, true) => format!("Added {name} to the wheel!"),
+            (false, false) => format!("{name} is already on the wheel."),
+            (true, true) => format!("Removed {name} from the wheel!"),
+            (true, false) => format!("{name} isn't on the wheel."),
+        };
+        if changed {
+            info!("{line}");
+        }
+        lines.push(line);
     }
-    ctx.say(text).await?;
+    ctx.say(lines.join("\n")).await?;
     Ok(())
 }
 

@@ -104,6 +104,10 @@ The voice message is your whole answer, so usually write no text with it.",
         }]
     }
 
+    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+        Some("🎙️ Recording a voice message…")
+    }
+
     async fn run_tool(
         &self,
         ctx: &BotCtx,

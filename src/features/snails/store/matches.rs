@@ -56,20 +56,27 @@ pub struct Candidate {
     pub distance: u32,
 }
 
-/// How many stored pictures [`close_pictures`] reads per call, so other database work can
-/// run in between on a big server.
-pub const SCAN_CHUNK: i64 = 20_000;
+/// A stored picture as [`pictures_after`] reads it, for comparing.
+#[derive(Debug, Clone)]
+pub struct ScannedPicture {
+    pub posted: Posted,
+    pub position: usize,
+    pub fp: Fingerprint,
+}
 
-/// One chunk of the scan for older pictures within [`MATCH_DISTANCE`] of `checked`. Reads
-/// pictures after `rowid` and returns the candidates plus the rowid to continue from, or
-/// None when the scan is done.
-pub fn close_pictures(
+/// How many stored pictures [`pictures_after`] reads per call, so other database work can
+/// run in between on a big server. (About 2.6 KB each, so a chunk is about 13 MB.)
+pub const SCAN_CHUNK: i64 = 5_000;
+
+/// One chunk of the server's pictures older than message `before`: those after `rowid`,
+/// plus the rowid to continue from, or None when there are no more. Only reads: the
+/// comparing ([`close_to`]) happens off the database thread.
+pub fn pictures_after(
     conn: &Connection,
     guild: u64,
-    checked: &[Fingerprint],
     before: u64,
     after_rowid: i64,
-) -> rusqlite::Result<(Vec<Candidate>, Option<i64>)> {
+) -> rusqlite::Result<(Vec<ScannedPicture>, Option<i64>)> {
     let mut stmt = conn.prepare_cached(
         "SELECT p.rowid, p.message_id, p.position, p.aspect, p.hashes, m.channel_id, m.author_id
          FROM snail_pictures p JOIN snail_messages m USING (message_id)
@@ -86,28 +93,41 @@ pub fn close_pictures(
         if hashes.len() != HASHES * HASH_BYTES {
             continue;
         }
-        let stored = Fingerprint {
-            aspect: row.get(3)?,
-            hashes,
-        };
+        found.push(ScannedPicture {
+            posted: Posted {
+                message: row.get(1)?,
+                channel: row.get(5)?,
+                author: row.get(6)?,
+            },
+            position: row.get::<_, i64>(2)? as usize,
+            fp: Fingerprint {
+                aspect: row.get(3)?,
+                hashes,
+            },
+        });
+    }
+    let next = (count == SCAN_CHUNK).then_some(last);
+    Ok((found, next))
+}
+
+/// The stored pictures within [`MATCH_DISTANCE`] of any of `checked`. Pure CPU work: run
+/// it on a blocking thread for a big chunk.
+pub fn close_to(checked: &[Fingerprint], stored: &[ScannedPicture]) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for row in stored {
         for (i, fp) in checked.iter().enumerate() {
-            let d = distance(fp, &stored);
+            let d = distance(fp, &row.fp);
             if d <= MATCH_DISTANCE {
                 found.push(Candidate {
-                    posted: Posted {
-                        message: row.get(1)?,
-                        channel: row.get(5)?,
-                        author: row.get(6)?,
-                    },
-                    position: row.get::<_, i64>(2)? as usize,
+                    posted: row.posted.clone(),
+                    position: row.position,
                     checked: i,
                     distance: d,
                 });
             }
         }
     }
-    let next = (count == SCAN_CHUNK).then_some(last);
-    Ok((found, next))
+    found
 }
 
 /// Notes that a new message was a snail.
@@ -144,10 +164,49 @@ pub fn caught_since(conn: &Connection, since: i64) -> rusqlite::Result<u64> {
     )
 }
 
+/// The server's top snailers since `since` (0 for all time): (author, snails), most first,
+/// at most `limit`.
+pub fn top_snailers(
+    conn: &Connection,
+    guild: u64,
+    since: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<(u64, u64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT author_id, count(*) AS snails FROM snail_caught
+         WHERE guild_id = ?1 AND caught_at >= ?2
+         GROUP BY author_id ORDER BY snails DESC, author_id LIMIT ?3",
+    )?;
+    stmt.query_map(params![guild, since, limit as i64], |row| {
+        Ok((row.get(0)?, row.get(1)?))
+    })?
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::db::test_connection;
+
+    #[test]
+    fn leaderboard_counts_per_server() {
+        let conn = test_connection("snails", MIGRATIONS);
+        // Author 7 caught twice in server 1, once long ago; author 8 once; server 2 apart.
+        for (message, guild, author, at) in [
+            (1, 1, 7, 1000),
+            (2, 1, 7, 2000),
+            (3, 1, 7, 10),
+            (4, 1, 8, 2000),
+            (5, 2, 9, 2000),
+        ] {
+            record_caught(&conn, guild, message, author, at).unwrap();
+        }
+        assert_eq!(top_snailers(&conn, 1, 0, 10).unwrap(), [(7, 3), (8, 1)]);
+        assert_eq!(top_snailers(&conn, 1, 500, 10).unwrap(), [(7, 2), (8, 1)]);
+        assert_eq!(top_snailers(&conn, 1, 0, 1).unwrap(), [(7, 3)]);
+        assert_eq!(top_snailers(&conn, 2, 0, 10).unwrap(), [(9, 1)]);
+        assert!(top_snailers(&conn, 1, 5000, 10).unwrap().is_empty());
+    }
     use crate::features::snails::store::testing::*;
     // The rest of the store, which some of these tests use too.
     use crate::features::snails::store::*;
@@ -174,8 +233,10 @@ mod tests {
         assert!(same_links(&conn, 2, &keys, 9).unwrap().is_empty());
 
         // fp(0) vs fp(0b1111): 4 bits per byte differ, far over the limit.
-        let (found, next) = close_pictures(&conn, 1, &[fp(0)], 9, 0).unwrap();
+        let (stored, next) = pictures_after(&conn, 1, 9, 0).unwrap();
         assert_eq!(next, None);
+        assert_eq!(stored.len(), 2);
+        let found = close_to(&[fp(0)], &stored);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].posted.message, found[0].distance), (5, 0));
 
@@ -186,12 +247,8 @@ mod tests {
                 .iter()
                 .all(|p| p.message == 7)
         );
-        assert!(
-            close_pictures(&conn, 1, &[fp(0)], 9, 0)
-                .unwrap()
-                .0
-                .is_empty()
-        );
+        let (stored, _) = pictures_after(&conn, 1, 9, 0).unwrap();
+        assert!(close_to(&[fp(0)], &stored).is_empty());
     }
 
     #[test]

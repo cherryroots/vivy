@@ -2,7 +2,7 @@
 //! already seen.
 //!
 //! Every new message's links and pictures are saved as it arrives, and a new message that
-//! repeats an earlier post is counted (quietly, for the control panel). "Check Snail" (right-click a
+//! repeats an earlier post is counted (quietly, for the control panel and `/snails`). "Check Snail" (right-click a
 //! message → Apps) lists the earlier posts of the same thing. `/snail_backfill` reads the
 //! server's older history, but only when an admin starts it; after that, each start catches
 //! up on what those channels got while the bot was offline.
@@ -18,10 +18,12 @@
 //! - `store.rs`: the tables and queries
 //! - `index.rs`: downloading and saving one message
 //! - `check.rs`: the Check Snail command
+//! - `board.rs`: `/snails`, the leaderboard
 //! - `backfill.rs`: `/snail_backfill`, the history crawl and the startup catch-up
 //! - `retry.rs`: trying failed pictures again
 
 mod backfill;
+mod board;
 mod check;
 mod collect;
 mod fingerprint;
@@ -30,7 +32,9 @@ mod links;
 mod retry;
 mod store;
 
-use std::time::Duration;
+use std::collections::HashSet;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -42,8 +46,21 @@ use crate::util::media;
 
 /// How long after a new message it's read again for late link previews.
 const PREVIEW_RECHECK: Duration = Duration::from_secs(12);
+/// How long the link and picture totals on the status picture are reused before they're
+/// counted again. Counting reads both whole tables; the graphs only sample every 15 minutes.
+const TOTALS_FOR: Duration = Duration::from_secs(15 * 60);
 
-pub struct Snails;
+/// (links, pictures, crawl channels finished, crawl channels), from `store::stats`.
+type Totals = (u64, u64, u64, u64);
+
+#[derive(Default)]
+pub struct Snails {
+    /// New messages waiting for their late link preview recheck. An edit event that reads
+    /// the message first takes it off, and the recheck is skipped.
+    waiting: Mutex<HashSet<u64>>,
+    /// The totals for the status picture, and when they were counted.
+    totals: Mutex<Option<(Instant, Totals)>>,
+}
 
 #[async_trait]
 impl Feature for Snails {
@@ -52,7 +69,11 @@ impl Feature for Snails {
     }
 
     fn commands(&self) -> Vec<Command> {
-        vec![check::check_snail(), backfill::snail_backfill()]
+        vec![
+            check::check_snail(),
+            backfill::snail_backfill(),
+            board::snails(),
+        ]
     }
 
     fn migrations(&self) -> &'static [&'static str] {
@@ -85,8 +106,9 @@ impl Feature for Snails {
 
     /// Saves a new message's links and pictures right away, then reads it once more a bit
     /// later: Discord adds link previews (and their pictures) a few seconds after the
-    /// message. That usually arrives as an edit too; reading twice is harmless, since only
-    /// what's new is checked and a message counts as a snail once.
+    /// message. That usually arrives as an edit too, so the recheck is skipped when the edit
+    /// was read first, or when every link already has its preview. (Reading twice would be
+    /// harmless, only wasted: only what's new is checked and a message counts once.)
     async fn on_message(&self, ctx: &BotCtx, msg: &Message) -> Result<()> {
         let Some(guild) = msg.guild_id else {
             return Ok(());
@@ -94,15 +116,25 @@ impl Feature for Snails {
         if !collect::has_content(msg) {
             return Ok(());
         }
+        // Noted before saving, so an edit that arrives while this downloads still counts.
+        let recheck = msg.embeds.len() < media::preview_links(msg).len();
+        if recheck {
+            self.waiting.lock().unwrap().insert(msg.id.get());
+        }
         if let Err(err) = check::on_new_message(ctx, guild, msg).await {
             warn!("couldn't save the message's links and pictures: {err:#}");
         }
-        if collect::message_links(msg).is_empty() {
+        if !recheck {
             return Ok(());
         }
         tokio::select! {
-            _ = ctx.shutdown.cancelled() => return Ok(()),
+            _ = ctx.shutdown.cancelled() => {}
             _ = tokio::time::sleep(PREVIEW_RECHECK) => {}
+        }
+        // Still waiting unless an edit event read the message in the meantime.
+        let still_waiting = self.waiting.lock().unwrap().remove(&msg.id.get());
+        if !still_waiting || ctx.shutdown.is_cancelled() {
+            return Ok(());
         }
         match msg.channel_id.message(&ctx.http, msg.id).await {
             Ok(fresh) => {
@@ -152,6 +184,8 @@ impl Feature for Snails {
         if msg.author.bot {
             return Ok(());
         }
+        // This read is newer than the recheck would be, so a waiting recheck is skipped.
+        self.waiting.lock().unwrap().remove(&msg.id.get());
         if let Err(err) = check::on_new_message(ctx, guild, &msg).await {
             warn!("couldn't save an edited message's links and pictures: {err:#}");
         }
@@ -178,10 +212,11 @@ impl Feature for Snails {
 
     async fn stats(&self, ctx: &BotCtx) -> Result<Vec<Stat>> {
         let week_ago = Utc::now().timestamp() - 7 * 86_400;
-        let ((links, pictures, finished, channels), caught) = ctx
+        let caught = ctx
             .db
-            .call(move |conn| Ok((store::stats(conn)?, store::caught_since(conn, week_ago)?)))
+            .call(move |conn| Ok(store::caught_since(conn, week_ago)?))
             .await?;
+        let (links, pictures, finished, channels) = self.totals(ctx).await?;
         let mut stats = vec![
             Stat::new("Caught this week", caught),
             Stat::new("Links", links),
@@ -194,5 +229,20 @@ impl Feature for Snails {
             ));
         }
         Ok(stats)
+    }
+}
+
+impl Snails {
+    /// The totals, counted again at most every [`TOTALS_FOR`]. The status picture asks
+    /// every minute.
+    async fn totals(&self, ctx: &BotCtx) -> Result<Totals> {
+        if let Some((at, totals)) = *self.totals.lock().unwrap()
+            && at.elapsed() < TOTALS_FOR
+        {
+            return Ok(totals);
+        }
+        let totals = ctx.db.call(|conn| Ok(store::stats(conn)?)).await?;
+        *self.totals.lock().unwrap() = Some((Instant::now(), totals));
+        Ok(totals)
     }
 }

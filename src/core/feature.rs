@@ -52,6 +52,12 @@ pub trait Feature: Send + Sync + 'static {
         Vec::new()
     }
 
+    /// The line chat shows under its answer while one of [`Feature::tools`] runs, like
+    /// "🎨 Drawing, this can take a minute…". `None` shows a plain "🔧 Tool name…".
+    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+        None
+    }
+
     /// Runs one of [`Feature::tools`] for the person who asked. Returns text for the model.
     /// An error is shown to the model as the result, so it can fix its call and try again;
     /// use [`crate::core::user_error`] for messages meant for it.

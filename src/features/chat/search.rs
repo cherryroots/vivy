@@ -29,7 +29,7 @@ const HAS: &[&str] = &[
 pub fn def() -> ToolDef {
     ToolDef {
         name: "search_messages",
-        description: "Searches the messages of the whole server, like Discord's search bar. Only returns messages from channels the asker can read. Give at least one filter.",
+        description: "Searches the messages of the whole server, like Discord's search bar. Only returns messages from channels the asker can read. Give at least one filter. Include the message links it returns when you point people at messages.",
         parameters: json!({
             "type": "object",
             "properties": {

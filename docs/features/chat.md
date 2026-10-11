@@ -29,7 +29,7 @@ All under `src/features/chat/`, in a good reading order:
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `emoji.rs` | The `list_server_emoji` tool and the task that describes each custom emoji once |
-| `prompt.md` | The system prompt, built into the binary with `include_str!` |
+| `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid); what each tool is for and when to use it is in the tool's own description, so the two can't disagree |
 
 Chat also leans on a few helpers in `src/util/` (described in [architecture](../architecture.md)): `util::reply::LiveReply` (a reply that spans several messages and is edited in place), `util::split::split_message` (Discord-sized parts that keep code blocks intact), `util::media` (finding and loading pictures, GIFs, videos and files) and `util::text` (attachment and embed text).
 
@@ -39,7 +39,7 @@ Chat also leans on a few helpers in `src/util/` (described in [architecture](../
 
 1. The dispatcher (`src/core/dispatcher.rs`) sees a message from a human that mentions the bot. It strips the mention, finds the feature with the longest matching mention prefix, and calls its `on_mention`. Chat declares the empty prefix `""`, so it gets every mention nobody else claimed, and every mention a feature returned `Mention::PassOn` for.
 2. `Chat::on_mention` (`mod.rs`) takes a provider with `ctx.ai.chat()`. With no AI key it returns a user error: "Chat is turned off: the bot has no AI key."
-3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later.
+3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later. Links written as `<link>` never get a preview, so a message with only those (or with previews turned off) isn't waited for.
 4. If the message is a reply, `history::turn_for_reference` finds the replied-to message's turn, or saves that message as a new turn without a parent.
 5. The question is saved as a turn (`store::add_turn`), with the message's text and links to its media and files (`history::read_message`).
 6. `Chat::answer` registers the answer as running (for ❌), loads the chain of turns up to 40 long (`store::chain`), and builds the model input (`history::build_input`).
@@ -70,7 +70,8 @@ The reply's last line is a small status in Discord's `-#` subtext markdown, redr
 | `-# 🔎 Searching the web…` | The provider's web search or fetch |
 | `-# 🐍 Running code…` | The code interpreter or code execution |
 | `-# ✍️ Writing…` | While text streams |
-| `-# 🔧 Read recent messages…` | One of the bot's tools runs, named after the tool (`tool_status` turns `read_recent_messages` into "Read recent messages") |
+| `-# 🎨 Drawing, this can take a minute…` | One of the bot's tools runs. The feature that owns the tool names the label (`Feature::tool_status`), like "🔍 Searching messages…", "📝 Remembering…" or "🎙️ Recording a voice message…". `schedule_follow_up` and `set_mood` show "💭 Thinking…", so a planned check-in stays a surprise |
+| `-# 🔧 Read recent messages…` | A tool whose feature gives no label: the tool's name as words (`plain_tool_status`) |
 
 When the answer is done the line goes away, or becomes `-# ⏹️ Stopped` (❌) or `-# ⚠️ Something went wrong: <short reason>`. Only the last message of a long answer carries it; `render` keeps 100 characters free there (`STATUS_ROOM`). `LiveReply::show` only edits messages whose text changed, so a tick with nothing new costs no API call.
 
@@ -87,14 +88,14 @@ Every message the bot answers and every answer gets a turn in `chat_turns`. A tu
 - `File`: a link to any other attachment, like a PDF or spreadsheet (at most 10 per message, 50 MB each).
 - `Context`: what features added to the question when it was first answered.
 
-Answers also store `provider`, `model`, `continuation_id` (OpenAI's response ID) and `native_json`: the provider's raw output round by round, with the tools' results. The [ai](../ai.md) doc explains how providers replay it.
+Answers also store `provider`, `model`, `continuation_id` (OpenAI's response ID) and `native_json`: the provider's raw output round by round, with the tools' results. The [ai](../ai.md) doc explains how providers replay it. `native_json` is cleared once an answer is 60 days old (`store::forget_old_rounds`, `NATIVE_KEEP_DAYS`, run by the daily emoji loop): it is only needed to replay recent conversations exactly, and an answer without it is sent as its text.
 
 `history::build_input` picks what to send:
 
 - If an answer in the chain was written by this same provider and model and has a `continuation_id`, it sends `Input::After` with that ID and only the turns after it (OpenAI).
 - Otherwise it sends `Input::Full` with the whole chain.
 
-Turning stored turns into model turns (`to_model_turns`) downloads the media again. Discord attachment links expire, so they are refreshed first through Discord's `attachments/refresh-urls` endpoint. A provider that is sent everything every time (`sends_full_history`, Claude) gets every turn's media, so earlier turns never change. Others get media only for the newest 4 turns that have some (`MEDIA_TURNS`); older ones say `[an earlier image]`. Files are always downloaded. Media that can't be loaded becomes a short note, so the model knows something was there.
+Turning stored turns into model turns (`to_model_turns`) downloads the media again. Discord attachment links expire, so they are refreshed first through Discord's `attachments/refresh-urls` endpoint. A provider that is sent everything every time (`sends_full_history`, Claude) gets every turn's media, so earlier turns never change. Others get media only for the newest 4 turns that have some (`MEDIA_TURNS`); older ones say `[an earlier image]`. Files are always downloaded. Up to 4 downloads run at once (`PARALLEL_LOADS`). Media that can't be loaded becomes a short note, so the model knows something was there.
 
 Turns are never deleted or rewritten, with one exception: the `Context` parts are appended to a question once, the first time it's answered (`store::add_parts`). 🔁 adds a new answer turn under the same question, and `add_turn` moves the old answer's messages over to it (`INSERT OR REPLACE` into `chat_messages`).
 
@@ -180,6 +181,7 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | `panels` | The next planned check-in in a server, in the box about Vivy on the status message |
 | `tools` | Chat's tools (`tools::defs`, plus `emoji::def` and `follow_up::def`) |
 | `run_tool` | Runs them: `list_server_emoji` and `schedule_follow_up` directly, the rest through `tools::run` |
+| `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the follow-up and emoji tasks |
 | `on_mention` | Answers a question |
 | `on_message` | Maybe chimes in |
