@@ -52,7 +52,7 @@ pub async fn complete(
                 None => anyhow::bail!("the model's stream closed early"),
                 Some(Err(err)) => return Err(err),
                 Some(Ok(ChatEvent::TextDelta(delta))) => completed.text.push_str(&delta),
-                Some(Ok(ChatEvent::Activity(_))) => {}
+                Some(Ok(ChatEvent::Activity(_) | ChatEvent::Progress(_))) => {}
                 Some(Ok(ChatEvent::Done(done))) => break done,
             }
         };
