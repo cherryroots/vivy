@@ -628,6 +628,19 @@ impl ChatProvider for Claude {
 
 /// Reads the streamed answer into `events`, continuing it when Claude pauses. Returns the
 /// finished round and its container, or `None` when nobody is listening anymore.
+/// When Claude leaves out earlier thinking because the conversation changed, it may say
+/// what changed in this header (`pattern=…` and the first changed path). Anthropic hasn't
+/// published it, so it's only logged, to find what the bot sent differently.
+fn log_thinking_note(response: &reqwest::Response) {
+    if let Some(note) = response
+        .headers()
+        .get("anthropic-thinking-prefix-mismatch")
+        .and_then(|value| value.to_str().ok())
+    {
+        info!("Claude says what changed before the left-out thinking: {note}");
+    }
+}
+
 async fn read_answer(
     sender: &Sender,
     spend: Option<&(Spend, &'static str)>,
@@ -638,6 +651,7 @@ async fn read_answer(
     let mut collector = Collector::default();
     let mut pauses = 0;
     loop {
+        log_thinking_note(&response);
         let read = read_response(&mut collector, &mut response, events).await;
         // What the response used so far costs even when it was stopped or failed partway.
         add_spend(spend, &collector, &body).await;
