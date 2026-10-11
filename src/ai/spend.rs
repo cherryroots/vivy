@@ -23,6 +23,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::display_name;
@@ -164,8 +165,13 @@ impl Spend {
         self.warn(result);
     }
 
-    /// Reads the bill now and then every hour, for as long as the bot runs.
-    pub async fn follow_bill(self, billing: impl Bill, timers: Timers) {
+    /// Reads the bill now and then every hour, until `shutdown` is cancelled.
+    pub async fn follow_bill(
+        self,
+        billing: impl Bill,
+        timers: Timers,
+        shutdown: CancellationToken,
+    ) {
         self.set_admin_key(AdminKey::Starting);
         let name = billing.name();
         let timer = timers.add(name, "hourly");
@@ -173,7 +179,11 @@ impl Spend {
         loop {
             timer.running();
             let now = Utc::now();
-            match billing.this_month(now).await {
+            let read = tokio::select! {
+                _ = shutdown.cancelled() => return,
+                read = billing.this_month(now) => read,
+            };
+            match read {
                 Ok(usd) => {
                     if failing {
                         info!("reading the {name} works again");
@@ -203,7 +213,10 @@ impl Spend {
                 }
             }
             timer.sleeping(BILL_EVERY);
-            tokio::time::sleep(BILL_EVERY).await;
+            tokio::select! {
+                _ = shutdown.cancelled() => return,
+                _ = tokio::time::sleep(BILL_EVERY) => {}
+            }
         }
     }
 

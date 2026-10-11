@@ -29,6 +29,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
+use super::api::{self, error_message};
 use super::fallback::ApiError;
 use super::spend::Spend;
 use super::sse::{SseEvent, SseParser};
@@ -235,30 +236,21 @@ impl OpenAi {
 
     /// Posts a Responses request, retrying a couple of times when OpenAI is busy.
     async fn responses(&self, body: &Value) -> anyhow::Result<reqwest::Response> {
-        let mut waits = RETRY_WAITS.iter();
-        loop {
-            let request = self.post("/responses").json(body);
-            let response = super::fallback::send(request)
-                .await
-                .context("couldn't reach OpenAI")?;
-            let status = response.status();
-            if status.is_success() {
-                return Ok(response);
-            }
-            let busy = matches!(status.as_u16(), 429 | 500 | 502 | 503);
-            if busy && let Some(wait) = waits.next() {
-                warn!("OpenAI answered {status}, trying again");
-                tokio::time::sleep(*wait).await;
-                continue;
-            }
-            let text = response.text().await.unwrap_or_default();
-            return Err(ApiError {
-                provider: "openai",
-                status,
-                message: error_message(&text),
-            }
-            .into());
+        let request = || self.post("/responses").json(body);
+        let response = api::send_retrying("OpenAI", request, &[429, 500, 502, 503], &RETRY_WAITS)
+            .await
+            .context("couldn't reach OpenAI")?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
         }
+        let text = response.text().await.unwrap_or_default();
+        Err(ApiError {
+            provider: "openai",
+            status,
+            message: error_message(&text),
+        }
+        .into())
     }
 
     /// Uploads a file with the Files API and returns its ID.
@@ -498,14 +490,6 @@ async fn add_spend(spend: &Spend, job: &'static str, event: &SseEvent, tier: Opt
         used.usd
     );
     spend.add(job, used).await;
-}
-
-/// The `message` of an OpenAI error body, or the whole body.
-fn error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .unwrap_or_else(|| crate::util::shorten(body, 300))
 }
 
 #[async_trait]

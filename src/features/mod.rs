@@ -22,7 +22,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(wheel::Wheel),
         Arc::new(control_panel::ControlPanel),
         Arc::new(memory::Memory),
-        Arc::new(snails::Snails),
+        Arc::new(snails::Snails::default()),
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
         Arc::new(chat::Chat::default()),

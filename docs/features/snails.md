@@ -80,16 +80,16 @@ Hashing and the detail check are CPU work, so they run in `tokio::task::spawn_bl
 `check::earlier_posts` does the search for both Check Snail and the quiet count. "Earlier" means a smaller message ID: Discord IDs grow with time.
 
 1. **Same link:** `store::same_links` finds older messages in the server with one of the keys.
-2. **Same picture:** `store::close_pictures` reads the server's stored fingerprints and computes `distance` in Rust for each. On a big server that is a lot of rows, so it reads `SCAN_CHUNK` (20,000) rows per database call and lets other database work run in between. The candidates are sorted closest first, one per stored picture, and at most `MAX_CANDIDATES` (12) go on to the detail check.
+2. **Same picture:** `store::pictures_after` reads the server's stored fingerprints, `SCAN_CHUNK` (5,000) rows per database call, so other database work runs in between. `store::close_to` then computes `distance` for each row on a blocking thread (`spawn_blocking`), so the database thread only reads. The candidates are sorted closest first, one per stored picture, and at most `MAX_CANDIDATES` (12) go on to the detail check.
 3. The database stores fingerprints, not pixels. So for the detail check, `same_picture` reads the earlier message from Discord again, picks its picture at the stored `position`, and downloads it.
 
-Check Snail downloads and fingerprints the checked message's pictures fresh, saves the message if it was never indexed (`save_if_new`), and lists every earlier post it finds. The quiet count only needs one, so it stops at the first hit.
+Check Snail downloads and fingerprints the checked message's pictures fresh, saves the message if it was never indexed (`save_if_new`), and lists the earlier posts it finds. Each one costs a Discord request (and a picture also a download), so it stops once `MAX_LISTED` (10) are confirmed; the earlier posts of the same link left over are counted as "…and N more post(s) of the same link, not checked one by one", and close pictures aren't looked for then. The quiet count only needs one, so it stops at the first hit.
 
 Every earlier message is read from Discord before it is listed (`still_there`). One that was deleted (404) is forgotten on the spot. One the bot can't read right now (another 4xx, like a channel it lost access to) is skipped but kept.
 
 ### New messages, edits and deletes (`mod.rs`, `index.rs`)
 
-- **New message** (`on_message`): if it has links, attachments or previews, `check::on_new_message` saves it and checks only what is new in it. Discord often adds link previews a few seconds late, so a message with links is read again after `PREVIEW_RECHECK` (12 seconds) and goes through the same function.
+- **New message** (`on_message`): if it has links, attachments or previews, `check::on_new_message` saves it and checks only what is new in it. Discord often adds link previews a few seconds late, so a message with fewer previews than links that can get one (`media::preview_links`: not `<link>` ones) is read again after `PREVIEW_RECHECK` (12 seconds) and goes through the same function. The recheck is skipped when an edit event read the message first (the `waiting` set on the `Snails` struct), since that read is newer.
 - **Edit** (`on_message_edit`): Discord also sends late link previews as edits. If the edit touches the text, the previews or the attachments, the message is read again. Added links and pictures are saved and checked; removed ones are dropped. A message with nothing to index now that had nothing before is skipped without reading it.
 - **Delete** (`on_messages_deleted`): `store::forget` deletes the message's links, pictures and failed pictures. A snail that gets deleted stays counted as caught: it was posted.
 
@@ -129,10 +129,10 @@ On every start, `spawn_catch_up` reads what was posted while the bot was offline
 | `commands` | Check Snail (`check::check_snail`) and `/snail_backfill` (`backfill::snail_backfill`). |
 | `migrations` | `store::MIGRATIONS` |
 | `start` | Resumes crawls that were running (in servers the gate allows), starts the catch-up, and starts the retry loop. Never starts a new crawl. |
-| `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews. |
+| `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews, unless every link already has one or an edit was read first. |
 | `on_message_edit` | Reads an edited message again and syncs its rows. |
 | `on_messages_deleted` | Forgets the deleted messages. |
-| `stats` | For the control panel: Caught this week (all servers), Links, Pictures, and Backfill (`<finished>/<total> channels`, only once a backfill exists). |
+| `stats` | For the control panel: Caught this week (all servers), Links, Pictures, and Backfill (`<finished>/<total> channels`, only once a backfill exists). Links, Pictures and Backfill are counted again at most every 15 minutes (`TOTALS_FOR`), since counting reads both whole tables. |
 
 The dispatcher already drops messages from bots and checks the feature's gate before calling these. See [architecture](../architecture.md).
 

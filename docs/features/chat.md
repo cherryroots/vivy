@@ -39,7 +39,7 @@ Chat also leans on a few helpers in `src/util/` (described in [architecture](../
 
 1. The dispatcher (`src/core/dispatcher.rs`) sees a message from a human that mentions the bot. It strips the mention, finds the feature with the longest matching mention prefix, and calls its `on_mention`. Chat declares the empty prefix `""`, so it gets every mention nobody else claimed, and every mention a feature returned `Mention::PassOn` for.
 2. `Chat::on_mention` (`mod.rs`) takes a provider with `ctx.ai.chat()`. With no AI key it returns a user error: "Chat is turned off: the bot has no AI key."
-3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later.
+3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later. Links written as `<link>` never get a preview, so a message with only those (or with previews turned off) isn't waited for.
 4. If the message is a reply, `history::turn_for_reference` finds the replied-to message's turn, or saves that message as a new turn without a parent.
 5. The question is saved as a turn (`store::add_turn`), with the message's text and links to its media and files (`history::read_message`).
 6. `Chat::answer` registers the answer as running (for ❌), loads the chain of turns up to 40 long (`store::chain`), and builds the model input (`history::build_input`).
@@ -87,14 +87,14 @@ Every message the bot answers and every answer gets a turn in `chat_turns`. A tu
 - `File`: a link to any other attachment, like a PDF or spreadsheet (at most 10 per message, 50 MB each).
 - `Context`: what features added to the question when it was first answered.
 
-Answers also store `provider`, `model`, `continuation_id` (OpenAI's response ID) and `native_json`: the provider's raw output round by round, with the tools' results. The [ai](../ai.md) doc explains how providers replay it.
+Answers also store `provider`, `model`, `continuation_id` (OpenAI's response ID) and `native_json`: the provider's raw output round by round, with the tools' results. The [ai](../ai.md) doc explains how providers replay it. `native_json` is cleared once an answer is 60 days old (`store::forget_old_rounds`, `NATIVE_KEEP_DAYS`, run by the daily emoji loop): it is only needed to replay recent conversations exactly, and an answer without it is sent as its text.
 
 `history::build_input` picks what to send:
 
 - If an answer in the chain was written by this same provider and model and has a `continuation_id`, it sends `Input::After` with that ID and only the turns after it (OpenAI).
 - Otherwise it sends `Input::Full` with the whole chain.
 
-Turning stored turns into model turns (`to_model_turns`) downloads the media again. Discord attachment links expire, so they are refreshed first through Discord's `attachments/refresh-urls` endpoint. A provider that is sent everything every time (`sends_full_history`, Claude) gets every turn's media, so earlier turns never change. Others get media only for the newest 4 turns that have some (`MEDIA_TURNS`); older ones say `[an earlier image]`. Files are always downloaded. Media that can't be loaded becomes a short note, so the model knows something was there.
+Turning stored turns into model turns (`to_model_turns`) downloads the media again. Discord attachment links expire, so they are refreshed first through Discord's `attachments/refresh-urls` endpoint. A provider that is sent everything every time (`sends_full_history`, Claude) gets every turn's media, so earlier turns never change. Others get media only for the newest 4 turns that have some (`MEDIA_TURNS`); older ones say `[an earlier image]`. Files are always downloaded. Up to 4 downloads run at once (`PARALLEL_LOADS`). Media that can't be loaded becomes a short note, so the model knows something was there.
 
 Turns are never deleted or rewritten, with one exception: the `Context` parts are appended to a question once, the first time it's answered (`store::add_parts`). 🔁 adds a new answer turn under the same question, and `add_turn` moves the old answer's messages over to it (`INSERT OR REPLACE` into `chat_messages`).
 
