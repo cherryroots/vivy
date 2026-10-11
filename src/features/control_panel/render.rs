@@ -1,8 +1,8 @@
 //! The status as a picture, drawn like the movie wheel's rounds (see `util::svg`).
 //!
 //! [`online_svg`] lays out a [`Dashboard`]: a header, four tiles with the last day's graph
-//! (latency, memory, database, errors), the AI provider, each provider's spend this month
-//! (Claude, then OpenAI) with a graph of the month so far, one card per feature with its `stats()`, the background
+//! (latency, memory, database, errors), the AI provider, the AI spend this month (a card per
+//! provider side by side, and one graph of the month with a line each), one card per feature with its `stats()`, the background
 //! loops' timers, and the last error.
 //! Graphs come from the samples in `history.rs`; a graph needs two samples, so a new
 //! install shows plain numbers for its first 15 minutes.
@@ -29,6 +29,9 @@ const LEFT: f32 = 16.0;
 const RIGHT: f32 = WIDTH - 16.0;
 /// Space between cards.
 const GAP: f32 = 8.0;
+/// Each provider's color in the spend section.
+const CLAUDE: &str = "#d97757";
+const OPENAI: &str = "#10a37f";
 
 /// Everything the status shows, gathered by `status.rs`. The fallback embed shows the same.
 pub struct Dashboard {
@@ -114,15 +117,7 @@ pub fn online_svg(d: &Dashboard) -> String {
     for panel in &d.panels {
         text_panel(&mut svg, d, panel);
     }
-    for spend in &d.spends {
-        match &spend.view {
-            Ok(view) => provider_spend(&mut svg, d, spend.provider, view),
-            Err(err) => {
-                section(&mut svg, &spend_title(spend.provider));
-                svg.note(&format!("Couldn't read it: {}", shorten(err, 80)));
-            }
-        }
-    }
+    spend(&mut svg, d);
     features(&mut svg, d);
     timers(&mut svg, d);
     last_error(&mut svg, d);
@@ -380,86 +375,159 @@ fn text_panel(svg: &mut Svg, d: &Dashboard, panel: &Panel) {
     svg.y += height;
 }
 
-/// "Claude spend this month"
-fn spend_title(provider: &str) -> String {
-    format!("{} spend this month", display_name(provider))
+/// Each provider's line and labels on the spend graph and cards.
+fn provider_color(provider: &str) -> &'static str {
+    match provider {
+        "claude" => CLAUDE,
+        "openai" => OPENAI,
+        _ => ACCENT,
+    }
 }
 
-/// One provider's total against its budget, a graph of the month so far, and the details.
-fn provider_spend(svg: &mut Svg, d: &Dashboard, provider: &str, spend: &SpendView) {
-    section(svg, &spend_title(provider));
-    let y = svg.y;
-    let height = 238.0;
-    svg.rect([LEFT, y, RIGHT - LEFT, height], ROW, 8.0, "");
+/// The most job rows a spend card shows.
+const MAX_JOB_ROWS: usize = 5;
 
-    // "$12.34 of $100" with a bar.
-    let total = format!("${:.2}", spend.usd);
-    svg.text(32.0, y + 40.0, &total, Style::new(28.0, TEXT).weight(700));
-    let mut x = 32.0 + text_width(&total, 28.0) + 8.0;
-    if spend.budget > 0.0 {
-        let of = format!("of ${:.0}", spend.budget);
-        svg.text(x, y + 40.0, &of, Style::new(14.0, MUTED).weight(500));
-        x += text_width(&of, 14.0) + 10.0;
+/// "AI spend this month": a card per provider side by side (total against its budget, the
+/// pace, the admin key, the cache hits and cost per job), then one graph of the month
+/// with every provider's line, budget (dashed) and pace (dotted).
+fn spend(svg: &mut Svg, d: &Dashboard) {
+    if d.spends.is_empty() {
+        return;
     }
+    section(svg, "AI spend this month");
+    let (start, end) = month_bounds(d.now);
+    let elapsed = (d.now - start).num_seconds() as f64;
+    let length = (end - start).num_seconds() as f64;
+    // Only guess at the month's end after a day of it.
+    let pace_of = |usd: f64| (elapsed >= 86_400.0).then(|| usd * length / elapsed);
+
+    // The cards, all as tall as the one with the most jobs.
+    let rows = d
+        .spends
+        .iter()
+        .filter_map(|spend| spend.view.as_ref().ok())
+        .map(|view| view.jobs.as_ref().map_or(0, Vec::len).min(MAX_JOB_ROWS))
+        .max()
+        .unwrap_or(0);
+    let height = 150.0 + 20.0 * rows as f32;
+    let count = d.spends.len() as f32;
+    let width = (RIGHT - LEFT - GAP * (count - 1.0)) / count;
+    let y = svg.y;
+    for (n, spend) in d.spends.iter().enumerate() {
+        let x = LEFT + (width + GAP) * n as f32;
+        let area = [x, y, width, height];
+        match &spend.view {
+            Ok(view) => spend_card(svg, d, area, spend.provider, view, pace_of(view.usd)),
+            Err(err) => {
+                svg.rect(area, ROW, 8.0, "");
+                card_title(svg, x, y, &display_name(spend.provider).to_uppercase());
+                svg.text(
+                    x + 14.0,
+                    y + 48.0,
+                    &shorten(&format!("Couldn't read it: {err}"), 40),
+                    Style::new(12.0, RED),
+                );
+            }
+        }
+    }
+    svg.y += height + GAP;
+
+    // The month so far, in one graph.
+    let chart_height = 150.0;
+    let y = svg.y;
+    svg.rect([LEFT, y, RIGHT - LEFT, chart_height], ROW, 8.0, "");
+    let area = [32.0, y + 24.0, RIGHT - LEFT - 32.0, chart_height - 50.0];
+    let lines: Vec<SpendLine> = d
+        .spends
+        .iter()
+        .filter_map(|spend| {
+            let view = spend.view.as_ref().ok()?;
+            Some(SpendLine {
+                color: provider_color(spend.provider),
+                points: series(
+                    &d.history,
+                    &history::spend_key(spend.provider),
+                    start.timestamp(),
+                    Some((d.now.timestamp(), view.usd)),
+                ),
+                usd: view.usd,
+                budget: view.budget,
+                pace: pace_of(view.usd),
+            })
+        })
+        .collect();
+    month_chart(svg, area, &lines, (start, end), d.now);
+    svg.y += chart_height;
+}
+
+/// One provider's card: its total, budget bar, pace, admin key, cache hits and jobs.
+fn spend_card(
+    svg: &mut Svg,
+    d: &Dashboard,
+    [x, y, w, h]: [f32; 4],
+    provider: &str,
+    spend: &SpendView,
+    pace: Option<f64>,
+) {
+    let color = provider_color(provider);
+    let (inner, right) = (x + 16.0, x + w - 16.0);
+    svg.rect([x, y, w, h], ROW, 8.0, "");
+    svg.raw(format!(
+        "<circle cx=\"{}\" cy=\"{}\" r=\"4\" fill=\"{color}\"/>",
+        inner + 4.0,
+        y + 19.0
+    ));
+    svg.text(
+        inner + 14.0,
+        y + 23.0,
+        &display_name(provider).to_uppercase(),
+        Style::new(11.0, color).weight(700).spaced(),
+    );
     let (tag, tag_color) = if spend.billed {
         ("BILLED", GREEN)
     } else {
         ("ESTIMATE", DIM)
     };
-    let tag_width = 9.0 + tag.len() as f32 * 7.4;
-    pill(svg, x + tag_width, y + 26.0, tag, tag_color);
+    pill(svg, right, y + 9.0, tag, tag_color);
 
-    let (start, end) = month_bounds(d.now);
-    let elapsed = (d.now - start).num_seconds() as f64;
-    let length = (end - start).num_seconds() as f64;
-    // Only guess at the month's end after a day of it.
-    let pace = (elapsed >= 86_400.0).then(|| spend.usd * length / elapsed);
+    // "$12.34 of $100" with a bar.
+    let total = format!("${:.2}", spend.usd);
+    svg.text(inner, y + 60.0, &total, Style::new(26.0, TEXT).weight(700));
+    if spend.budget > 0.0 {
+        let of = format!("of ${:.0}", spend.budget);
+        let at = inner + text_width(&total, 26.0) + 8.0;
+        svg.text(at, y + 60.0, &of, Style::new(13.0, MUTED).weight(500));
+    }
     let share = (spend.budget > 0.0).then(|| spend.usd / spend.budget);
+    let pace_over = pace.is_some_and(|p| spend.budget > 0.0 && p > spend.budget);
     let bar_color = match share {
         Some(s) if s >= 1.0 => RED,
         Some(s) if s >= 0.8 => AMBER,
-        _ if pace
-            .zip((spend.budget > 0.0).then_some(spend.budget))
-            .is_some_and(|(p, b)| p > b) =>
-        {
-            AMBER
-        }
+        _ if pace_over => AMBER,
         _ => GREEN,
     };
     if let Some(share) = share {
-        let width = RIGHT - LEFT - 32.0;
-        svg.rect([32.0, y + 52.0, width, 8.0], LINE, 4.0, "");
-        let filled = (width * share.min(1.0) as f32).max(8.0);
-        svg.rect([32.0, y + 52.0, filled, 8.0], bar_color, 4.0, "");
+        let width = right - inner;
+        svg.rect([inner, y + 70.0, width, 6.0], LINE, 3.0, "");
+        let filled = (width * share.min(1.0) as f32).max(6.0);
+        svg.rect([inner, y + 70.0, filled, 6.0], bar_color, 3.0, "");
     }
     let mut summary = Vec::new();
     if let Some(share) = share {
-        summary.push(format!("{:.0}% of the budget", share * 100.0));
+        summary.push(format!("{:.0}%", share * 100.0));
     }
     if let Some(pace) = pace {
-        summary.push(format!(
-            "on pace for ${pace:.2} by {}",
-            (end - TimeDelta::days(1)).format("%-d %b")
-        ));
+        summary.push(format!("pace ${pace:.2}"));
     }
-    if !summary.is_empty() {
-        svg.text(
-            32.0,
-            y + 80.0,
-            &summary.join("  ·  "),
-            Style::new(12.0, MUTED).weight(500),
-        );
+    if let Some(hits) = spend.cache_hits {
+        summary.push(format!("{:.0}% cache hits", hits * 100.0));
     }
-
-    // The month so far, the budget, and where the pace leads.
-    let chart = [32.0, y + 96.0, RIGHT - LEFT - 32.0, 96.0];
-    let points = series(
-        &d.history,
-        &history::spend_key(provider),
-        start.timestamp(),
-        Some((d.now.timestamp(), spend.usd)),
+    svg.text(
+        inner,
+        y + 94.0,
+        &summary.join("  ·  "),
+        Style::new(12.0, MUTED).weight(500),
     );
-    month_chart(svg, chart, &points, spend, pace, (start, end), d.now);
 
     // The admin key and the last bill read.
     let mut key = spend.admin_key.clone();
@@ -467,78 +535,124 @@ fn provider_spend(svg: &mut Svg, d: &Dashboard, provider: &str, spend: &SpendVie
         key = format!("{key}  ·  {}", plain(read, d.now));
     }
     let key_color = if spend.admin_key_failing { AMBER } else { DIM };
+    let fits = ((right - inner) / 5.6) as usize;
     svg.text(
-        32.0,
-        y + height - 12.0,
-        &shorten(&key, 95),
+        inner,
+        y + 114.0,
+        &shorten(&key, fits),
         Style::new(11.0, key_color).weight(500),
     );
-    svg.y += height;
 
-    cache_and_jobs(svg, spend);
+    // Cost per job as bars.
+    let jobs = spend.jobs.as_deref().unwrap_or_default();
+    let most = jobs.first().map_or(0.0, |(_, usd)| *usd).max(0.000_001);
+    let (bar_x, bar_width) = (inner + 82.0, right - inner - 82.0 - 58.0);
+    for (n, (job, usd)) in jobs.iter().take(MAX_JOB_ROWS).enumerate() {
+        let row_y = y + 142.0 + 20.0 * n as f32;
+        svg.text(
+            inner,
+            row_y,
+            &shorten(job, 11),
+            Style::new(12.0, MUTED).weight(500),
+        );
+        svg.rect([bar_x, row_y - 8.0, bar_width, 6.0], LINE, 3.0, "");
+        let filled = (bar_width * (*usd / most) as f32).max(6.0);
+        svg.rect([bar_x, row_y - 8.0, filled, 6.0], color, 3.0, "");
+        svg.text(
+            right,
+            row_y,
+            &format!("${usd:.2}"),
+            Style::new(12.0, TEXT).weight(600).end(),
+        );
+    }
 }
 
-/// The cache hit rate as a ring and the cost per job as bars, each when turned on.
-fn cache_and_jobs(svg: &mut Svg, spend: &SpendView) {
-    let jobs = spend.jobs.as_deref().filter(|jobs| !jobs.is_empty());
-    if spend.cache_hits.is_none() && jobs.is_none() {
-        return;
-    }
-    svg.y += GAP;
-    let y = svg.y;
-    let rows = jobs.map_or(0, |jobs| jobs.len().min(6));
-    let height = (40.0 + 22.0 * rows as f32).max(96.0);
-    let mut x = LEFT;
+/// One provider on the spend graph.
+struct SpendLine {
+    color: &'static str,
+    /// Spend samples this month, the current total last.
+    points: Vec<(i64, f64)>,
+    usd: f64,
+    /// 0 when there's no budget.
+    budget: f64,
+    pace: Option<f64>,
+}
 
-    if let Some(hits) = spend.cache_hits {
-        let width = if jobs.is_some() { 170.0 } else { RIGHT - LEFT };
-        svg.rect([x, y, width, height], ROW, 8.0, "");
-        card_title(svg, x, y, "CACHE HITS");
-        let (cx, cy, r) = (x + 44.0, y + height / 2.0 + 10.0, 24.0);
-        let circumference = 2.0 * std::f32::consts::PI * r;
-        let arc = circumference * hits.clamp(0.0, 1.0) as f32;
-        svg.raw(format!(
-            "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"none\" stroke=\"{LINE}\" stroke-width=\"7\"/>"
-        ));
-        svg.raw(format!(
-            "<circle cx=\"{cx}\" cy=\"{cy}\" r=\"{r}\" fill=\"none\" stroke=\"{GREEN}\" stroke-width=\"7\" stroke-linecap=\"round\" stroke-dasharray=\"{arc} {circumference}\" transform=\"rotate(-90 {cx} {cy})\"/>"
-        ));
+/// Spend over the month: each provider's line so far, its pace to the month's end
+/// (dotted) and its budget (dashed), in its color, with the days along the bottom.
+fn month_chart(
+    svg: &mut Svg,
+    area: [f32; 4],
+    lines: &[SpendLine],
+    (start, end): (DateTime<Utc>, DateTime<Utc>),
+    now: DateTime<Utc>,
+) {
+    let [x, y, w, h] = area;
+    let span = (start.timestamp(), end.timestamp());
+    let top = lines
+        .iter()
+        .flat_map(|line| [line.usd, line.budget, line.pace.unwrap_or(0.0)])
+        .fold(0.01, f64::max)
+        * 1.1;
+    let range = (0.0, top);
+
+    // The floor and the days of the month.
+    svg.raw(format!(
+        "<path d=\"M{x},{} H{}\" stroke=\"{LINE}\" stroke-width=\"1\"/>",
+        y + h,
+        x + w
+    ));
+    let days = (end - start).num_days();
+    for day in [1, 8, 15, 22, days] {
+        let at = start + TimeDelta::days(day - 1) + TimeDelta::hours(12);
+        let (tx, _) = scale(&[(at.timestamp(), 0.0)], area, span, range)[0];
         svg.text(
-            cx + 40.0,
-            cy + 2.0,
-            &format!("{:.0}%", hits * 100.0),
-            Style::new(20.0, TEXT).weight(700),
+            tx,
+            y + h + 14.0,
+            &format!("{} {}", day, start.format("%b")),
+            Style::new(10.0, DIM).middle(),
         );
-        svg.text(cx + 40.0, cy + 18.0, "of input", Style::new(11.0, DIM));
-        x += width + GAP;
     }
 
-    if let Some(jobs) = jobs {
-        let width = RIGHT - x;
-        svg.rect([x, y, width, height], ROW, 8.0, "");
-        card_title(svg, x, y, "COST PER JOB");
-        let most = jobs.first().map_or(0.0, |(_, usd)| *usd).max(0.000_001);
-        let (bar_x, bar_width) = (x + 110.0, width - 110.0 - 76.0);
-        for (n, (job, usd)) in jobs.iter().take(rows).enumerate() {
-            let row_y = y + 46.0 + 22.0 * n as f32;
+    for line in lines {
+        let color = line.color;
+        if line.budget > 0.0 {
+            let (_, by) = scale(&[(span.0, line.budget)], area, span, range)[0];
+            svg.raw(format!(
+                "<path d=\"M{x},{by:.1} H{}\" stroke=\"{color}\" stroke-opacity=\"0.7\" stroke-width=\"1\" stroke-dasharray=\"4 4\"/>",
+                x + w
+            ));
             svg.text(
-                x + 14.0,
-                row_y,
-                &shorten(job, 13),
-                Style::new(13.0, MUTED).weight(500),
-            );
-            svg.rect([bar_x, row_y - 9.0, bar_width, 8.0], LINE, 4.0, "");
-            let filled = (bar_width * (*usd / most) as f32).max(8.0);
-            svg.rect([bar_x, row_y - 9.0, filled, 8.0], ACCENT, 4.0, "");
-            svg.text(
-                x + width - 14.0,
-                row_y,
-                &format!("${usd:.2}"),
-                Style::new(13.0, TEXT).weight(600).end(),
+                x + w,
+                by - 5.0,
+                &format!("budget ${:.0}", line.budget),
+                Style::new(10.0, color).weight(600).end(),
             );
         }
+        let (nx, ny) = scale(&[(now.timestamp(), line.usd)], area, span, range)[0];
+        if let Some(pace) = line.pace {
+            let (ex, ey) = scale(&[(span.1, pace)], area, span, range)[0];
+            svg.raw(format!(
+                "<path d=\"M{nx:.1},{ny:.1} L{ex:.1},{ey:.1}\" stroke=\"{color}\" stroke-opacity=\"0.6\" stroke-width=\"1.5\" stroke-dasharray=\"2 4\" stroke-linecap=\"round\"/>"
+            ));
+        }
+        if line.points.len() >= 2 {
+            let coords = scale(&line.points, area, span, range);
+            let path = path(&coords);
+            svg.raw(format!(
+                "<path d=\"{path} L{nx:.1},{:.1} L{:.1},{:.1} Z\" fill=\"{color}\" fill-opacity=\"0.12\"/>",
+                y + h,
+                coords[0].0,
+                y + h
+            ));
+            svg.raw(format!(
+                "<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" stroke-linejoin=\"round\"/>"
+            ));
+        }
+        svg.raw(format!(
+            "<circle cx=\"{nx:.1}\" cy=\"{ny:.1}\" r=\"3.5\" fill=\"{color}\"/>"
+        ));
     }
-    svg.y += height;
 }
 
 /// Feature cards side by side.
@@ -828,82 +942,6 @@ fn bars(svg: &mut Svg, [x, y, w, h]: [f32; 4], counts: &[usize], color: &str) {
             svg.rect([bar_x, y + h - bar_h, slot - 1.0, bar_h], color, 1.0, "");
         }
     }
-}
-
-/// Spend over the month: the line so far, the pace to the month's end (dotted) and the
-/// budget (dashed), with the days along the bottom.
-fn month_chart(
-    svg: &mut Svg,
-    area: [f32; 4],
-    points: &[(i64, f64)],
-    spend: &SpendView,
-    pace: Option<f64>,
-    (start, end): (DateTime<Utc>, DateTime<Utc>),
-    now: DateTime<Utc>,
-) {
-    let [x, y, w, h] = area;
-    let span = (start.timestamp(), end.timestamp());
-    let top = [spend.usd, spend.budget, pace.unwrap_or(0.0)]
-        .into_iter()
-        .fold(0.01, f64::max)
-        * 1.1;
-    let range = (0.0, top);
-
-    // The floor and the days of the month.
-    svg.raw(format!(
-        "<path d=\"M{x},{} H{}\" stroke=\"{LINE}\" stroke-width=\"1\"/>",
-        y + h,
-        x + w
-    ));
-    let days = (end - start).num_days();
-    for day in [1, 8, 15, 22, days] {
-        let at = start + TimeDelta::days(day - 1) + TimeDelta::hours(12);
-        let (tx, _) = scale(&[(at.timestamp(), 0.0)], area, span, range)[0];
-        svg.text(
-            tx,
-            y + h + 14.0,
-            &format!("{} {}", day, start.format("%b")),
-            Style::new(10.0, DIM).middle(),
-        );
-    }
-
-    if spend.budget > 0.0 {
-        let (_, by) = scale(&[(span.0, spend.budget)], area, span, range)[0];
-        svg.raw(format!(
-            "<path d=\"M{x},{by:.1} H{}\" stroke=\"{AMBER}\" stroke-opacity=\"0.7\" stroke-width=\"1\" stroke-dasharray=\"4 4\"/>",
-            x + w
-        ));
-        svg.text(
-            x + w,
-            by - 5.0,
-            &format!("budget ${:.0}", spend.budget),
-            Style::new(10.0, AMBER).weight(600).end(),
-        );
-    }
-
-    let (nx, ny) = scale(&[(now.timestamp(), spend.usd)], area, span, range)[0];
-    if let Some(pace) = pace {
-        let (ex, ey) = scale(&[(span.1, pace)], area, span, range)[0];
-        svg.raw(format!(
-            "<path d=\"M{nx:.1},{ny:.1} L{ex:.1},{ey:.1}\" stroke=\"{ACCENT}\" stroke-opacity=\"0.6\" stroke-width=\"1.5\" stroke-dasharray=\"2 4\" stroke-linecap=\"round\"/>"
-        ));
-    }
-    if points.len() >= 2 {
-        let coords = scale(points, area, span, range);
-        let line = path(&coords);
-        svg.raw(format!(
-            "<path d=\"{line} L{nx:.1},{:.1} L{:.1},{:.1} Z\" fill=\"{ACCENT}\" fill-opacity=\"0.18\"/>",
-            y + h,
-            coords[0].0,
-            y + h
-        ));
-        svg.raw(format!(
-            "<path d=\"{line}\" fill=\"none\" stroke=\"{ACCENT}\" stroke-width=\"2\" stroke-linejoin=\"round\"/>"
-        ));
-    }
-    svg.raw(format!(
-        "<circle cx=\"{nx:.1}\" cy=\"{ny:.1}\" r=\"3.5\" fill=\"{ACCENT}\"/>"
-    ));
 }
 
 /// Points in time and value to positions in `area`. A flat line sits in the middle.
@@ -1350,8 +1388,8 @@ mod tests {
         assert!(svg.contains(">Vivy<") && svg.contains(">ONLINE<"));
         assert!(svg.contains(">$26.84<") && svg.contains(">of $100<"));
         assert!(svg.contains(">$5.62<") && svg.contains(">of $25<"));
-        assert!(svg.contains(">OPENAI SPEND THIS MONTH<"));
-        assert!(svg.contains("on pace for $"));
+        assert!(svg.contains(">AI SPEND THIS MONTH<") && svg.contains(">OPENAI<"));
+        assert!(svg.contains("pace $"));
         assert!(svg.contains(">in 2h 14m<"));
         assert!(svg.contains(">VIVY&apos;S MIND<") || svg.contains(">VIVY'S MIND<"));
         assert!(svg.contains(">in 5h 20m with Sam (2 planned): ask how the job"));
