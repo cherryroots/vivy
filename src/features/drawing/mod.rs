@@ -1,0 +1,299 @@
+//! Drawing: Vivy draws pictures with OpenAI's GPT Image 2.5.
+//!
+//! Chat gets one tool, `draw_picture`: she writes a prompt, the picture is drawn with the
+//! Image API (`ctx.ai.images`, see `ai/openai/images.rs`) and posted as a reply to the
+//! asker. With `use_pictures`, the pictures in the asker's message and in the message it
+//! replies to go along, so she can change a picture or draw from one ("put a hat on
+//! this", or replying to a picture she drew: "make it night").
+//!
+//! New pictures use `model` (Flare: fast, good for everyday pictures); pictures made from
+//! others use `edit_model` (Sunburst: the most precise at edits). Each one's cost counts
+//! toward OpenAI's spend as the job "drawing".
+//!
+//! - `store.rs`: what was drawn, for the monthly limit and the status
+//!
+//! It needs `OPENAI_TOKEN` in .env, whichever provider chats. Without it the tool isn't
+//! offered.
+
+mod store;
+
+use anyhow::Context as _;
+use async_trait::async_trait;
+use chrono::{DateTime, Datelike, Utc};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, Message};
+use tracing::{info, warn};
+
+use crate::ai::{PictureRequest, ToolDef};
+use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
+use crate::util::media::{self, MediaKind, ModelImage};
+
+const TOOL: &str = "draw_picture";
+/// The most pictures sent along to draw from.
+const MAX_PICTURES: usize = 4;
+
+/// `[features.drawing]` settings.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// For new pictures: "gpt-image-2.5-flare" or "gpt-image-2.5-sunburst".
+    pub model: String,
+    /// For pictures made from other pictures.
+    pub edit_model: String,
+    /// "low", "medium", "high", "xhigh" or "max". Higher is better and costs more.
+    pub quality: String,
+    /// "png", "jpeg" or "webp".
+    pub format: String,
+    /// "auto", or "low" for a less strict safety filter.
+    pub moderation: String,
+    /// The most pictures a month, all servers together. 0 for no limit.
+    pub monthly_pictures: u64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            model: "gpt-image-2.5-flare".to_string(),
+            edit_model: "gpt-image-2.5-sunburst".to_string(),
+            quality: "medium".to_string(),
+            format: "png".to_string(),
+            moderation: "auto".to_string(),
+            monthly_pictures: 100,
+        }
+    }
+}
+
+/// Whether `OPENAI_TOKEN` is set, which the Image API needs.
+fn has_key() -> bool {
+    std::env::var("OPENAI_TOKEN").is_ok_and(|key| !key.trim().is_empty())
+}
+
+/// The start of this month in UTC, as a Unix timestamp.
+fn month_start(now: DateTime<Utc>) -> i64 {
+    now.date_naive()
+        .with_day(1)
+        .and_then(|day| day.and_hms_opt(0, 0, 0))
+        .map(|start| start.and_utc().timestamp())
+        .unwrap_or_else(|| now.timestamp())
+}
+
+/// The size for a shape the model asks for. Anything else is square.
+fn size_for(shape: Option<&str>) -> &'static str {
+    match shape {
+        Some("landscape") => "1536x1024",
+        Some("portrait") => "1024x1536",
+        _ => "1024x1024",
+    }
+}
+
+/// The still pictures in a message and in the message it replies to, in that order:
+/// what "this picture" means to the asker. GIFs and videos are left out.
+fn pictures_in(msg: &Message) -> Vec<media::Media> {
+    let mut found = media::find_media(msg);
+    if let Some(replied) = &msg.referenced_message {
+        found.extend(media::find_media(replied));
+    }
+    found.retain(|media| media.kind == MediaKind::Image);
+    found.truncate(MAX_PICTURES);
+    found
+}
+
+pub struct Drawing;
+
+#[async_trait]
+impl Feature for Drawing {
+    fn name(&self) -> &'static str {
+        "drawing"
+    }
+
+    fn migrations(&self) -> &'static [&'static str] {
+        store::MIGRATIONS
+    }
+
+    fn tools(&self) -> Vec<ToolDef> {
+        if !has_key() {
+            return Vec::new();
+        }
+        vec![ToolDef {
+            name: TOOL,
+            description: "Draw a picture and post it as a reply to the asker. Use it when someone asks you to draw, paint, make or change a picture, or when a picture says it better than words. \
+Write the prompt in English as a clear description of the whole picture: the subject, what's happening, the style (photo, anime, watercolor, pixel art...), colors, light and framing. Put any words that should appear in the picture in quotes. \
+To change a picture or draw from one (\"put a hat on this\", \"me as a knight\", a reply to a picture you drew: \"make it night\"), set use_pictures: the pictures in the asker's message and in the message it replies to are sent along, and the prompt says what to do with them. \
+Drawing takes up to a minute. The picture is your answer, so write at most a short line with it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "What to draw, or what to change in the pictures."},
+                    "shape": {"type": "string", "enum": ["square", "landscape", "portrait"], "description": "Square if left out."},
+                    "use_pictures": {"type": "boolean", "description": "Send along the pictures in the asker's message and the one it replies to."}
+                },
+                "required": ["prompt"]
+            }),
+        }]
+    }
+
+    async fn run_tool(
+        &self,
+        ctx: &BotCtx,
+        asker: &Asker,
+        _name: &str,
+        args: &Value,
+    ) -> Result<String> {
+        let images = ctx
+            .ai
+            .images
+            .as_ref()
+            .ok_or_else(|| user_error("drawing isn't set up (no OPENAI_TOKEN)"))?;
+        let settings: Settings = ctx.config.feature("drawing")?;
+        let prompt = args
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| user_error("give a prompt: what to draw"))?
+            .to_string();
+        let since = month_start(Utc::now());
+        let (drawn, _) = ctx
+            .db
+            .call(move |conn| Ok(store::drawn_since(conn, since)?))
+            .await?;
+        let limit = settings.monthly_pictures;
+        if limit > 0 && drawn >= limit {
+            return Err(user_error(format!(
+                "you've drawn {drawn} of {limit} pictures this month, which is all of them. Say so in text."
+            )));
+        }
+
+        let mut pictures: Vec<ModelImage> = Vec::new();
+        if args.get("use_pictures").and_then(Value::as_bool) == Some(true) {
+            let msg = ctx
+                .http
+                .get_message(asker.channel, asker.message)
+                .await
+                .context("reading the asker's message")?;
+            for found in pictures_in(&msg) {
+                match media::load_for_model(&found).await {
+                    Ok(loaded) => pictures.extend(loaded),
+                    Err(err) => warn!("couldn't download a picture to draw from: {err:#}"),
+                }
+            }
+            if pictures.is_empty() {
+                return Err(user_error(
+                    "there are no pictures in the asker's message or the one it replies to. Draw without use_pictures, or ask for the picture.",
+                ));
+            }
+        }
+
+        let shape = args.get("shape").and_then(Value::as_str);
+        let model = match pictures.is_empty() {
+            true => &settings.model,
+            false => &settings.edit_model,
+        };
+        let request = PictureRequest {
+            model,
+            prompt: &prompt,
+            pictures: &pictures,
+            size: size_for(shape),
+            quality: &settings.quality,
+            format: &settings.format,
+            moderation: &settings.moderation,
+        };
+        let picture = images.draw(&request).await?;
+
+        let name = format!("drawing.{}", picture.format);
+        let message = CreateMessage::new()
+            .add_file(CreateAttachment::bytes(picture.data, name))
+            .reference_message((asker.channel, asker.message))
+            .allowed_mentions(CreateAllowedMentions::new().replied_user(true));
+        let message = asker
+            .channel
+            .send_message(&ctx.http, message)
+            .await
+            .context("posting the picture")?;
+        info!(channel = %asker.channel, model, usd = picture.usd, "drew a picture");
+        asker
+            .posted
+            .add(message.id, format!("[Picture you drew] {prompt}"));
+
+        let drawn = store::Drawn {
+            message_id: message.id.get(),
+            guild_id: asker.guild.map(|g| g.get()),
+            channel_id: asker.channel.get(),
+            user_id: asker.user.get(),
+            prompt,
+            usd: picture.usd,
+            at: Utc::now().timestamp(),
+        };
+        ctx.db
+            .call(move |conn| Ok(store::record(conn, &drawn)?))
+            .await?;
+        Ok("The picture is posted as a reply to the asker. It is your answer: write at most a short line with it, and don't describe it.".to_string())
+    }
+
+    async fn stats(&self, ctx: &BotCtx) -> Result<Vec<Stat>> {
+        if !has_key() {
+            return Ok(Vec::new());
+        }
+        let settings: Settings = ctx.config.feature("drawing")?;
+        let since = month_start(Utc::now());
+        let (drawn, usd) = ctx
+            .db
+            .call(move |conn| Ok(store::drawn_since(conn, since)?))
+            .await?;
+        let pictures = match settings.monthly_pictures {
+            0 => drawn.to_string(),
+            limit => format!("{drawn} / {limit}"),
+        };
+        Ok(vec![
+            Stat::new("Drawn this month", pictures),
+            Stat::new("Cost", format!("${usd:.2}")),
+        ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serenity::all::Attachment;
+
+    fn attachment(url: &str, content_type: &str) -> Attachment {
+        serde_json::from_value(json!({
+            "id": "1", "filename": "a", "size": 1, "url": url, "proxy_url": url,
+            "content_type": content_type,
+        }))
+        .unwrap()
+    }
+
+    fn message(attachments: Vec<Attachment>) -> Message {
+        let mut msg = Message::default();
+        msg.attachments = attachments;
+        msg
+    }
+
+    #[test]
+    fn finds_the_pictures_to_draw_from() {
+        let mut msg = message(vec![
+            attachment("https://cdn/a.png", "image/png"),
+            attachment("https://cdn/b.gif", "image/gif"),
+        ]);
+        msg.referenced_message = Some(Box::new(message(vec![attachment(
+            "https://cdn/c.webp",
+            "image/webp",
+        )])));
+        let urls: Vec<String> = pictures_in(&msg).into_iter().map(|m| m.url).collect();
+        assert_eq!(urls, ["https://cdn/a.png", "https://cdn/c.webp"]);
+        assert!(pictures_in(&Message::default()).is_empty());
+    }
+
+    #[test]
+    fn shapes_and_defaults() {
+        assert_eq!(size_for(Some("landscape")), "1536x1024");
+        assert_eq!(size_for(Some("portrait")), "1024x1536");
+        assert_eq!(size_for(Some("round")), "1024x1024");
+        assert_eq!(size_for(None), "1024x1024");
+        let settings = Settings::default();
+        assert_eq!(settings.model, "gpt-image-2.5-flare");
+        assert_eq!(settings.edit_model, "gpt-image-2.5-sunburst");
+    }
+}

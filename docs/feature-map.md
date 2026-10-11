@@ -10,12 +10,13 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
-| [ai.md](ai.md) | The AI providers (Claude, OpenAI), conversation history, fallback and spend |
+| [ai.md](ai.md) | The AI providers (Claude, OpenAI), pictures, conversation history, fallback and spend |
 | [features/chat.md](features/chat.md) | Chat: answers, tools, chime-ins, follow-ups, server emoji |
 | [features/reminders.md](features/reminders.md) | Reminders: the time grammar, the scheduler, snooze |
 | [features/wheel.md](features/wheel.md) | The movie wheel: the money rules, seasons, the round picture |
 | [features/memory.md](features/memory.md) | Memory: the notes folder, reflection, mood, faces, banners, nickname, diary |
 | [features/voice.md](features/voice.md) | Voice messages through ElevenLabs |
+| [features/drawing.md](features/drawing.md) | Drawing pictures with GPT Image 2.5 |
 | [features/snails.md](features/snails.md) | Repost detection: link keys, picture fingerprints, backfill |
 | [features/control-panel.md](features/control-panel.md) | The status picture and the log channel |
 
@@ -30,6 +31,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel_status`, `/wheel_add`, `/insert_bet`, `/reset_wheel`, buttons |
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
+| Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snail_backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 
@@ -44,6 +46,7 @@ Not features, but parts of the core everyone uses: the **log channel** (`src/cor
 | Movie wheel | its buttons, menus and modals | none (it looks names up once at start) |
 | Memory | none (it works through chat tools and its loop) | Memory upkeep (hourly) |
 | Voice | none (only its chat tool) | none |
+| Drawing | none (only its chat tool) | none |
 | Snails | every message, edits, deletes | Snail picture retries, plus the backfill and the startup catch-up |
 | Control panel | none | the status refresh (every 60 s) and Status graphs (every 15 min) |
 
@@ -62,6 +65,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids` |
 | memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
 | voice | `voice_messages` |
+| drawing | `drawings` |
 | snails | `snail_messages`, `snail_links`, `snail_pictures`, `snail_crawl`, `snail_backfills`, `snail_caught`, `snail_failures`, `snail_dropped` |
 | control_panel | `control_panel_state`, `control_panel_samples` |
 
@@ -90,9 +94,9 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | Movie wheel (`gamble/`) | Ported with tables instead of a JSON blob, seasons, pool betting, a picture, undo winner | `wheel/` |
 | Image hashing (`hasher/`, `/hash_server`, Check Snail) | Redesigned: link keys plus crop-tolerant picture fingerprints, admin-started backfill | `snails/` |
 | Long-term memory (notes, profiles, vector search, `memory_*` commands) | Replaced by the notes folder and `memory` tool | `memory/` |
-| Image and video generation (`/draw`, `/video`, Wavespeed) | Dropped | |
+| Image and video generation (`/draw`, `/video`, Wavespeed) | Pictures came back as a chat tool on GPT Image 2.5; video is dropped | `drawing/`, `ai/openai/images.rs` |
 | `response_ids` (OpenAI response IDs) | Replaced by `chat_turns`, which works with any provider | `chat/store.rs` |
-| New in Vivy | Voice messages, moods, faces, banners, nickname, diary, the control panel, Claude, spend tracking | |
+| New in Vivy | Voice messages, moods, faces, banners, nickname, diary, the control panel, Claude, spend tracking for Claude and OpenAI | |
 
 voltgpt's reminders and running wheel game are imported once from `old.db` (see [architecture.md](architecture.md#importing-from-voltgpt)). Its image hashes, chat history and memory are not.
 
@@ -124,6 +128,8 @@ The port went in stages, one pull request each, all merged into `main`.
 | #20 | | Renamed from VoltBot to Vivy |
 | #21 | | README rewrite, version 0.2.0 |
 | #22 | | Timers on the status picture; snail picture retries capped at 3 |
+| #23 | | Docs: the feature map as an overview, a page per feature |
+| #24 | | Drawing with GPT Image 2.5; OpenAI spend and bill next to Claude's |
 
 ## Not built yet
 

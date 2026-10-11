@@ -14,8 +14,11 @@ Both providers are called over plain HTTP with `reqwest` and `serde_json`, with 
 | `complete.rs` | `complete`: running a request to the end without showing it anywhere, for background jobs |
 | `sse.rs` | `SseParser`: splits a streamed body into server-sent events |
 | `fallback.rs` | `ApiError`, telling outages from bad requests, `send` (one retry without a connection), `State` and `Watched` (moving chat to the backup provider) |
-| `spend.rs` | `Spend`: what the AI costs this month, budget warnings, reading the real bill |
-| `openai.rs` | The OpenAI provider (Responses API) and `OpenAiConfig` |
+| `spend.rs` | `Spend`: what one provider costs this month, budget warnings, reading the real bill through the `Bill` trait |
+| `openai/mod.rs` | The OpenAI provider (Responses API) and `OpenAiConfig` |
+| `openai/price.rs` | List prices per model, and what one response or picture cost |
+| `openai/billing.rs` | Reading OpenAI's Costs API with an Admin key |
+| `openai/images.rs` | `Images`: drawing pictures with the Image API (GPT Image 2.5) |
 | `claude/mod.rs` | The Claude provider (Messages API), `ClaudeConfig`, `ContentKey`, pause and retry handling |
 | `claude/messages.rs` | Turns as Claude's messages, the tool list and the system block |
 | `claude/collect.rs` | `Collector`: rebuilds Claude's streamed content blocks and turns them into `ChatEvent`s |
@@ -154,7 +157,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 
 ## OpenAI
 
-`openai.rs`. One `POST /v1/responses` with `"stream": true` per round. `OPENAI_BASE` in `.env` sets another base URL for an OpenAI-compatible endpoint; `/v1` is added when it's missing.
+`openai/mod.rs`. One `POST /v1/responses` with `"stream": true` per round. `OPENAI_BASE` in `.env` sets another base URL for an OpenAI-compatible endpoint; `/v1` is added when it's missing.
 
 - The body has `instructions` (the system prompt), `input`, the built-in `web_search` and `code_interpreter` tools, then the bot's tools as `function` tools, plus `reasoning.effort`, `text.verbosity`, `service_tier`, `"store": true`, `"truncation": "auto"` and `prompt_cache_key` (the `cache_key`). OpenAI caches automatically.
 - OpenAI stores every response, so `Done.continuation` is the response ID. The next request sends `previous_response_id` and only what's new. That already carries the earlier reasoning, so OpenAI ignores `Part::Native`.
@@ -162,7 +165,18 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - Attached files are uploaded first (`POST /v1/files`, kept 30 days so stored responses that point at them still work). PDFs and Office files are also given to the model to read as `input_file` (at most 50 MB per request). Types the code interpreter takes go into its container. Other files get a note saying they're attached but can't be opened.
 - Files the code interpreter made come from `container_file_citation` annotations; `download_file` reads them from `/v1/containers/{container}/files/{file}/content`.
 - 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds. Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).
-- OpenAI's cost is not tracked; `Spend` is Claude only.
+- When the stream ends with `response.completed` (or `response.incomplete`), `add_spend` prices the response's `usage` with `price::chat_cost` and adds it to OpenAI's `Spend` (see below).
+
+### Pictures
+
+`openai/images.rs`. `Ai::images` is set whenever `OPENAI_TOKEN` is in `.env`, whichever provider chats, so any feature can draw (the [drawing](features/drawing.md) feature's chat tool does). `Images::draw` takes a `PictureRequest` (model, prompt, pictures to start from, size, quality, format, moderation):
+
+- No pictures: `POST https://api.openai.com/v1/images/generations` (JSON).
+- With pictures: `POST /v1/images/edits`, also JSON, with up to 16 pictures as `{"image_url": "data:..."}` in `images`.
+- The answer holds the picture in `data[0].b64_json` and the tokens in `usage`, which `price::image_cost` prices; the cost goes to OpenAI's `Spend` as the job `"drawing"`.
+- 429, 500, 502 and 503 are retried twice, after 5 and 15 seconds. A 400 (the safety system refused, or a bad size) becomes a `user_error`, so the model reads why and the log channel isn't bothered.
+
+GPT Image 2.5 comes as `gpt-image-2.5-flare` (fast, everyday pictures) and `gpt-image-2.5-sunburst` (the most capable, best at precise edits). Both cost the same per token: text in $5, pictures in $8, pictures out $30 per million (checked 2026-10-11). Quality goes `low`, `medium`, `high`, `xhigh`, `max`.
 
 ## History and native replay
 
@@ -202,15 +216,18 @@ Callers take `ctx.ai.chat()` once per answer and keep that provider for the whol
 
 ## Spend and billing
 
-`spend.rs`, `claude/price.rs`, `claude/billing.rs`. `Spend` exists when Claude is the main provider or the fallback.
+`spend.rs`, `claude/price.rs`, `claude/billing.rs`, `openai/price.rs`, `openai/billing.rs`. There is one `Spend` per provider, each with its own budget, in `Ai::spends`: Claude's when Claude is the main provider or the fallback, OpenAI's when OpenAI is one of them or `OPENAI_TOKEN` is set for pictures. The control panel shows each one.
 
 - After each Claude response, `add_spend` (in `claude/mod.rs`) prices its usage (input, cache writes and reads, output, web searches) with `price::cost`, from a table of list prices per model ID prefix. Cache writes cost 1.25 times the input price; web searches $10 per 1000. An unknown model is priced like Opus 5.5.
+- After each OpenAI response, `add_spend` (in `openai/mod.rs`) prices it with `price::chat_cost`: uncached input, cached input and output tokens from a table per model ID prefix, twice that on the `fast` service tier, plus $10 per 1000 web searches. Left out, so the estimate runs a little low: long-prompt prices, cache writes, and code interpreter containers ($0.03 a session). An unknown model is priced like gpt-6.1-sol. Pictures are priced by `price::image_cost`.
 - `Spend::add` adds it to `ai_spend` (the month's total) and to `ai_spend_jobs` (per job). Months are calendar months in UTC.
-- At 80% and 100% of `monthly_budget` under `[ai.claude]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
-- With `ANTHROPIC_ADMIN_KEY` in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill`, which reads the Cost API (`claude/billing.rs`, the whole organization, daily buckets in cents) now and every hour, and replaces the month's total with it. Answers in between add their estimate on top until the next read. A failing read is warned about once, then logged quietly.
+- At 80% and 100% of `monthly_budget` under `[ai.claude]` / `[ai.openai]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
+- With an Admin key in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill` with that company's `Bill`, which reads the bill now and every hour and replaces the month's total with it:
+  - `ANTHROPIC_ADMIN_KEY`: Anthropic's Cost API (`claude/billing.rs`: `GET /v1/organizations/cost_report`, the whole organization, daily buckets, amounts in cents as strings).
+  - `OPENAI_ADMIN_KEY`: OpenAI's Costs API (`openai/billing.rs`: `GET /v1/organization/costs` with `start_time` at the month's start, the whole organization, daily buckets only, `amount.value` in USD). An ordinary API key can't read it. Daily buckets mean today's spend can show up late, so the estimate fills the gap until the next read. Answers in between add their estimate on top until the next read. A failing read is warned about once, then logged quietly.
 - `Spend::this_month` gives the control panel the month's total, the cost per job (`show_job_costs`) and the cache hit rate (`show_cache_hits`: input tokens read from the cache over all input tokens). `Spend::admin_key` says whether the bill is being read.
 
-The Admin API can't create API keys, so the cost per job comes from the bot's own counts rather than one key per job.
+Neither Admin API creates API keys, so the cost per job comes from the bot's own counts rather than one key per job. OpenAI has no API for the prepaid credit balance, only for what was spent.
 
 ## Tables
 
@@ -220,11 +237,11 @@ The Admin API can't create API keys, so the cost per job comes from the bot's ow
 | `ai_spend_jobs` | core (`CORE_MIGRATIONS` 3) | month, provider, job, USD, uncached input tokens, cache read tokens, cache write tokens | Cost per job and cache hit rate |
 | `claude_uploads` | `claude` (`claude::UPLOAD_MIGRATIONS`, run from `main.rs` with every owner's migrations) | content key (hash and length as text), Files API ID, expiry (unix seconds) | Reusing uploads across restarts |
 
-Background loop: the timer `"Anthropic bill"` (`"hourly"`), from `Spend::follow_bill`.
+Background loops: the timers `"Anthropic bill"` and `"OpenAI bill"` (`"hourly"`), from `Spend::follow_bill`, each only with its admin key.
 
 ## Configuration
 
-`[ai]` in `config.toml` is read into `AiConfig` (`mod.rs`): `provider`, `fallback`, `[ai.claude]` (`ClaudeConfig`) and `[ai.openai]` (`OpenAiConfig`). `config.example.toml` explains each key. Keys come from `.env`: `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` (and optional `OPENAI_BASE`), and the optional `ANTHROPIC_ADMIN_KEY`.
+`[ai]` in `config.toml` is read into `AiConfig` (`mod.rs`): `provider`, `fallback`, `[ai.claude]` (`ClaudeConfig`) and `[ai.openai]` (`OpenAiConfig`). `config.example.toml` explains each key. Keys come from `.env`: `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` (and optional `OPENAI_BASE`), and the optional `ANTHROPIC_ADMIN_KEY` and `OPENAI_ADMIN_KEY`.
 
 `ai_from_env` in `src/main.rs` builds the providers at startup. Only the main provider's key is read, plus the fallback's when one is set (and different from the main one). Without the main key, `ctx.ai.chat()` returns `None` and chat says it is turned off; a missing fallback key only means there is no fallback. All providers share one `reqwest::Client` with a 10-second connect timeout and a 5-minute read timeout.
 
@@ -240,7 +257,7 @@ Background loop: the timer `"Anthropic bill"` (`"hourly"`), from `Spend::follow_
 2. **Register it in `src/ai/mod.rs`:** `pub mod gemini;`, re-export the types with `pub use`, add `Gemini` to the `Provider` enum (`#[serde(rename_all = "lowercase")]` makes it `"gemini"` in the config), add `pub gemini: GeminiConfig` to `AiConfig`, and add `"gemini" => "Gemini"` to `display_name`.
 3. **Build it in `ai_from_env` (`src/main.rs`):** add the key's name (like `GEMINI_API_KEY`) to the first `match provider`, and the constructor to the second. Rust checks that every `match` on `Provider` covers the new variant, so the compiler points at any spot you missed.
 4. **Document the settings:** add an `[ai.gemini]` section to `config.example.toml`, and the key to `.env.example` and the README.
-5. **Spend (optional):** cost is only tracked for Claude. To track Gemini, price its usage and call `Spend::add("gemini", job, used)`; `ai_from_env` only creates `Spend` when Claude is used, and the control panel reads `this_month("claude")`, so both would need changing.
+5. **Spend (optional):** give `Gemini` an `Option<Spend>`, price each response's usage (like `openai/price.rs`) and call `spend.add(job, used)`. In `ai_from_env`, make `Spend::new(db, "gemini", budget)` and push it to `spends`; the control panel then shows it. For the real bill, implement `Bill` for a Gemini billing reader and spawn `follow_bill` in `main.rs` like the other two.
 
 Chat, chime-ins, memory's jobs and the tool loops need no changes: they only use `ChatProvider`.
 

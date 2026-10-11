@@ -18,8 +18,10 @@ use serenity::all::{
 use tracing::warn;
 
 use super::history::{self, History};
-use super::render::{self, AiView, Dashboard, FeatureView, SpendView, human_duration};
-use crate::ai::{AdminKey, display_name};
+use super::render::{
+    self, AiView, Dashboard, FeatureView, ProviderSpend, SpendView, human_duration,
+};
+use crate::ai::{AdminKey, Spend, display_name};
 use crate::core::logging::error_stats;
 use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION};
 use crate::util::{shorten, svg};
@@ -246,7 +248,7 @@ async fn gather(ctx: &BotCtx) -> Dashboard {
         database_mb: megabytes(database_size(ctx)),
         errors: error_stats(),
         ai: ai_view(ctx),
-        spend: spend_view(ctx).await,
+        spends: spend_views(ctx).await,
         features,
         panels,
         timers: ctx.timers.list(),
@@ -270,14 +272,16 @@ fn merge_panels(panels: &mut Vec<Panel>, new: Vec<Panel>) {
     }
 }
 
-/// Saves this minute's numbers for the graphs: the system's, Claude's spend, and every
+/// Saves this minute's numbers for the graphs: the system's, each provider's spend, and every
 /// feature stat that is a plain number.
 async fn save_samples(ctx: &BotCtx, d: &Dashboard) -> Result<()> {
     let mut values = vec![(history::DATABASE.to_string(), d.database_mb)];
     values.extend(d.latency_ms.map(|v| (history::LATENCY.to_string(), v)));
     values.extend(d.memory_mb.map(|v| (history::MEMORY.to_string(), v)));
-    if let Some(Ok(spend)) = &d.spend {
-        values.push((history::SPEND.to_string(), spend.usd));
+    for spend in &d.spends {
+        if let Ok(view) = &spend.view {
+            values.push((history::spend_key(spend.provider), view.usd));
+        }
     }
     for feature in &d.features {
         for stat in feature.stats.iter().flatten() {
@@ -319,16 +323,33 @@ fn ai_view(ctx: &BotCtx) -> Option<AiView> {
     })
 }
 
-/// What Claude cost this month: Anthropic's bill (with an Admin API key) or the estimate,
-/// and, when turned on under `[ai.claude]`, the cache hit rate and the cost per job.
-/// `None` when Claude isn't set up.
-async fn spend_view(ctx: &BotCtx) -> Option<std::result::Result<SpendView, String>> {
-    let spend = ctx.ai.spend.as_ref()?;
-    let config = &ctx.config.ai.claude;
-    let month = match spend.this_month("claude").await {
-        Ok(month) => month,
-        Err(err) => return Some(Err(format!("{err:#}"))),
+/// What each provider that's set up cost this month.
+async fn spend_views(ctx: &BotCtx) -> Vec<ProviderSpend> {
+    let mut views = Vec::new();
+    for spend in &ctx.ai.spends {
+        views.push(ProviderSpend {
+            provider: spend.provider(),
+            view: spend_view(ctx, spend).await,
+        });
+    }
+    views
+}
+
+/// What one provider cost this month: the company's bill (with an Admin API key) or the
+/// estimate, and, when turned on under `[ai.claude]` / `[ai.openai]`, the cache hit rate
+/// and the cost per job.
+async fn spend_view(ctx: &BotCtx, spend: &Spend) -> std::result::Result<SpendView, String> {
+    let (show_cache_hits, show_job_costs) = match spend.provider() {
+        "claude" => {
+            let config = &ctx.config.ai.claude;
+            (config.show_cache_hits, config.show_job_costs)
+        }
+        _ => {
+            let config = &ctx.config.ai.openai;
+            (config.show_cache_hits, config.show_job_costs)
+        }
     };
+    let month = spend.this_month().await.map_err(|err| format!("{err:#}"))?;
     let admin_key = spend.admin_key();
     let billed = admin_key == AdminKey::Working;
     let admin_key_failing = matches!(admin_key, AdminKey::Failing(_));
@@ -339,7 +360,7 @@ async fn spend_view(ctx: &BotCtx) -> Option<std::result::Result<SpendView, Strin
         AdminKey::Working => "Admin key: on".to_string(),
         AdminKey::Failing(why) => format!("Admin key: failing ({})", shorten(&why, 120)),
     };
-    Some(Ok(SpendView {
+    Ok(SpendView {
         usd: month.usd,
         budget: spend.budget(),
         billed,
@@ -352,9 +373,9 @@ async fn spend_view(ctx: &BotCtx) -> Option<std::result::Result<SpendView, Strin
                 read.usd
             )
         }),
-        cache_hits: month.cache_hits.filter(|_| config.show_cache_hits),
-        jobs: config.show_job_costs.then_some(month.jobs),
-    }))
+        cache_hits: month.cache_hits.filter(|_| show_cache_hits),
+        jobs: show_job_costs.then_some(month.jobs),
+    })
 }
 
 /// The same as the picture, as an embed: shown when the picture can't be drawn.
@@ -388,8 +409,9 @@ fn online_embed(d: &Dashboard) -> CreateEmbed {
             ),
             true,
         );
-    if let Some(spend) = &d.spend {
-        embed = embed.field("Claude spend", spend_text(spend), true);
+    for spend in &d.spends {
+        let title = format!("{} spend", display_name(spend.provider));
+        embed = embed.field(title, spend_text(&spend.view), true);
     }
     if let Some((at, text)) = &errors.last {
         embed = embed.field(

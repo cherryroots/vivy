@@ -9,8 +9,15 @@
 //! go into its sandbox; PDFs, Office files and spreadsheets are also given to the model to
 //! read (`input_file`). Small text files are already in the message text.
 //!
+//! What each response cost is added to [`Spend`] (see `price.rs`). `billing.rs` reads the
+//! real bill with an Admin key, and `images.rs` draws pictures with the Image API.
+//!
 //! API reference: <https://platform.openai.com/docs/api-reference/responses>,
 //! file inputs: <https://platform.openai.com/docs/guides/file-inputs>
+
+pub mod billing;
+pub mod images;
+mod price;
 
 use std::time::Duration;
 
@@ -19,9 +26,10 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::fallback::ApiError;
+use super::spend::Spend;
 use super::sse::{SseEvent, SseParser};
 use super::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, ModelFile, Part,
@@ -74,6 +82,16 @@ pub struct OpenAiConfig {
     pub verbosity: String,
     /// Leave out for the account's default.
     pub service_tier: Option<String>,
+    /// USD a month for everything on the OpenAI key (chat and pictures); the log channel
+    /// gets a warning at 80% and 100%. 0 turns that off.
+    pub monthly_budget: f64,
+    /// With `OPENAI_ADMIN_KEY` in `.env`, read OpenAI's bill hourly and use it in place of
+    /// the estimate.
+    pub billed_spend: bool,
+    /// Show on the status message how much input came from the prompt cache this month.
+    pub show_cache_hits: bool,
+    /// Show on the status message what each job (chat, drawing, ...) cost this month.
+    pub show_job_costs: bool,
 }
 
 impl Default for OpenAiConfig {
@@ -84,6 +102,10 @@ impl Default for OpenAiConfig {
             reasoning_effort: "medium".to_string(),
             verbosity: "low".to_string(),
             service_tier: Some("fast".to_string()),
+            monthly_budget: 25.0,
+            billed_spend: true,
+            show_cache_hits: true,
+            show_job_costs: true,
         }
     }
 }
@@ -94,6 +116,8 @@ pub struct OpenAi {
     /// Ends in `/v1`.
     base_url: String,
     config: OpenAiConfig,
+    /// Where what each response cost is added up; `None` in tests.
+    spend: Option<Spend>,
 }
 
 impl OpenAi {
@@ -104,6 +128,7 @@ impl OpenAi {
         token: String,
         base: Option<&str>,
         config: OpenAiConfig,
+        spend: Option<Spend>,
     ) -> OpenAi {
         let mut base_url = base
             .map(|b| b.trim().trim_end_matches('/').to_string())
@@ -117,6 +142,7 @@ impl OpenAi {
             token,
             base_url,
             config,
+            spend,
         }
     }
 
@@ -442,6 +468,21 @@ fn stream_error(error: &Value) -> ApiError {
     }
 }
 
+/// Adds what the finished response in `event` cost to [`Spend`].
+async fn add_spend(spend: &Spend, job: &'static str, event: &SseEvent, tier: Option<&str>) {
+    let Ok(data) = serde_json::from_str::<Value>(&event.data) else {
+        return;
+    };
+    let used = price::chat_cost(&data["response"], tier);
+    debug!(
+        "OpenAI used {} input tokens ({} read from cache) and cost ${:.4}",
+        used.input + used.cache_read,
+        used.cache_read,
+        used.usd
+    );
+    spend.add(job, used).await;
+}
+
 /// The `message` of an OpenAI error body, or the whole body.
 fn error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
@@ -469,6 +510,8 @@ impl ChatProvider for OpenAi {
         let mut response = self.responses(&body).await?;
 
         let (sender, receiver) = mpsc::channel(64);
+        let spend = self.spend.clone().map(|spend| (spend, request.job));
+        let tier = self.config.service_tier.clone();
         tokio::spawn(async move {
             let mut parser = SseParser::default();
             loop {
@@ -485,6 +528,9 @@ impl ChatProvider for OpenAi {
                 };
                 for event in parser.push(&chunk) {
                     let parsed = parse_event(&event);
+                    if let (Ok(Some(ChatEvent::Done(_))), Some((spend, job))) = (&parsed, &spend) {
+                        add_spend(spend, job, &event, tier.as_deref()).await;
+                    }
                     let finished = matches!(parsed, Ok(Some(ChatEvent::Done(_))) | Err(_));
                     if let Some(parsed) = parsed.transpose()
                         && sender.send(parsed).await.is_err()
@@ -542,6 +588,7 @@ mod tests {
             "key".into(),
             None,
             OpenAiConfig::default(),
+            None,
         )
     }
 
@@ -553,6 +600,7 @@ mod tests {
                 String::new(),
                 b,
                 OpenAiConfig::default(),
+                None,
             )
             .base_url
         };
@@ -694,6 +742,7 @@ mod tests {
             "key".into(),
             Some(&base),
             OpenAiConfig::default(),
+            None,
         );
         let file = ModelFile {
             name: "data.csv".into(),

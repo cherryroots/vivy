@@ -1,6 +1,6 @@
 //! Numbers the status picture draws as graphs, saved every 15 minutes.
 //!
-//! Each sample is a name ("latency_ms", "spend:claude", "stat:reminders:Pending"), a time
+//! Each sample is a name ("latency_ms", "spend:openai", "stat:reminders:Pending"), a time
 //! and a number, in `control_panel_samples`. Samples older than [`KEEP_DAYS`] are deleted,
 //! so the table stays small: about 100 rows per name per day.
 
@@ -17,8 +17,13 @@ const KEEP_DAYS: i64 = 32;
 pub const LATENCY: &str = "latency_ms";
 pub const MEMORY: &str = "memory_mb";
 pub const DATABASE: &str = "database_mb";
-/// Claude's spend this month so far, in USD.
-pub const SPEND: &str = "spend:claude";
+/// What starts the names of the spend samples.
+const SPEND_PREFIX: &str = "spend:";
+
+/// The name for a provider's spend this month so far, in USD, like "spend:claude".
+pub fn spend_key(provider: &str) -> String {
+    format!("{SPEND_PREFIX}{provider}")
+}
 
 /// The name for a feature's stat, like "stat:reminders:Pending".
 pub fn stat_key(feature: &str, stat: &str) -> String {
@@ -44,21 +49,24 @@ pub fn record(conn: &Connection, at: i64, values: &[(String, f64)]) -> rusqlite:
 }
 
 /// What the graphs need: every sample of the last 7 days (the system tiles show a day,
-/// the feature cards a week), and the spend samples since `month_start` for the spend
-/// graph. Loading a whole month of everything every minute would be wasted work.
+/// the feature cards a week), and every provider's spend samples since `month_start` for
+/// the spend graphs. Loading a whole month of everything every minute would be wasted work.
 pub fn load_for_graphs(conn: &Connection, now: i64, month_start: i64) -> rusqlite::Result<History> {
     let mut history = load(conn, now - 7 * 86_400)?;
     let mut statement = conn.prepare_cached(
-        "SELECT at, value FROM control_panel_samples WHERE name = ?1 AND at >= ?2 ORDER BY at",
+        "SELECT name, at, value FROM control_panel_samples
+         WHERE name LIKE ?1 AND at >= ?2 ORDER BY name, at",
     )?;
-    let spend = statement
-        .query_map(params![SPEND, month_start], |row| {
-            Ok((row.get(0)?, row.get(1)?))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    if !spend.is_empty() {
-        history.insert(SPEND.to_string(), spend);
+    let rows = statement.query_map(params![format!("{SPEND_PREFIX}%"), month_start], |row| {
+        Ok((row.get::<_, String>(0)?, row.get(1)?, row.get(2)?))
+    })?;
+    let mut spend = History::new();
+    for row in rows {
+        let (name, at, value) = row?;
+        spend.entry(name).or_default().push((at, value));
     }
+    // The month's samples include the week's, so they replace them.
+    history.extend(spend);
     Ok(history)
 }
 
@@ -106,15 +114,22 @@ mod tests {
         let conn = test_connection("control_panel", MIGRATIONS);
         let day = 86_400;
         let now = 30 * day;
+        let (claude, openai) = (spend_key("claude"), spend_key("openai"));
         for at in [10 * day, 20 * day, 29 * day] {
-            record(&conn, at, &[("a".into(), 1.0), (SPEND.into(), 2.0)]).unwrap();
+            let values = [
+                ("a".into(), 1.0),
+                (claude.clone(), 2.0),
+                (openai.clone(), 3.0),
+            ];
+            record(&conn, at, &values).unwrap();
         }
         // The month started on day 15: spend from then, the rest only from day 23.
         let history = load_for_graphs(&conn, now, 15 * day).unwrap();
         assert_eq!(history["a"], vec![(29 * day, 1.0)]);
-        assert_eq!(history[SPEND], vec![(20 * day, 2.0), (29 * day, 2.0)]);
+        assert_eq!(history[&claude], vec![(20 * day, 2.0), (29 * day, 2.0)]);
+        assert_eq!(history[&openai], vec![(20 * day, 3.0), (29 * day, 3.0)]);
         // A month that started less than a week ago still gets its spend.
         let history = load_for_graphs(&conn, now, 28 * day).unwrap();
-        assert_eq!(history[SPEND], vec![(29 * day, 2.0)]);
+        assert_eq!(history[&claude], vec![(29 * day, 2.0)]);
     }
 }

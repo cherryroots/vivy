@@ -22,7 +22,7 @@ Every feature has a section in `config.toml` and can be turned off or limited to
 - **Controls:** ❌ under an answer stops or deletes it, 🔁 asks again. Only the person who asked can use them.
 - **Chime-ins:** now and then (3% of messages, then an hour's cooldown per channel) she reads the last 25 messages and adds a line, reacts, or stays quiet.
 - **Follow-ups:** when someone mentions something coming up, she can check in afterwards to ask how it went.
-- **Cost:** Claude's spend is tracked per month against `monthly_budget`, with warnings in the log channel at 80% and 100%. An optional Anthropic Admin key reads the real bill; read the caution in `.env.example` first.
+- **Cost:** Claude's and OpenAI's spend are tracked per month, each against its own `monthly_budget`, with warnings in the log channel at 80% and 100%. Optional Admin keys (Anthropic's and OpenAI's) read the real bills; read the caution in `.env.example` first.
 
 ### Memory and personality
 
@@ -36,6 +36,10 @@ Vivy keeps notes between conversations in a folder per server (and a private one
 ### Voice messages
 
 With an ElevenLabs key, Vivy can answer with a Discord voice message in her own voice. `monthly_characters` under `[features.voice]` caps the use.
+
+### Drawing
+
+With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either chat provider), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use, and each picture's cost counts toward OpenAI's spend.
 
 ### Reminders
 
@@ -86,7 +90,7 @@ sudo chmod 600 /opt/vivy/.env
 
 Then fill in the two files:
 
-- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY` and/or `OPENAI_TOKEN` for whichever providers `[ai]` names, and optionally `ELEVENLABS_API_KEY`.
+- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY` and/or `OPENAI_TOKEN` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY` and the two admin keys.
 - `config.toml` holds everything else: your user ID in `admins`, `main_server`, the log and status channel IDs, and per-feature settings.
 
 ### 4. Run with systemd
