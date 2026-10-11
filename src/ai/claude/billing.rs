@@ -8,10 +8,12 @@
 //! API reference: <https://platform.claude.com/docs/en/build-with-claude/usage-cost-api>
 
 use anyhow::Context as _;
+use async_trait::async_trait;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde_json::Value;
 
 use super::{API, VERSION};
+use crate::ai::spend::Bill;
 
 #[derive(Clone)]
 pub struct Billing {
@@ -23,9 +25,15 @@ impl Billing {
     pub fn new(http: reqwest::Client, key: String) -> Billing {
         Billing { http, key }
     }
+}
 
-    /// USD billed from the start of `now`'s month (UTC) until now.
-    pub async fn this_month(&self, now: DateTime<Utc>) -> anyhow::Result<f64> {
+#[async_trait]
+impl Bill for Billing {
+    fn name(&self) -> &'static str {
+        "Anthropic bill"
+    }
+
+    async fn this_month(&self, now: DateTime<Utc>) -> anyhow::Result<f64> {
         let start = Utc
             .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
             .unwrap()

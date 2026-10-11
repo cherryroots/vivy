@@ -63,6 +63,17 @@ reasoning_effort = "medium"
 verbosity = "low"
 # Leave out for the account's default.
 service_tier = "fast"
+# OpenAI's monthly cost in USD, chat and pictures together, for the status message and the
+# warnings in the log channel at 80% and 100% (estimated from list prices). 0 turns the
+# warnings off. Shown whenever OPENAI_TOKEN is set.
+monthly_budget = 25.0
+# With OPENAI_ADMIN_KEY in .env, use OpenAI's real bill (read hourly) instead of the
+# estimate. Without the key, or when it can't be read, the estimate is used.
+billed_spend = true
+# Show on the status message how much input came from the prompt cache this month.
+show_cache_hits = true
+# Show on the status message what each job (chat, drawing, ...) cost this month, estimated.
+show_job_costs = true
 
 # Every feature has a section. These keys work in all of them:
 #   enabled = false                   turn the feature off
@@ -135,6 +146,26 @@ similarity = 0.75
 monthly_characters = 50000
 # The most characters in one voice message.
 max_characters = 1000
+
+[features.drawing]
+# Drawing: Vivy draws pictures with OpenAI's GPT Image 2.5 through chat's `draw_picture`
+# tool, whichever provider chats. Needs OPENAI_TOKEN in .env.
+enabled = true
+# For new pictures. "gpt-image-2.5-flare" is fast and good for everyday pictures;
+# "gpt-image-2.5-sunburst" is the most capable. Both cost the same per token.
+model = "gpt-image-2.5-flare"
+# For changing a picture or drawing from one (the asker's pictures, or the message they
+# replied to). Sunburst is the most precise at edits.
+edit_model = "gpt-image-2.5-sunburst"
+# "low", "medium", "high", "xhigh" or "max". Higher looks better and costs more.
+quality = "medium"
+# "png", "jpeg" or "webp".
+format = "png"
+# OpenAI's safety filter: "auto", or "low" for less strict.
+moderation = "auto"
+# The most pictures a month, all servers together (0 for no limit). The status picture
+# shows how many were drawn and what they cost.
+monthly_pictures = 100
 
 [features.snails]
 # Repost detection. New messages' links and pictures are saved as they arrive; right-click a

@@ -1,8 +1,8 @@
 //! The status as a picture, drawn like the movie wheel's rounds (see `util::svg`).
 //!
 //! [`online_svg`] lays out a [`Dashboard`]: a header, four tiles with the last day's graph
-//! (latency, memory, database, errors), the AI provider, Claude's spend this month with a
-//! graph of the month so far, one card per feature with its `stats()`, the background
+//! (latency, memory, database, errors), the AI provider, each provider's spend this month
+//! (Claude, then OpenAI) with a graph of the month so far, one card per feature with its `stats()`, the background
 //! loops' timers, and the last error.
 //! Graphs come from the samples in `history.rs`; a graph needs two samples, so a new
 //! install shows plain numbers for its first 15 minutes.
@@ -13,6 +13,7 @@
 use chrono::{DateTime, Datelike, Months, NaiveDate, TimeDelta, Utc};
 
 use super::history::{self, History};
+use crate::ai::display_name;
 use crate::core::logging::ErrorStats;
 use crate::core::timers::TimerState;
 use crate::core::{Panel, Stat};
@@ -43,8 +44,8 @@ pub struct Dashboard {
     pub errors: ErrorStats,
     /// `None` when chat has no provider (no API key).
     pub ai: Option<AiView>,
-    /// `None` when Claude isn't set up; an error when this month couldn't be read.
-    pub spend: Option<Result<SpendView, String>>,
+    /// One per provider that's set up: Claude, then OpenAI.
+    pub spends: Vec<ProviderSpend>,
     pub features: Vec<FeatureView>,
     /// Boxes of longer text from the features, those with the same title merged.
     pub panels: Vec<Panel>,
@@ -62,11 +63,18 @@ pub struct AiView {
     pub fallback: Option<String>,
 }
 
+/// What one provider cost this month, or why it couldn't be read.
+pub struct ProviderSpend {
+    /// "claude" or "openai".
+    pub provider: &'static str,
+    pub view: Result<SpendView, String>,
+}
+
 pub struct SpendView {
     pub usd: f64,
     /// 0 when there's no budget.
     pub budget: f64,
-    /// Anthropic's bill (with an Admin API key) rather than the estimate.
+    /// The company's bill (with an Admin API key) rather than the estimate.
     pub billed: bool,
     /// "Admin key: on", or why it isn't used.
     pub admin_key: String,
@@ -106,11 +114,11 @@ pub fn online_svg(d: &Dashboard) -> String {
     for panel in &d.panels {
         text_panel(&mut svg, d, panel);
     }
-    if let Some(spend) = &d.spend {
-        match spend {
-            Ok(spend) => claude_spend(&mut svg, d, spend),
+    for spend in &d.spends {
+        match &spend.view {
+            Ok(view) => provider_spend(&mut svg, d, spend.provider, view),
             Err(err) => {
-                section(&mut svg, "Claude spend this month");
+                section(&mut svg, &spend_title(spend.provider));
                 svg.note(&format!("Couldn't read it: {}", shorten(err, 80)));
             }
         }
@@ -372,9 +380,14 @@ fn text_panel(svg: &mut Svg, d: &Dashboard, panel: &Panel) {
     svg.y += height;
 }
 
-/// The month's total against the budget, a graph of the month so far, and the details.
-fn claude_spend(svg: &mut Svg, d: &Dashboard, spend: &SpendView) {
-    section(svg, "Claude spend this month");
+/// "Claude spend this month"
+fn spend_title(provider: &str) -> String {
+    format!("{} spend this month", display_name(provider))
+}
+
+/// One provider's total against its budget, a graph of the month so far, and the details.
+fn provider_spend(svg: &mut Svg, d: &Dashboard, provider: &str, spend: &SpendView) {
+    section(svg, &spend_title(provider));
     let y = svg.y;
     let height = 238.0;
     svg.rect([LEFT, y, RIGHT - LEFT, height], ROW, 8.0, "");
@@ -442,7 +455,7 @@ fn claude_spend(svg: &mut Svg, d: &Dashboard, spend: &SpendView) {
     let chart = [32.0, y + 96.0, RIGHT - LEFT - 32.0, 96.0];
     let points = series(
         &d.history,
-        history::SPEND,
+        &history::spend_key(provider),
         start.timestamp(),
         Some((d.now.timestamp(), spend.usd)),
     );
@@ -1146,7 +1159,8 @@ mod tests {
             );
             if t >= start.timestamp() {
                 let days = (t - start.timestamp()) as f64 / 86_400.0;
-                push(history::SPEND.into(), 2.9 * days + 0.4 * wave);
+                push(history::spend_key("claude"), 2.9 * days + 0.4 * wave);
+                push(history::spend_key("openai"), 0.6 * days + 0.1 * wave);
             }
             t += history::EVERY_SECS;
         }
@@ -1181,25 +1195,43 @@ mod tests {
                 model: "claude-opus-5-5".into(),
                 fallback: None,
             }),
-            spend: Some(Ok(SpendView {
-                usd: 26.84,
-                budget: 100.0,
-                billed: true,
-                admin_key: "Admin key: on".into(),
-                admin_key_failing: false,
-                last_read: Some(format!(
-                    "Last read <t:{}:R>: $26.10 billed",
-                    (now - TimeDelta::minutes(34)).timestamp()
-                )),
-                cache_hits: Some(0.71),
-                jobs: Some(vec![
-                    ("chat".into(), 19.42),
-                    ("chime".into(), 3.10),
-                    ("reflection".into(), 2.65),
-                    ("diary".into(), 0.92),
-                    ("emoji".into(), 0.75),
-                ]),
-            })),
+            spends: vec![
+                ProviderSpend {
+                    provider: "claude",
+                    view: Ok(SpendView {
+                        usd: 26.84,
+                        budget: 100.0,
+                        billed: true,
+                        admin_key: "Admin key: on".into(),
+                        admin_key_failing: false,
+                        last_read: Some(format!(
+                            "Last read <t:{}:R>: $26.10 billed",
+                            (now - TimeDelta::minutes(34)).timestamp()
+                        )),
+                        cache_hits: Some(0.71),
+                        jobs: Some(vec![
+                            ("chat".into(), 19.42),
+                            ("chime".into(), 3.10),
+                            ("reflection".into(), 2.65),
+                            ("diary".into(), 0.92),
+                            ("emoji".into(), 0.75),
+                        ]),
+                    }),
+                },
+                ProviderSpend {
+                    provider: "openai",
+                    view: Ok(SpendView {
+                        usd: 5.62,
+                        budget: 25.0,
+                        billed: false,
+                        admin_key: "Admin key: off".into(),
+                        admin_key_failing: false,
+                        last_read: None,
+                        cache_hits: Some(0.38),
+                        jobs: Some(vec![("drawing".into(), 4.80), ("chat".into(), 0.82)]),
+                    }),
+                },
+            ],
             features: vec![
                 FeatureView {
                     name: "chat",
@@ -1285,6 +1317,7 @@ mod tests {
             ),
             timer("Snail picture retries", "every 5m", None, Some(-4)),
             timer("Anthropic bill", "hourly", Some(55), Some(5)),
+            timer("OpenAI bill", "hourly", Some(50), Some(10)),
         ]
     }
 
@@ -1316,6 +1349,8 @@ mod tests {
         let svg = online_svg(&full);
         assert!(svg.contains(">Vivy<") && svg.contains(">ONLINE<"));
         assert!(svg.contains(">$26.84<") && svg.contains(">of $100<"));
+        assert!(svg.contains(">$5.62<") && svg.contains(">of $25<"));
+        assert!(svg.contains(">OPENAI SPEND THIS MONTH<"));
         assert!(svg.contains("on pace for $"));
         assert!(svg.contains(">in 2h 14m<"));
         assert!(svg.contains(">VIVY&apos;S MIND<") || svg.contains(">VIVY'S MIND<"));
@@ -1332,7 +1367,7 @@ mod tests {
         // A new install: no history, no spend, a fallback, no errors.
         let mut fresh = sample(now);
         fresh.history = History::new();
-        fresh.spend = None;
+        fresh.spends = Vec::new();
         fresh.panels = Vec::new();
         fresh.timers = Vec::new();
         fresh.errors = ErrorStats {

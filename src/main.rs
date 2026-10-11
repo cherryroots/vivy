@@ -75,16 +75,23 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     let ai = ai_from_env(&config, &web, &db);
     // Made before the bot connects, so the bill reader below can report to it too.
     let timers = Timers::default();
-    // With an Admin API key, Claude's spend comes from Anthropic's bill (see ai/spend.rs).
-    let admin_key = std::env::var("ANTHROPIC_ADMIN_KEY").unwrap_or_default();
-    if let Some(spend) = &ai.spend
-        && !admin_key.trim().is_empty()
-    {
-        if config.ai.claude.billed_spend {
-            let billing = ai::claude::billing::Billing::new(web.clone(), admin_key.trim().into());
+    // With an Admin API key, a provider's spend comes from its real bill (see ai/spend.rs).
+    for spend in &ai.spends {
+        let (var, billed) = match spend.provider() {
+            "claude" => ("ANTHROPIC_ADMIN_KEY", config.ai.claude.billed_spend),
+            _ => ("OPENAI_ADMIN_KEY", config.ai.openai.billed_spend),
+        };
+        let Some(admin_key) = env_key(var) else {
+            continue;
+        };
+        if !billed {
+            spend.set_admin_key(ai::AdminKey::Unused);
+        } else if spend.provider() == "claude" {
+            let billing = ai::claude::billing::Billing::new(web.clone(), admin_key);
             tokio::spawn(spend.clone().follow_bill(billing, timers.clone()));
         } else {
-            spend.set_admin_key(ai::AdminKey::Unused);
+            let billing = ai::openai::billing::Billing::new(web.clone(), admin_key);
+            tokio::spawn(spend.clone().follow_bill(billing, timers.clone()));
         }
     }
 
@@ -247,22 +254,29 @@ async fn register_commands(
     Ok(())
 }
 
+/// A key from `.env`, trimmed. `None` when it's missing or empty.
+fn env_key(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+}
+
 /// Sets up the AI providers for chat: the one `provider` under `[ai]` names, and the
 /// `fallback` one if it's set. Chat is off when the main provider's key is missing from
-/// `.env`; a missing fallback key only means there's no fallback.
+/// `.env`; a missing fallback key only means there's no fallback. With `OPENAI_TOKEN` set,
+/// pictures can be drawn too, whichever provider chats.
 fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
-    // Claude's spend is tracked whether it's the main provider or the fallback.
-    let spend = ai::Spend::new(db.clone(), config.ai.claude.monthly_budget);
+    // Each provider's spend is tracked whether it's the main provider or the fallback.
+    let claude_spend = ai::Spend::new(db.clone(), "claude", config.ai.claude.monthly_budget);
+    let openai_spend = ai::Spend::new(db.clone(), "openai", config.ai.openai.monthly_budget);
+    let openai_key = env_key("OPENAI_TOKEN");
     let make = |provider: ai::Provider| -> Option<Arc<dyn ai::ChatProvider>> {
         let name = match provider {
             ai::Provider::Claude => "ANTHROPIC_API_KEY",
             ai::Provider::Openai => "OPENAI_TOKEN",
         };
-        let Some(key) = std::env::var(name)
-            .ok()
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty())
-        else {
+        let Some(key) = env_key(name) else {
             warn!("{name} is not set in .env, so {provider:?} can't chat");
             return None;
         };
@@ -271,13 +285,14 @@ fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
                 web.clone(),
                 key,
                 config.ai.claude.clone(),
-                Some(spend.clone()),
+                Some(claude_spend.clone()),
             )),
             ai::Provider::Openai => Arc::new(ai::OpenAi::new(
                 web.clone(),
                 key,
                 std::env::var("OPENAI_BASE").ok().as_deref(),
                 config.ai.openai.clone(),
+                Some(openai_spend.clone()),
             )),
         })
     };
@@ -293,9 +308,19 @@ fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
     if let Some(backup) = &backup {
         info!("chat falls back to {} ({})", backup.name(), backup.model());
     }
-    let uses_claude = [config.ai.provider, config.ai.fallback.unwrap_or_default()]
-        .contains(&ai::Provider::Claude);
-    ai::Ai::new(main, backup, uses_claude.then_some(spend))
+    let chats_with =
+        |provider| config.ai.provider == provider || config.ai.fallback == Some(provider);
+    let images =
+        openai_key.map(|key| ai::Images::new(web.clone(), key, Some(openai_spend.clone())));
+    let mut spends = Vec::new();
+    if chats_with(ai::Provider::Claude) {
+        spends.push(claude_spend);
+    }
+    // OpenAI's key is used for pictures too, so its spend shows whenever the key is set.
+    if chats_with(ai::Provider::Openai) || images.is_some() {
+        spends.push(openai_spend);
+    }
+    ai::Ai::new(main, backup, spends, images)
 }
 
 /// Imports voltgpt's `old.db` if it's there. Returns a summary for the start notice.

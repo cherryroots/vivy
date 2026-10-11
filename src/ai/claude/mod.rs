@@ -701,7 +701,7 @@ async fn add_spend(spend: Option<&(Spend, &'static str)>, collector: &Collector,
             cache_read: usage.cache_read,
             cache_write: usage.cache_write,
         };
-        spend.add("claude", job, used).await;
+        spend.add(job, used).await;
     }
 }
 

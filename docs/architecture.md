@@ -88,6 +88,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(memory::Memory),
         Arc::new(snails::Snails),
         Arc::new(voice::Voice),
+        Arc::new(drawing::Drawing),
         Arc::new(chat::Chat::default()),
     ]
 }
@@ -97,17 +98,17 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
 
 Which feature uses which hook:
 
-| Hook | chat | reminders | wheel | memory | snails | voice | control_panel |
-|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | |
-| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mention_prefixes` | `""` | `remind me`, ... | | | | | |
-| `legacy_import` | | ✓ | ✓ | | | | |
-| `tools` / `run_tool` | ✓ | ✓ | ✓ | ✓ | | ✓ | |
-| `chat_context` | | | | ✓ | | | |
-| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| `panels` | ✓ | | | ✓ | | | |
-| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | ✓ |
+| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel |
+|---|---|---|---|---|---|---|---|---|
+| `commands` | | ✓ | ✓ | ✓ | ✓ | | | |
+| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `mention_prefixes` | `""` | `remind me`, ... | | | | | | |
+| `legacy_import` | | ✓ | ✓ | | | | | |
+| `tools` / `run_tool` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | |
+| `chat_context` | | | | ✓ | | | | |
+| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| `panels` | ✓ | | | ✓ | | | | |
+| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ |
 | `on_mention` | ✓ | ✓ | | | | | |
 | `on_message` | ✓ | | | | ✓ | | |
 | `on_reaction_add` | ✓ | | | | | | |
@@ -201,13 +202,14 @@ Every loop reports to the status picture's Timers box through `ctx.timers` (`src
 | Memory upkeep | memory | hourly: reflection, mood checks, faces, banners, diary |
 | Snail picture retries | snails | every 5 minutes |
 | Status graphs | control_panel | every 15 minutes |
-| Anthropic bill | core (`ai/spend.rs`) | hourly, only with an admin key |
+| Anthropic bill | core (`ai/spend.rs`) | hourly, only with `ANTHROPIC_ADMIN_KEY` |
+| OpenAI bill | core (`ai/spend.rs`) | hourly, only with `OPENAI_ADMIN_KEY` |
 
 ## How features talk to each other
 
 Since features never import each other, the core gives them four ways to work together:
 
-- **Chat tools.** A feature lists functions in `tools()` and runs them in `run_tool`. Chat offers the model the tools of every feature allowed in that channel and sends each call back to the feature that owns it. A tool runs as the person who asked (`Asker`: user, server, channel, message), so it only sees what they can see and only changes their own things. A tool's error goes back to the model as the result, so it can fix its call. Example: reminders offers `create_reminder`; memory offers `memory` and `set_mood`; voice offers `send_voice_message`.
+- **Chat tools.** A feature lists functions in `tools()` and runs them in `run_tool`. Chat offers the model the tools of every feature allowed in that channel and sends each call back to the feature that owns it. A tool runs as the person who asked (`Asker`: user, server, channel, message), so it only sees what they can see and only changes their own things. A tool's error goes back to the model as the result, so it can fix its call. Example: reminders offers `create_reminder`; memory offers `memory` and `set_mood`; voice offers `send_voice_message`; drawing offers `draw_picture`.
 - **Chat context.** `chat_context` returns a few lines chat adds after the newest question, for that answer only. Memory uses it for the list of memory files and Vivy's mood. It goes after the question so the system prompt and earlier turns stay the same and the prompt cache keeps working.
 - **Bot events.** `ctx.publish(BotEvent::...)` sends an event to every feature's `on_bot_event` (`src/core/events.rs`, a `tokio::sync::broadcast` channel). Reminders publishes `ReminderFired` and the wheel `WheelRoundResolved`. No feature listens yet; they're there for the next one that needs them.
 - **The status picture.** `stats` and `panels` let each feature add its own numbers and text to the control panel without the control panel knowing about it. See [control-panel.md](features/control-panel.md).

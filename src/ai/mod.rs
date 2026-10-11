@@ -22,8 +22,9 @@ use crate::util::media::ModelImage;
 
 pub use claude::{Claude, ClaudeConfig};
 pub use complete::{ToolRunner, complete};
+pub use openai::images::{Images, PictureRequest};
 pub use openai::{OpenAi, OpenAiConfig};
-pub use spend::{AdminKey, Spend};
+pub use spend::{AdminKey, Bill, Spend};
 
 /// Who said something.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -242,20 +243,24 @@ pub struct Ai {
     /// Takes over while the main provider is out (see [`fallback`]).
     backup: Option<Arc<dyn ChatProvider>>,
     fallback: Option<Arc<fallback::State>>,
-    /// What Claude cost this month, when Claude is set up.
-    pub spend: Option<Spend>,
+    /// What each provider that's set up cost this month: Claude first, then OpenAI.
+    pub spends: Vec<Spend>,
+    /// Drawing pictures with OpenAI's Image API, when `OPENAI_TOKEN` is set.
+    pub images: Option<Images>,
 }
 
 impl Ai {
     pub fn new(
         main: Option<Arc<dyn ChatProvider>>,
         backup: Option<Arc<dyn ChatProvider>>,
-        spend: Option<Spend>,
+        spends: Vec<Spend>,
+        images: Option<Images>,
     ) -> Ai {
         let (Some(inner), Some(backup)) = (main.clone(), backup) else {
             return Ai {
                 main,
-                spend,
+                spends,
+                images,
                 ..Ai::default()
             };
         };
@@ -269,7 +274,8 @@ impl Ai {
             main: Some(main),
             backup: Some(backup),
             fallback: Some(state),
-            spend,
+            spends,
+            images,
         }
     }
 

@@ -5,6 +5,7 @@
 
 mod chat;
 mod control_panel;
+mod drawing;
 mod memory;
 mod reminders;
 mod snails;
@@ -23,6 +24,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(memory::Memory),
         Arc::new(snails::Snails),
         Arc::new(voice::Voice),
+        Arc::new(drawing::Drawing),
         Arc::new(chat::Chat::default()),
     ]
 }

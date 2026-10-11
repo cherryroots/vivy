@@ -1,27 +1,30 @@
 //! What the AI costs this month, added up from the token counts each answer reports.
 //!
-//! The provider works out what a response cost (see `claude/price.rs`) and calls
-//! [`Spend::add`] with the job that asked for it ("chat", "diary", ...). Months are
-//! calendar months in UTC. Two core tables keep the numbers:
+//! There is one [`Spend`] per provider ("claude", "openai"), each with its own budget. The
+//! provider works out what a response cost (see `claude/price.rs` and `openai/price.rs`)
+//! and calls [`Spend::add`] with the job that asked for it ("chat", "diary", "drawing",
+//! ...). Months are calendar months in UTC. Two core tables keep the numbers, one row per
+//! provider:
 //! - `ai_spend`: the month's total, which the budget warnings check. At 80% and 100% of the
 //!   monthly budget there's one warning each, which shows in the log channel.
 //! - `ai_spend_jobs`: the estimate and the input tokens per job, for the status message's
 //!   cost per job and cache hit rate.
 //!
 //! These are list prices, so the numbers are an estimate. With an Admin API key,
-//! [`Spend::follow_bill`] reads what Anthropic actually billed once an hour (see
-//! `claude/billing.rs`) and puts that in place of the month's total. Answers in between
-//! still add their estimate on top, until the next bill replaces it again. Without the
-//! key, or while the bill can't be read, the estimate is all there is.
+//! [`Spend::follow_bill`] reads what the company actually billed once an hour (see
+//! `claude/billing.rs` and `openai/billing.rs`) and puts that in place of the month's
+//! total. Answers in between still add their estimate on top, until the next bill
+//! replaces it again. Without the key, or while the bill can't be read, the estimate is
+//! all there is.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
 use tracing::{info, warn};
 
-use super::claude::billing::Billing;
 use super::display_name;
 use crate::core::Timers;
 use crate::core::db::Db;
@@ -31,9 +34,22 @@ const WARN_AT: [i64; 2] = [80, 100];
 /// How often the bill is read.
 const BILL_EVERY: Duration = Duration::from_secs(60 * 60);
 
+/// Reads a company's bill for this month, with an Admin API key.
+#[async_trait]
+pub trait Bill: Send + Sync + 'static {
+    /// "Anthropic bill", "OpenAI bill": for the log and the timer on the status picture.
+    fn name(&self) -> &'static str;
+
+    /// USD billed from the start of `now`'s month (UTC) until now.
+    async fn this_month(&self, now: DateTime<Utc>) -> anyhow::Result<f64>;
+}
+
+/// What one provider cost this month.
 #[derive(Clone)]
 pub struct Spend {
     db: Db,
+    /// "claude" or "openai".
+    provider: &'static str,
     /// USD per month; 0 means no warnings.
     budget: f64,
     /// How reading the bill with the Admin API key is going.
@@ -42,7 +58,7 @@ pub struct Spend {
     last_read: Arc<Mutex<Option<LastRead>>>,
 }
 
-/// One read of Anthropic's bill.
+/// One read of the bill.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LastRead {
     pub at: DateTime<Utc>,
@@ -50,13 +66,13 @@ pub struct LastRead {
     pub usd: f64,
 }
 
-/// Whether the bot reads Anthropic's bill with an Admin API key, for the status message.
+/// Whether the bot reads the bill with an Admin API key, for the status message.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum AdminKey {
-    /// No `ANTHROPIC_ADMIN_KEY` in `.env`.
+    /// No `ANTHROPIC_ADMIN_KEY` / `OPENAI_ADMIN_KEY` in `.env`.
     #[default]
     Off,
-    /// The key is set, but `billed_spend` under `[ai.claude]` is off.
+    /// The key is set, but `billed_spend` under `[ai.claude]` / `[ai.openai]` is off.
     Unused,
     /// The key is set; the first read hasn't finished yet.
     Starting,
@@ -92,14 +108,15 @@ pub struct Month {
 enum Change {
     /// Adds one answer's estimate.
     Add(f64),
-    /// Replaces the total with what Anthropic billed.
+    /// Replaces the total with what the company billed.
     Set(f64),
 }
 
 impl Spend {
-    pub fn new(db: Db, budget: f64) -> Spend {
+    pub fn new(db: Db, provider: &'static str, budget: f64) -> Spend {
         Spend {
             db,
+            provider,
             budget,
             admin_key: Arc::default(),
             last_read: Arc::default(),
@@ -109,6 +126,11 @@ impl Spend {
     /// The bot's database, which the Claude provider also uses for its uploads.
     pub fn db(&self) -> &Db {
         &self.db
+    }
+
+    /// "claude" or "openai".
+    pub fn provider(&self) -> &'static str {
+        self.provider
     }
 
     pub fn budget(&self) -> f64 {
@@ -129,9 +151,9 @@ impl Spend {
 
     /// Adds what one response of `job` used to this month. Errors are only logged: a
     /// failed write shouldn't fail the answer.
-    pub async fn add(&self, provider: &'static str, job: &'static str, used: Used) {
+    pub async fn add(&self, job: &'static str, used: Used) {
         let month = this_month();
-        let budget = self.budget;
+        let (provider, budget) = (self.provider, self.budget);
         let result = self
             .db
             .call(move |conn| {
@@ -139,13 +161,14 @@ impl Spend {
                 Ok(save(conn, &month, provider, Change::Add(used.usd), budget)?)
             })
             .await;
-        self.warn(provider, result);
+        self.warn(result);
     }
 
-    /// Reads Claude's bill now and then every hour, for as long as the bot runs.
-    pub async fn follow_bill(self, billing: Billing, timers: Timers) {
+    /// Reads the bill now and then every hour, for as long as the bot runs.
+    pub async fn follow_bill(self, billing: impl Bill, timers: Timers) {
         self.set_admin_key(AdminKey::Starting);
-        let timer = timers.add("Anthropic bill", "hourly");
+        let name = billing.name();
+        let timer = timers.add(name, "hourly");
         let mut failing = false;
         loop {
             timer.running();
@@ -153,27 +176,27 @@ impl Spend {
             match billing.this_month(now).await {
                 Ok(usd) => {
                     if failing {
-                        info!("reading Anthropic's bill works again");
+                        info!("reading the {name} works again");
                     }
                     failing = false;
                     self.set_admin_key(AdminKey::Working);
                     *self.last_read.lock().unwrap() = Some(LastRead { at: now, usd });
                     // The month the bill was read for, which may have ended during the read.
-                    let (month, budget) = (month_of(now), self.budget);
+                    let (month, provider, budget) = (month_of(now), self.provider, self.budget);
                     let result = self
                         .db
                         .call(move |conn| {
-                            Ok(save(conn, &month, "claude", Change::Set(usd), budget)?)
+                            Ok(save(conn, &month, provider, Change::Set(usd), budget)?)
                         })
                         .await;
-                    self.warn("claude", result);
+                    self.warn(result);
                 }
                 Err(err) => {
                     // Warned once, so a bad key doesn't fill the log channel every hour.
                     if failing {
-                        info!("still can't read Anthropic's bill: {err:#}");
+                        info!("still can't read the {name}: {err:#}");
                     } else {
-                        warn!("couldn't read Anthropic's bill, using the estimate: {err:#}");
+                        warn!("couldn't read the {name}, using the estimate: {err:#}");
                     }
                     failing = true;
                     self.set_admin_key(AdminKey::Failing(format!("{err:#}")));
@@ -184,24 +207,24 @@ impl Spend {
         }
     }
 
-    /// This month so far for `provider`.
-    pub async fn this_month(&self, provider: &'static str) -> anyhow::Result<Month> {
-        let month = this_month();
+    /// This month so far.
+    pub async fn this_month(&self) -> anyhow::Result<Month> {
+        let (month, provider) = (this_month(), self.provider);
         self.db
             .call(move |conn| Ok(read_month(conn, &month, provider)?))
             .await
     }
 
     /// Logs the warning [`save`] asked for, or why saving failed.
-    fn warn(&self, provider: &str, result: anyhow::Result<(f64, Option<i64>)>) {
+    fn warn(&self, result: anyhow::Result<(f64, Option<i64>)>) {
+        let name = display_name(self.provider);
         match result {
             Ok((total, Some(percent))) => warn!(
-                "{} has cost ${total:.2} this month, {percent}% of the ${:.2} budget",
-                display_name(provider),
+                "{name} has cost ${total:.2} this month, {percent}% of the ${:.2} budget",
                 self.budget
             ),
             Ok((_, None)) => {}
-            Err(err) => warn!("couldn't save what {provider} cost: {err:#}"),
+            Err(err) => warn!("couldn't save what {name} cost: {err:#}"),
         }
     }
 }
