@@ -4,6 +4,8 @@
 //! While the answer streams, the reply is edited once a second. Its last line is a small
 //! status (`-# 💭 Thinking…`, `-# 🔧 Reading recent messages…`) that disappears when the
 //! answer is done, or turns into `-# ⏹️ Stopped` or `-# ⚠️ Something went wrong: …`.
+//! Above it, while the model works through tools, goes its latest progress note
+//! (`-# 💬 Found the reminder, now moving it`), until it starts writing.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,8 +30,11 @@ use super::store::Written;
 
 /// The fixed instructions. Static, so every request starts the same and hits the cache.
 pub(super) const SYSTEM_PROMPT: &str = include_str!("prompt.md");
-/// Room kept in the last message for the status line.
-const STATUS_ROOM: usize = 100;
+/// Room kept in the last message for the progress note and the status line.
+const STATUS_ROOM: usize = 300;
+/// The most characters of the status line, and of the progress note.
+const STATUS_LENGTH: usize = 95;
+const NOTE_LENGTH: usize = 190;
 /// Most rounds of tool calls in one answer, so a confused model can't loop forever.
 const MAX_ROUNDS: usize = 8;
 /// Discord allows 10 files per message.
@@ -64,6 +69,8 @@ pub struct Outcome {
 struct Screen {
     reply: LiveReply,
     text: String,
+    /// The model's latest progress note, shown above the status.
+    note: Option<String>,
     status: Option<String>,
     /// What Discord shows now, to skip edits that change nothing.
     shown: Vec<String>,
@@ -72,7 +79,7 @@ struct Screen {
 
 impl Screen {
     async fn show(&mut self, ctx: &BotCtx) -> anyhow::Result<()> {
-        let parts = render(&self.text, self.status.as_deref());
+        let parts = render(&self.text, self.note.as_deref(), self.status.as_deref());
         if parts == self.shown {
             return Ok(());
         }
@@ -83,12 +90,22 @@ impl Screen {
     }
 }
 
-/// The messages to show: the text split to fit, with the status as the last line.
-fn render(text: &str, status: Option<&str>) -> Vec<String> {
+/// The messages to show: the text split to fit, with the note and the status as the last
+/// lines.
+fn render(text: &str, note: Option<&str>, status: Option<&str>) -> Vec<String> {
     let mut parts = split_message(text, DISCORD_LIMIT - STATUS_ROOM);
+    // Each is cut to fit, so the last message stays under Discord's limit.
+    let mut lines = Vec::new();
+    if let Some(note) = note {
+        // One line: a note's own line breaks would end the small `-#` text.
+        let note = note.split_whitespace().collect::<Vec<_>>().join(" ");
+        lines.push(format!("-# 💬 {}", shorten(&note, NOTE_LENGTH)));
+    }
     if let Some(status) = status {
-        // Cut to the room kept for it, so the last message stays under Discord's limit.
-        let line = format!("-# {}", shorten(status, STATUS_ROOM - 5));
+        lines.push(format!("-# {}", shorten(status, STATUS_LENGTH)));
+    }
+    if !lines.is_empty() {
+        let line = lines.join("\n");
         match parts.last_mut() {
             Some(last) => {
                 last.push('\n');
@@ -138,6 +155,7 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
     let mut screen = Screen {
         reply: job.reply,
         text: String::new(),
+        note: None,
         status: Some(activity_status(&Activity::Thinking)),
         shown: Vec::new(),
         message_ids: job.message_ids,
@@ -154,6 +172,7 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
 
     let (end, written) = match result {
         Ok(Some((done, rounds, files))) => {
+            screen.note = None;
             screen.status = None;
             if let Err(err) = attach_files(ctx, provider, &mut screen, &files).await {
                 warn!("couldn't attach the answer's files: {err:#}");
@@ -257,11 +276,14 @@ async fn stream_answer(
                         }
                         first_delta = false;
                         screen.text.push_str(&delta);
+                        // The text itself now says what's going on.
+                        screen.note = None;
                         screen.status = Some(activity_status(&Activity::Writing));
                     }
                     Some(Ok(ChatEvent::Activity(activity))) => {
                         screen.status = Some(activity_status(&activity));
                     }
+                    Some(Ok(ChatEvent::Progress(note))) => screen.note = Some(note),
                     Some(Ok(ChatEvent::Done(done))) => break done,
                 },
             }
@@ -448,17 +470,32 @@ mod tests {
 
     #[test]
     fn status_goes_under_the_text() {
-        assert_eq!(render("", Some("💭 Thinking…")), ["-# 💭 Thinking…"]);
-        assert_eq!(render("Hi", Some("✍️ Writing…")), ["Hi\n-# ✍️ Writing…"]);
-        assert_eq!(render("Hi", None), ["Hi"]);
+        assert_eq!(render("", None, Some("💭 Thinking…")), ["-# 💭 Thinking…"]);
+        assert_eq!(
+            render("Hi", None, Some("✍️ Writing…")),
+            ["Hi\n-# ✍️ Writing…"]
+        );
+        assert_eq!(render("Hi", None, None), ["Hi"]);
 
         let long = "word ".repeat(1000);
-        let parts = render(&long, Some("✍️ Writing…"));
+        let parts = render(&long, Some(&long), Some("✍️ Writing…"));
         assert!(parts.len() > 2);
         assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
-        // Only the last part has the status.
+        // Only the last part has the note and the status.
         assert_eq!(parts.iter().filter(|p| p.contains("-# ")).count(), 1);
         assert!(parts.last().unwrap().ends_with("-# ✍️ Writing…"));
+    }
+
+    #[test]
+    fn progress_note_goes_above_the_status() {
+        assert_eq!(
+            render(
+                "",
+                Some("Found it.\n\nNow checking"),
+                Some("🔧 Read recent messages…")
+            ),
+            ["-# 💬 Found it. Now checking\n-# 🔧 Read recent messages…"]
+        );
     }
 
     #[test]

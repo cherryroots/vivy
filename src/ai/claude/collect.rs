@@ -104,7 +104,16 @@ impl Collector {
                         append(block, "text", text("text"));
                         events.push(ChatEvent::TextDelta(text("text").to_string()));
                     }
-                    "thinking_delta" => append(block, "thinking", text("thinking")),
+                    "thinking_delta" => {
+                        append(block, "thinking", text("thinking"));
+                        // Only progress notes carry text (see `display: "updates"`); the
+                        // rest of the thinking arrives empty.
+                        if let Some(note) =
+                            block["thinking"].as_str().filter(|t| !t.trim().is_empty())
+                        {
+                            events.push(ChatEvent::Progress(note.to_string()));
+                        }
+                    }
                     "signature_delta" => block["signature"] = json!(text("signature")),
                     "citations_delta" => {
                         if !block["citations"].is_array() {
@@ -383,6 +392,35 @@ mod tests {
         let content = collector.finish().content;
         assert_eq!(content[0]["input"], input);
         assert_eq!(content[1]["input"], json!({"query": "rust"}));
+    }
+
+    #[test]
+    fn progress_notes_come_through() {
+        let mut collector = Collector::default();
+        let events = push_all(
+            &mut collector,
+            &[
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Found it. "}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Checking more."}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+            ],
+        );
+        assert_eq!(
+            events,
+            [
+                ChatEvent::Activity(Activity::Thinking),
+                ChatEvent::Progress("Found it. ".into()),
+                ChatEvent::Progress("Found it. Checking more.".into()),
+            ]
+        );
+        // The block goes back to Claude exactly as it came.
+        assert_eq!(
+            collector.finish().content[0]["thinking"],
+            "Found it. Checking more."
+        );
     }
 
     #[test]

@@ -59,6 +59,9 @@ pub(crate) const VERSION: &str = "2023-06-01";
 const THINKING_BETA: &str = "thinking-binding-controls-2026-08-01";
 /// `fallbacks: "default"`: when the model declines, the API retries on another one.
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
+/// `thinking.display: "updates"`: the short notes Claude writes between tool calls ("Found
+/// the message, now checking the reminders") come back as readable text.
+const UPDATES_BETA: &str = "thinking-display-updates-2026-08-18";
 /// Uploads are deleted by Anthropic after this long, so storage doesn't pile up. (The
 /// Files API takes 1 hour to 90 days.)
 const UPLOAD_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
@@ -187,7 +190,7 @@ struct Sender {
 
 impl Sender {
     fn new(http: &reqwest::Client, key: &str, config: &ClaudeConfig) -> Sender {
-        let mut betas = vec![THINKING_BETA];
+        let mut betas = vec![THINKING_BETA, UPDATES_BETA];
         if config.fallbacks {
             betas.push(FALLBACK_BETA);
         }
@@ -323,6 +326,12 @@ impl Claude {
             },
             "output_config": {"effort": run.effort},
         });
+        if !request.tools.is_empty() {
+            // Claude writes its progress notes between tool calls into thinking blocks,
+            // which come back empty unless asked for. The rest of its thinking stays
+            // hidden either way.
+            body["thinking"]["display"] = json!("updates");
+        }
         if run.cache_conversation {
             // Caches the conversation up to its newest message, for the next request.
             body["cache_control"] = json!({"type": "ephemeral"});
@@ -853,6 +862,8 @@ mod tests {
             body["thinking"]["block_binding"]["prefix_mismatch_behavior"],
             "drop_block"
         );
+        // Chat has tools, so Claude's notes between them come back readable.
+        assert_eq!(body["thinking"]["display"], "updates");
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
         // Chat's system prompt and tools stay cached for an hour.
@@ -869,7 +880,7 @@ mod tests {
         assert!(body["container"].get("id").is_none());
         assert_eq!(
             claude.sender().betas,
-            "thinking-binding-controls-2026-08-01,server-side-fallback-2026-07-01"
+            "thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18,server-side-fallback-2026-07-01"
         );
 
         // The channel's container is reused.
@@ -901,7 +912,7 @@ mod tests {
         assert!(body.get("container").is_none());
         assert_eq!(
             claude.sender().betas,
-            "thinking-binding-controls-2026-08-01"
+            "thinking-binding-controls-2026-08-01,thinking-display-updates-2026-08-18"
         );
     }
 

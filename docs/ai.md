@@ -68,6 +68,7 @@ The answer streams in as events:
 pub enum ChatEvent {
     TextDelta(String),
     Activity(Activity),  // Thinking, SearchingWeb, RunningCode, Writing (for the status line)
+    Progress(String),    // Claude's note between tool calls, the whole note so far
     Done(Done),
 }
 
@@ -157,7 +158,9 @@ The job's settings (see [Jobs](#jobs)) pick the model, the effort and the built-
 - `fallbacks: "default"` when `fallbacks` is on (not for Haiku, which has no model to fall back to): if the model declines, the API retries on another Claude model. This is Anthropic's server-side model fallback, not the provider fallback below.
 - `container`: Anthropic's skills (`xlsx`, `docx`, `pptx`, `pdf` by default) and the ID of the code execution container this `cache_key` used last, so files stay around between answers in a channel.
 
-Beta headers: `thinking-binding-controls-2026-08-01`, and `server-side-fallback-2026-07-01` when `fallbacks` is on.
+When the request has bot tools (chat, chime-ins, reflection, diary), `thinking.display` is `"updates"`: Claude's short progress notes between tool calls come back as text in their `thinking` blocks, and `collect.rs` sends them on as `ChatEvent::Progress` for chat's status line. The rest of the thinking stays empty, as with the default `"omitted"`. Jobs without tools (mood, emoji) leave `display` out.
+
+Beta headers: `thinking-binding-controls-2026-08-01`, `thinking-display-updates-2026-08-18`, and `server-side-fallback-2026-07-01` when `fallbacks` is on.
 
 **Building the messages** (`messages::to_messages`): text, pictures and tool results become content blocks. An assistant turn with a `Part::Native` written by `"claude"` with the same model is replaced by its rounds, exactly as stored. Any other assistant turn sends only its text. A file becomes a note naming it, a `document` block for PDFs (so Claude reads them), and a `container_upload` block when code execution is on (so code can open it). If a chain starts with one of the bot's messages, a short user message is put first, since Claude requires the user to speak first.
 
@@ -165,7 +168,7 @@ Beta headers: `thinking-binding-controls-2026-08-01`, and `server-side-fallback-
 
 **Retries**: 429, 500, 502, 503 and 529 are retried twice, after 2 and 6 seconds, or after the wait the answer's `Retry-After` header asks for when that is longer (up to 60 seconds; see `api::send_retrying`). If the request fails because an upload is gone, those uploads are forgotten and sent again. If it fails because the code execution container is gone, the request is sent without a container ID.
 
-**Reading the stream** (`collect.rs`): the answer arrives as content blocks (thinking, text, tool calls, built-in tools' results), each opened by `content_block_start`, filled by deltas and closed by `content_block_stop`. `Collector` rebuilds the blocks exactly as Claude wrote them, signatures included, because they go back into the conversation unchanged. On the way it sends `TextDelta`s and `Activity` events. Tool arguments stream as text and are parsed at the end of the block. A block that comes with its whole input in `content_block_start` and no deltas keeps that input: an input changed on the way back makes Claude leave out all thinking after it. An `error` event mid-stream becomes an `ApiError` (529 for `overloaded_error`, 500 for `api_error`), so the fallback reads it the same way as an HTTP error.
+**Reading the stream** (`collect.rs`): the answer arrives as content blocks (thinking, text, tool calls, built-in tools' results), each opened by `content_block_start`, filled by deltas and closed by `content_block_stop`. `Collector` rebuilds the blocks exactly as Claude wrote them, signatures included, because they go back into the conversation unchanged. On the way it sends `TextDelta`s, `Activity` events, and a `Progress` event whenever a thinking block's text grows (only progress notes have text). Tool arguments stream as text and are parsed at the end of the block. A block that comes with its whole input in `content_block_start` and no deltas keeps that input: an input changed on the way back makes Claude leave out all thinking after it. An `error` event mid-stream becomes an `ApiError` (529 for `overloaded_error`, 500 for `api_error`), so the fallback reads it the same way as an HTTP error.
 
 **When a response ends** (`read_answer`):
 
@@ -213,7 +216,7 @@ For answers, `native_json` keeps the provider's raw output round by round, with 
 
 Claude's thinking is also tied to the system prompt and tools it was written with, so a new version of the bot that changes either would make Claude drop the thinking of every answer written before, and all thinking after it, on every later request in that conversation. To avoid that, each round saves `setup`, a fingerprint of the system prompt and tools it was sent with (`messages::setup`). `to_messages` takes the thinking out of every answer up to the last one written with a different setup; removing thinking from the start of a conversation is allowed, so newer answers keep theirs. A conversation that spans an update loses its older thinking, and Claude doesn't have to drop anything, so the log line "Claude left out earlier thinking … (prefix_binding_mismatch)" means something else changed an earlier turn. Answers saved before `setup` existed have none and are sent as before.
 
-Thinking is never shown in Discord.
+Thinking is never shown in Discord, apart from Claude's progress notes between tool calls (see [chat's status line](features/chat.md#the-status-line)).
 
 ## Uploads
 

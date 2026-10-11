@@ -271,6 +271,9 @@ pub enum Activity {
 pub enum ChatEvent {
     TextDelta(String),
     Activity(Activity),
+    /// A short note on what the model found and does next, written between tool calls
+    /// (Claude's progress updates). Each one carries the whole note so far.
+    Progress(String),
     /// The answer is complete.
     Done(Done),
 }
