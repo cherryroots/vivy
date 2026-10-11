@@ -59,6 +59,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         db::migrate(conn, "core", db::CORE_MIGRATIONS)?;
         // Claude's saved uploads (see ai/claude/uploads.rs).
         db::migrate(conn, "claude", ai::claude::UPLOAD_MIGRATIONS)?;
+        db::migrate(conn, "claude_keep_warm", ai::claude::KEEP_WARM_MIGRATIONS)?;
         for feature in migration_features.iter() {
             db::migrate(conn, feature.name(), feature.migrations())?;
         }
@@ -68,12 +69,16 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     .context("running migrations")?;
     let import_summary = import_legacy(&db, &features, &config).await;
     info!("database {} is ready", config.database);
-    let ai = ai_from_env(&config, &web, &db);
+    let (ai, keep_warm) = ai_from_env(&config, &web, &db);
     // Made before the bot connects, so the bill reader below can report to it too.
     let timers = Timers::default();
     // Cancelled when the bot stops; tasks spawned on `tasks` are waited for then.
     let shutdown = CancellationToken::new();
     let tasks = TaskTracker::new();
+    // Keeps chat's cached prompt from expiring between quiet stretches.
+    if let Some(warm) = keep_warm {
+        tasks.spawn(warm.run(timers.clone(), shutdown.clone()));
+    }
     // With an Admin API key, a provider's spend comes from its real bill (see ai/spend.rs).
     for spend in &ai.spends {
         let (var, billed) = match spend.provider() {
@@ -263,12 +268,18 @@ async fn register_commands(
 /// `fallback` one if it's set. Chat is off when the main provider's key is missing from
 /// `.env`; a missing fallback key only means there's no fallback. With `OPENAI_TOKEN` set,
 /// pictures can be drawn too, whichever provider chats.
-fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
+/// The AI services, and what keeps Claude's chat cache warm when that's on.
+fn ai_from_env(
+    config: &Config,
+    web: &reqwest::Client,
+    db: &Db,
+) -> (ai::Ai, Option<ai::claude::KeepWarm>) {
     // Each provider's spend is tracked whether it's the main provider or the fallback.
     let claude_spend = ai::Spend::new(db.clone(), "claude", config.ai.claude.monthly_budget);
     let openai_spend = ai::Spend::new(db.clone(), "openai", config.ai.openai.monthly_budget);
     let openai_key = env_key("OPENAI_TOKEN");
-    let make = |provider: ai::Provider| -> Option<Arc<dyn ai::ChatProvider>> {
+    let mut keep_warm = None;
+    let mut make = |provider: ai::Provider| -> Option<Arc<dyn ai::ChatProvider>> {
         let name = match provider {
             ai::Provider::Claude => "ANTHROPIC_API_KEY",
             ai::Provider::Openai => "OPENAI_TOKEN",
@@ -278,12 +289,16 @@ fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
             return None;
         };
         Some(match provider {
-            ai::Provider::Claude => Arc::new(ai::Claude::new(
-                web.clone(),
-                key,
-                config.ai.claude.clone(),
-                Some(claude_spend.clone()),
-            )),
+            ai::Provider::Claude => {
+                let claude = ai::Claude::new(
+                    web.clone(),
+                    key,
+                    config.ai.claude.clone(),
+                    Some(claude_spend.clone()),
+                );
+                keep_warm = claude.keep_warm();
+                Arc::new(claude)
+            }
             ai::Provider::Openai => Arc::new(ai::OpenAi::new(
                 web.clone(),
                 key,
@@ -317,7 +332,7 @@ fn ai_from_env(config: &Config, web: &reqwest::Client, db: &Db) -> ai::Ai {
     if chats_with(ai::Provider::Openai) || images.is_some() {
         spends.push(openai_spend);
     }
-    ai::Ai::new(main, backup, spends, images)
+    (ai::Ai::new(main, backup, spends, images), keep_warm)
 }
 
 /// Imports voltgpt's `old.db` if it's there. Returns a summary for the start notice.

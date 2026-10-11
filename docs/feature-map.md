@@ -137,6 +137,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #29 | | Code cleanup: big files split, shared helpers, tracing-log, less work per message |
 | #31 | | `look_at_profile_picture`: Vivy can see people's profile pictures and her own face; tool results can carry pictures |
 | #32 | | Wheel: the movie each person picked, set with `/wheel_add` or `/wheel_movie`, shown on the picture and in the menus |
+| | | Chat's prompt cache kept warm with a ping 58 minutes after the last use; savings on the status picture |
 
 ## Not built yet
 

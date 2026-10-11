@@ -22,7 +22,7 @@ use super::history::{self, History};
 use super::render::{
     self, AiView, Dashboard, FeatureView, ProviderSpend, SpendView, human_duration,
 };
-use crate::ai::{AdminKey, Spend, display_name};
+use crate::ai::{self, AdminKey, Spend, display_name};
 use crate::core::logging::error_stats;
 use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION};
 use crate::util::{shorten, svg};
@@ -383,8 +383,26 @@ async fn spend_view(ctx: &BotCtx, spend: &Spend) -> std::result::Result<SpendVie
             )
         }),
         cache_hits: month.cache_hits.filter(|_| show_cache_hits),
+        warm_cache: warm_cache(ctx, spend).await,
         jobs: show_job_costs.then_some(month.jobs),
     })
+}
+
+/// What the chat cache keep-warm pings saved this month, net, once they've run (see
+/// `ai/claude/keep_warm.rs`).
+async fn warm_cache(ctx: &BotCtx, spend: &Spend) -> Option<f64> {
+    let config = &ctx.config.ai.claude;
+    if spend.provider() != "claude" || !config.show_cache_hits {
+        return None;
+    }
+    match ai::claude::keep_warm::this_month(&ctx.db, Utc::now()).await {
+        Ok(month) if month.pings > 0 => Some(month.net_usd()),
+        Ok(_) => None,
+        Err(err) => {
+            warn!("couldn't read the keep-warm numbers: {err:#}");
+            None
+        }
+    }
 }
 
 /// The same as the picture, as an embed: shown when the picture can't be drawn.
@@ -512,6 +530,9 @@ fn spend_text(spend: &std::result::Result<SpendView, String>) -> String {
     lines.extend(spend.last_read.clone());
     if let Some(hits) = spend.cache_hits {
         lines.push(format!("Cache hits: {:.0}% of input", hits * 100.0));
+    }
+    if let Some(net) = spend.warm_cache {
+        lines.push(render::warm_cache_text(net));
     }
     for (job, usd) in spend.jobs.iter().flatten() {
         lines.push(format!("{job}: ${usd:.2}"));
