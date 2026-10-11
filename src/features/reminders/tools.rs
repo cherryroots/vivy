@@ -14,13 +14,13 @@ pub fn defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "create_reminder",
-            description: "Reminds the asker of something later, in this channel.",
+            description: "Reminds the asker of something later, in this channel, once or again and again. Use it when someone asks to be reminded of something.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "when": {
                         "type": "string",
-                        "description": "When, in English: \"in 2h30m\", \"at 16:30 CET\", \"tomorrow at 9am\", \"next friday\". Times without a zone use the asker's timezone."
+                        "description": "When, in English: \"in 2h30m\", \"at 16:30 CET\", \"tomorrow at 9am\", \"next friday\". For a recurring reminder: \"every day at 9:00\", \"every weekday at 8:30\", \"every monday\", \"every 2 hours\". Times without a zone use the asker's timezone."
                     },
                     "message": {"type": "string", "description": "What to remind them of."}
                 },
@@ -29,12 +29,12 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "list_reminders",
-            description: "The asker's pending reminders, soonest first, with their IDs.",
+            description: "The asker's pending reminders, soonest first, with their IDs and how recurring ones repeat.",
             parameters: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
             name: "cancel_reminder",
-            description: "Deletes one of the asker's pending reminders.",
+            description: "Deletes one of the asker's pending reminders. For a recurring one, this stops it.",
             parameters: json!({
                 "type": "object",
                 "properties": {"id": {"type": "integer", "description": "From list_reminders."}},
@@ -65,6 +65,10 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
             let fire_at = parse::resolve(&parsed, Utc::now(), home)
                 .map_err(user_error)?
                 .timestamp();
+            let repeat = match &parsed {
+                parse::When::Every(repeat) => Some(parse::describe_repeat(repeat, home)),
+                _ => None,
+            };
             let new = NewReminder {
                 user_id: user,
                 channel_id: asker.channel.get(),
@@ -75,12 +79,16 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
                 source_message_id: Some(asker.message.get()),
                 missing_images: 0,
                 images: Vec::new(),
+                repeat: repeat.clone(),
             };
             let id = ctx.db.call(move |conn| Ok(store::add(conn, &new)?)).await?;
             let mut text = format!(
                 "Reminder {id} set for {}. In Discord, <t:{fire_at}:f> shows that time to each reader.",
                 local(fire_at, home)
             );
+            if let Some(repeat) = repeat {
+                text.push_str(&format!(" It repeats {repeat}, until it's cancelled."));
+            }
             if zone.is_none() {
                 text.push_str(" The asker has no timezone set, so times were read as UTC; they can set one with /timezone.");
             }
@@ -96,7 +104,18 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
             }
             let lines: Vec<String> = list
                 .iter()
-                .map(|r| format!("ID {}: {}: {}", r.id, local(r.fire_at, home), r.message))
+                .map(|r| {
+                    let repeat = match &r.repeat {
+                        Some(repeat) => format!(" (repeats {repeat})"),
+                        None => String::new(),
+                    };
+                    format!(
+                        "ID {}: {}{repeat}: {}",
+                        r.id,
+                        local(r.fire_at, home),
+                        r.message
+                    )
+                })
                 .collect();
             Ok((false, lines.join("\n")))
         }

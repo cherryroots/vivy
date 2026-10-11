@@ -9,7 +9,8 @@
 //! the input forward past what it read, and returns what it found.
 
 use chrono::{
-    DateTime, Datelike, Days, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
+    DateTime, Datelike, Days, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Timelike, Utc,
+    Weekday,
 };
 use chrono_tz::Tz;
 use winnow::ModalResult;
@@ -30,6 +31,30 @@ pub enum When {
         time: Option<NaiveTime>,
         zone: Option<Tz>,
     },
+    /// "every day at 9:00", "every weekday at 8:30 CET", "every monday", "every 2 hours"
+    Every(Repeat),
+}
+
+/// How a recurring reminder repeats.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Repeat {
+    pub rule: Rule,
+    /// The clock time of a day rule ("every monday at 9:30"); 09:00 when not given.
+    pub time: Option<NaiveTime>,
+    /// The zone the clock time and calendar days are in; the user's own when not given.
+    pub zone: Option<Tz>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Rule {
+    /// "every day"
+    Daily,
+    /// "every weekday": Monday to Friday.
+    Weekdays,
+    /// "every monday"
+    Weekly(Weekday),
+    /// "every 2 hours", "every week": this long after the last one. Hours or longer.
+    Interval(u32, Unit),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -173,6 +198,7 @@ pub fn parse_when(text: &str) -> Result<When, String> {
 pub fn resolve(when: &When, now: DateTime<Utc>, home: Tz) -> Result<DateTime<Utc>, String> {
     let too_far = || "That's too far in the future.".to_string();
     match when {
+        When::Every(repeat) => next_repeat(repeat, now, home),
         When::In(parts) => {
             let mut t = now;
             for &(n, unit) in parts {
@@ -219,6 +245,103 @@ pub fn resolve(when: &When, now: DateTime<Utc>, home: Tz) -> Result<DateTime<Utc
     }
 }
 
+/// The first time `repeat` comes up after `after`. `home` is the user's timezone, used
+/// when the repeat doesn't name one.
+pub fn next_repeat(
+    repeat: &Repeat,
+    after: DateTime<Utc>,
+    home: Tz,
+) -> Result<DateTime<Utc>, String> {
+    let zone = repeat.zone.unwrap_or(home);
+    let too_far = || "That's too far in the future.".to_string();
+    let wanted = |day: Weekday| match repeat.rule {
+        Rule::Daily => true,
+        Rule::Weekdays => day.num_days_from_monday() < 5,
+        Rule::Weekly(weekday) => day == weekday,
+        Rule::Interval(..) => false,
+    };
+    if let Rule::Interval(n, unit) = repeat.rule {
+        return add(after, n, unit, zone).ok_or_else(too_far);
+    }
+    // A day rule: the first wanted day, from the day of `after`, whose time is still ahead.
+    // Eight days always hold one.
+    let time = repeat.time.unwrap_or(NINE_AM);
+    let first = after.with_timezone(&zone).date_naive();
+    for ahead in 0..8 {
+        let date = first + Days::new(ahead);
+        if wanted(date.weekday()) {
+            let t = to_utc(zone, date, time)?;
+            if t > after {
+                return Ok(t);
+            }
+        }
+    }
+    Err(too_far())
+}
+
+/// How a repeat is saved and shown: "every monday at 09:00 Europe/Oslo", "every 2 hours".
+/// The zone (`home` when the repeat named none) is written out, so later changes to the
+/// user's timezone don't move it, and [`parse_repeat`] reads it back.
+pub fn describe_repeat(repeat: &Repeat, home: Tz) -> String {
+    let zone = repeat.zone.unwrap_or(home);
+    let time = repeat.time.unwrap_or(NINE_AM).format("%-H:%M");
+    let days = match repeat.rule {
+        Rule::Daily => "day".to_string(),
+        Rule::Weekdays => "weekday".to_string(),
+        Rule::Weekly(day) => weekday_name(day).to_string(),
+        Rule::Interval(n, unit) => {
+            let name = match unit {
+                Unit::Year => "year",
+                Unit::Month => "month",
+                Unit::Week => "week",
+                Unit::Day => "day",
+                Unit::Hour | Unit::Minute | Unit::Second => "hour",
+            };
+            let every = match n {
+                1 => format!("every {name}"),
+                n => format!("every {n} {name}s"),
+            };
+            // Hours are exact; days and longer follow the calendar in the zone.
+            return match unit {
+                Unit::Hour | Unit::Minute | Unit::Second => every,
+                _ => format!("{every} {zone}"),
+            };
+        }
+    };
+    format!("every {days} at {time} {zone}")
+}
+
+/// Reads a repeat saved by [`describe_repeat`].
+pub fn parse_repeat(text: &str) -> Option<Repeat> {
+    match parse_when(text) {
+        Ok(When::Every(repeat)) => Some(repeat),
+        _ => None,
+    }
+}
+
+fn weekday_name(day: Weekday) -> &'static str {
+    match day {
+        Weekday::Mon => "monday",
+        Weekday::Tue => "tuesday",
+        Weekday::Wed => "wednesday",
+        Weekday::Thu => "thursday",
+        Weekday::Fri => "friday",
+        Weekday::Sat => "saturday",
+        Weekday::Sun => "sunday",
+    }
+}
+
+/// When "Snooze until tomorrow" means: 09:00 the next morning in `zone`. Before 04:00 the
+/// night isn't over yet, so "tomorrow" is this morning's 09:00.
+pub fn tomorrow_morning(now: DateTime<Utc>, zone: Tz) -> Result<DateTime<Utc>, String> {
+    let local = now.with_timezone(&zone);
+    let mut date = local.date_naive();
+    if local.hour() >= 4 {
+        date = date.succ_opt().ok_or("That's too far in the future.")?;
+    }
+    to_utc(zone, date, NINE_AM)
+}
+
 /// Looks up a timezone by IANA name ("Europe/Oslo") or a common abbreviation ("CET").
 ///
 /// Abbreviations map to a real place, so summer time is handled: "CET" in July is UTC+2.
@@ -249,7 +372,47 @@ const NINE_AM: NaiveTime = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
 
 /// The whole time expression.
 fn when(input: &mut &str) -> ModalResult<When> {
-    alt((in_duration, at_time, on_day)).parse_next(input)
+    alt((in_duration, at_time, every, on_day)).parse_next(input)
+}
+
+/// "every day at 9:00", "every weekday 8:30 CET", "every monday", "every 2 hours",
+/// "every 3 days Europe/Oslo"
+fn every(input: &mut &str) -> ModalResult<When> {
+    (word("every"), space1).parse_next(input)?;
+    let (rule, time) = cut_err(alt((
+        (
+            repeat_days,
+            opt(preceded((space1, opt((word("at"), space1))), clock)),
+        ),
+        repeat_interval.map(|rule| (rule, None)),
+    )))
+    .context(describe(
+        "a repeat like every day at 9:00, every monday or every 2 hours",
+    ))
+    .parse_next(input)?;
+    let zone = opt(preceded(space1, zone)).parse_next(input)?;
+    Ok(When::Every(Repeat { rule, time, zone }))
+}
+
+/// "day", "weekday", "monday"
+fn repeat_days(input: &mut &str) -> ModalResult<Rule> {
+    alt((
+        word("day").value(Rule::Daily),
+        any_word(&["weekdays", "weekday"]).value(Rule::Weekdays),
+        weekday.map(Rule::Weekly),
+    ))
+    .parse_next(input)
+}
+
+/// "2 hours", "hour", "3 days", "week". Minutes and seconds are refused: a reminder every
+/// few minutes would only be noise.
+fn repeat_interval(input: &mut &str) -> ModalResult<Rule> {
+    let n: Option<u32> = opt(terminated(dec_uint, space0)).parse_next(input)?;
+    let unit = unit.parse_next(input)?;
+    match (n.unwrap_or(1), unit) {
+        (0, _) | (_, Unit::Minute | Unit::Second) => backtrack(),
+        (n, unit) => Ok(Rule::Interval(n, unit)),
+    }
 }
 
 /// "in 2h30m", "in 1 week and 2 days"
@@ -338,7 +501,10 @@ fn clock(input: &mut &str) -> ModalResult<NaiveTime> {
 }
 
 fn numeric_clock(input: &mut &str) -> ModalResult<NaiveTime> {
-    let hour: u32 = dec_uint.parse_next(input)?;
+    // One or two digits, so "08:30" works too (`dec_uint` stops after a leading 0).
+    let hour: u32 = take_while(1..=2, |c: char| c.is_ascii_digit())
+        .parse_to()
+        .parse_next(input)?;
     let minute = opt(preceded(':', two_digits)).parse_next(input)?;
     let second = match minute {
         Some(_) => opt(preceded(':', two_digits)).parse_next(input)?,
@@ -657,6 +823,9 @@ mod tests {
         assert_eq!(run("at midnight x").0, utc(2026, 2, 23, 0, 0));
         assert_eq!(run("at 12am x").0, utc(2026, 2, 23, 0, 0));
         assert_eq!(run("at 12pm x").0, utc(2026, 2, 23, 12, 0));
+        // A leading zero.
+        assert_eq!(run("at 08:30 x").0, utc(2026, 2, 23, 8, 30));
+        assert_eq!(run("at 00:05 x").0, utc(2026, 2, 23, 0, 5));
     }
 
     #[test]
@@ -795,6 +964,162 @@ mod tests {
 
         let past = parse_reminder("on 2020-01-01 x").unwrap();
         assert!(resolve(&past.when, now(), Tz::UTC).is_err());
+    }
+
+    /// Parses a repeat and lists its next few times after `now`, in UTC.
+    fn repeats(text: &str, home: Tz, count: usize) -> (Vec<DateTime<Utc>>, String) {
+        let parsed = parse_reminder(text).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+        let When::Every(repeat) = parsed.when else {
+            panic!("{text:?} isn't a repeat");
+        };
+        let mut times = Vec::new();
+        let mut at = now();
+        for _ in 0..count {
+            at = next_repeat(&repeat, at, home).unwrap();
+            times.push(at);
+        }
+        (times, parsed.message)
+    }
+
+    #[test]
+    fn recurring_days() {
+        // now() is Sunday 2026-02-22 12:00 UTC.
+        assert_eq!(
+            repeats("every day at 15:00 water the plants", Tz::UTC, 2),
+            (
+                vec![utc(2026, 2, 22, 15, 0), utc(2026, 2, 23, 15, 0)],
+                "water the plants".into()
+            )
+        );
+        // 09:00 when no time is given; today's has passed.
+        assert_eq!(
+            repeats("every day x", Tz::UTC, 1).0,
+            [utc(2026, 2, 23, 9, 0)]
+        );
+        // Weekdays skip Saturday and Sunday.
+        assert_eq!(
+            repeats("every weekday at 8:30 standup", Tz::UTC, 6).0,
+            [
+                utc(2026, 2, 23, 8, 30),
+                utc(2026, 2, 24, 8, 30),
+                utc(2026, 2, 25, 8, 30),
+                utc(2026, 2, 26, 8, 30),
+                utc(2026, 2, 27, 8, 30),
+                utc(2026, 3, 2, 8, 30),
+            ]
+        );
+        assert_eq!(
+            repeats("every monday at 9am take out the trash", Tz::UTC, 2),
+            (
+                vec![utc(2026, 2, 23, 9, 0), utc(2026, 3, 2, 9, 0)],
+                "take out the trash".into()
+            )
+        );
+        // A Sunday rule on a Sunday: today while the time is ahead.
+        assert_eq!(
+            repeats("every sun at 13:00 x", Tz::UTC, 1).0,
+            [utc(2026, 2, 22, 13, 0)]
+        );
+        // At the end of the message, with a zone, in the user's zone.
+        assert_eq!(
+            repeats("stretch every day at 18:00 CET", Tz::UTC, 1),
+            (vec![utc(2026, 2, 22, 17, 0)], "stretch".into())
+        );
+        assert_eq!(
+            repeats("every day at 15:00 x", Tz::America__New_York, 1).0,
+            [utc(2026, 2, 22, 20, 0)]
+        );
+    }
+
+    #[test]
+    fn recurring_days_keep_the_clock_through_summer_time() {
+        // New York moves to summer time on Mar 8: 09:00 stays 09:00 there.
+        let (times, _) = repeats("every day at 9:00 America/New_York x", Tz::UTC, 16);
+        // 07:00 in New York now, so today's 09:00 is first.
+        assert_eq!(times[0], utc(2026, 2, 22, 14, 0));
+        assert_eq!(times[14], utc(2026, 3, 8, 13, 0));
+        assert_eq!(times[15], utc(2026, 3, 9, 13, 0));
+    }
+
+    #[test]
+    fn recurring_intervals() {
+        assert_eq!(
+            repeats("every 2 hours drink water", Tz::UTC, 2),
+            (
+                vec![now() + TimeDelta::hours(2), now() + TimeDelta::hours(4)],
+                "drink water".into()
+            )
+        );
+        assert_eq!(
+            repeats("every hour x", Tz::UTC, 1).0,
+            [now() + TimeDelta::hours(1)]
+        );
+        assert_eq!(
+            repeats("every 3 days x", Tz::UTC, 1).0,
+            [now() + TimeDelta::days(3)]
+        );
+        assert_eq!(
+            repeats("every week x", Tz::UTC, 1).0,
+            [now() + TimeDelta::days(7)]
+        );
+        // Too often, or never.
+        let err = parse_reminder("every 5 minutes x").unwrap_err();
+        assert!(err.contains("every day at 9:00"), "{err}");
+        assert!(parse_reminder("every 0 hours x").is_err());
+        assert!(parse_reminder("every now and then").is_err());
+        // "everyone" is not "every".
+        assert!(parse_reminder("everyone at 5pm").is_ok_and(|p| matches!(p.when, When::At { .. })));
+    }
+
+    #[test]
+    fn repeats_are_saved_as_text() {
+        for (text, saved) in [
+            ("every day x", "every day at 9:00 Europe/Oslo"),
+            (
+                "every weekday at 08:30 x",
+                "every weekday at 8:30 Europe/Oslo",
+            ),
+            (
+                "every fri at 5pm CET x",
+                "every friday at 17:00 Europe/Paris",
+            ),
+            ("every 2h x", "every 2 hours"),
+            ("every hour x", "every hour"),
+            ("every 3 days x", "every 3 days Europe/Oslo"),
+            ("every month x", "every month Europe/Oslo"),
+        ] {
+            let parsed = parse_reminder(text).unwrap();
+            let When::Every(repeat) = parsed.when else {
+                panic!("{text:?}");
+            };
+            let described = describe_repeat(&repeat, Tz::Europe__Oslo);
+            assert_eq!(described, saved, "{text}");
+            // Read back, it means the same, now with the zone written out.
+            let back = parse_repeat(&described)
+                .unwrap_or_else(|| panic!("{described:?}: {:?}", parse_when(&described)));
+            assert_eq!(describe_repeat(&back, Tz::UTC), saved, "{text}");
+        }
+        assert_eq!(parse_repeat("in 2h"), None);
+    }
+
+    #[test]
+    fn snooze_until_tomorrow() {
+        // 12:00 on Sunday: Monday 09:00.
+        assert_eq!(
+            tomorrow_morning(now(), Tz::UTC).unwrap(),
+            utc(2026, 2, 23, 9, 0)
+        );
+        // 02:00 is still the night: this morning's 09:00.
+        let night = utc(2026, 2, 22, 2, 0);
+        assert_eq!(
+            tomorrow_morning(night, Tz::UTC).unwrap(),
+            utc(2026, 2, 22, 9, 0)
+        );
+        // In the user's zone: 12:00 UTC is 21:00 in Tokyo, so 09:00 Tokyo the next day.
+        assert_eq!(
+            tomorrow_morning(now(), Tz::Asia__Tokyo).unwrap(),
+            utc(2026, 2, 23, 0, 0)
+        );
     }
 
     #[test]

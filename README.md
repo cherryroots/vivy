@@ -39,19 +39,19 @@ With an ElevenLabs key, Vivy can answer with a Discord voice message in her own 
 
 ### Drawing
 
-With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either chat provider), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use, and each picture's cost counts toward OpenAI's spend.
+With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either chat provider), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use (and `per_user_monthly_pictures` each person's share), and each picture's cost counts toward OpenAI's spend.
 
 ### Reminders
 
-`@Vivy remind me in 2h30m to …`, `at 16:30 CET`, `tomorrow at 9am`, `next friday` or `on 2026-12-24 at noon`. `/reminders` lists and deletes them, `/timezone` sets your zone, and delivered reminders have snooze buttons.
+`@Vivy remind me in 2h30m to …`, `at 16:30 CET`, `tomorrow at 9am`, `next friday` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every 2 hours`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
 
 ### Movie wheel
 
-voltgpt's betting game for movie night. `/wheel_status` shows the round as a picture with buttons to claim, bet and set the winner. Bets and taxes go into a pot that the bets on the winner share by stake, and a player can bet at most half their money per round. Admins use `/wheel_add`, `/insert_bet` and `/reset_wheel` (which starts a new season). The Help button explains the rules.
+voltgpt's betting game for movie night. `/wheel_status` shows the round as a picture with buttons to claim, bet and set the winner. Bets and taxes go into a pot that the bets on the winner share by stake, and a player can bet at most half their money per round. Admins use `/wheel_add` (up to five people at once), `/insert_bet` and `/reset_wheel` (which starts a new season). The Help button explains the rules.
 
 ### Snail detection
 
-Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. Admins can read older history with `/snail_backfill start`.
+Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails` shows the server's top snailers this week and of all time. Admins can read older history with `/snail_backfill start`.
 
 ### Control panel
 

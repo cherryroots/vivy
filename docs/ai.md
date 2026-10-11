@@ -113,7 +113,7 @@ Some Rust terms here:
 
 The tool loop lives outside the trait, so every provider gets the same tools. There are two copies of it:
 
-- `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows tool names in the status line, and stops on ❌. At most 8 rounds.
+- `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows what each tool is doing in the status line (`Feature::tool_status`), and stops on ❌. At most 8 rounds.
 - `ai::complete` in `complete.rs`, for work nobody watches: chime-ins and follow-ups (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), and memory's reflection, mood and diary jobs. The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> String`) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
 
 Both work the same way: send the request, read events until `Done`, and if `Done` lists tool calls, run them, then build the next input with `ai::next_input` and send again.

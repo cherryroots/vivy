@@ -64,6 +64,10 @@ impl Feature for Wheel {
         tools::defs()
     }
 
+    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+        Some("🎡 Checking the wheel…")
+    }
+
     async fn run_tool(
         &self,
         ctx: &BotCtx,

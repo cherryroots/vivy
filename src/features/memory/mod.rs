@@ -59,6 +59,13 @@ impl Feature for Memory {
         vec![tool::def(), set_mood::def()]
     }
 
+    fn tool_status(&self, tool: &str) -> Option<&'static str> {
+        match tool {
+            set_mood::NAME => Some("💭 Thinking…"),
+            _ => Some("📝 Remembering…"),
+        }
+    }
+
     async fn run_tool(
         &self,
         ctx: &BotCtx,

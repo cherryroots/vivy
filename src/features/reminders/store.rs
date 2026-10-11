@@ -30,6 +30,9 @@ pub const MIGRATIONS: &[&str] = &[
     // saved, so the delivered reminder can say so.
     "ALTER TABLE reminders ADD COLUMN source_message_id INTEGER;
     ALTER TABLE reminders ADD COLUMN missing_images INTEGER NOT NULL DEFAULT 0;",
+    // 3: recurring reminders. How it repeats, as text parse::parse_repeat reads
+    // ("every monday at 09:00 Europe/Oslo"); NULL for a one-off reminder.
+    "ALTER TABLE reminders ADD COLUMN repeat TEXT;",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +55,8 @@ pub struct NewReminder {
     /// Attachments that couldn't be saved (too big, or the download failed).
     pub missing_images: u32,
     pub images: Vec<Image>,
+    /// How it repeats ([`super::parse::describe_repeat`]), or `None` for a one-off.
+    pub repeat: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +72,7 @@ pub struct Reminder {
     pub source_message_id: Option<u64>,
     pub missing_images: u32,
     pub images: Vec<Image>,
+    pub repeat: Option<String>,
 }
 
 /// A pending reminder in `/reminders`.
@@ -76,6 +82,7 @@ pub struct Summary {
     pub message: String,
     pub fire_at: i64,
     pub image_count: usize,
+    pub repeat: Option<String>,
 }
 
 /// Stats for the control panel.
@@ -92,8 +99,8 @@ pub struct Stats {
 pub fn insert(conn: &Connection, new: &NewReminder) -> rusqlite::Result<i64> {
     conn.execute(
         "INSERT INTO reminders (user_id, channel_id, guild_id, message, fire_at, created_at,
-                                source_message_id, missing_images, next_try_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?5)",
+                                source_message_id, missing_images, repeat, next_try_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?5)",
         params![
             new.user_id,
             new.channel_id,
@@ -102,7 +109,8 @@ pub fn insert(conn: &Connection, new: &NewReminder) -> rusqlite::Result<i64> {
             new.fire_at,
             new.created_at,
             new.source_message_id,
-            new.missing_images
+            new.missing_images,
+            new.repeat
         ],
     )?;
     let id = conn.last_insert_rowid();
@@ -138,7 +146,7 @@ pub fn next_try_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
 pub fn due(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, channel_id, guild_id, message, fire_at, created_at, attempts,
-                source_message_id, missing_images
+                source_message_id, missing_images, repeat
          FROM reminders WHERE sent_at IS NULL AND next_try_at <= ?1
          ORDER BY next_try_at LIMIT 50",
     )?;
@@ -151,7 +159,7 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Reminder>> {
     let reminder = conn
         .query_row(
             "SELECT id, user_id, channel_id, guild_id, message, fire_at, created_at, attempts,
-                    source_message_id, missing_images
+                    source_message_id, missing_images, repeat
              FROM reminders WHERE id = ?1",
             [id],
             reminder_from_row,
@@ -174,12 +182,33 @@ pub fn mark_sent(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Queues the next time of a recurring reminder: a copy of it (images and all) due at
+/// `fire_at`. The delivered one stays as it is, so its snooze buttons keep working.
+/// Call inside a transaction, like [`insert`]. Returns the new reminder's ID.
+pub fn repeat(conn: &Connection, reminder: &Reminder, fire_at: i64) -> rusqlite::Result<i64> {
+    let next = NewReminder {
+        user_id: reminder.user_id,
+        channel_id: reminder.channel_id,
+        guild_id: reminder.guild_id,
+        message: reminder.message.clone(),
+        fire_at,
+        created_at: reminder.created_at,
+        source_message_id: reminder.source_message_id,
+        missing_images: reminder.missing_images,
+        images: reminder.images.clone(),
+        repeat: reminder.repeat.clone(),
+    };
+    insert(conn, &next)
+}
+
 /// Snoozes a delivered reminder of `user_id`: it becomes pending again, due at `fire_at`.
 /// One UPDATE that only matches a sent reminder, so two quick presses can't snooze it
-/// twice. Returns whether it was snoozed.
+/// twice. A snoozed recurring reminder comes back once: its next time is already queued
+/// separately. Returns whether it was snoozed.
 pub fn snooze(conn: &Connection, id: i64, user_id: u64, fire_at: i64) -> rusqlite::Result<bool> {
     let changed = conn.execute(
-        "UPDATE reminders SET fire_at = ?3, next_try_at = ?3, attempts = 0, sent_at = NULL
+        "UPDATE reminders
+         SET fire_at = ?3, next_try_at = ?3, attempts = 0, sent_at = NULL, repeat = NULL
          WHERE id = ?1 AND user_id = ?2 AND sent_at IS NOT NULL",
         params![id, user_id, fire_at],
     )?;
@@ -221,7 +250,7 @@ pub fn purge_sent(conn: &Connection, before: i64) -> rusqlite::Result<usize> {
 pub fn list_pending(conn: &Connection, user_id: u64) -> rusqlite::Result<Vec<Summary>> {
     let mut stmt = conn.prepare(
         "SELECT r.id, r.message, r.fire_at,
-                (SELECT count(*) FROM reminder_images i WHERE i.reminder_id = r.id)
+                (SELECT count(*) FROM reminder_images i WHERE i.reminder_id = r.id), r.repeat
          FROM reminders r WHERE r.user_id = ?1 AND r.sent_at IS NULL
          ORDER BY r.fire_at",
     )?;
@@ -231,6 +260,7 @@ pub fn list_pending(conn: &Connection, user_id: u64) -> rusqlite::Result<Vec<Sum
             message: row.get(1)?,
             fire_at: row.get(2)?,
             image_count: row.get(3)?,
+            repeat: row.get(4)?,
         })
     })?
     .collect()
@@ -268,6 +298,7 @@ fn reminder_from_row(row: &Row) -> rusqlite::Result<Reminder> {
         source_message_id: row.get(8)?,
         missing_images: row.get(9)?,
         images: Vec::new(),
+        repeat: row.get(10)?,
     })
 }
 
@@ -305,6 +336,7 @@ mod tests {
             source_message_id: None,
             missing_images: 0,
             images: Vec::new(),
+            repeat: None,
         }
     }
 
@@ -385,6 +417,33 @@ mod tests {
         assert!(!snooze(&conn, id, 1, 600).unwrap());
         assert_eq!(next_try_at(&conn).unwrap(), Some(500));
         assert_eq!(get(&conn, id).unwrap().unwrap().fire_at, 500);
+    }
+
+    #[test]
+    fn recurring_reminders_queue_a_copy() {
+        let mut conn = conn();
+        let mut weekly = new(1, 100);
+        weekly.repeat = Some("every monday at 9:00 UTC".into());
+        weekly.images = vec![Image {
+            filename: "a.png".into(),
+            data: vec![1],
+        }];
+        let id = add(&mut conn, &weekly).unwrap();
+        let fired = get(&conn, id).unwrap().unwrap();
+        mark_sent(&conn, id, 100).unwrap();
+        let next = repeat(&conn, &fired, 700).unwrap();
+
+        let queued = get(&conn, next).unwrap().unwrap();
+        assert_eq!(queued.fire_at, 700);
+        assert_eq!(queued.images, fired.images);
+        assert_eq!(queued.repeat, weekly.repeat);
+        let list = list_pending(&conn, 1).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].repeat, weekly.repeat);
+
+        // Snoozing the delivered one brings it back once, as a one-off.
+        assert!(snooze(&conn, id, 1, 300).unwrap());
+        assert_eq!(get(&conn, id).unwrap().unwrap().repeat, None);
     }
 
     #[test]

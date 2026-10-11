@@ -2,7 +2,7 @@
 //! already seen.
 //!
 //! Every new message's links and pictures are saved as it arrives, and a new message that
-//! repeats an earlier post is counted (quietly, for the control panel). "Check Snail" (right-click a
+//! repeats an earlier post is counted (quietly, for the control panel and `/snails`). "Check Snail" (right-click a
 //! message → Apps) lists the earlier posts of the same thing. `/snail_backfill` reads the
 //! server's older history, but only when an admin starts it; after that, each start catches
 //! up on what those channels got while the bot was offline.
@@ -18,10 +18,12 @@
 //! - `store.rs`: the tables and queries
 //! - `index.rs`: downloading and saving one message
 //! - `check.rs`: the Check Snail command
+//! - `board.rs`: `/snails`, the leaderboard
 //! - `backfill.rs`: `/snail_backfill`, the history crawl and the startup catch-up
 //! - `retry.rs`: trying failed pictures again
 
 mod backfill;
+mod board;
 mod check;
 mod collect;
 mod fingerprint;
@@ -67,7 +69,11 @@ impl Feature for Snails {
     }
 
     fn commands(&self) -> Vec<Command> {
-        vec![check::check_snail(), backfill::snail_backfill()]
+        vec![
+            check::check_snail(),
+            backfill::snail_backfill(),
+            board::snails(),
+        ]
     }
 
     fn migrations(&self) -> &'static [&'static str] {

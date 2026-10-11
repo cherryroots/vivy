@@ -1,6 +1,7 @@
 //! Slash commands: `/reminders` and `/timezone`.
 
 use chrono::Utc;
+use poise::CreateReply;
 use serenity::all::{AutocompleteChoice, CreateAutocompleteResponse};
 
 use super::{parse, store, ui};
@@ -15,7 +16,9 @@ pub async fn reminders(ctx: Context<'_>) -> Result<()> {
         .db
         .call(move |conn| Ok(store::list_pending(conn, user)?))
         .await?;
-    ctx.send(ui::list_reply(&list)).await?;
+    let (text, menu) = ui::list_message(&list, None);
+    ctx.send(CreateReply::default().content(text).components(menu))
+        .await?;
     Ok(())
 }
 

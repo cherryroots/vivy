@@ -55,6 +55,7 @@ pub trait Feature: Send + Sync + 'static {
     fn mention_prefixes(&self) -> &'static [&'static str];       // "remind me", ...
     fn legacy_import(&self) -> Option<LegacyImport>;             // voltgpt's data
     fn tools(&self) -> Vec<ToolDef>;                             // functions the chat model may call
+    fn tool_status(&self, tool: &str) -> Option<&'static str>;  // "🎨 Drawing…" while one runs
     async fn run_tool(&self, ctx, asker: &Asker, name, args) -> Result<String>;
     async fn chat_context(&self, ctx, asker: &Asker, fresh: bool) -> Result<Option<String>>;
     async fn stats(&self, ctx) -> Result<Vec<Stat>>;             // a card on the status picture
@@ -104,7 +105,7 @@ Which feature uses which hook:
 | `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `mention_prefixes` | `""` | `remind me`, ... | | | | | | |
 | `legacy_import` | | ✓ | ✓ | | | | | |
-| `tools` / `run_tool` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | |
+| `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | |
 | `chat_context` | | | | ✓ | | | | |
 | `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `panels` | ✓ | | | ✓ | | | | |
@@ -115,7 +116,7 @@ Which feature uses which hook:
 | `on_message_edit` | | | | | ✓ | | |
 | `on_messages_deleted` | | | | | ✓ | | |
 | `on_component` | | ✓ | ✓ | | | | |
-| `on_modal` | | | ✓ | | | | |
+| `on_modal` | | ✓ | ✓ | | | | |
 
 ## How events reach features
 

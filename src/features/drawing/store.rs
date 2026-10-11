@@ -1,4 +1,4 @@
-//! The pictures she drew, to count them against `monthly_pictures` and for the status.
+//! The pictures she drew, to count them against the monthly limits and for the status.
 
 use rusqlite::{Connection, params};
 
@@ -56,6 +56,15 @@ pub fn drawn_since(conn: &Connection, since: i64) -> rusqlite::Result<(u64, f64)
     )
 }
 
+/// How many pictures were drawn for `user` since `since`.
+pub fn drawn_for_since(conn: &Connection, user: u64, since: i64) -> rusqlite::Result<u64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM drawings WHERE user_id = ?1 AND at >= ?2",
+        params![user, since],
+        |row| row.get(0),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +87,7 @@ mod tests {
         }
         assert_eq!(drawn_since(&conn, 100).unwrap(), (2, 0.625));
         assert_eq!(drawn_since(&conn, 500).unwrap(), (0, 0.0));
+        assert_eq!(drawn_for_since(&conn, 7, 100).unwrap(), 2);
+        assert_eq!(drawn_for_since(&conn, 8, 0).unwrap(), 0);
     }
 }

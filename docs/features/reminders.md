@@ -5,9 +5,11 @@ Reminders let people ask Vivy to ping them later. `@Vivy remind me in 2h30m to c
 ## Using it
 
 - **Mention**: `@Vivy remind me ...`, `@Vivy reminder ...` or `@Vivy remind ...`, followed by a time and the text, in either order: `remind me in 2h to check the oven` or `remind me to check the oven in 2h`.
-- **`/reminders`**: a private list of your pending reminders (soonest first, up to 25 shown) with a menu to delete one.
+- **Recurring reminders**: `remind me every day at 9:00 to stretch`, `every weekday at 8:30`, `every monday`, `every 2 hours`, `every 3 days`, `every month`. After each one is delivered the next is queued. Deleting it in `/reminders` stops it.
+- **Cancel** under the "I'll remind you" reply deletes that reminder. Only the person who set it can use it.
+- **`/reminders`**: a private list of your pending reminders (soonest first, up to 25 shown, recurring ones marked 🔁 with how they repeat) with a menu to delete one. The list stays open after a delete, reloaded, so you can delete several.
 - **`/timezone [zone]`**: sets the timezone used for times without one, like `Europe/Oslo` or `CET`. The option autocompletes zone names. Without a zone it tells you your current setting and the local time there.
-- **Snooze buttons** under a delivered reminder: 10 min, 1 hour, Tomorrow (24 hours from the press). Only the person the reminder is for can use them.
+- **Snooze buttons** under a delivered reminder: 10 min, 1 hour, Tomorrow 9:00 (09:00 the next morning in your timezone; before 04:00 it means this morning), and **Snooze…**, which opens a box to type a time like `in 30m`, `at 18:00` or `friday`. Only the person the reminder is for can use them.
 - **Chat**: in a normal conversation the model can create, list and cancel reminders with its [chat tools](#chat-tools).
 
 Settings: the feature has a `[features.reminders]` section with only the common keys (`enabled`, `guilds`, and so on); `config.example.toml` explains them. Setup is in the README.
@@ -20,12 +22,12 @@ All in `src/features/reminders/`, in a reading order that starts with the pure l
 |---|---|
 | `parse.rs` | The time grammar, written with the `winnow` crate. Pure: text in, time out, no Discord or database. Also the timezone lookup and the unit tests. |
 | `store.rs` | The migrations and every SQL query, as plain synchronous `rusqlite` functions, with tests on an in-memory database. |
-| `ui.rs` | Message texts, the snooze buttons, the `/reminders` list and delete menu, and the custom IDs (the `Action` enum). |
+| `ui.rs` | Message texts, the Cancel and snooze buttons, the snooze modal, the `/reminders` list and delete menu, and the custom IDs (the `Action` enum). |
 | `scheduler.rs` | The one background task that delivers due reminders, with retries. |
 | `commands.rs` | The slash commands `/reminders` and `/timezone`, written with `poise`. |
 | `tools.rs` | The chat tools `create_reminder`, `list_reminders`, `cancel_reminder`. |
 | `import.rs` | Reading reminders from voltgpt's database. |
-| `mod.rs` | Wires it all in: the `Reminders` struct, its `Feature` implementation, the mention handler, snooze and delete handlers, and image downloads. |
+| `mod.rs` | Wires it all in: the `Reminders` struct, its `Feature` implementation, the mention handler, the cancel, snooze and delete handlers, and image downloads. |
 
 ## How it works
 
@@ -41,11 +43,12 @@ The dispatcher strips the bot mention and the prefix ("remind me"), and `on_ment
 
 The grammar is a set of small parser functions. Each has the shape `fn(&mut &str) -> ModalResult<T>`: it reads from the front of the input, moves the input past what it read, and returns what it found. ("Parser combinators" just means small parsers glued together into bigger ones with helpers like `alt`, which tries several in order.) The pieces:
 
-- `when` is `alt((in_duration, at_time, on_day))`.
+- `when` is `alt((in_duration, at_time, every, on_day))`.
 - `in_duration`: "in" plus `duration`, which is one or more `duration_part`s (a number and a `unit`), separated by spaces, commas or "and". Units go from years to seconds, with short forms (`2h30m`, `1 week 2 days`, `3 mins`).
 - `at_time`: "at" plus a `clock`, or a `date` and a `clock` (`at 2026-03-01 15:04 EST`), then an optional `zone` and an optional `day` (`at 9:00 tomorrow`).
 - `on_day`: a `day` with an optional clock time (`friday at 3pm`, `next friday 9:30 CET`).
-- `clock` reads `16:30`, `16:30:15`, `3pm`, `3:30 pm`, `noon`, `midnight`. A bare number like `at 5` is rejected as too vague.
+- `every`: "every" plus either `repeat_days` (`day`, `weekday`, or a weekday name) with an optional clock time, or `repeat_interval` (an optional number and a unit: `2 hours`, `hour`, `3 days`, `week`), then an optional zone. Minutes and seconds are refused, so a reminder can't fire every few minutes. It gives `When::Every(Repeat)`.
+- `clock` reads `16:30`, `08:30`, `16:30:15`, `3pm`, `3:30 pm`, `noon`, `midnight`. A bare number like `at 5` is rejected as too vague.
 - `day` reads `today`, `tomorrow`, `next <weekday>`, `on <weekday>`, `on <date>`, a date `2026-12-24`, or a weekday (full or short names like `fri`, `thurs`).
 - `zone` reads a timezone name and checks it with `lookup_zone`.
 - `word` matches a whole word, ignoring case. An apostrophe counts as part of a word, so "tomorrow's standup" is not read as "tomorrow".
@@ -63,13 +66,20 @@ If nothing can be made into a reminder (no time, no message text, or a time that
 - **A day without a time** means 09:00.
 - **A weekday** means the next one; "friday" on a Friday means today if the time is still ahead. "next friday" on a Friday means a week later.
 - **A dated or day-based time in the past** is an error ("... has already passed").
+- **A repeat** (`next_repeat`): a day rule takes the first wanted day, from today, whose clock time (09:00 if none was given) is still ahead, in its zone, so summer time doesn't move the hour. An interval adds itself, like a duration.
 - **Summer time gaps**: a wall-clock time that does not exist (skipped hour) uses the hour after; one that happens twice uses the first.
 
 `lookup_zone` accepts IANA names that contain a `/` (`Europe/Oslo`, any case) and a fixed list of abbreviations, each mapped to a real place so summer time follows: `UTC`/`GMT`/`Z`, `EST`/`EDT`/`ET` (New York), `CST`/`CDT`/`CT` (Chicago), `MST`/`MDT`/`MT` (Denver), `PST`/`PDT`/`PT` (Los Angeles), `CET`/`CEST` (Paris), `BST` (London), `JST` (Tokyo), `AEST`/`AEDT` (Sydney). Single words that are not in that list are rejected on purpose, because zone names like "Japan" are also ordinary words in a reminder.
 
+### Recurring reminders
+
+A recurring reminder is a row like any other, plus a `repeat` column with how it repeats, as text the grammar reads back: `describe_repeat` writes `every monday at 9:00 Europe/Oslo` or `every 2 hours`, and `parse_repeat` reads it. The zone is written out (the user's zone when they set it), so a later `/timezone` change doesn't move it; hours are exact, so they need no zone.
+
+When the scheduler delivers one, `scheduler::next_time` works out the next time after the one it was due (or after now, when the bot was offline past it), and `store::repeat` queues a copy (images and all) in the same transaction that marks the delivered one sent. The delivered one keeps its snooze buttons: a snooze brings it back once, with `repeat` cleared, since the series goes on in the copy. The next one is queued even when the delivery is given up after 10 tries, so one bad day doesn't end the series. Deleting the pending copy (in `/reminders`, or with `cancel_reminder`) stops it. The confirmation, the delivered message and `/reminders` show `🔁` and the repeat.
+
 ### Saving a reminder
 
-`on_mention` downloads the message's images and videos (attachments with a width). Each one must fit the bot's upload limit in that server, which follows its boost level (`upload_limit`): 20 MiB normally and in DMs, 50 MiB at boost level 2, 100 MiB at level 3. Bigger files, and files whose download failed, are skipped and counted as `missing_images`. The reminder and its images are saved in one transaction (`store::add`), the scheduler is woken, and Vivy replies with a confirmation: the time as a Discord timestamp, the text, the names of skipped files, and a hint about `/timezone` when a clock time was read as UTC only because the user has no zone set. The confirmation pings nobody.
+`on_mention` downloads the message's images and videos (attachments with a width). Each one must fit the bot's upload limit in that server, which follows its boost level (`upload_limit`): 20 MiB normally and in DMs, 50 MiB at boost level 2, 100 MiB at level 3. Bigger files, and files whose download failed, are skipped and counted as `missing_images`. The reminder and its images are saved in one transaction (`store::add`), the scheduler is woken, and Vivy replies with a confirmation: the time as a Discord timestamp, the text, the names of skipped files, and a hint about `/timezone` when a clock time was read as UTC only because the user has no zone set. The confirmation pings nobody and has a **Cancel** button: `cancel` checks that the presser set the reminder, deletes it with `store::delete_pending` (the same call as the `/reminders` menu), and adds "❌ Cancelled" under the reply. A reminder that was already sent can't be cancelled there.
 
 ### The scheduler
 
@@ -93,9 +103,9 @@ A reminder is marked sent only after Discord accepted the message:
 
 ### Snooze and delete
 
-A snooze button does not create a new reminder. `store::snooze` moves the delivered reminder (with its images) back into the queue: it sets a new `fire_at` and clears `sent_at` and `attempts`. The `UPDATE` only matches a sent reminder of that user, so a double press or a retry snoozes it once. The delivered message then loses its buttons and gets a "Snoozed until ..." line. Sent reminders are kept for a week for this; after that the button answers "This reminder is too old to snooze."
+A snooze button does not create a new reminder. "Tomorrow 9:00" asks `parse::tomorrow_morning` for 09:00 the next morning in the owner's timezone (this morning's, before 04:00). "Snooze…" opens a modal; what is typed there goes through `parse::parse_when` and `parse::resolve`, like a reminder's time (a repeat is refused). Snooze buttons from before "Tomorrow 9:00" existed add 24 hours, as they always did. `store::snooze` moves the delivered reminder (with its images) back into the queue: it sets a new `fire_at` and clears `sent_at` and `attempts`. The `UPDATE` only matches a sent reminder of that user, so a double press or a retry snoozes it once. The delivered message then loses its buttons and gets a "Snoozed until ..." line. Sent reminders are kept for a week for this; after that the button answers "This reminder is too old to snooze."
 
-The `/reminders` menu calls `store::delete_pending`, which only deletes a pending reminder of the person who picked it.
+The `/reminders` menu calls `store::delete_pending`, which only deletes a pending reminder of the person who picked it, then shows the list again with "✅ Reminder deleted." on top.
 
 ## Chat tools
 
@@ -103,9 +113,9 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 
 | Tool | What it does |
 |---|---|
-| `create_reminder` | Takes `when` (English, like "in 2h30m" or "tomorrow at 9am", parsed by `parse::parse_when`) and `message`. Sets a reminder in the current channel, linked to the asking message, without images. The answer tells the model the time and says when it was read as UTC because no zone is set. |
-| `list_reminders` | The asker's pending reminders with IDs, soonest first. |
-| `cancel_reminder` | Deletes one of the asker's pending reminders by ID. |
+| `create_reminder` | Takes `when` (English, like "in 2h30m", "tomorrow at 9am" or "every monday at 9:00", parsed by `parse::parse_when`) and `message`. Sets a reminder in the current channel, linked to the asking message, without images. The answer tells the model the time and says when it was read as UTC because no zone is set. |
+| `list_reminders` | The asker's pending reminders with IDs, soonest first, and how recurring ones repeat. |
+| `cancel_reminder` | Deletes one of the asker's pending reminders by ID (which stops a recurring one). |
 
 `run_tool` in `mod.rs` wakes the scheduler after a create or cancel.
 
@@ -121,10 +131,12 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 | `mention_prefixes` | `remind me`, `reminder`, `remind` (the dispatcher picks the longest match). |
 | `legacy_import` | The `reminders` part, run by `import::import`. |
 | `tools`, `run_tool` | The three chat tools. |
+| `tool_status` | "⏰ Setting a reminder…" and similar in chat's status line. |
 | `stats` | Control panel lines: Pending, Next, Sent this week, and Failing to send when any are retrying. |
 | `start` | Spawns the scheduler. |
 | `on_mention` | Parses and saves a reminder, or passes the mention on to chat. |
-| `on_component` | The delete menu and the snooze buttons. |
+| `on_component` | The delete menu, the Cancel button and the snooze buttons. |
+| `on_modal` | The "Snooze…" modal. |
 
 After each delivery it publishes `BotEvent::ReminderFired { reminder_id, user_id, channel_id }`. No feature listens to it yet.
 
@@ -135,7 +147,11 @@ Built and parsed only in `ui::Action`. The dispatcher strips the `reminders:` pr
 | ID | Where |
 |---|---|
 | `reminders:delete` | The `/reminders` select menu. The reminder ID is the selected value. |
-| `reminders:snooze:<reminder id>:<minutes>` | The snooze buttons: minutes are 10, 60 or 1440. |
+| `reminders:snooze:<reminder id>:<minutes>` | The 10 min and 1 hour snooze buttons (older messages also have 1440, a day). |
+| `reminders:tomorrow:<reminder id>` | Snooze until 09:00 tomorrow. |
+| `reminders:asksnooze:<reminder id>` | "Snooze…": opens the modal. |
+| `reminders:snoozeto:<reminder id>` | The snooze modal. |
+| `reminders:cancel:<reminder id>` | Cancel under the "I'll remind you" reply. |
 
 ## Tables
 
@@ -147,6 +163,8 @@ From `store::MIGRATIONS`. Times are unix seconds; Discord IDs are integers.
 - `reminder_images`: `reminder_id`, `position`, `filename`, and the file as a `BLOB`. Deleted together with their reminder (`ON DELETE CASCADE`).
 
 **Migration 2** adds two columns to `reminders`: `source_message_id` (the message that set it, for the link; NULL for imported reminders) and `missing_images` (attachments that could not be saved).
+
+**Migration 3** adds `repeat` to `reminders`: how a recurring reminder repeats (see [Recurring reminders](#recurring-reminders)), NULL for a one-off.
 
 The timezone lives in `user_settings (user_id, timezone)`. That table belongs to the core (`CORE_MIGRATIONS` in `src/core/db.rs`) and is read and written through `src/core/settings.rs`, so other features can use the zone too.
 
@@ -167,4 +185,4 @@ The old.db import code is planned for removal once the imports are confirmed: `s
 - **One scheduler instead of a timer per reminder.** voltgpt kept a Go timer for each reminder in memory. Here the next due time is read from SQLite, so there is nothing to rebuild on startup.
 - **Delivery is confirmed.** voltgpt deleted a reminder after trying to send it, even when sending failed. Here it is retried and only given up on after 10 tries, with the text in the log.
 - **Images as BLOBs** instead of base64 JSON in a text column.
-- **New**: snooze buttons, the link to the original message, the late and missing-image notes, and the chat tools.
+- **New**: snooze buttons (with a typed time), Cancel, recurring reminders, the link to the original message, the late and missing-image notes, and the chat tools.

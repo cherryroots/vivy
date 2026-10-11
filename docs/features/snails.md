@@ -5,6 +5,7 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 ## Using it
 
 - **Check Snail** (right-click a message, then Apps): a private reply that lists up to 10 earlier posts of the same link or picture, oldest first, each with the date, the author and a jump link, and whether it was the same link or the same picture. If a picture could not be downloaded, the reply says so and that it will be retried.
+- **`/snails`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
 - **`/snail_backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got, the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
 The only setting is the usual gate in `[features.snails]` (`enabled`, plus the shared `guilds` / `channels` keys); `config.example.toml` explains them. Setup is in the README.
@@ -21,6 +22,7 @@ All in `src/features/snails/`. The first three are pure functions (no Discord, n
 | `store.rs` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection. |
 | `index.rs` | Downloading, fingerprinting and saving one message (`sync_message`, `index_message`). |
 | `check.rs` | The Check Snail command, and the quiet snail count for new messages (`on_new_message`). |
+| `board.rs` | `/snails`, the leaderboard (`store::top_snailers`). |
 | `backfill.rs` | `/snail_backfill`, the history crawl, and the startup catch-up. |
 | `retry.rs` | The loop that tries failed pictures again. |
 | `mod.rs` | The `Snails` struct and its `Feature` methods, which tie the rest together. |
@@ -126,7 +128,7 @@ On every start, `spawn_catch_up` reads what was posted while the bot was offline
 | Method | What it does here |
 |---|---|
 | `name` | `"snails"` |
-| `commands` | Check Snail (`check::check_snail`) and `/snail_backfill` (`backfill::snail_backfill`). |
+| `commands` | Check Snail (`check::check_snail`), `/snail_backfill` (`backfill::snail_backfill`) and `/snails` (`board::snails`). |
 | `migrations` | `store::MIGRATIONS` |
 | `start` | Resumes crawls that were running (in servers the gate allows), starts the catch-up, and starts the retry loop. Never starts a new crawl. |
 | `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews, unless every link already has one or an edit was read first. |
@@ -150,7 +152,7 @@ All created by `store::MIGRATIONS`.
 
 **Migration 2**
 
-- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week".
+- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails`.
 
 **Migration 3** (edits, deletes, failed downloads, catch-up)
 
@@ -162,6 +164,8 @@ All created by `store::MIGRATIONS`.
 **Migration 4**
 
 - `snail_dropped`: server, host, and how many pictures from that host were dropped after their last try.
+
+**Migration 5** adds the index `snail_caught_guild` on `(guild_id, caught_at)` for `/snails`.
 
 ## Background loops
 
