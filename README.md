@@ -8,7 +8,7 @@ The code aims to be:
 - **Provider agnostic.** AI chat sits behind one trait, so Claude, OpenAI or (later) Gemini can be swapped in.
 - **Simple and readable.** Easy to study for someone learning Rust.
 
-Built with [serenity](https://github.com/serenity-rs/serenity) and [poise](https://github.com/serenity-rs/poise) for Discord, [tokio](https://tokio.rs), and one SQLite file. [`docs/feature-map.md`](docs/feature-map.md) has the full design and the port plan.
+Built with [serenity](https://github.com/serenity-rs/serenity) and [poise](https://github.com/serenity-rs/poise) for Discord, [tokio](https://tokio.rs), and one SQLite file. [`docs/feature-map.md`](docs/feature-map.md) is the overview of every feature and what's next, [`docs/architecture.md`](docs/architecture.md) explains how the code fits together, and `docs/features/` has a page per feature.
 
 ## Features
 
@@ -59,7 +59,7 @@ A status picture in a channel of your choice, refreshed every minute: uptime, ve
 
 1. Create an application at <https://discord.com/developers/applications> and add a bot to it.
 2. Under **Bot**, turn on the **Message Content Intent** and copy the token.
-3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions. Add Change Nickname if you use `nickname`.
+3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions. Add Change Nickname if you use `nickname`, and Send Voice Messages if you use voice.
 4. Create two private channels for the control panel, for example `#bot-logs` and `#bot-status`, and copy their IDs (turn on Developer Mode in Discord, then right-click the channel).
 
 ### 2. Build
