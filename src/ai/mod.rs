@@ -67,11 +67,14 @@ pub struct ModelFile {
 
 /// One round of an answer: what the model wrote (the provider's own JSON), and what the
 /// bot's tools answered when it asked for them.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NativeRound {
     pub output: serde_json::Value,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub results: Vec<ToolOutput>,
+    /// Which system prompt and tools it was written with (see [`Done::setup`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
 }
 
 impl NativeRound {
@@ -177,6 +180,9 @@ pub struct Done {
     pub files: Vec<GeneratedFile>,
     /// The provider's raw output for this answer, kept in the history.
     pub native: serde_json::Value,
+    /// A fingerprint of the system prompt and tools it was written with, for a provider
+    /// whose earlier output only stays valid with the same ones (Claude's thinking).
+    pub setup: Option<String>,
 }
 
 #[async_trait]
@@ -336,6 +342,7 @@ pub fn next_input(
             rounds: vec![NativeRound {
                 output: done.native.clone(),
                 results: Vec::new(),
+                setup: done.setup.clone(),
             }],
         }],
     });
@@ -425,7 +432,7 @@ mod tests {
                 model: "m1".into(),
                 rounds: vec![NativeRound {
                     output: json!([{"type": "tool_use", "id": "c1"}]),
-                    results: Vec::new(),
+                    ..NativeRound::default()
                 }],
             }]
         );
@@ -437,6 +444,7 @@ mod tests {
         let rounds = vec![NativeRound {
             output: json!([{"type": "text", "text": "hi"}]),
             results: results(),
+            setup: Some("0123".into()),
         }];
         let text = serde_json::to_string(&rounds).unwrap();
         assert_eq!(NativeRound::parse_list(&text), Some(rounds));

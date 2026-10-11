@@ -189,6 +189,8 @@ So switching providers in the middle of a conversation works: the new provider g
 
 For answers, `native_json` keeps the provider's raw output round by round, with the tools' results. When the history goes back to Claude with the same model, the rounds are sent unchanged instead of the turn's text. That keeps the model's earlier thinking (Claude's rule is that thinking blocks only stay valid while everything before them is unchanged), and keeps the request prefix byte-identical so the prompt cache still hits. Any other provider or model gets only the text, because thinking blocks are tied to the model that wrote them. `NativeRound::parse_list` returns `None` for answers saved before rounds existed, which are then sent as text.
 
+Claude's thinking is also tied to the system prompt and tools it was written with, so a new version of the bot that changes either would make Claude drop the thinking of every answer written before, and all thinking after it, on every later request in that conversation. To avoid that, each round saves `setup`, a fingerprint of the system prompt and tools it was sent with (`messages::setup`). `to_messages` takes the thinking out of every answer up to the last one written with a different setup; removing thinking from the start of a conversation is allowed, so newer answers keep theirs. A conversation that spans an update loses its older thinking, and Claude doesn't have to drop anything, so the log line "Claude left out earlier thinking … (prefix_binding_mismatch)" means something else changed an earlier turn. Answers saved before `setup` existed have none and are sent as before.
+
 Thinking is never shown in Discord.
 
 ## Uploads

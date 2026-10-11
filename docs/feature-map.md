@@ -130,6 +130,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #22 | | Timers on the status picture; snail picture retries capped at 3 |
 | #23 | | Docs: the feature map as an overview, a page per feature |
 | #24 | | Drawing with GPT Image 2.5; OpenAI spend and bill next to Claude's |
+| #25 | | Claude's thinking survives bot updates that change the prompt or tools |
 
 ## Not built yet
 

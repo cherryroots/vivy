@@ -4,6 +4,10 @@
 //! Answers Claude wrote before go back exactly as it wrote them ([`Part::Native`]), thinking
 //! included. The conversation then only ever grows at the end, which keeps Claude's earlier
 //! thinking valid and lets the prompt cache cover everything before the new message.
+//!
+//! Claude's thinking is also bound to the system prompt and tools it was written with. When
+//! those change (a new version of the bot), the thinking of answers written before can't
+//! be used anymore, so it is left out: see [`to_messages`].
 
 use std::collections::HashMap;
 
@@ -15,20 +19,34 @@ use crate::ai::{ModelFile, NativeRound, Part, Role, ToolDef, Turn};
 
 /// Turns become messages. `uploaded` holds the Files API IDs of pictures and files (by
 /// [`ContentKey`]); anything missing from it is sent inline, or as a note when it can't be.
-/// `model` picks which earlier answers can go back as they were written.
+/// `model` picks which earlier answers can go back as they were written. `setup` is this
+/// request's [`setup`]: answers written with another one lose their thinking, and so do
+/// all answers before them.
 pub fn to_messages(
     turns: &[Turn],
     model: &str,
+    setup: &str,
     uploaded: &HashMap<ContentKey, String>,
     code_execution: bool,
 ) -> Vec<Value> {
+    // Claude would leave out that thinking itself, and all thinking after it too, on every
+    // request. Taking it out here keeps the thinking of newer answers: thinking can be
+    // removed from the start of a conversation, just not from the middle.
+    let outdated = turns.iter().rposition(|turn| {
+        own_rounds(turn, model).is_some_and(|rounds| {
+            rounds
+                .iter()
+                .any(|r| r.setup.as_deref().is_some_and(|s| s != setup))
+        })
+    });
     let mut messages = Vec::new();
-    for turn in turns {
+    for (i, turn) in turns.iter().enumerate() {
         if turn.role == Role::Assistant
             && let Some(rounds) = own_rounds(turn, model)
         {
+            let keep_thinking = outdated.is_none_or(|last| i > last);
             for round in rounds {
-                add_round(&mut messages, round);
+                add_round(&mut messages, round, keep_thinking);
             }
             continue;
         }
@@ -91,8 +109,16 @@ fn own_rounds<'a>(turn: &'a Turn, model: &str) -> Option<&'a [NativeRound]> {
 }
 
 /// One round of an earlier answer: what Claude wrote, then what the bot's tools answered.
-fn add_round(messages: &mut Vec<Value>, round: &NativeRound) {
-    let content = round.output.as_array().cloned().unwrap_or_default();
+fn add_round(messages: &mut Vec<Value>, round: &NativeRound, keep_thinking: bool) {
+    let mut content = round.output.as_array().cloned().unwrap_or_default();
+    if !keep_thinking {
+        content.retain(|block| {
+            !matches!(
+                block["type"].as_str(),
+                Some("thinking" | "redacted_thinking")
+            )
+        });
+    }
     if !content.is_empty() {
         messages.push(json!({"role": "assistant", "content": content}));
     }
@@ -178,6 +204,18 @@ pub fn tools(defs: &[ToolDef], code_execution: bool) -> Vec<Value> {
     tools
 }
 
+/// A short fingerprint of the system prompt and tools as sent, to tell whether an earlier
+/// answer was written with the same ones. FNV-1a, which gives the same result in every
+/// version of the bot (Rust's own hasher doesn't promise that).
+pub fn setup(system: &Value, tools: &Value) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in json!([system, tools]).to_string().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// The system prompt as one block, marked as the end of the part every request shares, for
 /// the prompt cache.
 pub fn system(prompt: &str) -> Vec<Value> {
@@ -217,10 +255,11 @@ mod tests {
                                 call_id: "t1".into(),
                                 output: "12:00".into(),
                             }],
+                            ..NativeRound::default()
                         },
                         NativeRound {
                             output: json!([{"type": "text", "text": "It's noon."}]),
-                            results: Vec::new(),
+                            ..NativeRound::default()
                         },
                     ],
                 },
@@ -231,7 +270,7 @@ mod tests {
             answer,
             text(Role::User, "thanks"),
         ];
-        let messages = to_messages(&turns, "claude-opus-5-5", &HashMap::new(), true);
+        let messages = to_messages(&turns, "claude-opus-5-5", "s", &HashMap::new(), true);
         assert_eq!(
             messages,
             [
@@ -244,12 +283,69 @@ mod tests {
         );
 
         // Another model gets the text only.
-        let messages = to_messages(&turns, "claude-sonnet-5-5", &HashMap::new(), true);
+        let messages = to_messages(&turns, "claude-sonnet-5-5", "s", &HashMap::new(), true);
         assert_eq!(messages.len(), 3);
         assert_eq!(
             messages[1],
             json!({"role": "assistant", "content": [{"type": "text", "text": "It's noon."}]})
         );
+    }
+
+    #[test]
+    fn thinking_from_another_setup_is_left_out() {
+        let answer = |thought: &str, setup: Option<&str>| Turn {
+            role: Role::Assistant,
+            parts: vec![Part::Native {
+                provider: "claude".into(),
+                model: "m".into(),
+                rounds: vec![NativeRound {
+                    output: json!([
+                        {"type": "thinking", "thinking": "", "signature": thought},
+                        {"type": "text", "text": "hi"}
+                    ]),
+                    setup: setup.map(str::to_string),
+                    ..NativeRound::default()
+                }],
+            }],
+        };
+        let turns = vec![
+            text(Role::User, "a"),
+            answer("old", None),
+            text(Role::User, "b"),
+            answer("before the update", Some("v1")),
+            text(Role::User, "c"),
+            answer("after the update", Some("v2")),
+            text(Role::User, "d"),
+        ];
+        let thoughts = |messages: Vec<Value>| -> Vec<String> {
+            messages
+                .iter()
+                .flat_map(|m| m["content"].as_array().unwrap().clone())
+                .filter(|block| block["type"] == "thinking")
+                .map(|block| block["signature"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // Everything up to the last answer written with another setup loses its thinking;
+        // the text stays.
+        let messages = to_messages(&turns, "m", "v2", &HashMap::new(), true);
+        assert_eq!(messages.len(), 7);
+        assert_eq!(
+            messages[3]["content"],
+            json!([{"type": "text", "text": "hi"}])
+        );
+        assert_eq!(thoughts(messages), ["after the update"]);
+        // Answers saved before setups were recorded keep theirs.
+        let messages = to_messages(&turns[..3], "m", "v2", &HashMap::new(), true);
+        assert_eq!(thoughts(messages), ["old"]);
+    }
+
+    #[test]
+    fn setup_changes_with_the_prompt_or_the_tools() {
+        let tools = json!([{"name": "draw_picture"}]);
+        let base = setup(&json!("prompt"), &tools);
+        assert_eq!(base, setup(&json!("prompt"), &tools));
+        assert_ne!(base, setup(&json!("prompt."), &tools));
+        assert_ne!(base, setup(&json!("prompt"), &json!([])));
     }
 
     #[test]
@@ -281,7 +377,7 @@ mod tests {
             (ContentKey::of(&[1]), "file_pic".to_string()),
             (ContentKey::of(&[2]), "file_sheet".to_string()),
         ]);
-        let content = &to_messages(&turns, "m", &uploaded, true)[0]["content"];
+        let content = &to_messages(&turns, "m", "s", &uploaded, true)[0]["content"];
         assert_eq!(
             content,
             &json!([
@@ -294,7 +390,7 @@ mod tests {
         );
 
         // Without code execution the spreadsheet can't be opened.
-        let content = &to_messages(&turns, "m", &uploaded, false)[0]["content"];
+        let content = &to_messages(&turns, "m", "s", &uploaded, false)[0]["content"];
         assert_eq!(
             content[1]["text"],
             "[sales.xlsx is attached, but you can't open this kind of file here]"
@@ -308,7 +404,7 @@ mod tests {
             text(Role::Assistant, "I said this on my own."),
             text(Role::User, "why?"),
         ];
-        let messages = to_messages(&turns, "m", &HashMap::new(), true);
+        let messages = to_messages(&turns, "m", "s", &HashMap::new(), true);
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
