@@ -73,9 +73,15 @@ async fn send_due(ctx: &BotCtx) -> Result<()> {
     Ok(())
 }
 
-async fn deliver(ctx: &BotCtx, reminder: Reminder) -> Result<()> {
+async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
     let now = Utc::now().timestamp();
     let id = reminder.id;
+    // Loaded now rather than with the list of due reminders, so only one reminder's
+    // pictures are in memory at a time.
+    reminder.images = ctx
+        .db
+        .call(move |conn| Ok(store::images(conn, id)?))
+        .await?;
     let channel = ChannelId::new(reminder.channel_id);
 
     let mut sent = channel

@@ -86,7 +86,7 @@ When the scheduler delivers one, `scheduler::next_time` works out the next time 
 `scheduler.rs` runs one background task for all reminders (voltgpt had a timer per reminder). Each loop it:
 
 1. purges reminders sent more than a week ago (`KEEP_SENT_SECS`),
-2. delivers up to 50 due reminders (`store::due`, oldest first),
+2. delivers up to 50 due reminders (`store::due`, oldest first), loading each one's images (`store::images`) just before sending it, so only one reminder's images are in memory at a time,
 3. sleeps until the next `next_try_at`, at most an hour, so old reminders still get purged and a changed system clock is noticed.
 
 The sleep is a `tokio::select!`, which waits on several things at once and continues with whichever finishes first: the sleep, the `wake` signal, or the shutdown token. `wake` is a `tokio::sync::Notify` shared with the feature. Adding, deleting or snoozing a reminder calls `notify_one()` on it, so the scheduler never sleeps past a new reminder.

@@ -140,7 +140,9 @@ pub fn next_try_at(conn: &Connection) -> rusqlite::Result<Option<i64>> {
     )
 }
 
-/// Reminders that should be sent now, oldest first.
+/// Reminders that should be sent now, oldest first. Their `images` are left empty: up to
+/// 50 reminders' pictures would all sit in memory at once, so the sender loads each one's
+/// with [`images`] just before sending it.
 pub fn due(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Reminder>> {
     let mut stmt = conn.prepare(
         "SELECT id, user_id, channel_id, guild_id, message, fire_at, created_at, attempts,
@@ -148,10 +150,8 @@ pub fn due(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Reminder>> {
          FROM reminders WHERE sent_at IS NULL AND next_try_at <= ?1
          ORDER BY next_try_at LIMIT 50",
     )?;
-    let reminders = stmt
-        .query_map([now], reminder_from_row)?
-        .collect::<Result<Vec<_>, _>>()?;
-    with_images(conn, reminders)
+    stmt.query_map([now], reminder_from_row)?
+        .collect::<Result<Vec<_>, _>>()
 }
 
 /// Any reminder by ID, sent or not.
@@ -166,7 +166,10 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Reminder>> {
         )
         .optional()?;
     match reminder {
-        Some(reminder) => Ok(with_images(conn, vec![reminder])?.pop()),
+        Some(mut reminder) => {
+            reminder.images = images(conn, id)?;
+            Ok(Some(reminder))
+        }
         None => Ok(None),
     }
 }
@@ -299,21 +302,18 @@ fn reminder_from_row(row: &Row) -> rusqlite::Result<Reminder> {
     })
 }
 
-fn with_images(conn: &Connection, mut reminders: Vec<Reminder>) -> rusqlite::Result<Vec<Reminder>> {
-    let mut stmt = conn.prepare(
+/// A reminder's pictures, in order.
+pub fn images(conn: &Connection, reminder: i64) -> rusqlite::Result<Vec<Image>> {
+    let mut stmt = conn.prepare_cached(
         "SELECT filename, data FROM reminder_images WHERE reminder_id = ?1 ORDER BY position",
     )?;
-    for reminder in &mut reminders {
-        reminder.images = stmt
-            .query_map([reminder.id], |row| {
-                Ok(Image {
-                    filename: row.get(0)?,
-                    data: row.get(1)?,
-                })
-            })?
-            .collect::<Result<_, _>>()?;
-    }
-    Ok(reminders)
+    stmt.query_map([reminder], |row| {
+        Ok(Image {
+            filename: row.get(0)?,
+            data: row.get(1)?,
+        })
+    })?
+    .collect()
 }
 
 #[cfg(test)]
@@ -363,6 +363,10 @@ mod tests {
         assert_eq!(got.missing_images, 1);
         assert_eq!(got.guild_id, Some(20));
         assert_eq!(list_pending(&conn, 1).unwrap()[0].image_count, 2);
+        // Due reminders come without their pictures; the sender loads them one by one.
+        let due_now = due(&conn, 100).unwrap();
+        assert!(due_now[0].images.is_empty());
+        assert_eq!(images(&conn, id).unwrap(), reminder.images);
     }
 
     #[test]

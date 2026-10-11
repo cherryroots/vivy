@@ -34,13 +34,15 @@ use chrono::{DateTime, Utc};
 use image::imageops::FilterType;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use serenity::futures::future::join_all;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use self::collect::Collector;
 pub use self::uploads::MIGRATIONS as UPLOAD_MIGRATIONS;
 use self::uploads::Uploads;
-use super::fallback::{self, ApiError};
+use super::api::{self, error_message};
+use super::fallback::ApiError;
 use super::spend::{Spend, Used};
 use super::sse::SseParser;
 use super::{ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Part, Turn};
@@ -167,34 +169,27 @@ impl Sender {
 
     /// Posts a Messages request, retrying a couple of times when Anthropic is busy.
     async fn messages(&self, body: &Value) -> anyhow::Result<reqwest::Response> {
-        let mut waits = RETRY_WAITS.iter();
-        loop {
-            let request = self
-                .request(reqwest::Method::POST, "/messages")
+        let request = || {
+            self.request(reqwest::Method::POST, "/messages")
                 .header("anthropic-beta", &self.betas)
-                .json(body);
-            let response = fallback::send(request)
+                .json(body)
+        };
+        // 429: rate limited, 529: overloaded.
+        let response =
+            api::send_retrying("Claude", request, &[429, 500, 502, 503, 529], &RETRY_WAITS)
                 .await
                 .context("couldn't reach Claude")?;
-            let status = response.status();
-            if status.is_success() {
-                return Ok(response);
-            }
-            // 429: rate limited, 529: overloaded.
-            let busy = matches!(status.as_u16(), 429 | 500 | 502 | 503 | 529);
-            if busy && let Some(wait) = waits.next() {
-                warn!("Claude answered {status}, trying again");
-                tokio::time::sleep(*wait).await;
-                continue;
-            }
-            let text = response.text().await.unwrap_or_default();
-            return Err(ApiError {
-                provider: "claude",
-                status,
-                message: error_message(&text),
-            }
-            .into());
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
         }
+        let text = response.text().await.unwrap_or_default();
+        Err(ApiError {
+            provider: "claude",
+            status,
+            message: error_message(&text),
+        }
+        .into())
     }
 
     /// The name of a file Claude's code saved.
@@ -282,39 +277,57 @@ impl Claude {
     /// Uploads the pictures and files of `turns` that aren't uploaded yet, and returns the
     /// IDs of all of them. One that fails to upload is left out and sent another way.
     async fn upload_all(&self, turns: &[Turn]) -> HashMap<ContentKey, String> {
-        let mut ids = HashMap::new();
+        // Each picture and file once, found by its bytes.
+        let mut wanted = Vec::new();
         for part in turns.iter().flat_map(|t| &t.parts) {
-            let (name, mime, data) = match part {
-                Part::Image(image) => (image_name(image.mime), image.mime, &image.data),
-                Part::File(file) => (file.name.clone(), file.mime.as_str(), &file.data),
+            let data = match part {
+                Part::Image(image) => &image.data,
+                Part::File(file) => &file.data,
                 _ => continue,
             };
             let key = ContentKey::of(data);
-            if ids.contains_key(&key) {
-                continue;
-            }
-            if let Some(id) = self.uploads.get(key, Utc::now()).await {
-                ids.insert(key, id);
-                continue;
-            }
-            // Big pictures are made smaller first. The upload is still found by the
-            // original's bytes, so this happens once per picture.
-            let smaller = match part {
-                Part::Image(_) => shrink_image(data.clone()).await,
-                _ => None,
-            };
-            let (mime, data) = match &smaller {
-                Some(small) => (small.mime, &small.data),
-                None => (mime, data),
-            };
-            match self.upload(key, &name, mime, data).await {
-                Ok(id) => {
-                    ids.insert(key, id);
-                }
-                Err(err) => warn!("couldn't upload {name} to Claude: {err:#}"),
+            if !wanted.iter().any(|(k, _)| *k == key) {
+                wanted.push((key, part));
             }
         }
+        // A few at a time, so a message with many pictures doesn't wait for each in turn.
+        const PARALLEL_UPLOADS: usize = 4;
+        let mut ids = HashMap::new();
+        for group in wanted.chunks(PARALLEL_UPLOADS) {
+            let uploads = group.iter().map(|&(key, part)| self.upload_part(key, part));
+            ids.extend(join_all(uploads).await.into_iter().flatten());
+        }
         ids
+    }
+
+    /// The ID of one picture or file: saved from before, or uploaded now. None when the
+    /// upload failed.
+    async fn upload_part(&self, key: ContentKey, part: &Part) -> Option<(ContentKey, String)> {
+        let (name, mime, data) = match part {
+            Part::Image(image) => (image_name(image.mime), image.mime, &image.data),
+            Part::File(file) => (file.name.clone(), file.mime.as_str(), &file.data),
+            _ => return None,
+        };
+        if let Some(id) = self.uploads.get(key, Utc::now()).await {
+            return Some((key, id));
+        }
+        // Big pictures are made smaller first. The upload is still found by the
+        // original's bytes, so this happens once per picture.
+        let smaller = match part {
+            Part::Image(_) => shrink_image(data.clone()).await,
+            _ => None,
+        };
+        let (mime, data) = match &smaller {
+            Some(small) => (small.mime, &small.data),
+            None => (mime, data),
+        };
+        match self.upload(key, &name, mime, data).await {
+            Ok(id) => Some((key, id)),
+            Err(err) => {
+                warn!("couldn't upload {name} to Claude: {err:#}");
+                None
+            }
+        }
     }
 
     async fn upload(
@@ -446,14 +459,6 @@ async fn shrink_image(data: Vec<u8>) -> Option<ModelImage> {
 fn image_name(mime: &str) -> String {
     let extension = mime.rsplit('/').next().unwrap_or("png");
     format!("image.{extension}")
-}
-
-/// The `message` of an API error body, or the whole body.
-fn error_message(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
-        .ok()
-        .and_then(|v| v["error"]["message"].as_str().map(str::to_string))
-        .unwrap_or_else(|| crate::util::shorten(body, 300))
 }
 
 /// Sets (or with `None`, removes) the ID of the code execution container to use. The

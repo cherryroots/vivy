@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Datelike, TimeZone, Utc};
 use serde_json::Value;
 
-use super::error_message;
+use crate::ai::api::error_message;
 use crate::ai::spend::Bill;
 
 const API: &str = "https://api.openai.com/v1";

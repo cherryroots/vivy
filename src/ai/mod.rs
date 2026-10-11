@@ -5,6 +5,7 @@
 //! arrives as a stream of [`ChatEvent`]s. Discord, message splitting, the tool loop and the
 //! bot's own tools live outside, so every provider reuses them.
 
+mod api;
 pub mod claude;
 mod complete;
 pub mod fallback;

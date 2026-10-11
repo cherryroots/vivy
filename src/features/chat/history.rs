@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use serenity::all::{ContentSafeOptions, Message, content_safe};
+use serenity::futures::future::join_all;
 use tracing::warn;
 
 use super::store::{self, StoredPart, Turn};
@@ -175,6 +176,17 @@ async fn to_model_turns(ctx: &BotCtx, turns: &[Turn], media_turns: usize) -> Vec
         .collect();
     let fresh = refresh_urls(ctx, &urls).await;
 
+    // Download everything first, a few at a time, then put each result in its place below.
+    let to_load: Vec<&StoredPart> = turns
+        .iter()
+        .flat_map(|t| t.parts.iter().filter(|p| loads(t, p, loaded_turns)))
+        .collect();
+    let mut loaded = Vec::new();
+    for group in to_load.chunks(PARALLEL_LOADS) {
+        loaded.extend(join_all(group.iter().map(|part| load_part(part, &fresh))).await);
+    }
+    let mut loaded = loaded.into_iter();
+
     let mut result = Vec::new();
     for turn in turns {
         let mut parts = Vec::new();
@@ -183,42 +195,14 @@ async fn to_model_turns(ctx: &BotCtx, turns: &[Turn], media_turns: usize) -> Vec
                 StoredPart::Text { text } | StoredPart::Context { text } => {
                     parts.push(Part::Text(text.clone()));
                 }
-                // Answers never carry media of their own.
-                StoredPart::Media { .. } if turn.role == Role::Assistant => {}
-                StoredPart::Media { .. } if !loaded_turns.contains(&turn.id) => {
+                _ if loads(turn, part, loaded_turns) => {
+                    parts.extend(loaded.next().unwrap_or_default());
+                }
+                StoredPart::Media { .. } if turn.role == Role::User => {
                     parts.push(Part::Text("[an earlier image]".into()));
                 }
-                StoredPart::Media { url, kind, mime } => {
-                    let media = Media {
-                        url: fresh.get(url).unwrap_or(url).clone(),
-                        kind: (*kind).into(),
-                        mime: static_mime(mime),
-                    };
-                    match media::load_for_model(&media).await {
-                        Ok(images) => parts.extend(images.into_iter().map(Part::Image)),
-                        Err(err) => {
-                            warn!("couldn't load {url} for chat: {err:#}");
-                            parts.push(Part::Text("[an image that couldn't be loaded]".into()));
-                        }
-                    }
-                }
-                StoredPart::File { .. } if turn.role == Role::Assistant => {}
-                StoredPart::File { url, name, mime } => {
-                    let link = fresh.get(url).unwrap_or(url);
-                    match media::download(link, MAX_FILE_BYTES).await {
-                        Ok(data) => parts.push(Part::File(ModelFile {
-                            name: name.clone(),
-                            mime: mime.clone(),
-                            data,
-                        })),
-                        Err(err) => {
-                            warn!("couldn't load {name} for chat: {err:#}");
-                            parts.push(Part::Text(format!(
-                                "[the file {name}, which couldn't be loaded]"
-                            )));
-                        }
-                    }
-                }
+                // Answers never carry media or files of their own.
+                StoredPart::Media { .. } | StoredPart::File { .. } => {}
             }
         }
         if let Some(native) = native_part(turn) {
@@ -230,6 +214,58 @@ async fn to_model_turns(ctx: &BotCtx, turns: &[Turn], media_turns: usize) -> Vec
         });
     }
     result
+}
+
+/// How many pictures, videos and files are downloaded at once.
+const PARALLEL_LOADS: usize = 4;
+
+/// Whether `part` of `turn` is downloaded for the model: a person's files, and their
+/// pictures and videos in the newest turns that have some (`loaded_turns`).
+fn loads(turn: &Turn, part: &StoredPart, loaded_turns: &[i64]) -> bool {
+    match part {
+        _ if turn.role == Role::Assistant => false,
+        StoredPart::Media { .. } => loaded_turns.contains(&turn.id),
+        StoredPart::File { .. } => true,
+        StoredPart::Text { .. } | StoredPart::Context { .. } => false,
+    }
+}
+
+/// Downloads one picture, video or file for the model. One that can't be loaded becomes a
+/// short note, so the model knows something was there.
+async fn load_part(part: &StoredPart, fresh: &HashMap<String, String>) -> Vec<Part> {
+    match part {
+        StoredPart::Media { url, kind, mime } => {
+            let media = Media {
+                url: fresh.get(url).unwrap_or(url).clone(),
+                kind: (*kind).into(),
+                mime: static_mime(mime),
+            };
+            match media::load_for_model(&media).await {
+                Ok(images) => images.into_iter().map(Part::Image).collect(),
+                Err(err) => {
+                    warn!("couldn't load {url} for chat: {err:#}");
+                    vec![Part::Text("[an image that couldn't be loaded]".into())]
+                }
+            }
+        }
+        StoredPart::File { url, name, mime } => {
+            let link = fresh.get(url).unwrap_or(url);
+            match media::download(link, MAX_FILE_BYTES).await {
+                Ok(data) => vec![Part::File(ModelFile {
+                    name: name.clone(),
+                    mime: mime.clone(),
+                    data,
+                })],
+                Err(err) => {
+                    warn!("couldn't load {name} for chat: {err:#}");
+                    vec![Part::Text(format!(
+                        "[the file {name}, which couldn't be loaded]"
+                    ))]
+                }
+            }
+        }
+        StoredPart::Text { .. } | StoredPart::Context { .. } => Vec::new(),
+    }
 }
 
 /// An answer's raw output, for the provider that wrote it. Answers saved before rounds

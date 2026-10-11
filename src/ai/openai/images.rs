@@ -16,10 +16,10 @@ use anyhow::{Context as _, bail};
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use serde_json::{Value, json};
-use tracing::warn;
 
-use super::{error_message, price};
+use super::price;
 use crate::ai::Spend;
+use crate::ai::api::{self, error_message};
 use crate::core::user_error;
 use crate::util::media::ModelImage;
 
@@ -83,35 +83,28 @@ impl Images {
 
     /// Posts a request, retrying a couple of times when OpenAI is busy.
     async fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
-        let mut waits = RETRY_WAITS.iter();
-        loop {
-            let response = self
-                .http
+        let request = || {
+            self.http
                 .post(format!("{API}{path}"))
                 .bearer_auth(&self.token)
                 .json(body)
-                .send()
-                .await
-                .context("couldn't reach OpenAI")?;
-            let status = response.status();
-            if status.is_success() {
-                return response.json().await.context("OpenAI sent invalid JSON");
-            }
-            let busy = matches!(status.as_u16(), 429 | 500 | 502 | 503);
-            if busy && let Some(wait) = waits.next() {
-                warn!("OpenAI's Image API answered {status}, trying again");
-                tokio::time::sleep(*wait).await;
-                continue;
-            }
-            let text = response.text().await.unwrap_or_default();
-            let message = error_message(&text);
-            // 400 is a request it won't draw (its safety system) or can't (a bad size): the
-            // model reads why and can try again, and the log channel isn't bothered.
-            if status == reqwest::StatusCode::BAD_REQUEST {
-                return Err(user_error(format!("OpenAI won't draw that: {message}")));
-            }
-            bail!("OpenAI answered {status}: {message}");
+        };
+        let busy = [429, 500, 502, 503];
+        let response = api::send_retrying("OpenAI's Image API", request, &busy, &RETRY_WAITS)
+            .await
+            .context("couldn't reach OpenAI")?;
+        let status = response.status();
+        if status.is_success() {
+            return response.json().await.context("OpenAI sent invalid JSON");
         }
+        let text = response.text().await.unwrap_or_default();
+        let message = error_message(&text);
+        // 400 is a request it won't draw (its safety system) or can't (a bad size): the
+        // model reads why and can try again, and the log channel isn't bothered.
+        if status == reqwest::StatusCode::BAD_REQUEST {
+            return Err(user_error(format!("OpenAI won't draw that: {message}")));
+        }
+        bail!("OpenAI answered {status}: {message}");
     }
 }
 

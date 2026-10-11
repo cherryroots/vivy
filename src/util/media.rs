@@ -15,7 +15,7 @@ use anyhow::{Context as _, bail};
 use base64::Engine as _;
 use reqwest::Url;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use serenity::all::{Http, Message};
+use serenity::all::{Http, Message, MessageFlags};
 use tracing::warn;
 
 use super::frames;
@@ -196,11 +196,32 @@ pub fn links(text: &str) -> Vec<&str> {
         .collect()
 }
 
+/// The links in a message's text that Discord may give a preview, each once: not the ones
+/// written as `<link>`, and none when the message's previews are turned off.
+pub fn preview_links(msg: &Message) -> Vec<&str> {
+    if msg
+        .flags
+        .is_some_and(|f| f.contains(MessageFlags::SUPPRESS_EMBEDS))
+    {
+        return Vec::new();
+    }
+    let mut found: Vec<&str> = Vec::new();
+    for word in msg.content.split_whitespace() {
+        for link in links(word) {
+            let wrapped = word.contains(&format!("<{link}"));
+            if !wrapped && !found.contains(&link) {
+                found.push(link);
+            }
+        }
+    }
+    found
+}
+
 /// Discord sometimes adds link previews (and the GIF of a GIF link) a moment after the
-/// message arrives. When a message has links but no previews yet, wait and read it again.
+/// message arrives. When a message has links that can get a preview but no previews yet,
+/// wait and read it again. Links written as `<link>` never get one, so they aren't waited for.
 pub async fn with_previews(http: &Http, msg: &Message) -> Message {
-    let has_link = msg.content.contains("https://") || msg.content.contains("http://");
-    if !has_link || !msg.embeds.is_empty() {
+    if preview_links(msg).is_empty() || !msg.embeds.is_empty() {
         return msg.clone();
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -492,6 +513,20 @@ mod tests {
                 "https://d.com/e"
             ]
         );
+    }
+
+    #[test]
+    fn finds_links_that_get_previews() {
+        let mut msg = Message::default();
+        msg.content =
+            "<https://a.com/x> https://b.com/y and https://b.com/y (https://c.com)".into();
+        assert_eq!(preview_links(&msg), ["https://b.com/y", "https://c.com"]);
+        msg.content = "only <https://a.com/x> here".into();
+        assert!(preview_links(&msg).is_empty());
+        // Previews turned off for the whole message.
+        msg.content = "https://b.com/y".into();
+        msg.flags = Some(MessageFlags::SUPPRESS_EMBEDS);
+        assert!(preview_links(&msg).is_empty());
     }
 
     #[test]
