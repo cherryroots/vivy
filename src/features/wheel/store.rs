@@ -64,6 +64,8 @@ pub const MIGRATIONS: &[&str] = &[
     );
     INSERT INTO wheel_round_ids (id, last_id)
         SELECT 1, coalesce(max(id), 0) FROM wheel_rounds;",
+    // 5: the movie each option picked, set by admins. NULL when not set.
+    "ALTER TABLE wheel_options ADD COLUMN movie TEXT;",
 ];
 
 /// A season's row, without its rounds.
@@ -156,14 +158,22 @@ pub fn seasons(conn: &Connection, guild: u64) -> rusqlite::Result<Vec<SeasonInfo
     .collect()
 }
 
-/// Reads a whole season: its options and its rounds with their claims and bets, all in the
-/// order they were added.
+/// Reads a whole season: its options with their movies, and its rounds with their claims
+/// and bets, all in the order they were added.
 pub fn load_season(conn: &Connection, season: i64) -> rusqlite::Result<Season> {
-    let mut stmt =
-        conn.prepare("SELECT user_id FROM wheel_options WHERE season_id = ?1 ORDER BY rowid")?;
-    let options = stmt
-        .query_map([season], |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<u64>>>()?;
+    let mut stmt = conn
+        .prepare("SELECT user_id, movie FROM wheel_options WHERE season_id = ?1 ORDER BY rowid")?;
+    let rows = stmt
+        .query_map([season], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<(u64, Option<String>)>>>()?;
+    let mut options = Vec::new();
+    let mut movies = HashMap::new();
+    for (user, movie) in rows {
+        options.push(user);
+        if let Some(movie) = movie {
+            movies.insert(user, movie);
+        }
+    }
 
     let mut stmt = conn.prepare(
         "SELECT id, number, winner_id FROM wheel_rounds WHERE season_id = ?1 ORDER BY number",
@@ -216,6 +226,7 @@ pub fn load_season(conn: &Connection, season: i64) -> rusqlite::Result<Season> {
         number,
         rules: Rules::parse(&rules).unwrap_or_default(),
         options,
+        movies,
         rounds,
     })
 }
@@ -254,6 +265,21 @@ pub fn remove_option(conn: &Connection, season: i64, user: u64) -> rusqlite::Res
         params![season, user],
     )?;
     Ok(removed > 0)
+}
+
+/// Sets the movie an option picked; `None` clears it. Returns false if they aren't on the
+/// wheel.
+pub fn set_movie(
+    conn: &Connection,
+    season: i64,
+    user: u64,
+    movie: Option<&str>,
+) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE wheel_options SET movie = ?3 WHERE season_id = ?1 AND user_id = ?2",
+        params![season, user, movie],
+    )?;
+    Ok(changed > 0)
 }
 
 /// Claims for a player. Returns false if they already claimed this round.
@@ -478,6 +504,13 @@ mod tests {
                 }
             ]
         );
+
+        assert!(set_movie(&conn, season, 7, Some("Alien")).unwrap());
+        assert!(!set_movie(&conn, season, 9, Some("Heat")).unwrap());
+        let loaded = load_season(&conn, season).unwrap();
+        assert_eq!(loaded.movies, HashMap::from([(7, "Alien".to_string())]));
+        set_movie(&conn, season, 7, None).unwrap();
+        assert!(load_season(&conn, season).unwrap().movies.is_empty());
 
         assert!(remove_bet(&conn, round, 1, 8).unwrap());
         assert!(!remove_bet(&conn, round, 1, 8).unwrap());

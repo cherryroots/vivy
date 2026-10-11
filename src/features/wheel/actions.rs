@@ -557,7 +557,14 @@ async fn open_menu(
 
     i.defer_ephemeral(&ctx.http).await?;
     let names = names::lookup(ctx, guild, &choices).await;
-    let (content, menu) = ui::pick_menu(kind, round, i.message.id.get(), &choices, &names);
+    let (content, menu) = ui::pick_menu(
+        kind,
+        round,
+        i.message.id.get(),
+        &choices,
+        &names,
+        &game.season.movies,
+    );
     let menu = EditInteractionResponse::new()
         .content(content)
         .components(menu);
@@ -642,10 +649,11 @@ async fn picked(
                 winner: UserId::new(on),
             });
             let names = names::lookup(ctx, guild, &[on]).await;
-            let text = format!(
-                "Set {} as the winner of round {number}.",
-                ui::name(&names, on)
+            let winner = ui::with_movie(
+                ui::name(&names, on),
+                game.season.movies.get(&on).map(String::as_str),
             );
+            let text = format!("Set {winner} as the winner of round {number}.");
             i.create_response(&ctx.http, update_text(text)).await?;
             edit_status(ctx, i.channel_id, message, guild, &game, resolved).await;
         }
@@ -816,13 +824,25 @@ async fn reset(
                 return Err(user_error(SEASON_CHANGED));
             }
             let mut options = Vec::new();
+            let mut movies = Vec::new();
             if let Some(old) = active {
                 if keep_options {
-                    options = store::load_season(&tx, old)?.options;
+                    let old = store::load_season(&tx, old)?;
+                    // Movies that won were watched, so only the others come along.
+                    let won: Vec<u64> = old.rounds.iter().filter_map(|r| r.winner).collect();
+                    movies = old
+                        .movies
+                        .into_iter()
+                        .filter(|(user, _)| !won.contains(user))
+                        .collect();
+                    options = old.options;
                 }
                 store::end_season(&tx, old, now())?;
             }
-            store::start_season(&tx, guild.get(), &options, now())?;
+            let new = store::start_season(&tx, guild.get(), &options, now())?;
+            for (user, movie) in movies {
+                store::set_movie(&tx, new, user, Some(&movie))?;
+            }
             let number = store::seasons(&tx, guild.get())?.len();
             tx.commit()?;
             Ok(number)

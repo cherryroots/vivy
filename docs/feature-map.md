@@ -28,7 +28,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 |---|---|---|---|
 | Chat | `chat/` | Answers when someone @-mentions Vivy, with web search, code, files and the bot's own tools; chimes in now and then; checks in on people later; knows the server's emoji | @-mention, reply to an answer, ❌ and 🔁 reactions |
 | Reminders | `reminders/` | Pings you at a time you name, in plain words, with the pictures you attached, once or on repeat | `@Vivy remind me ...`, `/reminders`, `/timezone`, Cancel and snooze buttons, chat tools |
-| Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel_status`, `/wheel_add`, `/insert_bet`, `/reset_wheel`, buttons |
+| Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`, buttons |
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
@@ -136,6 +136,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #28 | | Wheel menus past 25 names, reminder Cancel and Snooze… buttons, repeating reminders, friendly tool status lines, `/snails` leaderboard |
 | #29 | | Code cleanup: big files split, shared helpers, tracing-log, less work per message |
 | #31 | | `look_at_profile_picture`: Vivy can see people's profile pictures and her own face; tool results can carry pictures |
+| #32 | | Wheel: the movie each person picked, set with `/wheel_add` or `/wheel_movie`, shown on the picture and in the menus |
 
 ## Not built yet
 

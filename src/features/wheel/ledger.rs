@@ -86,6 +86,8 @@ pub struct Season {
     pub number: i64,
     pub rules: Rules,
     pub options: Vec<u64>,
+    /// The movie each option picked, for those that have one set.
+    pub movies: HashMap<u64, String>,
     pub rounds: Vec<Round>,
 }
 
@@ -479,6 +481,7 @@ mod tests {
             number: 1,
             rules: Default::default(),
             options: options.to_vec(),
+            movies: Default::default(),
             rounds,
         }
     }

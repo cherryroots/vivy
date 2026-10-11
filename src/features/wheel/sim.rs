@@ -60,6 +60,7 @@ fn play(rules: Rules, rng: &mut Rng) -> Season {
         number: 1,
         rules,
         options: options.clone(),
+        movies: Default::default(),
         rounds: Vec::new(),
     };
     let mut left = options.clone();
