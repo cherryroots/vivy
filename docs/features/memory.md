@@ -9,7 +9,7 @@ Vivy remembers people and places between conversations. She keeps a folder of sh
 - **`/memory forget [file]`** deletes one of your own files (autocompleted), or with no file your whole folder (in DMs, everything).
 - **`/memory delete <path>`** (admins, from `admins` in config.toml) deletes any file or folder.
 
-Settings live under `[features.memory]`: `diary_channels`, `mood_checks_per_day`, `timezone`, `faces_dir`, `face_zoom`, `face_center`, `banners_dir` and `nickname`, plus the usual gate keys like `guilds`. `config.example.toml` explains each one. Setup is in the README.
+Settings live under `[features.memory]`: `diary_channels`, `mood_checks_per_day`, `no_mood_checks`, `timezone`, `faces_dir`, `face_zoom`, `face_center`, `banners_dir` and `nickname`, plus the usual gate keys like `guilds`. `config.example.toml` explains each one. Setup is in the README.
 
 ## Files
 
@@ -120,7 +120,7 @@ On success the reflection time saved is when it started, not when it ended, so e
 
 ### Mood checks
 
-`mood.rs`. In each server that has a `mood.md`, the loop rewrites it `mood_checks_per_day` times a day (default 5; 0 turns them off). A check is due when the last one is older than a day divided by that number, minus 10 minutes so the hourly loop doesn't push each check an hour later. A server where nobody wrote for a day (from the newest message ID Discord's cache keeps per channel and thread, `talked_lately`) is skipped until people talk there again, since nobody would see the change.
+`mood.rs`. In each server that has a `mood.md`, the loop rewrites it `mood_checks_per_day` times a day (default 5; 0 turns them off). A check is due when the last one is older than a day divided by that number, minus 10 minutes so the hourly loop doesn't push each check an hour later. Servers listed in `no_mood_checks` are skipped too. A server where nobody wrote for a day (from the newest message ID Discord's cache keeps per channel and thread, `talked_lately`) is skipped until people talk there again, since nobody would see the change.
 
 One short call with no tools: Vivy gets the local time in `timezone` (like "It's Saturday 10 October, 23:40 where you live."), her self notes, her mood file, and the paths changed in her memory since the last check. She answers with the new file. The prompt says this check is about her body and the time of day (waking up slowly, hungry at mealtimes, sleepy late at night), to drift rather than jump, and to keep a mood that came from people until it has had time to fade. An answer without a `status:` line is dropped. If `set_mood` changed the file while she was thinking, the newer one stays. Either way the check time is saved in `memory_mood_checks`. The request's job is "mood", which runs at low effort with no built-in tools (see [Jobs](../ai.md#jobs)).
 
