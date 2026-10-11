@@ -105,6 +105,14 @@ sudo systemctl enable --now vivy
 
 **Any other way works too.** Every file the bot uses (`.env`, `config.toml`, `vivy.db`, `faces_dir`, `banners_dir`) is found relative to the folder it runs in, so you can also skip the install and run `./target/release/vivy` straight from the repo folder, in `tmux`, or however you like. `VIVY_CONFIG` points at a config file somewhere else.
 
+If you run it from the repo folder, make the files there and keep the secrets private:
+
+```bash
+cp .env.example .env
+cp config.example.toml config.toml
+chmod 600 .env
+```
+
 ### Updating
 
 ```bash
