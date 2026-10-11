@@ -24,7 +24,7 @@ src/
 
 1. **Features never import each other.** A feature may use `core`, `ai` and `util`, nothing else. When features need each other, they go through the core: chat tools (a feature offers a tool, chat runs it), chat context (a feature adds a few lines to each question), bot events (a feature publishes, others may listen), and the status picture (each feature adds its own stats). Chat never imports reminders, and reminders never import chat.
 2. **A feature declares everything it adds in one place**, its `impl Feature`: commands, mention prefixes, tools, tables, background tasks, stats. Nothing is registered by hand anywhere else.
-3. **Logic, storage and Discord are separate files.** Pure logic (the reminder parser `reminders/parse.rs`, the wheel ledger `wheel/ledger.rs`, memory's folder commands `memory/folder.rs`, snail link keys `snails/links.rs`) takes plain values and returns plain values, so it is tested without Discord or a database. SQL lives in each feature's `store.rs`. The Discord code in between only turns events into calls to those two.
+3. **Logic, storage and Discord are separate files.** Pure logic (the reminder parser `reminders/parse.rs`, the wheel ledger `wheel/ledger.rs`, memory's folder commands `memory/folder.rs`, snail link keys `snails/links.rs`) takes plain values and returns plain values, so it is tested without Discord or a database. SQL lives in each feature's `store.rs` (or a `store/` folder once it grows big, like snails'). The Discord code in between only turns events into calls to those two.
 
 ## What happens at startup
 

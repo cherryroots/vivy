@@ -19,7 +19,7 @@ The two halves are independent. The log channel is part of the core logging setu
 |---|---|
 | `src/core/timers.rs` | `Timers` and `Timer`: how background loops report when they last ran and run next. Small and self-contained. |
 | `src/features/control_panel/history.rs` | Saving and loading the numbers behind the graphs (`control_panel_samples`). |
-| `src/features/control_panel/render.rs` | Lays out the status picture as SVG: `Dashboard` (everything it shows), `online_svg`, `offline_svg`, and the graph helpers. Pure functions. |
+| `src/features/control_panel/render.rs` | Lays out the status picture as SVG: `Dashboard` (everything it shows), `online_svg`, `offline_svg`. Pure functions. Its parts are in `render/`: `spend.rs` (the AI spend cards and the month's graph), `graphs.rs` (line graphs and bars) and `format.rs` (numbers, times and Discord markup as text). |
 | `src/features/control_panel/status.rs` | The refresh loop (`run`): gathers the numbers, draws the picture, edits the message, saves samples, and the fallback embed. Also the migrations. |
 | `src/features/control_panel/mod.rs` | The `ControlPanel` feature and its `Settings`. Starts the loop. |
 | `src/core/logging.rs` | The `tracing` setup: readable lines on stdout, the Discord log channel, and the in-memory error counts the status picture shows. |

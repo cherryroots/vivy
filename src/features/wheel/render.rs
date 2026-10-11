@@ -32,7 +32,19 @@ pub fn round_svg(view: &View) -> String {
 
 /// The open round: who has what, the bets, and who still has to play.
 fn open(svg: &mut Svg, view: &View) {
-    let round = &view.season.rounds[view.index];
+    open_header(svg, view);
+    standings_table(svg, view);
+    bets_table(svg, view);
+    // Who still has to play, while the round is open.
+    if view.active && view.is_latest() {
+        waiting_on(svg, view);
+    }
+    already_won(svg, view);
+    svg.y += 20.0;
+}
+
+/// "Round 4  OPEN" with the options left, how many of them one may bet on, and the payouts.
+fn open_header(svg: &mut Svg, view: &View) {
     let numbers = &view.ledger[view.index];
     let left = numbers.options_left.len();
     let (state, color) = if view.active && view.is_latest() {
@@ -52,7 +64,11 @@ fn open(svg: &mut Svg, view: &View) {
         numbers.max_bets()
     );
     header(svg, view, state, color, &sub);
+}
 
+/// Everyone's money, bet and tax, richest first, with the tax rule under it.
+fn standings_table(svg: &mut Svg, view: &View) {
+    let numbers = &view.ledger[view.index];
     svg.section("Standings");
     let standings = sorted_by_money(view, &numbers.standings);
     if standings.is_empty() {
@@ -152,7 +168,12 @@ fn open(svg: &mut Svg, view: &View) {
         );
         svg.y += 16.0;
     }
+}
 
+/// The options still on the wheel, most bet on first, with who bet what on each.
+fn bets_table(svg: &mut Svg, view: &View) {
+    let round = &view.season.rounds[view.index];
+    let numbers = &view.ledger[view.index];
     svg.section("Bets this round");
     if numbers.options_left.is_empty() {
         svg.note("Nobody is on the wheel yet. Admins add options with /wheel_add.");
@@ -230,60 +251,65 @@ fn open(svg: &mut Svg, view: &View) {
             svg.y += height + 4.0;
         }
     }
+}
 
-    // Who still has to play, while the round is open.
-    if view.active && view.is_latest() {
-        let players: Vec<u64> = numbers.standings.iter().map(|s| s.user).collect();
-        let mut not_claimed: Vec<&str> = players
-            .iter()
-            .filter(|p| !round.claims.contains(p))
-            .map(|&p| view.name(p))
-            .collect();
-        let mut no_bet: Vec<&str> = players
-            .iter()
-            .filter(|p| round.claims.contains(p) && !round.bets.iter().any(|b| b.by == **p))
-            .map(|&p| view.name(p))
-            .collect();
-        not_claimed.sort();
-        no_bet.sort();
-        let mut groups = Vec::new();
-        if !not_claimed.is_empty() {
-            groups.push(("Haven't claimed", not_claimed));
-        }
-        if !no_bet.is_empty() {
-            groups.push(("Claimed, no bet yet", no_bet));
-        }
-        if !groups.is_empty() {
-            svg.section("Waiting on");
-            svg.y += 4.0;
-            let mut lines = Vec::new();
-            for (label, names) in groups {
-                let names: Vec<String> = names.iter().map(|n| short(n)).collect();
-                let pieces: Vec<String> = names.iter().map(|n| markup(n)).collect();
-                for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 180.0, 13.0)
-                    .into_iter()
-                    .enumerate()
-                {
-                    lines.push((if n == 0 { label } else { "" }, line));
-                }
-            }
-            let height = 12.0 + 22.0 * lines.len() as f32;
-            svg.rect(
-                [16.0, svg.y, WIDTH - 32.0, height],
-                AMBER,
-                8.0,
-                "fill-opacity=\"0.10\"",
-            );
-            svg.rect([16.0, svg.y, 4.0, height], AMBER, 2.0, "");
-            for (n, (label, line)) in lines.iter().enumerate() {
-                let y = svg.y + 22.0 + 22.0 * n as f32;
-                svg.text(32.0, y, label, Style::new(13.0, AMBER).weight(600));
-                svg.raw_text(180.0, y, line, Style::new(13.0, TEXT).weight(500));
-            }
-            svg.y += height;
-        }
+/// The players who haven't claimed yet, and those who claimed but haven't bet.
+fn waiting_on(svg: &mut Svg, view: &View) {
+    let round = &view.season.rounds[view.index];
+    let numbers = &view.ledger[view.index];
+    let players: Vec<u64> = numbers.standings.iter().map(|s| s.user).collect();
+    let mut not_claimed: Vec<&str> = players
+        .iter()
+        .filter(|p| !round.claims.contains(p))
+        .map(|&p| view.name(p))
+        .collect();
+    let mut no_bet: Vec<&str> = players
+        .iter()
+        .filter(|p| round.claims.contains(p) && !round.bets.iter().any(|b| b.by == **p))
+        .map(|&p| view.name(p))
+        .collect();
+    not_claimed.sort();
+    no_bet.sort();
+    let mut groups = Vec::new();
+    if !not_claimed.is_empty() {
+        groups.push(("Haven't claimed", not_claimed));
     }
+    if !no_bet.is_empty() {
+        groups.push(("Claimed, no bet yet", no_bet));
+    }
+    if !groups.is_empty() {
+        svg.section("Waiting on");
+        svg.y += 4.0;
+        let mut lines = Vec::new();
+        for (label, names) in groups {
+            let names: Vec<String> = names.iter().map(|n| short(n)).collect();
+            let pieces: Vec<String> = names.iter().map(|n| markup(n)).collect();
+            for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 180.0, 13.0)
+                .into_iter()
+                .enumerate()
+            {
+                lines.push((if n == 0 { label } else { "" }, line));
+            }
+        }
+        let height = 12.0 + 22.0 * lines.len() as f32;
+        svg.rect(
+            [16.0, svg.y, WIDTH - 32.0, height],
+            AMBER,
+            8.0,
+            "fill-opacity=\"0.10\"",
+        );
+        svg.rect([16.0, svg.y, 4.0, height], AMBER, 2.0, "");
+        for (n, (label, line)) in lines.iter().enumerate() {
+            let y = svg.y + 22.0 + 22.0 * n as f32;
+            svg.text(32.0, y, label, Style::new(13.0, AMBER).weight(600));
+            svg.raw_text(180.0, y, line, Style::new(13.0, TEXT).weight(500));
+        }
+        svg.y += height;
+    }
+}
 
+/// "Already won: round 1 Alice · round 2 Bob", for the earlier rounds of the season.
+fn already_won(svg: &mut Svg, view: &View) {
     let won: Vec<String> = view.season.rounds[..view.index]
         .iter()
         .filter_map(|r| {
@@ -300,7 +326,6 @@ fn open(svg: &mut Svg, view: &View) {
             Style::new(12.0, DIM).weight(500),
         );
     }
-    svg.y += 20.0;
 }
 
 /// A round with a winner: the winner and what everyone won or lost.

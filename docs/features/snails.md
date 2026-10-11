@@ -18,7 +18,7 @@ All in `src/features/snails/`. The first three are pure functions (no Discord, n
 | `links.rs` | Turns a link into a **link key**, so mirrors and tracking junk share one key. Lists known sites, embed-fixer mirrors and short-link hosts. |
 | `fingerprint.rs` | The picture **fingerprint** (81 hashes), the `distance` between two fingerprints, and the **detail check** that confirms a match. |
 | `collect.rs` | Which links and pictures of a message count, and the small media-proxy URL each picture is fetched from. |
-| `store.rs` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection. |
+| `store/` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection, all reached as `store::name`. `mod.rs` has the tables and saving a message; `matches.rs` finds older messages with the same links or pictures and counts snails; `failures.rs` is the retry list; `crawl.rs` is the backfill's bookkeeping. |
 | `index.rs` | Downloading, fingerprinting and saving one message (`sync_message`, `index_message`). |
 | `check.rs` | The Check Snail command, and the quiet snail count for new messages (`on_new_message`). |
 | `backfill.rs` | `/snail_backfill`, the history crawl, and the startup catch-up. |
@@ -75,7 +75,7 @@ The match is confirmed when that is at most `DETAIL_LIMIT` (0.5).
 
 Hashing and the detail check are CPU work, so they run in `tokio::task::spawn_blocking`, which moves the work to a separate pool of threads so the async tasks that answer Discord keep running. The region list and the hasher are `LazyLock` statics: values built once, the first time they are used.
 
-### Finding earlier posts (`check.rs`, `store.rs`)
+### Finding earlier posts (`check.rs`, `store/matches.rs`)
 
 `check::earlier_posts` does the search for both Check Snail and the quiet count. "Earlier" means a smaller message ID: Discord IDs grow with time.
 

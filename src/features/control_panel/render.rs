@@ -9,17 +9,31 @@
 //!
 //! Text from features and from the AI status can hold Discord timestamps (`<t:…:R>`). The
 //! embed shows those as they are; here [`plain`] writes them out ("in 3h 12m").
+//!
+//! The parts in their own files:
+//! - `render/spend.rs`: the AI spend cards and the month's graph
+//! - `render/graphs.rs`: line graphs, bars, and scaling samples to positions
+//! - `render/format.rs`: numbers, times and Discord markup as text
 
-use chrono::{DateTime, Datelike, Months, NaiveDate, TimeDelta, Utc};
+mod format;
+mod graphs;
+mod spend;
 
+use chrono::{DateTime, TimeDelta, Utc};
+
+use self::format::{
+    first_lines, format_mb, format_ms, number, plain, plural, relative, title, wrap_words,
+};
+pub use self::format::{human_duration, month_bounds};
+use self::graphs::{bars, series, sparkline};
+use self::spend::spend;
 use super::history::{self, History};
-use crate::ai::display_name;
 use crate::core::logging::ErrorStats;
 use crate::core::timers::TimerState;
 use crate::core::{Panel, Stat};
 use crate::util::shorten;
 use crate::util::svg::{
-    ACCENT, AMBER, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, esc, pill_width, text_width,
+    ACCENT, AMBER, DIM, GREEN, MUTED, RED, ROW, Style, Svg, TEXT, esc, pill_width, text_width,
 };
 
 /// Width of the picture in SVG units.
@@ -29,9 +43,6 @@ const LEFT: f32 = 16.0;
 const RIGHT: f32 = WIDTH - 16.0;
 /// Space between cards.
 const GAP: f32 = 8.0;
-/// Each provider's color in the spend section.
-const CLAUDE: &str = "#d97757";
-const OPENAI: &str = "#10a37f";
 
 /// Everything the status shows, gathered by `status.rs`. The fallback embed shows the same.
 pub struct Dashboard {
@@ -382,286 +393,6 @@ fn text_panel(svg: &mut Svg, d: &Dashboard, panel: &Panel) {
     svg.y += height;
 }
 
-/// Each provider's line and labels on the spend graph and cards.
-fn provider_color(provider: &str) -> &'static str {
-    match provider {
-        "claude" => CLAUDE,
-        "openai" => OPENAI,
-        _ => ACCENT,
-    }
-}
-
-/// The most job rows a spend card shows.
-const MAX_JOB_ROWS: usize = 5;
-
-/// "AI spend this month": a card per provider side by side (total against its budget, the
-/// pace, the admin key, the cache hits and cost per job), then one graph of the month
-/// with every provider's line, budget (dashed) and pace (dotted).
-fn spend(svg: &mut Svg, d: &Dashboard) {
-    if d.spends.is_empty() {
-        return;
-    }
-    section(svg, "AI spend this month");
-    let (start, end) = month_bounds(d.now);
-    let elapsed = (d.now - start).num_seconds() as f64;
-    let length = (end - start).num_seconds() as f64;
-    // Only guess at the month's end after a day of it.
-    let pace_of = |usd: f64| (elapsed >= 86_400.0).then(|| usd * length / elapsed);
-
-    // The cards, all as tall as the one with the most jobs.
-    let rows = d
-        .spends
-        .iter()
-        .filter_map(|spend| spend.view.as_ref().ok())
-        .map(|view| view.jobs.as_ref().map_or(0, Vec::len).min(MAX_JOB_ROWS))
-        .max()
-        .unwrap_or(0);
-    let height = 150.0 + 20.0 * rows as f32;
-    let count = d.spends.len() as f32;
-    let width = (RIGHT - LEFT - GAP * (count - 1.0)) / count;
-    let y = svg.y;
-    for (n, spend) in d.spends.iter().enumerate() {
-        let x = LEFT + (width + GAP) * n as f32;
-        let area = [x, y, width, height];
-        match &spend.view {
-            Ok(view) => spend_card(svg, d, area, spend.provider, view, pace_of(view.usd)),
-            Err(err) => {
-                svg.rect(area, ROW, 8.0, "");
-                card_title(svg, x, y, &display_name(spend.provider).to_uppercase());
-                svg.text(
-                    x + 14.0,
-                    y + 48.0,
-                    &shorten(&format!("Couldn't read it: {err}"), 40),
-                    Style::new(12.0, RED),
-                );
-            }
-        }
-    }
-    svg.y += height + GAP;
-
-    // The month so far, in one graph.
-    let chart_height = 150.0;
-    let y = svg.y;
-    svg.rect([LEFT, y, RIGHT - LEFT, chart_height], ROW, 8.0, "");
-    let area = [32.0, y + 24.0, RIGHT - LEFT - 32.0, chart_height - 50.0];
-    let lines: Vec<SpendLine> = d
-        .spends
-        .iter()
-        .filter_map(|spend| {
-            let view = spend.view.as_ref().ok()?;
-            Some(SpendLine {
-                color: provider_color(spend.provider),
-                points: series(
-                    &d.history,
-                    &history::spend_key(spend.provider),
-                    start.timestamp(),
-                    Some((d.now.timestamp(), view.usd)),
-                ),
-                usd: view.usd,
-                budget: view.budget,
-                pace: pace_of(view.usd),
-            })
-        })
-        .collect();
-    month_chart(svg, area, &lines, (start, end), d.now);
-    svg.y += chart_height;
-}
-
-/// One provider's card: its total, budget bar, pace, admin key, cache hits and jobs.
-fn spend_card(
-    svg: &mut Svg,
-    d: &Dashboard,
-    [x, y, w, h]: [f32; 4],
-    provider: &str,
-    spend: &SpendView,
-    pace: Option<f64>,
-) {
-    let color = provider_color(provider);
-    let (inner, right) = (x + 16.0, x + w - 16.0);
-    svg.rect([x, y, w, h], ROW, 8.0, "");
-    svg.raw(format!(
-        "<circle cx=\"{}\" cy=\"{}\" r=\"4\" fill=\"{color}\"/>",
-        inner + 4.0,
-        y + 19.0
-    ));
-    svg.text(
-        inner + 14.0,
-        y + 23.0,
-        &display_name(provider).to_uppercase(),
-        Style::new(11.0, color).weight(700).spaced(),
-    );
-    let (tag, tag_color) = if spend.billed {
-        ("BILLED", GREEN)
-    } else {
-        ("ESTIMATE", DIM)
-    };
-    svg.pill(right - pill_width(tag), y + 9.0, tag, tag_color, 10.0);
-
-    // "$12.34 of $100" with a bar.
-    let total = format!("${:.2}", spend.usd);
-    svg.text(inner, y + 60.0, &total, Style::new(26.0, TEXT).weight(700));
-    if spend.budget > 0.0 {
-        let of = format!("of ${:.0}", spend.budget);
-        let at = inner + text_width(&total, 26.0) + 8.0;
-        svg.text(at, y + 60.0, &of, Style::new(13.0, MUTED).weight(500));
-    }
-    let share = (spend.budget > 0.0).then(|| spend.usd / spend.budget);
-    let pace_over = pace.is_some_and(|p| spend.budget > 0.0 && p > spend.budget);
-    let bar_color = match share {
-        Some(s) if s >= 1.0 => RED,
-        Some(s) if s >= 0.8 => AMBER,
-        _ if pace_over => AMBER,
-        _ => GREEN,
-    };
-    if let Some(share) = share {
-        let width = right - inner;
-        svg.rect([inner, y + 70.0, width, 6.0], LINE, 3.0, "");
-        let filled = (width * share.min(1.0) as f32).max(6.0);
-        svg.rect([inner, y + 70.0, filled, 6.0], bar_color, 3.0, "");
-    }
-    let mut summary = Vec::new();
-    if let Some(share) = share {
-        summary.push(format!("{:.0}%", share * 100.0));
-    }
-    if let Some(pace) = pace {
-        summary.push(format!("pace ${pace:.2}"));
-    }
-    if let Some(hits) = spend.cache_hits {
-        summary.push(format!("{:.0}% cache hits", hits * 100.0));
-    }
-    svg.text(
-        inner,
-        y + 94.0,
-        &summary.join("  ·  "),
-        Style::new(12.0, MUTED).weight(500),
-    );
-
-    // The admin key and the last bill read.
-    let mut key = spend.admin_key.clone();
-    if let Some(read) = &spend.last_read {
-        key = format!("{key}  ·  {}", plain(read, d.now));
-    }
-    let key_color = if spend.admin_key_failing { AMBER } else { DIM };
-    let fits = ((right - inner) / 5.6) as usize;
-    svg.text(
-        inner,
-        y + 114.0,
-        &shorten(&key, fits),
-        Style::new(11.0, key_color).weight(500),
-    );
-
-    // Cost per job as bars.
-    let jobs = spend.jobs.as_deref().unwrap_or_default();
-    let most = jobs.first().map_or(0.0, |(_, usd)| *usd).max(0.000_001);
-    let (bar_x, bar_width) = (inner + 82.0, right - inner - 82.0 - 58.0);
-    for (n, (job, usd)) in jobs.iter().take(MAX_JOB_ROWS).enumerate() {
-        let row_y = y + 142.0 + 20.0 * n as f32;
-        svg.text(
-            inner,
-            row_y,
-            &shorten(job, 11),
-            Style::new(12.0, MUTED).weight(500),
-        );
-        svg.rect([bar_x, row_y - 8.0, bar_width, 6.0], LINE, 3.0, "");
-        let filled = (bar_width * (*usd / most) as f32).max(6.0);
-        svg.rect([bar_x, row_y - 8.0, filled, 6.0], color, 3.0, "");
-        svg.text(
-            right,
-            row_y,
-            &format!("${usd:.2}"),
-            Style::new(12.0, TEXT).weight(600).end(),
-        );
-    }
-}
-
-/// One provider on the spend graph.
-struct SpendLine {
-    color: &'static str,
-    /// Spend samples this month, the current total last.
-    points: Vec<(i64, f64)>,
-    usd: f64,
-    /// 0 when there's no budget.
-    budget: f64,
-    pace: Option<f64>,
-}
-
-/// Spend over the month: each provider's line so far, its pace to the month's end
-/// (dotted) and its budget (dashed), in its color, with the days along the bottom.
-fn month_chart(
-    svg: &mut Svg,
-    area: [f32; 4],
-    lines: &[SpendLine],
-    (start, end): (DateTime<Utc>, DateTime<Utc>),
-    now: DateTime<Utc>,
-) {
-    let [x, y, w, h] = area;
-    let span = (start.timestamp(), end.timestamp());
-    let top = lines
-        .iter()
-        .flat_map(|line| [line.usd, line.budget, line.pace.unwrap_or(0.0)])
-        .fold(0.01, f64::max)
-        * 1.1;
-    let range = (0.0, top);
-
-    // The floor and the days of the month.
-    svg.raw(format!(
-        "<path d=\"M{x},{} H{}\" stroke=\"{LINE}\" stroke-width=\"1\"/>",
-        y + h,
-        x + w
-    ));
-    let days = (end - start).num_days();
-    for day in [1, 8, 15, 22, days] {
-        let at = start + TimeDelta::days(day - 1) + TimeDelta::hours(12);
-        let (tx, _) = scale(&[(at.timestamp(), 0.0)], area, span, range)[0];
-        svg.text(
-            tx,
-            y + h + 14.0,
-            &format!("{} {}", day, start.format("%b")),
-            Style::new(10.0, DIM).middle(),
-        );
-    }
-
-    for line in lines {
-        let color = line.color;
-        if line.budget > 0.0 {
-            let (_, by) = scale(&[(span.0, line.budget)], area, span, range)[0];
-            svg.raw(format!(
-                "<path d=\"M{x},{by:.1} H{}\" stroke=\"{color}\" stroke-opacity=\"0.7\" stroke-width=\"1\" stroke-dasharray=\"4 4\"/>",
-                x + w
-            ));
-            svg.text(
-                x + w,
-                by - 5.0,
-                &format!("budget ${:.0}", line.budget),
-                Style::new(10.0, color).weight(600).end(),
-            );
-        }
-        let (nx, ny) = scale(&[(now.timestamp(), line.usd)], area, span, range)[0];
-        if let Some(pace) = line.pace {
-            let (ex, ey) = scale(&[(span.1, pace)], area, span, range)[0];
-            svg.raw(format!(
-                "<path d=\"M{nx:.1},{ny:.1} L{ex:.1},{ey:.1}\" stroke=\"{color}\" stroke-opacity=\"0.6\" stroke-width=\"1.5\" stroke-dasharray=\"2 4\" stroke-linecap=\"round\"/>"
-            ));
-        }
-        if line.points.len() >= 2 {
-            let coords = scale(&line.points, area, span, range);
-            let path = path(&coords);
-            svg.raw(format!(
-                "<path d=\"{path} L{nx:.1},{:.1} L{:.1},{:.1} Z\" fill=\"{color}\" fill-opacity=\"0.12\"/>",
-                y + h,
-                coords[0].0,
-                y + h
-            ));
-            svg.raw(format!(
-                "<path d=\"{path}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\" stroke-linejoin=\"round\"/>"
-            ));
-        }
-        svg.raw(format!(
-            "<circle cx=\"{nx:.1}\" cy=\"{ny:.1}\" r=\"3.5\" fill=\"{color}\"/>"
-        ));
-    }
-}
-
 /// Feature cards side by side.
 const FEATURE_COLUMNS: usize = 3;
 /// Space between a feature card's stat lines.
@@ -895,94 +626,6 @@ fn last_error(svg: &mut Svg, d: &Dashboard) {
 }
 
 // ---------------------------------------------------------------------------------------
-// Graphs
-// ---------------------------------------------------------------------------------------
-
-/// The samples of `key` since `since`, with the current value added at the end.
-fn series(history: &History, key: &str, since: i64, now: Option<(i64, f64)>) -> Vec<(i64, f64)> {
-    let mut points: Vec<(i64, f64)> = history
-        .get(key)
-        .map(|samples| {
-            samples
-                .iter()
-                .filter(|(at, _)| *at >= since)
-                .copied()
-                .collect()
-        })
-        .unwrap_or_default();
-    points.extend(now);
-    points
-}
-
-/// A small line graph of `points` over the times `span`, filled underneath. Nothing with
-/// fewer than two points.
-fn sparkline(svg: &mut Svg, area: [f32; 4], points: &[(i64, f64)], span: (i64, i64), color: &str) {
-    if points.len() < 2 {
-        return;
-    }
-    let low = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
-    let high = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
-    let coords = scale(points, area, span, (low, high));
-    let line = path(&coords);
-    let [_, y, _, h] = area;
-    let (first, last) = (coords[0].0, coords[coords.len() - 1].0);
-    svg.raw(format!(
-        "<path d=\"{line} L{last:.1},{:.1} L{first:.1},{:.1} Z\" fill=\"{color}\" fill-opacity=\"0.15\"/>",
-        y + h,
-        y + h
-    ));
-    svg.raw(format!(
-        "<path d=\"{line}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"1.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>"
-    ));
-}
-
-/// Bars for `counts`, left to right, scaled to the highest. Empty slots show as a dot.
-fn bars(svg: &mut Svg, [x, y, w, h]: [f32; 4], counts: &[usize], color: &str) {
-    let most = counts.iter().copied().max().unwrap_or(0).max(1) as f32;
-    let slot = w / counts.len() as f32;
-    for (n, &count) in counts.iter().enumerate() {
-        let bar_x = x + slot * n as f32 + 0.5;
-        if count == 0 {
-            svg.rect([bar_x, y + h - 2.0, slot - 1.0, 2.0], LINE, 1.0, "");
-        } else {
-            let bar_h = (h * count as f32 / most).max(3.0);
-            svg.rect([bar_x, y + h - bar_h, slot - 1.0, bar_h], color, 1.0, "");
-        }
-    }
-}
-
-/// Points in time and value to positions in `area`. A flat line sits in the middle.
-fn scale(
-    points: &[(i64, f64)],
-    [x, y, w, h]: [f32; 4],
-    (from, to): (i64, i64),
-    (low, high): (f64, f64),
-) -> Vec<(f32, f32)> {
-    let length = (to - from).max(1) as f32;
-    points
-        .iter()
-        .map(|&(at, value)| {
-            let px = x + w * ((at - from) as f32 / length).clamp(0.0, 1.0);
-            let share = if high - low < 1e-9 {
-                0.5
-            } else {
-                ((value - low) / (high - low)) as f32
-            };
-            (px, y + h - h * share.clamp(0.0, 1.0))
-        })
-        .collect()
-}
-
-/// "M1,2 L3,4 ..."
-fn path(coords: &[(f32, f32)]) -> String {
-    coords
-        .iter()
-        .enumerate()
-        .map(|(n, (x, y))| format!("{}{x:.1},{y:.1}", if n == 0 { "M" } else { " L" }))
-        .collect()
-}
-
-// ---------------------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------------------
 
@@ -1000,145 +643,6 @@ fn card_title(svg: &mut Svg, x: f32, y: f32, text: &str) {
         text,
         Style::new(10.0, DIM).weight(700).spaced(),
     );
-}
-
-/// "reminders" → "Reminders", "control_panel" → "Control panel".
-fn title(name: &str) -> String {
-    let name = name.replace('_', " ");
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => name,
-    }
-}
-
-fn plural(n: usize, word: &str) -> String {
-    if n == 1 {
-        format!("1 {word}")
-    } else {
-        format!("{n} {word}s")
-    }
-}
-
-fn format_ms(ms: f64) -> String {
-    format!("{ms:.0} ms")
-}
-
-fn format_mb(mb: f64) -> String {
-    format!("{mb:.1} MB")
-}
-
-/// 12 → "12", 2.5 → "2.5", 0.123 → "0.12".
-fn number(n: f64) -> String {
-    if n.fract().abs() < 1e-9 {
-        format!("{n:.0}")
-    } else if n >= 10.0 {
-        format!("{n:.1}")
-    } else {
-        format!("{n:.2}")
-    }
-}
-
-/// The first day of this month and of the next, in UTC.
-pub fn month_bounds(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
-    let first = NaiveDate::from_ymd_opt(now.year(), now.month(), 1).expect("valid date");
-    let next = first + Months::new(1);
-    let midnight = |date: NaiveDate| date.and_hms_opt(0, 0, 0).expect("valid time").and_utc();
-    (midnight(first), midnight(next))
-}
-
-/// "3d 4h 12m", "4h 12m" or "12m".
-pub fn human_duration(duration: TimeDelta) -> String {
-    let minutes = duration.num_minutes().max(0);
-    let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
-    match (days, hours) {
-        (0, 0) => format!("{minutes}m"),
-        (0, _) => format!("{hours}h {minutes}m"),
-        _ => format!("{days}d {hours}h {minutes}m"),
-    }
-}
-
-/// "in 3h 12m", "12m ago" or "just now".
-fn relative(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let delta = at - now;
-    if delta.num_seconds().abs() < 60 {
-        return "just now".to_string();
-    }
-    // Two units at most: "3d 4h" rather than "3d 4h 12m".
-    let short = |d: TimeDelta| {
-        let text = human_duration(d);
-        let parts: Vec<&str> = text.split(' ').take(2).collect();
-        // "9h 0m" reads better as "9h".
-        match parts[..] {
-            [first, second] if !second.starts_with('0') => format!("{first} {second}"),
-            _ => parts[0].to_string(),
-        }
-    };
-    if delta > TimeDelta::zero() {
-        format!("in {}", short(delta))
-    } else {
-        format!("{} ago", short(-delta))
-    }
-}
-
-/// Discord markup as plain text: timestamps (`<t:1700000000:R>`) written out, and code
-/// backticks left out.
-fn plain(text: &str, now: DateTime<Utc>) -> String {
-    let mut out = String::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("<t:") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 3..];
-        let Some(end) = after.find('>') else {
-            out.push_str(&rest[start..]);
-            rest = "";
-            break;
-        };
-        let (seconds, style) = after[..end].split_once(':').unwrap_or((&after[..end], "f"));
-        match seconds
-            .parse::<i64>()
-            .ok()
-            .and_then(|s| DateTime::from_timestamp(s, 0))
-        {
-            Some(at) if style == "R" => out.push_str(&relative(at, now)),
-            Some(at) => out.push_str(&format!("{} UTC", at.format("%-d %b %H:%M"))),
-            None => out.push_str(&rest[start..start + 4 + end]),
-        }
-        rest = &after[end + 1..];
-    }
-    out.push_str(rest);
-    out.replace('`', "")
-}
-
-/// The error's first lines as one line of text.
-fn first_lines(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-/// Words into lines of at most `width` characters, at most `max` lines (the last ends in
-/// "…" when cut).
-fn wrap_words(text: &str, width: usize, max: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    for word in text.split_whitespace() {
-        let word = shorten(word, width);
-        match lines.last_mut() {
-            Some(line) if line.chars().count() + 1 + word.chars().count() <= width => {
-                line.push(' ');
-                line.push_str(&word);
-            }
-            _ => lines.push(word),
-        }
-    }
-    if lines.len() > max {
-        lines.truncate(max);
-        let last = &mut lines[max - 1];
-        *last = format!("{}…", shorten(last, width - 1).trim_end_matches('…'));
-    }
-    lines
 }
 
 #[cfg(test)]
@@ -1418,62 +922,5 @@ mod tests {
                 std::fs::write(format!("{dir}/status-{name}.png"), png).unwrap();
             }
         }
-    }
-
-    #[test]
-    fn discord_markup_as_text() {
-        let now = at("2026-10-10T08:00:00Z");
-        let in_2h = now.timestamp() + 2 * 3600 + 5 * 60;
-        assert_eq!(plain(&format!("next <t:{in_2h}:R>"), now), "next in 2h 5m");
-        assert_eq!(
-            plain(&format!("<t:{}:f>", now.timestamp()), now),
-            "10 Oct 08:00 UTC"
-        );
-        assert_eq!(plain("`model` <t:x:R> <t:", now), "model <t:x:R> <t:");
-        assert_eq!(
-            relative(
-                now - TimeDelta::days(3) - TimeDelta::hours(4) - TimeDelta::minutes(9),
-                now
-            ),
-            "3d 4h ago"
-        );
-        assert_eq!(relative(now + TimeDelta::seconds(20), now), "just now");
-    }
-
-    #[test]
-    fn durations() {
-        assert_eq!(human_duration(TimeDelta::minutes(12)), "12m");
-        assert_eq!(human_duration(TimeDelta::minutes(4 * 60 + 12)), "4h 12m");
-        assert_eq!(
-            human_duration(TimeDelta::minutes(3 * 1440 + 4 * 60 + 12)),
-            "3d 4h 12m"
-        );
-        assert_eq!(human_duration(TimeDelta::seconds(-5)), "0m");
-    }
-
-    #[test]
-    fn small_helpers() {
-        assert_eq!(
-            wrap_words("one two three four", 9, 4),
-            ["one two", "three", "four"]
-        );
-        assert_eq!(
-            wrap_words("one two three four", 9, 2),
-            ["one two", "three…"]
-        );
-        let (start, end) = month_bounds(at("2026-12-31T23:00:00Z"));
-        assert_eq!(
-            (start, end),
-            (at("2026-12-01T00:00:00Z"), at("2027-01-01T00:00:00Z"))
-        );
-        assert_eq!(title("control_panel"), "Control panel");
-        assert_eq!(number(12.0), "12");
-        assert_eq!(number(2.5), "2.50");
-        assert_eq!(path(&[(1.0, 2.0), (3.0, 4.0)]), "M1.0,2.0 L3.0,4.0");
-        // A flat line sits in the middle.
-        assert_eq!(
-            scale(&[(5, 1.0)], [0.0, 0.0, 10.0, 10.0], (0, 10), (1.0, 1.0)),
-            [(5.0, 5.0)]
-        );
     }
 }
