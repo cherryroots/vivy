@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::actions::Game;
 use super::ledger::{self, OutcomeKind, Rules, Season, outcomes};
-use super::ui::{Names, help_text, name};
+use super::ui::{Names, help_text, name, with_movie};
 use super::{names, store};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
@@ -12,7 +12,7 @@ use crate::core::{Asker, BotCtx, Result, user_error};
 pub fn defs() -> Vec<ToolDef> {
     vec![ToolDef {
         name: "get_wheel_status",
-        description: "The movie wheel betting game of this server: a round's state, the options left on the wheel, past winners, every player's money, the claims and bets, and how a resolved round paid out. Read only.",
+        description: "The movie wheel betting game of this server: a round's state, the options left on the wheel with the movies they picked, past winners, every player's money, the claims and bets, and how a resolved round paid out. Read only.",
         parameters: json!({
             "type": "object",
             "properties": {
@@ -94,16 +94,26 @@ fn describe(season: &Season, index: usize, names: &Names, asker: u64) -> String 
         };
         lines.push(format!("The pot is {}{carried}.", current.pot));
     }
+    // "Alice (Alien)": each option with the movie they picked, when one is set.
+    let picked = |user: u64| with_movie(n(user), season.movies.get(&user).map(String::as_str));
+    let options: Vec<String> = current.options_left.iter().map(|&u| picked(u)).collect();
     lines.push(format!(
-        "Options left on the wheel ({}): {}. Each player may bet on up to {} of them.",
-        current.options_left.len(),
-        list(&current.options_left),
+        "Options left on the wheel ({}), with the movie each picked: {}. Each player may bet on up to {} of them.",
+        options.len(),
+        if options.is_empty() {
+            "none".to_string()
+        } else {
+            options.join(", ")
+        },
         current.max_bets()
     ));
     let winners: Vec<String> = season
         .rounds
         .iter()
-        .filter_map(|r| r.winner.map(|w| format!("round {}: {}", r.number, n(w))))
+        .filter_map(|r| {
+            r.winner
+                .map(|w| format!("round {}: {}", r.number, picked(w)))
+        })
         .collect();
     if !winners.is_empty() {
         lines.push(format!("Winners so far: {}.", winners.join(", ")));
@@ -186,6 +196,7 @@ mod tests {
             number: 1,
             rules: Default::default(),
             options: vec![1, 2, 3],
+            movies: [(2, "Alien".to_string()), (3, "Heat".to_string())].into(),
             rounds: vec![
                 Round {
                     id: 1,
@@ -213,8 +224,10 @@ mod tests {
         };
         let text = describe(&season, 1, &names, 1);
         assert!(text.starts_with("Movie wheel, round 2 of 2 (open for claims and bets)."));
-        assert!(text.contains("Options left on the wheel (2): Alice, Charlie."));
-        assert!(text.contains("Winners so far: round 1: Bob."));
+        assert!(text.contains(
+            "Options left on the wheel (2), with the movie each picked: Alice, Charlie (Heat)."
+        ));
+        assert!(text.contains("Winners so far: round 1: Bob (Alien)."));
         assert!(text.contains("- Alice: 240, bet 30 (12%) (the asker)"));
         assert!(text.contains("- Bob: 70, bet 0 (0%), taxed 21"));
         assert!(text.contains("- Alice on Charlie: 30"));

@@ -280,6 +280,19 @@ impl View<'_> {
     pub(super) fn name(&self, user: u64) -> &str {
         name(self.names, user)
     }
+
+    /// The movie an option picked, if one is set.
+    pub(super) fn movie(&self, user: u64) -> Option<&str> {
+        self.season.movies.get(&user).map(String::as_str)
+    }
+}
+
+/// "Alice (Alien)", or just "Alice" when no movie is set.
+pub fn with_movie(name: &str, movie: Option<&str>) -> String {
+    match movie {
+        Some(movie) => format!("{name} ({movie})"),
+        None => name.to_string(),
+    }
 }
 
 pub fn name(names: &Names, user: u64) -> &str {
@@ -370,7 +383,7 @@ const MENU_OPTIONS: usize = 25;
 const MAX_MENUS: usize = 5;
 
 /// The menus after Place Bet, Remove Bet or Set Winner. `users` are the choices, sorted by
-/// name. Discord shows at most 25 in a menu, so a big wheel gets several menus, each saying
+/// name, each with its movie under it if one is set. Discord shows at most 25 in a menu, so a big wheel gets several menus, each saying
 /// which names it holds; past 125 the rest are left out and the text says so.
 pub fn pick_menu(
     kind: PickKind,
@@ -378,6 +391,7 @@ pub fn pick_menu(
     message: u64,
     users: &[u64],
     names: &Names,
+    movies: &HashMap<u64, String>,
 ) -> (String, Vec<CreateActionRow>) {
     let (title, placeholder) = match kind {
         PickKind::Place => ("Place a Bet", "Select an option to bet on"),
@@ -394,7 +408,12 @@ pub fn pick_menu(
         let options = group
             .iter()
             .map(|&user| {
-                CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string())
+                let option =
+                    CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string());
+                match movies.get(&user) {
+                    Some(movie) => option.description(shorten(movie, 100)),
+                    None => option,
+                }
             })
             .collect();
         // With several menus, each placeholder says which names it holds: "(Alice … Dana)".
@@ -583,20 +602,35 @@ pub fn name_modal(round: i64, current: Option<&str>) -> CreateModal {
 
 /// Checks a name typed in the name modal. `None` means back to the Discord name.
 pub fn clean_name(input: &str) -> Result<Option<String>, String> {
-    let name = input.split_whitespace().collect::<Vec<_>>().join(" ");
-    if name.is_empty() {
+    clean_text(input, MAX_CHOSEN_NAME, "name", "Names")
+}
+
+/// The longest movie title an admin can set, in characters. Discord's menus show it under
+/// the name and allow 100 there.
+pub const MAX_MOVIE: usize = 100;
+
+/// Checks a movie title from `/wheel_add` or `/wheel_movie`. `None` means no movie.
+pub fn clean_movie(input: &str) -> Result<Option<String>, String> {
+    clean_text(input, MAX_MOVIE, "movie title", "Movie titles")
+}
+
+/// Collapses spaces and checks the length and the characters. `what` and `plural` name the
+/// text in the error messages.
+fn clean_text(input: &str, max: usize, what: &str, plural: &str) -> Result<Option<String>, String> {
+    let text = input.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.is_empty() {
         return Ok(None);
     }
-    if name.chars().count() > MAX_CHOSEN_NAME {
+    if text.chars().count() > max {
         return Err(format!(
-            "That name is too long: {MAX_CHOSEN_NAME} characters at most."
+            "That {what} is too long: {max} characters at most."
         ));
     }
-    // Names are also used in messages, where these would make mentions or code.
-    if name.contains(['@', '<', '>', '`']) || name.chars().any(char::is_control) {
-        return Err("Names can't contain @, <, > or `.".to_string());
+    // These are also used in messages, where these would make mentions or code.
+    if text.contains(['@', '<', '>', '`']) || text.chars().any(char::is_control) {
+        return Err(format!("{plural} can't contain @, <, > or `."));
     }
-    Ok(Some(name))
+    Ok(Some(text))
 }
 
 /// What the Help button says: how to play, under the season's rules.
@@ -699,6 +733,7 @@ mod tests {
             number: 1,
             rules: Default::default(),
             options: vec![1, 2],
+            movies: Default::default(),
             rounds: vec![
                 Round {
                     id: 1,
@@ -837,7 +872,7 @@ mod tests {
     fn big_wheels_get_several_menus() {
         let users: Vec<u64> = (1..=130).collect();
         let names: Names = users.iter().map(|&u| (u, format!("P{u:03}"))).collect();
-        let (text, rows) = pick_menu(PickKind::Place, 3, 99, &users, &names);
+        let (text, rows) = pick_menu(PickKind::Place, 3, 99, &users, &names, &HashMap::new());
         let rows = serde_json::to_value(rows).unwrap();
         let menus: Vec<&serde_json::Value> = rows
             .as_array()
@@ -864,12 +899,16 @@ mod tests {
         );
         assert!(text.contains("only fit 125 of the 130"), "{text}");
 
-        // A small wheel: one menu, no note.
-        let (text, rows) = pick_menu(PickKind::Winner, 3, 99, &users[..3], &names);
+        // A small wheel: one menu, no note, and the movies under the names.
+        let movies = HashMap::from([(2, "Alien".to_string())]);
+        let (text, rows) = pick_menu(PickKind::Winner, 3, 99, &users[..3], &names, &movies);
         assert_eq!(text, "Pick a Winner");
         let rows = serde_json::to_value(rows).unwrap();
         assert_eq!(rows.as_array().unwrap().len(), 1);
-        assert_eq!(rows[0]["components"][0]["placeholder"], "Select the winner");
+        let menu = &rows[0]["components"][0];
+        assert_eq!(menu["placeholder"], "Select the winner");
+        assert_eq!(menu["options"][1]["description"], "Alien");
+        assert!(menu["options"][0].get("description").is_none());
     }
 
     #[test]
@@ -888,6 +927,7 @@ mod tests {
             number: 2,
             rules: Rules::Pool,
             options: vec![1, 2, 3, 4],
+            movies: Default::default(),
             rounds: vec![Round {
                 id: 5,
                 number: 1,
@@ -957,5 +997,19 @@ mod tests {
         assert!(clean_name(&"é".repeat(MAX_CHOSEN_NAME)).is_ok());
         assert!(clean_name("@everyone").is_err());
         assert!(clean_name("<@123>").is_err());
+    }
+
+    #[test]
+    fn movie_titles_are_checked() {
+        assert_eq!(
+            clean_movie(" The  Thing (1982) "),
+            Ok(Some("The Thing (1982)".to_string()))
+        );
+        assert_eq!(clean_movie(""), Ok(None));
+        assert!(clean_movie(&"x".repeat(MAX_MOVIE)).is_ok());
+        assert!(clean_movie(&"x".repeat(MAX_MOVIE + 1)).is_err());
+        assert!(clean_movie("<@&1>").is_err());
+        assert_eq!(with_movie("Alice", Some("Alien")), "Alice (Alien)");
+        assert_eq!(with_movie("Alice", None), "Alice");
     }
 }

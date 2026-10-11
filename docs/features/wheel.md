@@ -1,11 +1,12 @@
 # Movie wheel
 
-The movie wheel is a betting game for movie night. Admins put people (the "options") on the wheel. Each round, players claim 100, bet on which option the wheel will pick, and an admin sets the winner. Players who bet too little are taxed. The round is shown as a picture with buttons under it for claiming, betting and setting the winner. Games are split into seasons, so an old game stays viewable after a new one starts. Each server has its own game.
+The movie wheel is a betting game for movie night. Admins put people (the "options") on the wheel, each with the movie they picked. Each round, players claim 100, bet on which option the wheel will pick, and an admin sets the winner. Players who bet too little are taxed. The round is shown as a picture with buttons under it for claiming, betting and setting the winner. Games are split into seasons, so an old game stays viewable after a new one starts. Each server has its own game.
 
 ## Using it
 
 - **`/wheel_status [round] [season]`**: posts the status picture of a round (default: the current one) of a season (default: the one being played; seasons count from 1 per server). If the server has no game yet, this starts one. Past seasons are shown without buttons.
-- **`/wheel_add user [user2 … user5] [remove]`** (admins): puts up to five people on the wheel at once, or takes them off with `remove:true`. The answer has a line per person.
+- **`/wheel_add user [movie] [user2 movie2 … user5 movie5] [remove]`** (admins): puts up to five people on the wheel at once, each with the movie they picked (optional), or takes them off with `remove:true`. A movie for someone already on the wheel replaces theirs. A `movie2` without a `user2` is refused. The answer has a line per person.
+- **`/wheel_movie user [movie]`** (admins): sets or changes the movie someone on the wheel picked; leaving `movie` out clears it. It shows on the next status picture.
 - **`/insert_bet by on amount round`** (admins): sets a bet in any round of the current season by round number; `amount:0` removes it. This is for fixing mistakes, so it skips the betting rules.
 - **`/reset_wheel [keep_options]`** (admins): asks for confirmation, then ends the season and starts a new one, empty or with the same options.
 - **Buttons under an open round**: Claim!, Place Bet!, Remove Bet!, Set Winner! (admins), and in a second row Change Name and Help.
@@ -25,7 +26,7 @@ All in `src/features/wheel/`, starting with the pure logic.
 | `render.rs` | The round as a picture: `round_svg` writes SVG text, `round_png` turns it into a PNG with the shared helpers in `src/util/svg.rs`. |
 | `names.rs` | Display names for the stored user IDs, with a cache. |
 | `actions.rs` | The handlers for buttons, menus and modals, and `status_message`, which builds a status picture with its buttons. |
-| `commands.rs` | The four slash commands, written with `poise`. |
+| `commands.rs` | The five slash commands, written with `poise`. |
 | `tools.rs` | The chat tool `get_wheel_status`. |
 | `import.rs` | voltgpt's running game, read from its `game_state` JSON. |
 | `sim.rs` | Simulated games that compare the payout rules. Test-only (`#[cfg(test)]`, an ignored test). |
@@ -36,6 +37,8 @@ All in `src/features/wheel/`, starting with the pure logic.
 ### The game
 
 A **season** has a list of options (user IDs) and numbered rounds. The active season is the one with no end time; there is at most one per server. A **round** has claims, bets and, once resolved, a winner. Setting a winner starts the next round. An option leaves the wheel once it has won, so the options left in a round are the season's options minus earlier winners (`options_left`). **Players** are everyone who claimed or bet in the season; there is no separate players table.
+
+Each option can have the **movie** they picked (`wheel_options.movie`), up to 100 characters with the same character rules as Change Name (`ui::clean_movie`). It is shown under the option's name in the bets table, under the winner's name on a resolved round, under each name in the Place Bet and Set Winner menus (the option's description, which Discord caps at 100), in the "Set … as the winner" answer, and in the chat tool. `/reset_wheel keep_options:true` keeps the movies of the options that haven't won yet; the winners' movies were watched, so they start the new season without one.
 
 Options are stored per season, not per round. Adding or removing one with `/wheel_add` therefore also changes `options_left` of earlier rounds, which under classic rules changes what their winning bets paid.
 
@@ -93,13 +96,14 @@ The database stores only user IDs. `names::lookup` turns them into names when so
 The status is a PNG, not an embed. `round_svg` lays the round out as SVG and `resvg` draws it, through `src/util/svg.rs`, which is shared with the control panel. The Inter font is built into the binary; system fonts are the fallback for characters Inter lacks, such as emoji in names. Drawing runs on tokio's blocking threads (`spawn_blocking`) because it takes CPU time.
 
 - **An open round** shows a header (round number, OPEN or ENDED, the season), a line with options left, how many you may bet on, and the payout (classic multiplier, or the pot and what was carried over). Then the standings sorted by money, with each player's money, bet, bet percentage and the tax they would pay if the round ended now, the bets grouped by option with each option's total and current pool payout, a "Waiting on" box with players who haven't claimed or have claimed but not bet, and the earlier winners.
-- **A resolved round** shows the winner and a results table: before, bets, tax, after and change for each player.
+- Options with a movie get it on a second line under their name in the bets table, cut short with "…" if it would run into the bets.
+- **A resolved round** shows the winner (with their movie under the name, if set) and a results table: before, bets, tax, after and change for each player.
 
 Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them and the winner stays hidden, as voltgpt's `||spoiler||` did. Open rounds are `round-<n>.png`.
 
 ## Chat tools
 
-`get_wheel_status` (in `tools.rs`): read only. It takes an optional `round` number (default: the current one) and returns the active season of the asker's server as plain text: the round's state, the Help text for the season's rules, the pot, the options left and the bet limit, earlier winners, every player's money, bet and tax (marking the asker), the claims and bets, current pool payouts, and the outcome of a resolved round. It refuses in DMs.
+`get_wheel_status` (in `tools.rs`): read only. It takes an optional `round` number (default: the current one) and returns the active season of the asker's server as plain text: the round's state, the Help text for the season's rules, the pot, the options left with their movies and the bet limit, earlier winners with their movies, every player's money, bet and tax (marking the asker), the claims and bets, current pool payouts, and the outcome of a resolved round. It refuses in DMs.
 
 ## Feature hooks it uses
 
@@ -108,7 +112,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | Method | What it does here |
 |---|---|
 | `name` | `"wheel"`: the config section, the custom ID prefix and the log label. |
-| `commands` | `/wheel_status`, `/wheel_add`, `/insert_bet`, `/reset_wheel`. |
+| `commands` | `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`. |
 | `migrations` | `store::MIGRATIONS`. |
 | `legacy_import` | The `wheel` part, run by `import::import`. |
 | `tools`, `run_tool` | `get_wheel_status`. |
@@ -165,6 +169,8 @@ From `store::MIGRATIONS`. Every child table uses `ON DELETE CASCADE`.
 
 **Migration 4** adds `wheel_round_ids`, a single row holding the highest round ID ever used. Undo Winner deletes the newest round, and SQLite would hand its ID to the next round, so a button made for the deleted round would work on its replacement. `store::add_round` takes new IDs from this counter instead.
 
+**Migration 5** adds `movie` to `wheel_options`: the movie that option picked, NULL when none is set.
+
 ## Background loops
 
 None. `start` only runs a one-off name lookup and font load.
@@ -187,7 +193,7 @@ The old.db import code is planned for removal once the imports are confirmed: `s
 - **Seasons instead of a hard reset.** voltgpt's `/reset_wheel` deleted everything without asking. Here it asks for `START` and keeps the old season viewable.
 - **One game per server** instead of one global game.
 - **No lock held during Discord calls.** voltgpt held `gamble.Mu` while calling the Discord API. Here each action is a short transaction and Discord comes after it.
-- **New**: pool betting with the 50% bet cap, the bet slip, Change Name, Help, a picture instead of an embed, and the chat tool.
+- **New**: pool betting with the 50% bet cap, the bet slip, Change Name, Help, the movie each option picked, a picture instead of an embed, and the chat tool.
 - **Small difference**: the player list is everyone who claimed or bet this season. voltgpt also listed people who only opened the bet menu.
 
 ## Ideas not built yet

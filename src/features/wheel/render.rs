@@ -13,6 +13,8 @@ use crate::util::svg::{
 const WIDTH: f32 = 600.0;
 /// Names longer than this are cut short.
 const MAX_NAME: usize = 14;
+/// How wide a movie under an option's name may be, so it stays clear of the bets.
+const MOVIE_WIDTH: f32 = 300.0;
 
 /// The round as a PNG. Call it off the async threads (see [`to_png`]).
 pub fn round_png(view: &View) -> anyhow::Result<Vec<u8>> {
@@ -206,7 +208,10 @@ fn bets_table(svg: &mut Svg, view: &View) {
                 .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
                 .collect();
             let lines = wrap_pieces(&pieces, &plain, WIDTH - 32.0 - 300.0, 13.0);
-            let height = 30.0 + 20.0 * (lines.len().max(1) - 1) as f32;
+            let movie = view.movie(option);
+            // A movie takes a second line under the name.
+            let rows = lines.len().max(if movie.is_some() { 2 } else { 1 });
+            let height = 30.0 + 20.0 * (rows - 1) as f32;
             let y = svg.y;
             if pieces.is_empty() {
                 let dashed = format!("stroke=\"{LINE}\" stroke-dasharray=\"3 3\"");
@@ -247,6 +252,15 @@ fn bets_table(svg: &mut Svg, view: &View) {
                         Style::new(13.0, MUTED).end(),
                     );
                 }
+            }
+            // Drawn after the row's background, which would cover it.
+            if let Some(movie) = movie {
+                svg.text(
+                    32.0,
+                    y + 39.0,
+                    &fit(movie, MOVIE_WIDTH, 12.0),
+                    Style::new(12.0, DIM).weight(500),
+                );
             }
             svg.y += height + 4.0;
         }
@@ -351,12 +365,22 @@ fn resolved(svg: &mut Svg, view: &View) {
     header(svg, view, "RESOLVED", RED, &sub);
 
     svg.y += 4.0;
+    let movie = view.movie(winner);
+    let height = if movie.is_some() { 78.0 } else { 56.0 };
     svg.rect(
-        [16.0, svg.y, WIDTH - 32.0, 56.0],
+        [16.0, svg.y, WIDTH - 32.0, height],
         GREEN,
         10.0,
         "fill-opacity=\"0.14\"",
     );
+    if let Some(movie) = movie {
+        svg.text(
+            32.0,
+            svg.y + 68.0,
+            &fit(movie, WIDTH - 64.0, 14.0),
+            Style::new(14.0, MUTED).weight(500),
+        );
+    }
     svg.text(
         32.0,
         svg.y + 24.0,
@@ -378,7 +402,7 @@ fn resolved(svg: &mut Svg, view: &View) {
             Style::new(13.0, MUTED).weight(500).end(),
         );
     }
-    svg.y += 70.0;
+    svg.y += height + 14.0;
 
     svg.section("Results");
     let (name, before, bets, tax, after, change) = (40.0, 250.0, 330.0, 400.0, 480.0, WIDTH - 28.0);
@@ -538,6 +562,26 @@ fn short(name: &str) -> String {
     format!("{cut}…")
 }
 
+/// The text cut short with "…" so it fits `width` at font size `size`.
+fn fit(text: &str, width: f32, size: f32) -> String {
+    if text_width(text, size) <= width {
+        return text.to_string();
+    }
+    let mut cut = String::new();
+    for c in text.chars() {
+        cut.push(c);
+        if text_width(&format!("{cut}…"), size) > width {
+            cut.pop();
+            break;
+        }
+    }
+    // End on a whole word when that loses little.
+    if let Some(space) = cut.rfind(' ').filter(|&space| space > cut.len() / 2) {
+        cut.truncate(space);
+    }
+    format!("{}…", cut.trim_end())
+}
+
 /// "+60", "−15" (a real minus sign), or "–" for nothing.
 fn signed(n: i64) -> String {
     match n {
@@ -580,6 +624,7 @@ mod tests {
             number: 2,
             rules: Default::default(),
             options: vec![1, 2, 3, 4],
+            movies: Default::default(),
             rounds: vec![
                 Round {
                     id: 1,
@@ -648,12 +693,37 @@ mod tests {
     }
 
     #[test]
+    fn movies_show_under_the_names() {
+        let mut season = season();
+        season.movies = [
+            (2, "Alien".to_string()),
+            (
+                4,
+                "The Lord of the Rings: The Return of the King (Extended)".to_string(),
+            ),
+        ]
+        .into();
+        // The winner's movie in the winner box.
+        let svg = render(&season, 0);
+        assert!(svg.contains(">Alien<"), "{svg}");
+        // Options left in the open round, cut short when long.
+        let svg = render(&season, 1);
+        assert!(
+            svg.contains(">The Lord of the Rings: The Return of…<"),
+            "{svg}"
+        );
+        assert!(!svg.contains(">Alien<"));
+        assert_eq!(fit("Heat", 100.0, 12.0), "Heat");
+    }
+
+    #[test]
     fn empty_round() {
         let season = Season {
             id: 1,
             number: 1,
             rules: Default::default(),
             options: vec![],
+            movies: Default::default(),
             rounds: vec![Round {
                 id: 1,
                 number: 1,
