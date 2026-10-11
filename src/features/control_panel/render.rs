@@ -27,6 +27,7 @@ use self::format::{
 pub use self::format::{human_duration, month_bounds};
 use self::graphs::{bars, series, sparkline};
 use self::spend::spend;
+pub use self::spend::warm_cache_text;
 use super::history::{self, History};
 use crate::core::logging::ErrorStats;
 use crate::core::timers::TimerState;
@@ -97,6 +98,9 @@ pub struct SpendView {
     pub last_read: Option<String>,
     /// Share of input read from the cache, when `show_cache_hits` is on.
     pub cache_hits: Option<f64>,
+    /// USD the chat cache keep-warm pings saved this month after paying for themselves,
+    /// once they've run (Claude only).
+    pub warm_cache: Option<f64>,
     /// USD per job, most expensive first, when `show_job_costs` is on.
     pub jobs: Option<Vec<(String, f64)>>,
 }
@@ -741,6 +745,7 @@ mod tests {
                             (now - TimeDelta::minutes(34)).timestamp()
                         )),
                         cache_hits: Some(0.71),
+                        warm_cache: Some(1.24),
                         jobs: Some(vec![
                             ("chat".into(), 19.42),
                             ("chime".into(), 3.10),
@@ -760,6 +765,7 @@ mod tests {
                         admin_key_failing: false,
                         last_read: None,
                         cache_hits: Some(0.38),
+                        warm_cache: None,
                         jobs: Some(vec![("drawing".into(), 4.80), ("chat".into(), 0.82)]),
                     }),
                 },

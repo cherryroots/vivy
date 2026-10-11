@@ -81,6 +81,17 @@ pub fn cost(usage: &Usage, model: &str) -> f64 {
         + usage.web_searches as f64 * WEB_SEARCH
 }
 
+/// What reading `tokens` from the cache saves, in USD, over writing them to the 1-hour
+/// cache again: a cold start the keep-warm ping prevented (see `keep_warm.rs`).
+pub fn hour_write_saved(tokens: u64, model: &str) -> f64 {
+    let usage = Usage {
+        cache_read: tokens,
+        ..Usage::default()
+    };
+    let p = prices_for(model, &usage);
+    tokens as f64 * (p.input * 2.0 - p.cache_read) / 1_000_000.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +137,12 @@ mod tests {
         };
         // 600k at 1.25 x $4 + 400k at 2 x $4
         assert!(close(cost(&usage, "claude-opus-5-5"), 3.0 + 3.2));
+    }
+
+    #[test]
+    fn a_warm_cache_saves_the_write() {
+        // 14k tokens: $0.112 to write for an hour, $0.0028 to read.
+        assert!(close(hour_write_saved(14_000, "claude-opus-5-5"), 0.1092));
     }
 
     #[test]

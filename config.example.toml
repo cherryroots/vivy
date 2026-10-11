@@ -57,6 +57,13 @@ show_job_costs = true
 # for answers and chime-ins. Writing it costs a bit more, but it's shared by every channel,
 # so an answer after a quiet half hour still reads it cheaply.
 cache_prompt_for_an_hour = true
+# Keep that cache from expiring: this many minutes after chat last used it, a ping reads
+# it again for about a fortieth of what writing it costs. Under 60, since the cache lasts
+# an hour; 0 turns it off. A ping that finds the cache already gone is logged as a warning.
+keep_cache_warm_minutes = 58
+# Stop pinging this many hours after the last chat; longer, the pings cost more than one
+# write.
+keep_cache_warm_hours = 36
 
 # Settings per job, for work nobody waits on. Each can set `model`, `effort`, `web` (web
 # search and fetch) and `code` (code execution and the skills); what's left out keeps the

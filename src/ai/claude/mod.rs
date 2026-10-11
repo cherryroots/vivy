@@ -20,6 +20,7 @@
 
 pub mod billing;
 mod collect;
+pub mod keep_warm;
 mod messages;
 mod price;
 mod uploads;
@@ -39,6 +40,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use self::collect::Collector;
+pub use self::keep_warm::{KeepWarm, MIGRATIONS as KEEP_WARM_MIGRATIONS};
 pub use self::uploads::MIGRATIONS as UPLOAD_MIGRATIONS;
 use self::uploads::Uploads;
 use super::api::{self, error_message};
@@ -102,6 +104,13 @@ pub struct ClaudeConfig {
     /// instead of 1.25x, but it's shared by every channel, so an answer after a quiet
     /// stretch still reads it at a twentieth of the price.
     pub cache_prompt_for_an_hour: bool,
+    /// Keep that cache from expiring: this many minutes after chat last used it, a ping
+    /// reads it again (see `keep_warm.rs`). Under 60, since the cache lasts an hour; 0
+    /// turns pings off. Needs `cache_prompt_for_an_hour`.
+    pub keep_cache_warm_minutes: u32,
+    /// Stop pinging this many hours after the last chat: longer, the pings cost more than
+    /// writing the cache once.
+    pub keep_cache_warm_hours: u32,
     /// Settings per job, like `[ai.claude.jobs.mood]` (see [`Job`]).
     pub jobs: HashMap<String, Job>,
 }
@@ -120,6 +129,8 @@ impl Default for ClaudeConfig {
             show_job_costs: true,
             skills: ["xlsx", "docx", "pptx", "pdf"].map(String::from).to_vec(),
             cache_prompt_for_an_hour: true,
+            keep_cache_warm_minutes: 58,
+            keep_cache_warm_hours: 36,
             jobs: HashMap::new(),
         }
     }
@@ -162,6 +173,8 @@ pub struct Claude {
     containers: Arc<Mutex<HashMap<String, String>>>,
     /// Where what each response cost is added up; `None` in tests.
     spend: Option<Spend>,
+    /// Keeps chat's cached prompt warm; each chat request reports to it.
+    warm: KeepWarm,
 }
 
 /// What's needed to send requests from the task that reads the stream.
@@ -173,6 +186,18 @@ struct Sender {
 }
 
 impl Sender {
+    fn new(http: &reqwest::Client, key: &str, config: &ClaudeConfig) -> Sender {
+        let mut betas = vec![THINKING_BETA];
+        if config.fallbacks {
+            betas.push(FALLBACK_BETA);
+        }
+        Sender {
+            http: http.clone(),
+            key: key.to_string(),
+            betas: betas.join(","),
+        }
+    }
+
     fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         self.http
             .request(method, format!("{API}{path}"))
@@ -228,6 +253,12 @@ impl Claude {
     ) -> Claude {
         // The database comes along with the spend, which keeps it for its own tables.
         let db = spend.as_ref().map(|spend| spend.db().clone());
+        let warm = KeepWarm::new(
+            Sender::new(&http, &key, &config),
+            spend.clone(),
+            config.keep_cache_warm_minutes,
+            config.keep_cache_warm_hours,
+        );
         Claude {
             http,
             key,
@@ -235,19 +266,22 @@ impl Claude {
             uploads: Uploads::new(db),
             containers: Arc::new(Mutex::new(HashMap::new())),
             spend,
+            warm,
         }
     }
 
+    /// What keeps chat's cached prompt warm, for its loop ([`KeepWarm::run`]). `None`
+    /// when that's off, or the prompt is only cached for five minutes.
+    pub fn keep_warm(&self) -> Option<KeepWarm> {
+        let config = &self.config;
+        let on = config.cache_prompt_for_an_hour
+            && (1..60).contains(&config.keep_cache_warm_minutes)
+            && config.keep_cache_warm_hours > 0;
+        on.then(|| self.warm.clone())
+    }
+
     fn sender(&self) -> Sender {
-        let mut betas = vec![THINKING_BETA];
-        if self.config.fallbacks {
-            betas.push(FALLBACK_BETA);
-        }
-        Sender {
-            http: self.http.clone(),
-            key: self.key.clone(),
-            betas: betas.join(","),
-        }
+        Sender::new(&self.http, &self.key, &self.config)
     }
 
     /// How `request` runs: its job's model, effort and built-in tools.
@@ -560,6 +594,8 @@ impl ChatProvider for Claude {
         };
         let (mut body, uploaded) = self.prepare(&request, turns).await;
         let sender = self.sender();
+        // Before sending: the cache's hour counts from the start of the request.
+        self.warm.used(&body, request.job).await;
         let mut result = sender.messages(&body).await;
         // Uploads expire, and can be deleted; upload those files again.
         if let Err(err) = &result

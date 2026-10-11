@@ -164,6 +164,9 @@ fn spend_card(
     if let Some(hits) = spend.cache_hits {
         summary.push(format!("{:.0}% cache hits", hits * 100.0));
     }
+    if let Some(net) = spend.warm_cache {
+        summary.push(warm_cache_text(net));
+    }
     svg.text(
         inner,
         y + 94.0,
@@ -294,5 +297,14 @@ fn month_chart(
         svg.raw(format!(
             "<circle cx=\"{nx:.1}\" cy=\"{ny:.1}\" r=\"3.5\" fill=\"{color}\"/>"
         ));
+    }
+}
+
+/// What keeping the chat cache warm saved this month, or cost when it didn't pay off.
+pub fn warm_cache_text(net: f64) -> String {
+    if net < 0.0 {
+        format!("keep-warm cost ${:.2}", -net)
+    } else {
+        format!("keep-warm saved ${net:.2}")
     }
 }

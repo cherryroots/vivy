@@ -138,6 +138,10 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 
 On Claude, a request whose job has no bot tools (emoji, mood) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
 
+### Keeping the chat cache warm
+
+`claude/keep_warm.rs`. The hour counts from the start of the last request that read or wrote the cached prompt and tools, and a read starts it over for free. So `keep_cache_warm_minutes` (58) after the last use, a ping sends the last chat request's model, system prompt, tools, thinking, effort and skills with one `"."` message, `max_tokens: 0` and no streaming: Claude reads the cache and stops, billing only the read (about $0.003 for 14k tokens, against $0.11 to write them again). Every chat and chime-in request with the same prompt and tools (`prefix_key`) counts as a use, so while people talk no ping goes out. A chat request with a different prompt or tool list (an update) moves the pings to it; a chime-in with one doesn't count. Pings stop `keep_cache_warm_hours` (36) after the last chat, since 40 pings cost as much as one write, and start again with the next chat (after a restart too: a ping copies the last chat request). Pings are spent as the job `keep_warm`. Each day in `claude_keep_warm` counts pings and their cost, cold pings (a ping that had to write the cache, so the wait is too close to the hour; also logged as a warning), and saves (a chat request over an hour after the last chat that found the cache warm thanks to a ping, with the write it saved, `price::hour_write_saved`). The status picture shows the month's savings minus the pings' cost next to the cache hit rate, once a ping has run.
+
 ## Claude
 
 `claude/mod.rs`. One `POST /v1/messages` with `"stream": true` per round. Claude keeps nothing between requests, so each one carries the whole conversation.
@@ -256,8 +260,9 @@ Neither Admin API creates API keys, so the cost per job comes from the bot's own
 | `ai_spend` | core (`CORE_MIGRATIONS` 2 in `src/core/db.rs`) | month (`2026-10`), provider, USD, `warned` (highest budget share already warned about, in percent) | The month's total, for the budget warnings and the status message |
 | `ai_spend_jobs` | core (`CORE_MIGRATIONS` 3) | month, provider, job, USD, uncached input tokens, cache read tokens, cache write tokens | Cost per job and cache hit rate |
 | `claude_uploads` | `claude` (`claude::UPLOAD_MIGRATIONS`, run from `main.rs` with every owner's migrations) | content key (hash and length as text), Files API ID, expiry (unix seconds) | Reusing uploads across restarts |
+| `claude_keep_warm` | `claude_keep_warm` (`claude::KEEP_WARM_MIGRATIONS`) | day (UTC, `2026-10-11`), pings, ping USD, cold pings, saves, saved USD | What keeping the chat cache warm cost and saved |
 
-Background loops: the timers `"Anthropic bill"` and `"OpenAI bill"` (`"hourly"`), from `Spend::follow_bill`, each only with its admin key.
+Background loops: the timers `"Anthropic bill"` and `"OpenAI bill"` (`"hourly"`), from `Spend::follow_bill`, each only with its admin key; `"Chat cache warmth"` (`"before the cache expires"`), from `KeepWarm::run`, when Claude chats and the pings are on.
 
 ## Configuration
 
