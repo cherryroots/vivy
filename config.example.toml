@@ -138,9 +138,6 @@ enabled = true
 # How often a day Vivy checks in with her mood in each server (0 turns it off; the daily
 # reflection still updates it). Each check is one short model call.
 mood_checks_per_day = 5
-# Servers that get no mood checks, like a test server. Her mood there still changes
-# through conversations and the daily reflection.
-# no_mood_checks = [123456789012345678]
 # Where she lives, so her mood follows the time of day (sleepy late at night).
 timezone = "UTC"
 # A folder with one PNG per mood, named after it: happy.png, sleepy.png, ... She picks one
