@@ -5,7 +5,8 @@
 //! Discord timestamp (`<t:...:R>`), which Discord keeps counting up on its own: if the bot
 //! dies without saying goodbye, the message visibly goes stale.
 //!
-//! Every 15 minutes the numbers are also saved for the picture's graphs (`history.rs`).
+//! Every 15 minutes the numbers are also saved for the picture's graphs (`history.rs`), and
+//! the graphs' samples are read back then; between those, the same samples are drawn.
 //! If the picture can't be drawn, the message shows the same information as an embed.
 
 use std::time::Duration;
@@ -66,6 +67,9 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
     tokio::task::spawn_blocking(svg::load_fonts);
     // The 15-minute slot of the last saved sample.
     let mut sampled = None;
+    // The graphs' samples, read again only after new ones are saved: they don't change
+    // in between.
+    let mut history = History::new();
     let samples = ctx.timers.add("Status graphs", "every 15m");
 
     loop {
@@ -78,7 +82,7 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
         let status = if stopping {
             offline(&ctx).await
         } else {
-            let dashboard = gather(&ctx).await;
+            let mut dashboard = gather(&ctx).await;
             let slot = dashboard.now.timestamp() / history::EVERY_SECS;
             if sampled != Some(slot) {
                 sampled = Some(slot);
@@ -86,10 +90,12 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
                 if let Err(err) = save_samples(&ctx, &dashboard).await {
                     warn!("couldn't save the status graphs' numbers: {err:#}");
                 }
+                history = load_history(&ctx, dashboard.now).await;
                 // The first refresh in the next slot saves the next sample.
                 let next = (slot + 1) * history::EVERY_SECS;
                 samples.next_at(DateTime::from_timestamp(next, 0).unwrap_or(dashboard.now));
             }
+            dashboard.history = history.clone();
             online(dashboard).await
         };
         match show(&ctx, channel, message, status).await {
@@ -227,16 +233,6 @@ async fn gather(ctx: &BotCtx) -> Dashboard {
             Err(err) => warn!("couldn't load {}'s status box: {err:#}", feature.name()),
         }
     }
-    // Only what the graphs draw: a week of everything, and this month of spend.
-    let (at, month_start) = (now.timestamp(), render::month_bounds(now).0.timestamp());
-    let history = ctx
-        .db
-        .call(move |conn| Ok(history::load_for_graphs(conn, at, month_start)?))
-        .await
-        .unwrap_or_else(|err| {
-            warn!("couldn't read the status graphs' numbers: {err:#}");
-            History::new()
-        });
     Dashboard {
         now,
         bot_name: bot_name(ctx),
@@ -252,8 +248,21 @@ async fn gather(ctx: &BotCtx) -> Dashboard {
         features,
         panels,
         timers: ctx.timers.list(),
-        history,
+        // Filled in by `run`, which keeps the samples between refreshes.
+        history: History::new(),
     }
+}
+
+/// The samples the graphs draw: a week of everything, and this month of spend.
+async fn load_history(ctx: &BotCtx, now: DateTime<Utc>) -> History {
+    let (at, month_start) = (now.timestamp(), render::month_bounds(now).0.timestamp());
+    ctx.db
+        .call(move |conn| Ok(history::load_for_graphs(conn, at, month_start)?))
+        .await
+        .unwrap_or_else(|err| {
+            warn!("couldn't read the status graphs' numbers: {err:#}");
+            History::new()
+        })
 }
 
 /// Adds `new` to `panels`: rows of a panel whose title is already there go into that one,

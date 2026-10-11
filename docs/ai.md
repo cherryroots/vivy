@@ -13,6 +13,7 @@ Both providers are called over plain HTTP with `reqwest` and `serde_json`, with 
 | `mod.rs` | The shared types (`Turn`, `Part`, `Input`, `ChatRequest`, `ChatEvent`, `Done`), the `ChatProvider` trait, `AiConfig` and `Provider` (the `[ai]` config), `Ai` (the providers the bot has), and `next_input` |
 | `complete.rs` | `complete`: running a request to the end without showing it anywhere, for background jobs |
 | `sse.rs` | `SseParser`: splits a streamed body into server-sent events |
+| `api.rs` | `send_retrying` (trying again when an API is busy, honouring `Retry-After`) and `error_message` (the message of an error answer), shared by Claude, OpenAI and the Image API |
 | `fallback.rs` | `ApiError`, telling outages from bad requests, `send` (one retry without a connection), `State` and `Watched` (moving chat to the backup provider) |
 | `spend.rs` | `Spend`: what one provider costs this month, budget warnings, reading the real bill through the `Bill` trait |
 | `openai/mod.rs` | The OpenAI provider (Responses API) and `OpenAiConfig` |
@@ -139,9 +140,9 @@ Beta headers: `thinking-binding-controls-2026-08-01`, and `server-side-fallback-
 
 **Building the messages** (`messages::to_messages`): text, pictures and tool results become content blocks. An assistant turn with a `Part::Native` written by `"claude"` with the same model is replaced by its rounds, exactly as stored. Any other assistant turn sends only its text. A file becomes a note naming it, a `document` block for PDFs (so Claude reads them), and a `container_upload` block when code execution is on (so code can open it). If a chain starts with one of the bot's messages, a short user message is put first, since Claude requires the user to speak first.
 
-**Uploads**: pictures and files go through the Files API: uploaded once, then sent by `file_id` (see "Uploads" below). Pictures over 2000 pixels a side or 5 MB are made smaller first (`shrink_image`), because Claude rejects big ones once a request has more than 20 pictures. A picture that fails to upload is sent inline as base64.
+**Uploads**: pictures and files go through the Files API: uploaded once, then sent by `file_id` (see "Uploads" below). Up to 4 are uploaded at once. Pictures over 2000 pixels a side or 5 MB are made smaller first (`shrink_image`), because Claude rejects big ones once a request has more than 20 pictures. A picture that fails to upload is sent inline as base64.
 
-**Retries**: 429, 500, 502, 503 and 529 are retried twice, after 2 and 6 seconds. If the request fails because an upload is gone, those uploads are forgotten and sent again. If it fails because the code execution container is gone, the request is sent without a container ID.
+**Retries**: 429, 500, 502, 503 and 529 are retried twice, after 2 and 6 seconds, or after the wait the answer's `Retry-After` header asks for when that is longer (up to 60 seconds; see `api::send_retrying`). If the request fails because an upload is gone, those uploads are forgotten and sent again. If it fails because the code execution container is gone, the request is sent without a container ID.
 
 **Reading the stream** (`collect.rs`): the answer arrives as content blocks (thinking, text, tool calls, built-in tools' results), each opened by `content_block_start`, filled by deltas and closed by `content_block_stop`. `Collector` rebuilds the blocks exactly as Claude wrote them, signatures included, because they go back into the conversation unchanged. On the way it sends `TextDelta`s and `Activity` events. Tool arguments stream as text and are parsed at the end of the block. An `error` event mid-stream becomes an `ApiError` (529 for `overloaded_error`, 500 for `api_error`), so the fallback reads it the same way as an HTTP error.
 
@@ -164,7 +165,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - Pictures are sent inline as base64 data URLs.
 - Attached files are uploaded first (`POST /v1/files`, kept 30 days so stored responses that point at them still work). PDFs and Office files are also given to the model to read as `input_file` (at most 50 MB per request). Types the code interpreter takes go into its container. Other files get a note saying they're attached but can't be opened.
 - Files the code interpreter made come from `container_file_citation` annotations; `download_file` reads them from `/v1/containers/{container}/files/{file}/content`.
-- 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds. Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).
+- 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds (or a longer `Retry-After`/`retry-after-ms`, up to 60 seconds). Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).
 - When the stream ends with `response.completed` (or `response.incomplete`), `add_spend` prices the response's `usage` with `price::chat_cost` and adds it to OpenAI's `Spend` (see below).
 
 ### Pictures
@@ -174,7 +175,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - No pictures: `POST https://api.openai.com/v1/images/generations` (JSON).
 - With pictures: `POST /v1/images/edits`, also JSON, with up to 16 pictures as `{"image_url": "data:..."}` in `images`.
 - The answer holds the picture in `data[0].b64_json` and the tokens in `usage`, which `price::image_cost` prices; the cost goes to OpenAI's `Spend` as the job `"drawing"`.
-- 429, 500, 502 and 503 are retried twice, after 5 and 15 seconds. A 400 (the safety system refused, or a bad size) becomes a `user_error`, so the model reads why and the log channel isn't bothered.
+- 429, 500, 502 and 503 are retried twice, after 5 and 15 seconds (or a longer `Retry-After`, up to 60 seconds), and no connection is retried once, like chat (`fallback::send`). A 400 (the safety system refused, or a bad size) becomes a `user_error`, so the model reads why and the log channel isn't bothered.
 
 GPT Image 2.5 comes as `gpt-image-2.5-flare` (fast, everyday pictures) and `gpt-image-2.5-sunburst` (the most capable, best at precise edits). Both cost the same per token: text in $5, pictures in $8, pictures out $30 per million (checked 2026-10-11). Quality goes `low`, `medium`, `high`, `xhigh`, `max`.
 
@@ -224,7 +225,7 @@ Callers take `ctx.ai.chat()` once per answer and keep that provider for the whol
 - After each OpenAI response, `add_spend` (in `openai/mod.rs`) prices it with `price::chat_cost`: uncached input, cached input and output tokens from a table per model ID prefix, twice that on the `fast` service tier, plus $10 per 1000 web searches. Left out, so the estimate runs a little low: long-prompt prices, cache writes, and code interpreter containers ($0.03 a session). An unknown model is priced like gpt-6.1-sol. Pictures are priced by `price::image_cost`.
 - `Spend::add` adds it to `ai_spend` (the month's total) and to `ai_spend_jobs` (per job). Months are calendar months in UTC.
 - At 80% and 100% of `monthly_budget` under `[ai.claude]` / `[ai.openai]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
-- With an Admin key in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill` with that company's `Bill`, which reads the bill now and every hour and replaces the month's total with it:
+- With an Admin key in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill` with that company's `Bill` on the shutdown tracker, which reads the bill now and every hour (until the bot stops) and replaces the month's total with it:
   - `ANTHROPIC_ADMIN_KEY`: Anthropic's Cost API (`claude/billing.rs`: `GET /v1/organizations/cost_report`, the whole organization, daily buckets, amounts in cents as strings).
   - `OPENAI_ADMIN_KEY`: OpenAI's Costs API (`openai/billing.rs`: `GET /v1/organization/costs` with `start_time` at the month's start, the whole organization, daily buckets only, `amount.value` in USD). An ordinary API key can't read it. Daily buckets mean today's spend can show up late, so the estimate fills the gap until the next read. Answers in between add their estimate on top until the next read. A failing read is warned about once, then logged quietly.
 - `Spend::this_month` gives the control panel the month's total, the cost per job (`show_job_costs`) and the cache hit rate (`show_cache_hits`: input tokens read from the cache over all input tokens). `Spend::admin_key` says whether the bill is being read.

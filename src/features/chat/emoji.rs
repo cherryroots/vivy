@@ -91,6 +91,17 @@ async fn run(ctx: BotCtx) {
         if let Err(err) = describe_new(&ctx).await {
             error!("describing emoji: {err:#}");
         }
+        // Daily chat upkeep that fits here: old answers' raw output isn't needed any more.
+        let before = chrono::Utc::now().timestamp() - store::NATIVE_KEEP_DAYS * 86_400;
+        match ctx
+            .db
+            .call(move |conn| Ok(store::forget_old_rounds(conn, before)?))
+            .await
+        {
+            Ok(0) => {}
+            Ok(cleared) => info!("cleared the raw output of {cleared} old answers"),
+            Err(err) => error!("clearing old answers' raw output: {err:#}"),
+        }
         timer.sleeping(CHECK);
         tokio::select! {
             () = tokio::time::sleep(CHECK) => {}

@@ -59,6 +59,11 @@ static REGIONS: LazyLock<Vec<Region>> = LazyLock::new(|| {
     regions
 });
 
+/// [`SHAPE_TOLERANCE`] as bounds on the ratio of two shapes, so comparing needs no
+/// logarithm: |ln(a/b)| <= t is the same as e^-t <= a/b <= e^t.
+static SHAPE_RANGE: LazyLock<(f32, f32)> =
+    LazyLock::new(|| ((-SHAPE_TOLERANCE).exp(), SHAPE_TOLERANCE.exp()));
+
 static HASHER: LazyLock<Hasher> = LazyLock::new(|| {
     HasherConfig::new()
         .hash_alg(HashAlg::Gradient)
@@ -106,9 +111,10 @@ pub fn fingerprint(img: &DynamicImage) -> Fingerprint {
 /// The closest pair of regions: the whole of one picture against the whole or a crop of the
 /// other, in both directions. Lower is more alike; 0 is the same hash.
 pub fn distance(a: &Fingerprint, b: &Fingerprint) -> u32 {
+    let (low, high) = *SHAPE_RANGE;
     let mut best = u32::MAX;
     let mut try_pair = |a: &Fingerprint, i: usize, b: &Fingerprint, j: usize| {
-        if (a.aspect_of(i) / b.aspect_of(j)).ln().abs() <= SHAPE_TOLERANCE {
+        if (low..=high).contains(&(a.aspect_of(i) / b.aspect_of(j))) {
             best = best.min(hamming(a.hash(i), b.hash(j)));
         }
     };
@@ -350,6 +356,23 @@ mod tests {
 
         let other = fingerprint(&picture(9, 400, 300));
         assert!(distance(&fp, &other) > MATCH_DISTANCE);
+    }
+
+    #[test]
+    fn shape_range_matches_the_logarithm() {
+        let (low, high) = *SHAPE_RANGE;
+        for step in 0..=4000 {
+            let ratio = 0.8 + step as f32 * 0.0001;
+            // Right at the edge, rounding may differ; no real picture lands there.
+            if (ratio - low).abs() < 1e-5 || (ratio - high).abs() < 1e-5 {
+                continue;
+            }
+            assert_eq!(
+                (low..=high).contains(&ratio),
+                ratio.ln().abs() <= SHAPE_TOLERANCE,
+                "{ratio}"
+            );
+        }
     }
 
     #[test]

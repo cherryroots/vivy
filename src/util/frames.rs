@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 
 use super::media::MediaKind;
 
@@ -80,8 +81,16 @@ fn plan(duration: f64, layout: Layout) -> (f64, u32, u32) {
     (fps, columns, rows)
 }
 
-/// Returns the frame grids of a GIF or video as PNG files.
+/// At most this many files go through ffprobe and ffmpeg at once. Each run takes a CPU core
+/// or more, and a chat question with many videos would otherwise start them all together.
+const MAX_RUNS: usize = 2;
+static RUNS: Semaphore = Semaphore::const_new(MAX_RUNS);
+
+/// Returns the frame grids of a GIF or video as PNG files. Waits its turn when
+/// [`MAX_RUNS`] files are already being read.
 pub async fn frame_grids(data: &[u8], layout: Layout) -> anyhow::Result<Vec<Vec<u8>>> {
+    // Held until the grids are read back. The semaphore is never closed, so this can't fail.
+    let _turn = RUNS.acquire().await.context("waiting for ffmpeg")?;
     // ffmpeg needs a real file: MP4s can't always be read from a pipe. The folder and
     // everything in it is deleted when `dir` is dropped.
     let dir = tempfile::tempdir().context("creating a temporary folder")?;

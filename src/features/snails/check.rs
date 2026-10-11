@@ -28,11 +28,11 @@ pub async fn check_snail(ctx: Context<'_>, msg: Message) -> Result<()> {
     ctx.defer_ephemeral().await?;
     let text = match find_snails(ctx.data(), guild, &msg).await? {
         None => "This message has no links or pictures to check.".to_string(),
-        Some((snails, failed)) => {
+        Some((snails, unchecked, failed)) => {
             let mut text = if snails.is_empty() {
                 "No snails: this hasn't been posted here before.".to_string()
             } else {
-                describe(guild, &snails)
+                describe(guild, &snails, unchecked)
             };
             if failed > 0 {
                 text.push_str(&format!(
@@ -59,13 +59,13 @@ struct Snail {
     same_link: bool,
 }
 
-/// The earlier posts, oldest first, and how many pictures failed to load. None when the
-/// message has nothing to check.
+/// The earlier posts (oldest first, at most [`MAX_LISTED`]), how many more weren't checked,
+/// and how many pictures failed to load. None when the message has nothing to check.
 async fn find_snails(
     ctx: &BotCtx,
     guild: GuildId,
     msg: &Message,
-) -> Result<Option<(Vec<Snail>, usize)>> {
+) -> Result<Option<(Vec<Snail>, usize, usize)>> {
     let keys = index::link_keys(msg).await;
     let (pictures, failed) = index::load_pictures(msg).await;
     if keys.is_empty() && pictures.is_empty() && failed.is_empty() {
@@ -73,8 +73,8 @@ async fn find_snails(
     }
     let failed_count = failed.len();
     save_if_new(ctx, guild, msg, &keys, &pictures, failed).await?;
-    let snails = earlier_posts(ctx, guild, msg, &keys, &pictures, false).await?;
-    Ok(Some((snails, failed_count)))
+    let (snails, unchecked) = earlier_posts(ctx, guild, msg, &keys, &pictures, MAX_LISTED).await?;
+    Ok(Some((snails, unchecked, failed_count)))
 }
 
 /// A new message, or one that changed (an edit, a late link preview, or a message read by
@@ -119,8 +119,9 @@ async fn count_if_snail(
     {
         return Ok(());
     }
-    if earlier_posts(ctx, guild, msg, links, pictures, true)
+    if earlier_posts(ctx, guild, msg, links, pictures, 1)
         .await?
+        .0
         .is_empty()
     {
         return Ok(());
@@ -132,16 +133,18 @@ async fn count_if_snail(
         .await
 }
 
-/// Earlier posts of the same links or pictures, oldest first. With `first_only`, stops at
-/// the first one found.
+/// Earlier posts of the same links or pictures, oldest first. Each one is checked before it
+/// counts (read again from Discord, and a picture downloaded for the detail check), so this
+/// stops once `limit` are confirmed. Also returns how many earlier posts of the same link
+/// were left unchecked then; close pictures aren't looked for at all once the limit is hit.
 async fn earlier_posts(
     ctx: &BotCtx,
     guild: GuildId,
     msg: &Message,
     keys: &[String],
     pictures: &[LoadedPicture],
-    first_only: bool,
-) -> Result<Vec<Snail>> {
+    limit: usize,
+) -> Result<(Vec<Snail>, usize)> {
     let mut snails = Vec::new();
     let (g, before) = (guild.get(), msg.id.get());
     let keys = keys.to_vec();
@@ -149,16 +152,19 @@ async fn earlier_posts(
         .db
         .call(move |conn| Ok(store::same_links(conn, g, &keys, before)?))
         .await?;
+    let mut unchecked = 0;
     for posted in same_links {
-        if still_there(ctx, &posted).await?.is_some() {
+        if snails.len() >= limit {
+            unchecked += 1;
+        } else if still_there(ctx, &posted).await?.is_some() {
             snails.push(Snail {
                 posted,
                 same_link: true,
             });
-            if first_only {
-                return Ok(snails);
-            }
         }
+    }
+    if snails.len() >= limit {
+        return Ok((snails, unchecked));
     }
 
     let checked: Vec<Fingerprint> = pictures.iter().map(|p| p.fp.clone()).collect();
@@ -172,13 +178,13 @@ async fn earlier_posts(
                 posted: candidate.posted,
                 same_link: false,
             });
-            if first_only {
-                return Ok(snails);
+            if snails.len() >= limit {
+                break;
             }
         }
     }
     snails.sort_by_key(|s| s.posted.message);
-    Ok(snails)
+    Ok((snails, unchecked))
 }
 
 /// Saves the checked message too, so later checks find it. Pictures that failed go on the
@@ -229,11 +235,14 @@ async fn close_pictures(
     let mut found: Vec<Candidate> = Vec::new();
     let mut after = 0;
     loop {
-        let checked = checked.clone();
-        let (chunk, next) = ctx
+        // The database thread only reads; comparing a chunk takes a moment of CPU, so it
+        // runs on a blocking thread and other features' queries don't wait for it.
+        let (rows, next) = ctx
             .db
-            .call(move |conn| Ok(store::close_pictures(conn, guild, &checked, before, after)?))
+            .call(move |conn| Ok(store::pictures_after(conn, guild, before, after)?))
             .await?;
+        let checked = checked.clone();
+        let chunk = tokio::task::spawn_blocking(move || store::close_to(&checked, &rows)).await?;
         found.extend(chunk);
         match next {
             Some(rowid) => after = rowid,
@@ -313,9 +322,10 @@ fn is_not_found(err: &serenity::Error) -> bool {
     backfill::http_status(err) == Some(404)
 }
 
-fn describe(guild: GuildId, snails: &[Snail]) -> String {
+/// The reply listing `snails`, plus a line for the `unchecked` ones not listed.
+fn describe(guild: GuildId, snails: &[Snail], unchecked: usize) -> String {
     let mut text = String::from("🐌 **Snail!** This was posted before:");
-    for snail in snails.iter().take(MAX_LISTED) {
+    for snail in snails {
         let p = &snail.posted;
         let when = MessageId::new(p.message).created_at().unix_timestamp();
         let what = if snail.same_link {
@@ -328,8 +338,10 @@ fn describe(guild: GuildId, snails: &[Snail]) -> String {
             p.author, p.channel, p.message
         ));
     }
-    if snails.len() > MAX_LISTED {
-        text.push_str(&format!("\n…and {} more.", snails.len() - MAX_LISTED));
+    if unchecked > 0 {
+        text.push_str(&format!(
+            "\n…and {unchecked} more post(s) of the same link, not checked one by one."
+        ));
     }
     text
 }

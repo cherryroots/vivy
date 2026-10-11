@@ -37,7 +37,7 @@ All of this is in `src/main.rs`, top to bottom:
 5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`. With `ANTHROPIC_ADMIN_KEY`, a task starts that reads Anthropic's bill hourly.
 6. **Commands.** Every feature's slash commands are collected. Each gets its feature's name as its poise `category`, so the gate check knows whose command it is.
 7. **Connect.** serenity connects to Discord. When Discord says the bot is ready, poise runs `setup` once: it builds the `BotCtx`, starts posting to the log channel, registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
-8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels the `shutdown` token. Background tasks see it and stop, and the bot waits up to 10 seconds for them (the control panel uses that time to show OFFLINE).
+8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels the `shutdown` token. Background tasks see it and stop, and the bot waits up to 10 seconds for them and for event handlers still running (the control panel uses that time to show OFFLINE).
 
 ## The `Feature` trait
 
@@ -86,7 +86,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(wheel::Wheel),
         Arc::new(control_panel::ControlPanel),
         Arc::new(memory::Memory),
-        Arc::new(snails::Snails),
+        Arc::new(snails::Snails::default()),
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
         Arc::new(chat::Chat::default()),
@@ -132,7 +132,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | A slash command | poise runs it. `command_check` refuses it where its feature is turned off. |
 | A `BotEvent` | Every enabled feature's `on_bot_event` (see "How features talk to each other"). |
 
-**Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot.
+**Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot. The tasks are spawned on `ctx.tasks`, so at shutdown the bot waits for them (within the same 10 seconds) instead of cutting off an answer or a database write halfway.
 
 **Errors.** Handlers return `anyhow::Result`. When one fails, the dispatcher logs the error with its whole chain of causes and tells the user something: a reply for a message, a private (ephemeral) message for a button or command. Most errors become "Something went wrong. The error was logged." An error made with `user_error("...")` (`src/core/errors.rs`) is meant for the user and is shown as written, without an error in the log.
 
@@ -228,8 +228,8 @@ Since features never import each other, the core gives them four ways to work to
 |---|---|
 | `split.rs` | `split_message`: long text into Discord-sized parts, cut at Markdown boundaries by the `text-splitter` crate, never inside an emoji, with code blocks closed and reopened across parts |
 | `reply.rs` | `LiveReply`: a reply that can span several messages and change over time. `show(parts)` edits, sends or deletes messages until Discord matches. Chat streams answers through it. |
-| `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network |
-| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames |
+| `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `preview_links` (the links Discord may preview: not `<link>` ones) and `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network |
+| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames. At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. |
 | `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in. The wheel and the status picture use it. |
 | `text.rs` | Text from text-file attachments and embeds, for chat |
 | `mod.rs` | `shorten`: cut text to a number of characters, ending in "…" |

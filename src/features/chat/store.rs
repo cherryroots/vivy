@@ -2,7 +2,9 @@
 //!
 //! `chat_turns` holds one row per turn. Turns point at the turn they answer or reply to
 //! (`parent_id`), so a conversation is the chain from a turn up to its root, and a
-//! regenerated answer is a second child of the same question. Rows are never edited.
+//! regenerated answer is a second child of the same question. Rows are never edited,
+//! except that an answer's raw output (`native_json`) is cleared once it is
+//! [`NATIVE_KEEP_DAYS`] old: see [`forget_old_rounds`].
 //!
 //! `chat_messages` maps Discord message IDs to turns. A long answer spans several Discord
 //! messages, and replying to any of them continues the same conversation.
@@ -255,6 +257,21 @@ pub fn chain(conn: &Connection, turn_id: i64, limit: usize) -> anyhow::Result<Ve
     Ok(turns)
 }
 
+/// How long an answer's raw provider output (`native_json`) is kept.
+pub const NATIVE_KEEP_DAYS: i64 = 60;
+
+/// Clears the raw output (`native_json`: thinking, tool calls and their results) of answers
+/// written before `before`. It is only needed to replay recent conversations exactly; an
+/// answer without it is sent again as its text, like one from another provider. Returns
+/// how many answers were cleared.
+pub fn forget_old_rounds(conn: &Connection, before: i64) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE chat_turns SET native_json = NULL
+         WHERE native_json IS NOT NULL AND created_at < ?1",
+        [before],
+    )
+}
+
 type RawRow = (
     i64,
     Option<i64>,
@@ -442,6 +459,32 @@ mod tests {
             }),
             created_at: 0,
         }
+    }
+
+    #[test]
+    fn old_rounds_are_forgotten() {
+        let mut conn = test_connection("chat", MIGRATIONS);
+        let mut old = new_turn(None, Role::Assistant, "old");
+        old.created_at = 100;
+        let old = add_turn(&mut conn, &old, &[]).unwrap();
+        let mut recent = new_turn(None, Role::Assistant, "recent");
+        recent.created_at = 300;
+        let recent = add_turn(&mut conn, &recent, &[]).unwrap();
+
+        assert_eq!(forget_old_rounds(&conn, 200).unwrap(), 1);
+        let old = get_turn(&conn, old).unwrap().unwrap();
+        assert_eq!(old.native_json, None);
+        // The rest of the answer stays.
+        assert_eq!(old.continuation_id.as_deref(), Some("resp_old"));
+        assert!(
+            get_turn(&conn, recent)
+                .unwrap()
+                .unwrap()
+                .native_json
+                .is_some()
+        );
+        // Nothing left to clear.
+        assert_eq!(forget_old_rounds(&conn, 200).unwrap(), 0);
     }
 
     #[test]
