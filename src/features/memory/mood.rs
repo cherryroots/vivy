@@ -30,6 +30,9 @@ pub(super) struct Settings {
     /// How often a day her mood is checked in each server. 0 turns checks off (the daily
     /// reflection still updates it).
     mood_checks_per_day: u32,
+    /// Servers that get no mood checks (her mood there still changes through chat and the
+    /// daily reflection).
+    no_mood_checks: Vec<u64>,
     /// Where she lives, for the time of day: a name like "Europe/Stockholm".
     timezone: String,
 }
@@ -38,6 +41,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             mood_checks_per_day: 5,
+            no_mood_checks: Vec::new(),
             timezone: "UTC".to_string(),
         }
     }
@@ -124,7 +128,8 @@ pub async fn check_due(ctx: &BotCtx) -> Result<()> {
         else {
             continue;
         };
-        if !ctx.gate("memory").allows_guild(guild) {
+        if !ctx.gate("memory").allows_guild(guild) || settings.no_mood_checks.contains(&guild.get())
+        {
             continue;
         }
         // Nobody would see it: wait until people talk there again.
@@ -295,6 +300,7 @@ mod tests {
     fn settings_default_to_five_checks() {
         let settings = Settings::default();
         assert_eq!(settings.mood_checks_per_day, 5);
+        assert!(settings.no_mood_checks.is_empty());
         assert!(system(None).ends_with(ANSWER));
         assert!(system(Some("face: sleepy")).contains("sleepy"));
     }
