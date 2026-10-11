@@ -70,6 +70,7 @@ pub async fn complete(
             results.push(ToolOutput {
                 call_id: call.id.clone(),
                 output: tools.run(call).await,
+                images: Vec::new(),
             });
         }
         input = next_input(provider, input, &done, &results);

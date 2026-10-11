@@ -134,6 +134,7 @@ impl Feature for Drawing {
             description: "Draw a picture and post it as a reply to the asker. Use it when someone asks you for a picture (to draw, paint or make one) or to change one they show you; not on your own. It makes real pictures: don't draw with code instead. \
 Write the prompt in English as a clear description of the whole picture: the subject, what's happening, the style (photo, anime, watercolor, pixel art...), colors, light and framing. Put any words that should appear in the picture in quotes. \
 To change a picture or draw from one (\"put a hat on this\", \"me as a knight\", a reply to a picture you drew: \"make it night\"), set use_pictures: the pictures in the asker's message and in the message it replies to are sent along, and the prompt says what to do with them. \
+To draw yourself or someone here, look at their profile picture first (look_at_profile_picture) and describe their looks in the prompt: hair, eyes, clothes, colors. \
 Drawing takes up to a minute. The picture is your answer, so write at most a short line with it.",
             parameters: json!({
                 "type": "object",

@@ -28,6 +28,7 @@ All under `src/features/chat/`, in a good reading order:
 | `search.rs` | The `search_messages` tool, which calls Discord's search endpoint directly |
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
+| `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
 | `emoji.rs` | The `list_server_emoji` tool and the task that describes each custom emoji once |
 | `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid); what each tool is for and when to use it is in the tool's own description, so the two can't disagree |
 
@@ -148,6 +149,7 @@ Chat's own tools:
 | `get_channel_info` | `tools.rs` | The channel's name, topic and type, its parent channel or category, and the server name |
 | `list_channels` | `tools.rs` | Every channel the asker can see, by category, with topics |
 | `get_user_info` | `tools.rs` | A member's names, ID, roles, join date and timezone (the asker when no `user` is given) |
+| `look_at_profile_picture` | `avatar.rs` | Shows the model someone's profile picture as a picture: their picture for this server if they set one, otherwise their main one (Discord's default when they have none). `me` is Vivy herself, so in a server it's her current face. Downloaded as a 512 px PNG (an animated one gives its first frame). Only the text stays in the history |
 | `read_recent_messages` | `tools.rs` | The messages just before the one being answered, 1 to 50 (default 20), oldest first |
 | `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel |
 | `search_messages` | `search.rs` | Discord's server-wide search (words, author, channel, attachment type, dates, sort), filtered to channels the asker can read, with message links. Waits once if Discord is still indexing |
@@ -179,8 +181,9 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) and "Follow-ups" (check-ins planned) for the status message |
 | `panels` | The next planned check-in in a server, in the box about Vivy on the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `emoji::def` and `follow_up::def`) |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def` and `follow_up::def`) |
 | `run_tool` | Runs them: `list_server_emoji` and `schedule_follow_up` directly, the rest through `tools::run` |
+| `run_tool_with_pictures` | `look_at_profile_picture`, which answers with a picture; every other tool goes to `run_tool`. Chat always calls this one |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the follow-up and emoji tasks |
 | `on_mention` | Answers a question |

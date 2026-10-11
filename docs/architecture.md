@@ -57,6 +57,7 @@ pub trait Feature: Send + Sync + 'static {
     fn tools(&self) -> Vec<ToolDef>;                             // functions the chat model may call
     fn tool_status(&self, tool: &str) -> Option<&'static str>;  // "🎨 Drawing…" while one runs
     async fn run_tool(&self, ctx, asker: &Asker, name, args) -> Result<String>;
+    async fn run_tool_with_pictures(&self, ctx, asker, name, args) -> Result<ToolReply>; // text + pictures
     async fn chat_context(&self, ctx, asker: &Asker, fresh: bool) -> Result<Option<String>>;
     async fn stats(&self, ctx) -> Result<Vec<Stat>>;             // a card on the status picture
     async fn panels(&self, ctx) -> Result<Vec<Panel>>;           // a box of text on it

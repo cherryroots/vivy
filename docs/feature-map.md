@@ -135,6 +135,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #27 | | Speed and reliability: shared retries with Retry-After, parallel loading, snail scan off the database thread |
 | #28 | | Wheel menus past 25 names, reminder Cancel and Snooze… buttons, repeating reminders, friendly tool status lines, `/snails` leaderboard |
 | #29 | | Code cleanup: big files split, shared helpers, tracing-log, less work per message |
+| #31 | | `look_at_profile_picture`: Vivy can see people's profile pictures and her own face; tool results can carry pictures |
 
 ## Not built yet
 

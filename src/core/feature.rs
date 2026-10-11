@@ -15,7 +15,7 @@ use serenity::all::{
 
 use super::config::Config;
 use super::{BotCtx, BotEvent, Command, Result};
-use crate::ai::ToolDef;
+use crate::ai::{ToolDef, ToolReply};
 
 #[async_trait]
 pub trait Feature: Send + Sync + 'static {
@@ -69,6 +69,18 @@ pub trait Feature: Send + Sync + 'static {
         _args: &serde_json::Value,
     ) -> Result<String> {
         anyhow::bail!("{} has no tool named {name}", self.name())
+    }
+
+    /// Like [`Feature::run_tool`], for a tool that also shows the model pictures, like a
+    /// profile picture. Chat calls this one; by default it runs `run_tool`, with no pictures.
+    async fn run_tool_with_pictures(
+        &self,
+        ctx: &BotCtx,
+        asker: &Asker,
+        name: &str,
+        args: &serde_json::Value,
+    ) -> Result<ToolReply> {
+        Ok(self.run_tool(ctx, asker, name, args).await?.into())
     }
 
     /// Text chat adds to the asker's question, for this answer only: what the model should

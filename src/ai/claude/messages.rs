@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use super::ContentKey;
 use crate::ai::{ModelFile, NativeRound, Part, Role, ToolDef, Turn};
+use crate::util::media::ModelImage;
 
 /// Turns become messages. `uploaded` holds the Files API IDs of pictures and files (by
 /// [`ContentKey`]); anything missing from it is sent inline, or as a note when it can't be.
@@ -67,7 +68,11 @@ pub fn to_messages(
                     content.push(json!({"type": "image", "source": source}));
                 }
                 Part::File(file) => content.extend(file_blocks(file, uploaded, code_execution)),
-                Part::ToolResult { call_id, output } => content.push(tool_result(call_id, output)),
+                Part::ToolResult {
+                    call_id,
+                    output,
+                    images,
+                } => content.push(tool_result(call_id, output, images)),
                 // Another provider's answer: its text parts stand in for it.
                 Part::Native { .. } => {}
             }
@@ -126,20 +131,32 @@ fn add_round(messages: &mut Vec<Value>, round: &NativeRound, keep_thinking: bool
         let results: Vec<Value> = round
             .results
             .iter()
-            .map(|r| tool_result(&r.call_id, &r.output))
+            .map(|r| tool_result(&r.call_id, &r.output, &r.images))
             .collect();
         messages.push(json!({"role": "user", "content": results}));
     }
 }
 
-fn tool_result(call_id: &str, output: &str) -> Value {
+fn tool_result(call_id: &str, output: &str, images: &[ModelImage]) -> Value {
     // Claude doesn't take empty results.
     let output = if output.trim().is_empty() {
         "(no output)"
     } else {
         output
     };
-    json!({"type": "tool_result", "tool_use_id": call_id, "content": output})
+    if images.is_empty() {
+        return json!({"type": "tool_result", "tool_use_id": call_id, "content": output});
+    }
+    // With pictures, the content is a list of blocks: the text, then each picture.
+    let mut content = vec![json!({"type": "text", "text": output})];
+    for image in images {
+        content.push(json!({"type": "image", "source": {
+            "type": "base64",
+            "media_type": image.mime,
+            "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
+        }}));
+    }
+    json!({"type": "tool_result", "tool_use_id": call_id, "content": content})
 }
 
 /// An attached file: a note naming it, the PDF itself so Claude can read it, and a copy in
@@ -260,6 +277,7 @@ mod tests {
                             results: vec![ToolOutput {
                                 call_id: "t1".into(),
                                 output: "12:00".into(),
+                                images: Vec::new(),
                             }],
                             ..NativeRound::default()
                         },
@@ -414,6 +432,25 @@ mod tests {
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn tool_results_can_carry_pictures() {
+        let picture = ModelImage {
+            mime: "image/png",
+            data: vec![1],
+        };
+        assert_eq!(
+            tool_result("t1", "Cherry's picture.", &[picture]),
+            json!({"type": "tool_result", "tool_use_id": "t1", "content": [
+                {"type": "text", "text": "Cherry's picture."},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AQ=="}},
+            ]})
+        );
+        assert_eq!(
+            tool_result("t1", "", &[]),
+            json!({"type": "tool_result", "tool_use_id": "t1", "content": "(no output)"})
+        );
     }
 
     fn def(name: &'static str) -> ToolDef {
