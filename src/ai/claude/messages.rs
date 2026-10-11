@@ -184,11 +184,12 @@ fn file_blocks(
 /// Claude's built-in tools, then the bot's, always in the same order (they're part of the
 /// cached prefix). The bot's `memory` tool is sent as a normal tool, not as Claude's own
 /// memory tool: that one comes with Anthropic's instruction to log task progress in memory.
-pub fn tools(defs: &[ToolDef], code_execution: bool) -> Vec<Value> {
-    let mut tools = vec![
-        json!({"type": "web_search_20260209", "name": "web_search"}),
-        json!({"type": "web_fetch_20260209", "name": "web_fetch"}),
-    ];
+pub fn tools(defs: &[ToolDef], web: bool, code_execution: bool) -> Vec<Value> {
+    let mut tools = Vec::new();
+    if web {
+        tools.push(json!({"type": "web_search_20260209", "name": "web_search"}));
+        tools.push(json!({"type": "web_fetch_20260209", "name": "web_fetch"}));
+    }
     if code_execution {
         tools.push(json!({"type": "code_execution_20260521", "name": "code_execution"}));
     }
@@ -217,12 +218,17 @@ pub fn setup(system: &Value, tools: &Value) -> String {
 }
 
 /// The system prompt as one block, marked as the end of the part every request shares, for
-/// the prompt cache.
-pub fn system(prompt: &str) -> Vec<Value> {
+/// the prompt cache. `ttl` is how long it stays cached: "5m" or "1h".
+pub fn system(prompt: &str, ttl: &str) -> Vec<Value> {
     if prompt.trim().is_empty() {
         return Vec::new();
     }
-    vec![json!({"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}})]
+    let cache = if ttl == "5m" {
+        json!({"type": "ephemeral"})
+    } else {
+        json!({"type": "ephemeral", "ttl": ttl})
+    };
+    vec![json!({"type": "text", "text": prompt, "cache_control": cache})]
 }
 
 #[cfg(test)]
@@ -421,7 +427,7 @@ mod tests {
     #[test]
     fn built_in_tools_come_first() {
         let defs = [def("get_current_time"), def("memory")];
-        let tools = tools(&defs, true);
+        let tools = tools(&defs, true, true);
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -434,10 +440,17 @@ mod tests {
             ]
         );
         assert_eq!(tools[4]["eager_input_streaming"], true);
-        assert_eq!(super::tools(&defs, false).len(), 4);
+        assert_eq!(super::tools(&defs, true, false).len(), 4);
+        // A job without the web or code gets only the bot's tools.
+        assert_eq!(super::tools(&defs, false, false).len(), 2);
 
-        let blocks = system("Be nice.");
+        let blocks = system("Be nice.", "5m");
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0]["cache_control"], json!({"type": "ephemeral"}));
+        let blocks = system("Be nice.", "1h");
+        assert_eq!(
+            blocks[0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
     }
 }

@@ -55,7 +55,7 @@ pub struct ChatRequest {
     pub input: Input,
     pub tools: Vec<ToolDef>,  // the bot's own tools, always in the same order
     pub cache_key: String,    // requests with the same key share a cache ("discord:<channel>")
-    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary"
+    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary"; picks the job's settings
 }
 ```
 
@@ -122,17 +122,32 @@ Both work the same way: send the request, read events until `Done`, and if `Done
 - With a `continuation` (OpenAI), the next input is `Input::After` with only the tool results. OpenAI remembers its own output.
 - Without one (Claude), it is the whole conversation again, plus an assistant turn holding this round's `Part::Native` output, plus a user turn with the tool results. Claude needs its own tool calls (and the thinking before them) back, exactly as written.
 
+## Jobs
+
+Every request names its job, and each job runs with its own settings (`Job` in `mod.rs`): a model, an effort, and whether it gets the web (web search and fetch) and code (code execution, and on Claude the skills). `job_settings` takes them from `[ai.<provider>.jobs.<job>]` in config.toml, then from `Job::builtin`, then from the provider's own settings:
+
+| Job | Model | Effort | Web | Code | Why |
+|---|---|---|---|---|---|
+| `chat`, `chime` | main | main | yes | yes | Her answers and lines. Chime-ins send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so they read the system prompt and tools from the same cache. Neither can change model: their history is saved and continued with the main one. |
+| `emoji` | Claude Haiku (OpenAI: main) | low | no | no | Describing a picture in one line. |
+| `mood` | main | low | no | no | A short rewrite of her mood file. |
+| `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
+
+On Claude, a request whose job has no bot tools (emoji, mood) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
+
 ## Claude
 
 `claude/mod.rs`. One `POST /v1/messages` with `"stream": true` per round. Claude keeps nothing between requests, so each one carries the whole conversation.
 
 **The request body** (`Claude::request_body`):
 
-- `system`: one text block with `cache_control`, marking the end of the part every request shares.
-- `tools`: Claude's built-in `web_search` and `web_fetch`, `code_execution` when `code_execution` is on, then the bot's tools with `eager_input_streaming` (`messages::tools`). The bot's `memory` tool is sent as a normal tool, not as Claude's own memory tool, because that one comes with Anthropic's instruction to log task progress in memory.
+The job's settings (see [Jobs](#jobs)) pick the model, the effort and the built-in tools; `Claude::run_for` works them out into a `Run`.
+
+- `system`: one text block with `cache_control`, marking the end of the part every request shares. For chat and chime-ins it says `"ttl": "1h"`.
+- `tools`: Claude's built-in `web_search` and `web_fetch` when the job has the web, `code_execution` when it has code (and `code_execution` is on), then the bot's tools with `eager_input_streaming` (`messages::tools`). The bot's `memory` tool is sent as a normal tool, not as Claude's own memory tool, because that one comes with Anthropic's instruction to log task progress in memory.
 - `thinking`: adaptive (it can't be turned off; `effort` in `output_config` sets how much), with `block_binding.prefix_mismatch_behavior = "drop_block"`: if an earlier turn ever changes, Claude drops the thinking after it instead of failing the request. The response lists what it left out, and `collect.rs` logs it.
-- `cache_control` at the top level, so the conversation up to its newest message is cached for the next request.
-- `fallbacks: "default"` when `fallbacks` is on: if the model declines, the API retries on another Claude model. This is Anthropic's server-side model fallback, not the provider fallback below.
+- `cache_control` at the top level, so the conversation up to its newest message is cached for the next request (left out when the job has no bot tools, since it's one round).
+- `fallbacks: "default"` when `fallbacks` is on (not for Haiku, which has no model to fall back to): if the model declines, the API retries on another Claude model. This is Anthropic's server-side model fallback, not the provider fallback below.
 - `container`: Anthropic's skills (`xlsx`, `docx`, `pptx`, `pdf` by default) and the ID of the code execution container this `cache_key` used last, so files stay around between answers in a channel.
 
 Beta headers: `thinking-binding-controls-2026-08-01`, and `server-side-fallback-2026-07-01` when `fallbacks` is on.
@@ -159,7 +174,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 
 `openai/mod.rs`. One `POST /v1/responses` with `"stream": true` per round. `OPENAI_BASE` in `.env` sets another base URL for an OpenAI-compatible endpoint; `/v1` is added when it's missing.
 
-- The body has `instructions` (the system prompt), `input`, the built-in `web_search` and `code_interpreter` tools, then the bot's tools as `function` tools, plus `reasoning.effort`, `text.verbosity`, `service_tier`, `"store": true`, `"truncation": "auto"` and `prompt_cache_key` (the `cache_key`). OpenAI caches automatically.
+- The body has `instructions` (the system prompt), `input`, the built-in `web_search` and `code_interpreter` tools (as the job allows, see [Jobs](#jobs)), then the bot's tools as `function` tools, plus the job's model and `reasoning.effort`, `text.verbosity`, `service_tier` (chat answers only; other jobs use the account's default), `"store": true`, `"truncation": "auto"` and `prompt_cache_key` (the `cache_key`). OpenAI caches automatically.
 - OpenAI stores every response, so `Done.continuation` is the response ID. The next request sends `previous_response_id` and only what's new. That already carries the earlier reasoning, so OpenAI ignores `Part::Native`.
 - Pictures are sent inline as base64 data URLs.
 - Attached files are uploaded first (`POST /v1/files`, kept 30 days so stored responses that point at them still work). PDFs and Office files are also given to the model to read as `input_file` (at most 50 MB per request). Types the code interpreter takes go into its container. Other files get a note saying they're attached but can't be opened.
@@ -220,7 +235,7 @@ Callers take `ctx.ai.chat()` once per answer and keep that provider for the whol
 
 `spend.rs`, `claude/price.rs`, `claude/billing.rs`, `openai/price.rs`, `openai/billing.rs`. There is one `Spend` per provider, each with its own budget, in `Ai::spends`: Claude's when Claude is the main provider or the fallback, OpenAI's when OpenAI is one of them or `OPENAI_TOKEN` is set for pictures. The control panel shows each one.
 
-- After each Claude response, `add_spend` (in `claude/mod.rs`) prices its usage (input, cache writes and reads, output, web searches) with `price::cost`, from a table of list prices per model ID prefix. Cache writes cost 1.25 times the input price; web searches $10 per 1000. An unknown model is priced like Opus 5.5.
+- After each Claude response, `add_spend` (in `claude/mod.rs`) prices its usage (input, cache writes and reads, output, web searches) with `price::cost`, from a table of list prices per model ID prefix. Cache writes cost 1.25 times the input price for 5 minutes and 2 times for an hour (`usage.cache_creation.ephemeral_1h_input_tokens`); web searches $10 per 1000. An unknown model is priced like Opus 5.5.
 - After each OpenAI response, `add_spend` (in `openai/mod.rs`) prices it with `price::chat_cost`: uncached input, cached input and output tokens from a table per model ID prefix, twice that on the `fast` service tier, plus $10 per 1000 web searches. Left out, so the estimate runs a little low: long-prompt prices, cache writes, and code interpreter containers ($0.03 a session). An unknown model is priced like gpt-6.1-sol. Pictures are priced by `price::image_cost`.
 - `Spend::add` adds it to `ai_spend` (the month's total) and to `ai_spend_jobs` (per job). Months are calendar months in UTC.
 - At 80% and 100% of `monthly_budget` under `[ai.claude]` / `[ai.openai]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.

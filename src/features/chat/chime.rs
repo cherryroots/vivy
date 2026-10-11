@@ -7,7 +7,7 @@
 //! saved like an answer, so replying to it continues the conversation.
 //!
 //! Nobody asked for these lines (nor for check-ins, which use [`speak`] too), and they're
-//! posted for the whole channel, so she only gets [`UNPROMPTED_TOOLS`]: tools that read
+//! posted for the whole channel, so she can only use [`UNPROMPTED_TOOLS`]: tools that read
 //! what people in this channel could see anyway, and her own memory.
 
 use std::collections::HashMap;
@@ -171,9 +171,10 @@ pub async fn speak(
     let context = answer::context_for(ctx, asker, true).await;
     let mut parts = vec![Part::Text(question.clone())];
     parts.extend(context.iter().cloned().map(Part::Text));
-    let (mut tools, mut owners) = answer::tools_for(ctx, asker);
-    tools.retain(|tool| UNPROMPTED_TOOLS.contains(&tool.name));
-    owners.retain(|name, _| UNPROMPTED_TOOLS.contains(name));
+    // Every tool goes in the request, as for an answer, so the request starts the same as
+    // an answer's and reads the system prompt and tools from the prompt cache. The runner
+    // turns down the ones she can't use here.
+    let (tools, owners) = answer::tools_for(ctx, asker);
     let request = ChatRequest {
         system: SYSTEM_PROMPT.to_string(),
         input: Input::Full(vec![Turn {
@@ -191,11 +192,8 @@ pub async fn speak(
     };
     let done = complete(provider.as_ref(), request, &runner, MAX_ROUNDS).await?;
 
-    // A voice message she sent with a tool counts as speaking up, even when she then
-    // passes on writing a line.
-    let posted = asker.posted.ids();
     let line = match (decide(&done.text), last) {
-        (Decision::Say(line), _) => Some(line),
+        (Decision::Say(line), _) => line,
         (Decision::React(emoji), Some(msg)) => {
             let reaction = ReactionType::try_from(emoji.as_str())
                 .with_context(|| format!("{emoji:?} isn't an emoji"))?;
@@ -203,29 +201,23 @@ pub async fn speak(
             info!("reacted with {emoji}");
             return Ok(());
         }
-        _ if posted.is_empty() => {
+        _ => {
             info!("read along and passed");
             return Ok(());
         }
-        _ => None,
     };
-    let mut ids: Vec<u64> = Vec::new();
-    if let Some(line) = &line {
-        let pings = match mention {
-            Some(user) => CreateAllowedMentions::new().users([user]),
-            None => CreateAllowedMentions::new(),
-        };
-        let sent = asker
-            .channel
-            .send_message(
-                &ctx.http,
-                CreateMessage::new().content(line).allowed_mentions(pings),
-            )
-            .await?;
-        ids.push(sent.id.get());
-    }
-    ids.extend(posted.iter().map(|id| id.get()));
-    let line = answer::with_posted(line.as_deref().unwrap_or(""), &asker.posted.texts());
+    let pings = match mention {
+        Some(user) => CreateAllowedMentions::new().users([user]),
+        None => CreateAllowedMentions::new(),
+    };
+    let sent = asker
+        .channel
+        .send_message(
+            &ctx.http,
+            CreateMessage::new().content(&line).allowed_mentions(pings),
+        )
+        .await?;
+    let ids = vec![sent.id.get()];
     info!("spoke up on her own");
     // Saved like a question and its answer, exactly as the model read it, so a reply to
     // her line continues the same conversation.
@@ -356,6 +348,13 @@ struct Runner {
 #[async_trait]
 impl ToolRunner for Runner {
     async fn run(&self, call: &ToolCall) -> String {
+        if !UNPROMPTED_TOOLS.contains(&call.name.as_str()) {
+            return format!(
+                "Error: {} can't be used when nobody asked you anything. Here you can only \
+                 read this channel and use your memory.",
+                call.name
+            );
+        }
         match here_only(call, self.asker.channel) {
             Ok(call) if call.name == "memory" && self.asker.guild.is_some() => {
                 let herself = Asker {

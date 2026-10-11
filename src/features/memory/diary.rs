@@ -221,18 +221,21 @@ async fn set_posted(ctx: &BotCtx, channels: &[ChannelId], now: i64) -> Result<()
 /// Writes one entry for `guild`. `None` when nothing changed this week.
 async fn write(ctx: &BotCtx, guild: GuildId, now: i64) -> Result<Option<String>> {
     let scope = store::scope(Some(guild.get()), 0);
-    let (folder, changed) = {
-        let scope = scope.clone();
+    let (folder, changed, people) = {
+        let (scope, bot) = (scope.clone(), ctx.bot_id.get());
         ctx.db
             .call(move |conn| {
+                let since = now - EVERY_SECS;
                 Ok((
                     store::load(conn, &scope)?,
-                    store::changed_since(conn, &scope, now - EVERY_SECS)?,
+                    store::changed_since(conn, &scope, since)?,
+                    store::people_changed_since(conn, &scope, since, bot)?,
                 ))
             })
             .await?
     };
-    if changed.is_empty() {
+    // Only her own upkeep (mood checks, reflections) changed anything: a quiet week.
+    if !people {
         info!("nothing new this week, no diary");
         return Ok(None);
     }
@@ -343,7 +346,8 @@ async fn send(ctx: &BotCtx, channel: ChannelId, entry: &str) -> Result<()> {
 }
 
 /// The changed files with their text, each cut to [`MAX_FILE`] and all to [`MAX_CHANGES`].
-fn render_changes(changed: &[(String, Option<String>)]) -> String {
+/// The reflection uses it too, so she doesn't spend a round viewing each file.
+pub(super) fn render_changes(changed: &[(String, Option<String>)]) -> String {
     let mut text = String::new();
     for (path, content) in changed {
         let body = match content {

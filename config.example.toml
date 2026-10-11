@@ -53,6 +53,32 @@ show_cache_hits = true
 # Show on the status message what each job (chat, chime-ins, reflection, diary, emoji)
 # cost this month, estimated.
 show_job_costs = true
+# Keep the system prompt and tools in the prompt cache for an hour instead of 5 minutes,
+# for answers and chime-ins. Writing it costs a bit more, but it's shared by every channel,
+# so an answer after a quiet half hour still reads it cheaply.
+cache_prompt_for_an_hour = true
+
+# Settings per job, for work nobody waits on. Each can set `model`, `effort`, `web` (web
+# search and fetch) and `code` (code execution and the skills); what's left out keeps the
+# built-in default below. Chat answers ("chat") and chime-ins ("chime") always use the main
+# model and every tool, so they share the prompt cache. Jobs: "chime", "emoji", "mood",
+# "reflection", "diary". Web search and code need Opus or Sonnet, not Haiku.
+#
+# The built-in defaults:
+# [ai.claude.jobs.emoji]       # describing server emoji: simple, done once per emoji
+# model = "claude-haiku-5-5"
+# effort = "low"
+# web = false
+# code = false
+#
+# [ai.claude.jobs.mood]        # rewriting her mood a few times a day, in her own model
+# effort = "low"
+# web = false
+# code = false
+#
+# [ai.claude.jobs.reflection]  # her daily tidy-up of memory; the diary is the same
+# web = true
+# code = false
 
 # OpenAI settings. The key goes in .env (OPENAI_TOKEN).
 [ai.openai]
@@ -61,7 +87,8 @@ model = "gpt-6.1-sol"
 reasoning_effort = "medium"
 # How long answers are: "low", "medium" or "high".
 verbosity = "low"
-# Leave out for the account's default.
+# The service tier of chat answers ("fast" costs twice as much). Leave out for the
+# account's default. Background jobs always use the default.
 service_tier = "fast"
 # OpenAI's monthly cost in USD, chat and pictures together, for the status message and the
 # warnings in the log channel at 80% and 100% (estimated from list prices). 0 turns the
@@ -74,6 +101,8 @@ billed_spend = true
 show_cache_hits = true
 # Show on the status message what each job (chat, drawing, ...) cost this month, estimated.
 show_job_costs = true
+# Settings per job work like Claude's ([ai.openai.jobs.mood] and so on), with the same
+# built-in defaults, except that emoji use the main model.
 
 # Every feature has a section. These keys work in all of them:
 #   enabled = false                   turn the feature off
