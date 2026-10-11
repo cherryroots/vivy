@@ -1,25 +1,36 @@
 //! What reminders look like in Discord: message texts, buttons, the delete menu, and the
 //! button IDs.
 
-use poise::CreateReply;
 use serenity::all::{
     ButtonStyle, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton,
-    CreateMessage, CreateSelectMenu, CreateSelectMenuKind, CreateSelectMenuOption, UserId,
+    CreateInputText, CreateMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
+    CreateSelectMenuOption, InputTextStyle, UserId,
 };
 
 use super::store::{Reminder, Summary};
 use crate::util::shorten;
 
-/// The snooze buttons under a delivered reminder: (label, minutes).
-const SNOOZES: [(&str, i64); 3] = [("10 min", 10), ("1 hour", 60), ("Tomorrow", 24 * 60)];
+/// The snooze buttons under a delivered reminder that add a fixed time: (label, minutes).
+/// "Tomorrow" and "Snooze…" come after them.
+const SNOOZES: [(&str, i64); 2] = [("10 min", 10), ("1 hour", 60)];
 
-/// Every button and menu this feature makes. The ID text is built and parsed only here.
+/// Every button, menu and modal this feature makes. The ID text is built and parsed only
+/// here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// The `/reminders` delete menu. The reminder ID is the selected value.
     Delete,
-    /// A snooze button on a delivered reminder.
+    /// A snooze button on a delivered reminder: `minutes` from now. (Before "Tomorrow" had
+    /// its own button, it was this with 1440 minutes; those buttons still work.)
     Snooze { id: i64, minutes: i64 },
+    /// "Snooze until tomorrow": 09:00 the next morning in the owner's timezone.
+    Tomorrow { id: i64 },
+    /// "Snooze…": opens the modal to type a time.
+    AskSnooze { id: i64 },
+    /// The snooze modal.
+    SnoozeTo { id: i64 },
+    /// The Cancel button under the "I'll remind you" reply.
+    Cancel { id: i64 },
 }
 
 impl Action {
@@ -27,6 +38,10 @@ impl Action {
         match self {
             Action::Delete => "reminders:delete".to_string(),
             Action::Snooze { id, minutes } => format!("reminders:snooze:{id}:{minutes}"),
+            Action::Tomorrow { id } => format!("reminders:tomorrow:{id}"),
+            Action::AskSnooze { id } => format!("reminders:asksnooze:{id}"),
+            Action::SnoozeTo { id } => format!("reminders:snoozeto:{id}"),
+            Action::Cancel { id } => format!("reminders:cancel:{id}"),
         }
     }
 
@@ -39,17 +54,41 @@ impl Action {
                 id: id.parse().ok()?,
                 minutes: minutes.parse().ok()?,
             }),
+            ["tomorrow", id] => Some(Action::Tomorrow {
+                id: id.parse().ok()?,
+            }),
+            ["asksnooze", id] => Some(Action::AskSnooze {
+                id: id.parse().ok()?,
+            }),
+            ["snoozeto", id] => Some(Action::SnoozeTo {
+                id: id.parse().ok()?,
+            }),
+            ["cancel", id] => Some(Action::Cancel {
+                id: id.parse().ok()?,
+            }),
             _ => None,
         }
     }
 }
 
-/// The reply after setting a reminder.
-pub fn confirmation(fire_at: i64, message: &str, zone_hint: bool, skipped: &[String]) -> String {
-    let mut text = format!(
-        "I'll remind you <t:{fire_at}:R> (<t:{fire_at}:f>): {}",
-        shorten(message, 1500)
-    );
+/// The reply after setting a reminder. `repeat` is how a recurring one repeats.
+pub fn confirmation(
+    fire_at: i64,
+    message: &str,
+    repeat: Option<&str>,
+    zone_hint: bool,
+    skipped: &[String],
+) -> String {
+    let mut text = match repeat {
+        Some(repeat) => format!(
+            "I'll remind you {repeat}, starting <t:{fire_at}:R> (<t:{fire_at}:f>): {}",
+            shorten(message, 1400)
+        ),
+        None => format!(
+            "I'll remind you <t:{fire_at}:R> (<t:{fire_at}:f>): {}",
+            shorten(message, 1500)
+        ),
+    };
     if zone_hint {
         text.push_str("\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.");
     }
@@ -60,6 +99,14 @@ pub fn confirmation(fire_at: i64, message: &str, zone_hint: bool, skipped: &[Str
         ));
     }
     text
+}
+
+/// The Cancel button under the "I'll remind you" reply. Only the reminder's owner can use it.
+pub fn cancel_button(id: i64) -> CreateActionRow {
+    let button = CreateButton::new(Action::Cancel { id }.custom_id())
+        .label("Cancel")
+        .style(ButtonStyle::Secondary);
+    CreateActionRow::Buttons(vec![button])
 }
 
 /// The delivered reminder: pings only its owner, links to the message that set it, and
@@ -89,6 +136,9 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
     if now - reminder.fire_at > 5 * 60 {
         content.push_str(&format!(", due <t:{}:R>", reminder.fire_at));
     }
+    if let Some(repeat) = &reminder.repeat {
+        content.push_str(&format!(" · 🔁 {repeat}"));
+    }
     let mut missing = reminder.missing_images as usize;
     if !with_images {
         missing += reminder.images.len();
@@ -99,18 +149,18 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
         n => content.push_str(&format!(" · [{n} images missing]")),
     }
 
-    let buttons = SNOOZES
+    let id = reminder.id;
+    let button = |action: Action, label: &str| {
+        CreateButton::new(action.custom_id())
+            .label(label)
+            .style(ButtonStyle::Secondary)
+    };
+    let mut buttons: Vec<CreateButton> = SNOOZES
         .iter()
-        .map(|(label, minutes)| {
-            let action = Action::Snooze {
-                id: reminder.id,
-                minutes: *minutes,
-            };
-            CreateButton::new(action.custom_id())
-                .label(format!("Snooze {label}"))
-                .style(ButtonStyle::Secondary)
-        })
+        .map(|&(label, minutes)| button(Action::Snooze { id, minutes }, &format!("Snooze {label}")))
         .collect();
+    buttons.push(button(Action::Tomorrow { id }, "Tomorrow 9:00"));
+    buttons.push(button(Action::AskSnooze { id }, "Snooze…"));
 
     let mut message = CreateMessage::new()
         .content(content)
@@ -128,30 +178,57 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
     message
 }
 
+/// The modal behind "Snooze…".
+pub fn snooze_modal(id: i64) -> CreateModal {
+    let input = CreateInputText::new(InputTextStyle::Short, "When?", "when")
+        .placeholder("in 30m, at 18:00, tomorrow at 9am, friday")
+        .max_length(100)
+        .required(true);
+    CreateModal::new(Action::SnoozeTo { id }.custom_id(), "Snooze until…")
+        .components(vec![CreateActionRow::InputText(input)])
+}
+
 /// The delivered reminder's text after a snooze button was pressed.
 pub fn snoozed(original: &str, until: i64) -> String {
-    let line = format!("\n-# 😴 Snoozed until <t:{until}:f>");
-    // Discord allows 2000 characters, so cut the original to leave room for the line.
+    with_line(original, &format!("😴 Snoozed until <t:{until}:f>"))
+}
+
+/// The "I'll remind you" reply after its Cancel button was pressed.
+pub fn cancelled(original: &str) -> String {
+    with_line(original, "❌ Cancelled")
+}
+
+/// `original` with a small line under it. Discord allows 2000 characters, so the original is
+/// cut to leave room for the line.
+fn with_line(original: &str, line: &str) -> String {
+    let line = format!("\n-# {line}");
     let room = 2000 - line.chars().count();
     format!("{}{line}", shorten(original, room))
 }
 
 /// The `/reminders` list, with a menu to delete one. Discord menus hold at most 25 options.
-pub fn list_reply(reminders: &[Summary]) -> CreateReply {
+/// `note` goes first, like "✅ Reminder deleted." after a delete.
+pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<CreateActionRow>) {
+    let mut text = note.map(|note| format!("{note}\n")).unwrap_or_default();
     if reminders.is_empty() {
-        return CreateReply::default().content("You have no pending reminders.");
+        text.push_str("You have no pending reminders.");
+        return (text, Vec::new());
     }
 
     let shown = &reminders[..reminders.len().min(25)];
-    let mut text = String::from("**Your reminders**\n");
+    text.push_str("**Your reminders**\n");
     for (n, reminder) in shown.iter().enumerate() {
         let images = match reminder.image_count {
             0 => String::new(),
             1 => " (1 image)".to_string(),
             n => format!(" ({n} images)"),
         };
+        let repeat = match &reminder.repeat {
+            Some(repeat) => format!(" 🔁 {repeat}"),
+            None => String::new(),
+        };
         text.push_str(&format!(
-            "{}. <t:{}:R>: {}{images}\n",
+            "{}. <t:{}:R>{repeat}: {}{images}\n",
             n + 1,
             reminder.fire_at,
             shorten(&reminder.message, 60)
@@ -174,10 +251,7 @@ pub fn list_reply(reminders: &[Summary]) -> CreateReply {
         CreateSelectMenuKind::String { options },
     )
     .placeholder("Delete a reminder…");
-
-    CreateReply::default()
-        .content(text)
-        .components(vec![CreateActionRow::SelectMenu(menu)])
+    (text, vec![CreateActionRow::SelectMenu(menu)])
 }
 
 #[cfg(test)]
@@ -201,6 +275,7 @@ mod tests {
                 filename: "a.png".into(),
                 data: vec![1],
             }],
+            repeat: None,
         }
     }
 
@@ -249,6 +324,46 @@ mod tests {
     }
 
     #[test]
+    fn recurring_reminders_say_so() {
+        let mut r = reminder();
+        r.repeat = Some("every monday at 9:00 UTC".into());
+        assert!(
+            content(&fired_message(&r, 1000, true)).ends_with(" · 🔁 every monday at 9:00 UTC")
+        );
+        let list = [Summary {
+            id: 1,
+            message: "trash".into(),
+            fire_at: 1000,
+            image_count: 0,
+            repeat: r.repeat.clone(),
+        }];
+        let (text, rows) = list_message(&list, Some("✅ Reminder deleted."));
+        assert_eq!(
+            text,
+            "✅ Reminder deleted.\n**Your reminders**\n1. <t:1000:R> 🔁 every monday at 9:00 UTC: trash\n"
+        );
+        assert_eq!(rows.len(), 1);
+        let (text, rows) = list_message(&[], Some("✅ Reminder deleted."));
+        assert_eq!(text, "✅ Reminder deleted.\nYou have no pending reminders.");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn snooze_buttons() {
+        let json = serde_json::to_value(fired_message(&reminder(), 1000, true)).unwrap();
+        let labels: Vec<&str> = json["components"][0]["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|b| b["label"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            labels,
+            ["Snooze 10 min", "Snooze 1 hour", "Tomorrow 9:00", "Snooze…"]
+        );
+    }
+
+    #[test]
     fn action_round_trip() {
         for action in [
             Action::Delete,
@@ -256,6 +371,10 @@ mod tests {
                 id: 12,
                 minutes: 60,
             },
+            Action::Tomorrow { id: 12 },
+            Action::AskSnooze { id: 12 },
+            Action::SnoozeTo { id: 12 },
+            Action::Cancel { id: 12 },
         ] {
             let id = action.custom_id();
             let rest = id.strip_prefix("reminders:").unwrap();

@@ -60,6 +60,7 @@ fn read_reminder(row: &Row) -> anyhow::Result<NewReminder> {
         source_message_id: None,
         missing_images: 0,
         images: decode_images(images.as_deref()).context("images")?,
+        repeat: None,
     })
 }
 

@@ -10,11 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use serenity::all::{ChannelId, HttpError, UserId};
 use tokio::sync::Notify;
 use tracing::{Instrument as _, error, info, info_span, warn};
 
+use super::parse;
 use super::store::{self, Reminder};
 use super::ui;
 use crate::core::{BotCtx, BotEvent, Result};
@@ -94,10 +96,22 @@ async fn deliver(ctx: &BotCtx, reminder: Reminder) -> Result<()> {
             .await;
     }
 
+    // A recurring reminder queues its next time either way, so one failed delivery doesn't
+    // end the series.
+    let next = next_time(&reminder, now);
     match sent {
         Ok(_) => {
+            let fired = reminder.clone();
             ctx.db
-                .call(move |conn| Ok(store::mark_sent(conn, id, now)?))
+                .call(move |conn| {
+                    let tx = conn.transaction()?;
+                    store::mark_sent(&tx, id, now)?;
+                    if let Some(next) = next {
+                        store::repeat(&tx, &fired, next)?;
+                    }
+                    tx.commit()?;
+                    Ok(())
+                })
                 .await?;
             info!(reminder = id, "reminder delivered");
             ctx.publish(BotEvent::ReminderFired {
@@ -116,8 +130,17 @@ async fn deliver(ctx: &BotCtx, reminder: Reminder) -> Result<()> {
                     "gave up on a reminder after {attempts} failed sends ({err}). It said: {}",
                     reminder.message
                 );
+                let fired = reminder.clone();
                 ctx.db
-                    .call(move |conn| Ok(store::delete(conn, id)?))
+                    .call(move |conn| {
+                        let tx = conn.transaction()?;
+                        store::delete(&tx, id)?;
+                        if let Some(next) = next {
+                            store::repeat(&tx, &fired, next)?;
+                        }
+                        tx.commit()?;
+                        Ok(())
+                    })
                     .await?;
             } else {
                 let next = now + retry_delay(attempts);
@@ -133,6 +156,32 @@ async fn deliver(ctx: &BotCtx, reminder: Reminder) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// When a recurring reminder comes up next: after the time it was due, or after `now` if
+/// the bot was offline past that. `None` for a one-off reminder (or a repeat that can't be
+/// read, which is logged).
+fn next_time(reminder: &Reminder, now: i64) -> Option<i64> {
+    let text = reminder.repeat.as_deref()?;
+    let Some(repeat) = parse::parse_repeat(text) else {
+        warn!(
+            reminder = reminder.id,
+            "can't read the repeat {text:?}; not repeating"
+        );
+        return None;
+    };
+    // The saved text names its zone wherever it matters, so the home zone is never used.
+    let after = DateTime::from_timestamp(reminder.fire_at.max(now), 0)?;
+    match parse::next_repeat(&repeat, after, Tz::UTC) {
+        Ok(next) => Some(next.timestamp()),
+        Err(err) => {
+            warn!(
+                reminder = reminder.id,
+                "can't find the next time of {text:?}: {err}"
+            );
+            None
+        }
+    }
 }
 
 /// Whether Discord refused the message for being too big: HTTP 413, or Discord's error
@@ -169,6 +218,40 @@ mod tests {
         assert_eq!(sleep_duration(Some(90), 30), Duration::from_secs(60));
         assert_eq!(sleep_duration(Some(10), 30), Duration::from_secs(1));
         assert_eq!(sleep_duration(Some(99_999), 0), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn recurring_reminders_come_back() {
+        let mut reminder = Reminder {
+            id: 1,
+            user_id: 2,
+            channel_id: 3,
+            guild_id: None,
+            message: "trash".into(),
+            // Monday 2026-02-23 09:00 UTC.
+            fire_at: 1_771_837_200,
+            created_at: 0,
+            attempts: 0,
+            source_message_id: None,
+            missing_images: 0,
+            images: Vec::new(),
+            repeat: None,
+        };
+        assert_eq!(next_time(&reminder, reminder.fire_at), None);
+        reminder.repeat = Some("every monday at 9:00 UTC".into());
+        let week = 7 * 24 * 60 * 60;
+        assert_eq!(
+            next_time(&reminder, reminder.fire_at),
+            Some(reminder.fire_at + week)
+        );
+        // Sent two weeks late: the next one is still ahead, not in the past.
+        let late = reminder.fire_at + 2 * week + 60;
+        assert_eq!(
+            next_time(&reminder, late),
+            Some(reminder.fire_at + 3 * week)
+        );
+        reminder.repeat = Some("gibberish".into());
+        assert_eq!(next_time(&reminder, reminder.fire_at), None);
     }
 
     #[test]
