@@ -43,7 +43,9 @@ use self::uploads::Uploads;
 use super::fallback::{self, ApiError};
 use super::spend::{Spend, Used};
 use super::sse::SseParser;
-use super::{ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Part, Turn};
+use super::{
+    ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, Part, Turn, job_settings,
+};
 use crate::util::media::ModelImage;
 
 pub(crate) const API: &str = "https://api.anthropic.com/v1";
@@ -63,6 +65,8 @@ const MAX_IMAGE_SIDE: u32 = 2000;
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 /// How often one answer may pause (a long run of built-in tools) and be continued.
 const MAX_PAUSES: usize = 5;
+/// The cheap model background jobs like describing emoji use (see [`Job::builtin`]).
+const CHEAP_MODEL: &str = "claude-haiku-5-5";
 /// Waits before retrying when Anthropic is busy or rate limited.
 const RETRY_WAITS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(6)];
 
@@ -91,6 +95,13 @@ pub struct ClaudeConfig {
     /// Anthropic's skills loaded into the code execution container, for making
     /// spreadsheets ("xlsx"), documents ("docx"), slides ("pptx") and PDFs ("pdf").
     pub skills: Vec<String>,
+    /// Keep the system prompt and tools in the prompt cache for an hour instead of five
+    /// minutes, for chat answers and chime-ins. Writing it costs 2x the input price
+    /// instead of 1.25x, but it's shared by every channel, so an answer after a quiet
+    /// stretch still reads it at a twentieth of the price.
+    pub cache_prompt_for_an_hour: bool,
+    /// Settings per job, like `[ai.claude.jobs.mood]` (see [`Job`]).
+    pub jobs: HashMap<String, Job>,
 }
 
 impl Default for ClaudeConfig {
@@ -106,6 +117,8 @@ impl Default for ClaudeConfig {
             show_cache_hits: true,
             show_job_costs: true,
             skills: ["xlsx", "docx", "pptx", "pdf"].map(String::from).to_vec(),
+            cache_prompt_for_an_hour: true,
+            jobs: HashMap::new(),
         }
     }
 }
@@ -242,30 +255,54 @@ impl Claude {
         }
     }
 
+    /// How `request` runs: its job's model, effort and built-in tools.
+    fn run_for(&self, request: &ChatRequest) -> Run {
+        let config = &self.config;
+        let job = job_settings(&config.jobs, request.job, Some(CHEAP_MODEL));
+        // A job's own tools: the bot's tools only (no conversation to continue) means
+        // one round, so caching the conversation would only cost the write.
+        Run {
+            model: job.model.unwrap_or_else(|| config.model.clone()),
+            effort: job.effort.unwrap_or_else(|| config.effort.clone()),
+            web: job.web.unwrap_or(true),
+            code: job.code.unwrap_or(true) && config.code_execution,
+            cache_ttl: if config.cache_prompt_for_an_hour && matches!(request.job, "chat" | "chime")
+            {
+                "1h"
+            } else {
+                "5m"
+            },
+            cache_conversation: !request.tools.is_empty(),
+        }
+    }
+
     /// The JSON body of a request.
-    fn request_body(&self, request: &ChatRequest, conversation: Vec<Value>) -> Value {
+    fn request_body(&self, request: &ChatRequest, run: &Run, conversation: Vec<Value>) -> Value {
         let config = &self.config;
         let mut body = json!({
-            "model": config.model,
+            "model": run.model,
             "max_tokens": config.max_tokens,
             "stream": true,
-            "system": messages::system(&request.system),
+            "system": messages::system(&request.system, run.cache_ttl),
             "messages": conversation,
-            "tools": messages::tools(&request.tools, config.code_execution),
+            "tools": messages::tools(&request.tools, run.web, run.code),
             // Thinking can't be turned off; effort sets how much. When an earlier turn
             // changed, the thinking after it is left out instead of failing the request.
             "thinking": {
                 "type": "adaptive",
                 "block_binding": {"prefix_mismatch_behavior": "drop_block"},
             },
-            "output_config": {"effort": config.effort},
-            // Caches the conversation up to its newest message, for the next request.
-            "cache_control": {"type": "ephemeral"},
+            "output_config": {"effort": run.effort},
         });
-        if config.fallbacks {
+        if run.cache_conversation {
+            // Caches the conversation up to its newest message, for the next request.
+            body["cache_control"] = json!({"type": "ephemeral"});
+        }
+        // Haiku has no other model to retry on.
+        if config.fallbacks && !run.model.starts_with("claude-haiku") {
             body["fallbacks"] = json!("default");
         }
-        if config.code_execution && !config.skills.is_empty() {
+        if run.code && !config.skills.is_empty() {
             let skills: Vec<Value> = config
                 .skills
                 .iter()
@@ -359,19 +396,28 @@ impl Claude {
         turns: &[Turn],
     ) -> (Value, HashMap<ContentKey, String>) {
         let uploaded = self.upload_all(turns).await;
+        let run = self.run_for(request);
         let setup = messages::setup(
-            &json!(messages::system(&request.system)),
-            &json!(messages::tools(&request.tools, self.config.code_execution)),
+            &json!(messages::system(&request.system, run.cache_ttl)),
+            &json!(messages::tools(&request.tools, run.web, run.code)),
         );
-        let conversation = messages::to_messages(
-            turns,
-            &self.config.model,
-            &setup,
-            &uploaded,
-            self.config.code_execution,
-        );
-        (self.request_body(request, conversation), uploaded)
+        let conversation = messages::to_messages(turns, &run.model, &setup, &uploaded, run.code);
+        (self.request_body(request, &run, conversation), uploaded)
     }
+}
+
+/// How one request runs, from its job's settings (see [`Job`]) and `[ai.claude]`.
+struct Run {
+    model: String,
+    effort: String,
+    /// Web search and web fetch.
+    web: bool,
+    /// Code execution, with the skills.
+    code: bool,
+    /// How long the system prompt and tools stay cached: "5m" or "1h".
+    cache_ttl: &'static str,
+    /// Whether the conversation is cached too, for a next round.
+    cache_conversation: bool,
 }
 
 /// When an upload expires, from the Files API's answer (`expires_at`, RFC 3339), or from
@@ -650,6 +696,7 @@ async fn read_answer(
         files,
         native: Value::Array(finished.content),
         setup: Some(messages::setup(&body["system"], &body["tools"])),
+        model: body["model"].as_str().map(str::to_string),
     };
     Ok(Some((done, container)))
 }
@@ -737,10 +784,14 @@ mod tests {
         }
     }
 
+    fn body_of(claude: &Claude, request: &ChatRequest, conversation: Vec<Value>) -> Value {
+        claude.request_body(request, &claude.run_for(request), conversation)
+    }
+
     #[test]
     fn request_body() {
         let claude = client(ClaudeConfig::default());
-        let body = claude.request_body(&request(), vec![json!({"role": "user"})]);
+        let body = body_of(&claude, &request(), vec![json!({"role": "user"})]);
         assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["output_config"], json!({"effort": "medium"}));
         assert_eq!(
@@ -749,9 +800,10 @@ mod tests {
         );
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+        // Chat's system prompt and tools stay cached for an hour.
         assert_eq!(
             body["system"],
-            json!([{"type": "text", "text": "Be nice.", "cache_control": {"type": "ephemeral"}}])
+            json!([{"type": "text", "text": "Be nice.", "cache_control": {"type": "ephemeral", "ttl": "1h"}}])
         );
         assert_eq!(body["tools"].as_array().unwrap().len(), 4);
         assert_eq!(body["container"]["skills"].as_array().unwrap().len(), 4);
@@ -771,7 +823,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("discord:1".into(), "container_1".into());
-        let mut body = claude.request_body(&request(), Vec::new());
+        let mut body = body_of(&claude, &request(), Vec::new());
         assert_eq!(body["container"]["id"], "container_1");
         // An expired container is dropped; the skills stay.
         set_container(&mut body, None);
@@ -783,7 +835,7 @@ mod tests {
             code_execution: false,
             ..ClaudeConfig::default()
         });
-        let mut body = claude.request_body(&request(), Vec::new());
+        let mut body = body_of(&claude, &request(), Vec::new());
         assert!(body.get("fallbacks").is_none());
         assert_eq!(body["tools"].as_array().unwrap().len(), 3);
         // No code execution, no skills, no container.
@@ -795,6 +847,89 @@ mod tests {
         assert_eq!(
             claude.sender().betas,
             "thinking-binding-controls-2026-08-01"
+        );
+    }
+
+    #[test]
+    fn background_jobs_run_cheaper() {
+        let claude = client(ClaudeConfig::default());
+        let job = |job: &'static str, tools: Vec<ToolDef>| {
+            let request = ChatRequest {
+                job,
+                tools,
+                ..request()
+            };
+            body_of(&claude, &request, Vec::new())
+        };
+
+        // Emoji: Haiku at low effort, no built-in tools, nothing cached past the prompt.
+        let body = job("emoji", Vec::new());
+        assert_eq!(body["model"], CHEAP_MODEL);
+        assert_eq!(body["output_config"], json!({"effort": "low"}));
+        assert!(body.get("fallbacks").is_none());
+        assert_eq!(body["tools"], json!([]));
+        assert!(body.get("container").is_none());
+        assert!(body.get("cache_control").is_none());
+        assert_eq!(
+            body["system"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+
+        // Mood: her own model at low effort.
+        let body = job("mood", Vec::new());
+        assert_eq!(body["model"], "claude-opus-5-5");
+        assert_eq!(body["output_config"], json!({"effort": "low"}));
+
+        // Reflection: her model and effort, the web and the memory tool, no code.
+        let body = job("reflection", request().tools);
+        assert_eq!(body["output_config"], json!({"effort": "medium"}));
+        let names: Vec<&str> = body["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["web_search", "web_fetch", "get_current_time"]);
+        assert!(body.get("container").is_none());
+        assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+
+        // Chime-ins send what chat sends, so they share its cache.
+        let chat = job("chat", request().tools);
+        let chime = job("chime", request().tools);
+        assert_eq!(chat["system"], chime["system"]);
+        assert_eq!(chat["tools"], chime["tools"]);
+        assert_eq!(chat["output_config"], chime["output_config"]);
+
+        // config.toml changes a job; what it leaves out keeps the built-in default, and
+        // chat always uses the main model.
+        let mut config = ClaudeConfig::default();
+        config.jobs.insert(
+            "emoji".into(),
+            Job {
+                model: Some("claude-sonnet-5-5".into()),
+                ..Job::default()
+            },
+        );
+        config.jobs.insert(
+            "chat".into(),
+            Job {
+                model: Some("claude-sonnet-5-5".into()),
+                ..Job::default()
+            },
+        );
+        let claude = client(config);
+        let emoji = ChatRequest {
+            job: "emoji",
+            tools: Vec::new(),
+            ..request()
+        };
+        let body = body_of(&claude, &emoji, Vec::new());
+        assert_eq!(body["model"], "claude-sonnet-5-5");
+        assert_eq!(body["output_config"], json!({"effort": "low"}));
+        assert_eq!(body["fallbacks"], "default");
+        assert_eq!(
+            body_of(&claude, &request(), Vec::new())["model"],
+            "claude-opus-5-5"
         );
     }
 

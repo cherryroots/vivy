@@ -1,8 +1,8 @@
 //! What a Claude response costs, from its token counts, at Anthropic's list prices.
 //!
-//! Prices: <https://platform.claude.com/docs/en/about-claude/pricing> (checked 2026-10-10).
-//! Writing to the prompt cache costs 1.25 times the input price on every model (the
-//! 5-minute cache the bot uses). Reading from it is usually a tenth of the input price, but
+//! Prices: <https://platform.claude.com/docs/en/about-claude/pricing> (checked 2026-10-11).
+//! Writing to the prompt cache costs 1.25 times the input price on every model for the
+//! 5-minute cache, and 2 times for the 1-hour cache. Reading from it is usually a tenth of the input price, but
 //! less on the newest models, so the table lists it. Every model since Claude 4.6 costs the
 //! same per token over its whole context window, except Haiku 5.5, whose long prompts cost
 //! more. Code execution is left out: it's free while web search is in the request, which it
@@ -39,7 +39,7 @@ const TABLE: &[(&str, Prices)] = &[
     ("claude-opus-4-7", prices(5.0, 0.50, 25.0)),
     ("claude-opus-4-6", prices(5.0, 0.50, 25.0)),
     ("claude-opus-4-5", prices(5.0, 0.50, 25.0)),
-    ("claude-sonnet-5-5", prices(2.0, 0.10, 10.0)),
+    ("claude-sonnet-5-5", prices(2.0, 0.20, 10.0)),
     ("claude-sonnet-5", prices(2.0, 0.20, 10.0)),
     ("claude-sonnet-4", prices(3.0, 0.30, 15.0)),
     ("claude-haiku-5-5", prices(0.10, 0.01, 0.50)),
@@ -72,8 +72,10 @@ fn prices_for(model: &str, usage: &Usage) -> Prices {
 pub fn cost(usage: &Usage, model: &str) -> f64 {
     let p = prices_for(model, usage);
     let per_token = |count: u64, price: f64| count as f64 * price / 1_000_000.0;
+    let write_1h = usage.cache_write_1h.min(usage.cache_write);
     per_token(usage.input, p.input)
-        + per_token(usage.cache_write, p.input * 1.25)
+        + per_token(usage.cache_write - write_1h, p.input * 1.25)
+        + per_token(write_1h, p.input * 2.0)
         + per_token(usage.cache_read, p.cache_read)
         + per_token(usage.output, p.output)
         + usage.web_searches as f64 * WEB_SEARCH
@@ -90,6 +92,7 @@ mod tests {
             cache_read: 100_000,
             output: 1_500,
             web_searches: 2,
+            ..Usage::default()
         }
     }
 
@@ -103,8 +106,8 @@ mod tests {
         // 0.004 + 0.01 + 0.02 + 0.03 + 0.02
         let usd = cost(&usage, "claude-opus-5-5");
         assert!(close(usd, 0.084), "{usd}");
-        // 0.002 + 0.005 + 0.01 + 0.015 + 0.02
-        assert!(close(cost(&usage, "claude-sonnet-5-5"), 0.052));
+        // 0.002 + 0.005 + 0.02 + 0.015 + 0.02
+        assert!(close(cost(&usage, "claude-sonnet-5-5"), 0.062));
         // Opus 5 isn't priced like Opus 5.5, though its ID starts the same.
         // 0.005 + 0.0125 + 0.05 + 0.0375 + 0.02
         assert!(close(cost(&usage, "claude-opus-5"), 0.125));
@@ -112,6 +115,17 @@ mod tests {
         assert!(close(cost(&usage, "claude-fable-5-1"), 0.155));
         assert_eq!(cost(&usage, "claude-new-model"), usd);
         assert_eq!(cost(&Usage::default(), "claude-opus-5-5"), 0.0);
+    }
+
+    #[test]
+    fn hour_long_cache_writes_cost_double() {
+        let usage = Usage {
+            cache_write: 1_000_000,
+            cache_write_1h: 400_000,
+            ..Usage::default()
+        };
+        // 600k at 1.25 x $4 + 400k at 2 x $4
+        assert!(close(cost(&usage, "claude-opus-5-5"), 3.0 + 3.2));
     }
 
     #[test]

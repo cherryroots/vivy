@@ -61,7 +61,32 @@ fn system(extra: Option<&str>) -> String {
     }
 }
 
-/// Checks her mood in every server where the last check is old enough.
+/// A server with no message for this long gets no mood checks.
+const QUIET_SECS: i64 = 24 * 60 * 60;
+
+/// Whether anyone wrote in `guild` (in a channel or thread the bot sees) after `since`, from
+/// the newest message ID Discord's cache keeps per channel.
+fn talked_lately(ctx: &BotCtx, guild: GuildId, since: i64) -> bool {
+    let Some(guild) = ctx.cache.guild(guild) else {
+        return false;
+    };
+    let newest = guild
+        .channels
+        .values()
+        .filter_map(|channel| channel.last_message_id)
+        .chain(
+            guild
+                .threads
+                .iter()
+                .filter_map(|thread| thread.last_message_id),
+        )
+        .map(|id| id.created_at().unix_timestamp())
+        .max();
+    newest.is_some_and(|at| at > since)
+}
+
+/// Checks her mood in every server where the last check is old enough and people talked
+/// lately.
 pub async fn check_due(ctx: &BotCtx) -> Result<()> {
     if ctx.ai.chat().is_none() {
         return Ok(());
@@ -92,11 +117,18 @@ pub async fn check_due(ctx: &BotCtx) -> Result<()> {
         if last.is_some_and(|at| at > now - every + 600) {
             continue;
         }
-        let allowed = scope
+        let Some(guild) = scope
             .strip_prefix("server:")
             .and_then(|id| id.parse().ok())
-            .is_some_and(|id| ctx.gate("memory").allows_guild(GuildId::new(id)));
-        if !allowed {
+            .map(GuildId::new)
+        else {
+            continue;
+        };
+        if !ctx.gate("memory").allows_guild(guild) {
+            continue;
+        }
+        // Nobody would see it: wait until people talk there again.
+        if !talked_lately(ctx, guild, now - QUIET_SECS) {
             continue;
         }
         match check(ctx, &scope, &mood, last.unwrap_or(now - every), zone).await {
