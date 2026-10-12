@@ -211,8 +211,10 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         })
         .build();
 
-    let intents =
-        serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::MESSAGE_CONTENT;
+    // Message content and presences are privileged: both need turning on in the Developer Portal.
+    let intents = serenity::GatewayIntents::non_privileged()
+        | serenity::GatewayIntents::MESSAGE_CONTENT
+        | serenity::GatewayIntents::GUILD_PRESENCES;
     let mut client = serenity::ClientBuilder::new(&token, intents)
         .framework(framework)
         .await

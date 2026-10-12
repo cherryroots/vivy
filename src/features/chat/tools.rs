@@ -8,8 +8,9 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
 use serenity::all::{
-    ChannelId, ChannelType, ContentSafeOptions, GetMessages, GuildChannel, GuildId, Member,
-    Message, MessageId, ReactionType, ScheduledEventStatus, UserId, content_safe,
+    Activity, ActivityType, ChannelId, ChannelType, ContentSafeOptions, GetMessages, GuildChannel,
+    GuildId, Member, Message, MessageId, OnlineStatus, Presence, ReactionType,
+    ScheduledEventStatus, UserId, content_safe,
 };
 
 use super::search;
@@ -48,7 +49,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_user_info",
-            description: "A server member's names, ID, roles, join date and timezone. Without `user`, the asker.",
+            description: "A server member's names, ID, roles, join date, timezone, online status and what they're doing right now (playing, listening to, custom status). Without `user`, the asker.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -287,13 +288,17 @@ async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<St
         Some(query) => find_member(ctx, guild_id, query).await?,
     };
 
-    let roles: Vec<String> = match ctx.cache.guild(guild_id) {
-        Some(guild) => member
-            .roles
-            .iter()
-            .filter_map(|id| guild.roles.get(id).map(|r| r.name.clone()))
-            .collect(),
-        None => Vec::new(),
+    // Presences come from the gateway (the Presence intent), so only the cache has them.
+    let (roles, presence): (Vec<String>, Vec<String>) = match ctx.cache.guild(guild_id) {
+        Some(guild) => (
+            member
+                .roles
+                .iter()
+                .filter_map(|id| guild.roles.get(id).map(|r| r.name.clone()))
+                .collect(),
+            presence_lines(guild.presences.get(&member.user.id)),
+        ),
+        None => (Vec::new(), Vec::new()),
     };
     let zone = settings::timezone(&ctx.db, member.user.id).await?;
     let mut lines = vec![format!(
@@ -312,7 +317,54 @@ async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<St
         Some(zone) => format!("Timezone: {}", zone.name()),
         None => "Timezone: not set".to_string(),
     });
+    lines.extend(presence);
     Ok(lines.join("\n"))
+}
+
+/// "Status: online" and one line per activity. Discord only sends presences for people
+/// who are online, so no presence means offline.
+fn presence_lines(presence: Option<&Presence>) -> Vec<String> {
+    let Some(presence) = presence else {
+        return vec!["Status: offline".to_string()];
+    };
+    let status = match presence.status {
+        OnlineStatus::Online => "online",
+        OnlineStatus::Idle => "idle",
+        OnlineStatus::DoNotDisturb => "do not disturb",
+        // Invisible people look offline to everyone else, so say the same.
+        _ => "offline",
+    };
+    let mut lines = vec![format!("Status: {status}")];
+    lines.extend(presence.activities.iter().filter_map(activity_line));
+    lines
+}
+
+/// "Playing Minecraft (Survival, In a world)", "Custom status: 🍜 lunch", …
+fn activity_line(activity: &Activity) -> Option<String> {
+    if activity.kind == ActivityType::Custom {
+        // The name is always "Custom Status"; the text is in `state`.
+        let emoji = activity.emoji.as_ref().map(|e| e.name.as_str());
+        let text: Vec<&str> = emoji.into_iter().chain(activity.state.as_deref()).collect();
+        return (!text.is_empty()).then(|| format!("Custom status: {}", text.join(" ")));
+    }
+    let verb = match activity.kind {
+        ActivityType::Playing => "Playing",
+        ActivityType::Streaming => "Streaming",
+        ActivityType::Listening => "Listening to",
+        ActivityType::Watching => "Watching",
+        ActivityType::Competing => "Competing in",
+        _ => "Doing",
+    };
+    // For Spotify, details is the song and state the artist.
+    let extra: Vec<&str> = [activity.details.as_deref(), activity.state.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let mut line = format!("{verb} {}", activity.name);
+    if !extra.is_empty() {
+        line.push_str(&format!(" ({})", extra.join(", ")));
+    }
+    Some(line)
 }
 
 /// A server member from a mention, user ID or name.
@@ -591,6 +643,43 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn presence(status: &str, activities: Value) -> Presence {
+        serde_json::from_value(json!({
+            "user": {"id": "1"},
+            "status": status,
+            "activities": activities,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn presence_status_and_activities() {
+        assert_eq!(presence_lines(None), ["Status: offline"]);
+        assert_eq!(
+            presence_lines(Some(&presence("invisible", json!([])))),
+            ["Status: offline"]
+        );
+
+        let busy = presence(
+            "dnd",
+            json!([
+                {"type": 4, "name": "Custom Status", "state": "lunch", "emoji": {"name": "🍜"}, "created_at": 0},
+                {"type": 2, "name": "Spotify", "details": "Song", "state": "Artist", "created_at": 0},
+                {"type": 0, "name": "Minecraft", "created_at": 0},
+                {"type": 4, "name": "Custom Status", "created_at": 0}
+            ]),
+        );
+        assert_eq!(
+            presence_lines(Some(&busy)),
+            [
+                "Status: do not disturb",
+                "Custom status: 🍜 lunch",
+                "Listening to Spotify (Song, Artist)",
+                "Playing Minecraft",
+            ]
+        );
+    }
 
     #[test]
     fn reactions_after_the_message() {
