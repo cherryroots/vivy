@@ -25,7 +25,7 @@ Call it rarely, at most once in a conversation, and only when the change would l
             "type": "object",
             "properties": {
                 "mood": {"type": "string", "description": "A few words on how you feel now and why."},
-                "status": {"type": "string", "description": "Your new Discord status: under 80 characters, in your voice, about what's on your mind. It shows in every server and DM, so keep it general: never name people or something only this server would understand. No hashtags."},
+                "status": {"type": "string", "description": "Your new Discord status: under 80 characters, in your voice, about what's on your mind. No hashtags."},
                 "face": {"type": "string", "description": "Optional: one of your faces (listed at the start of the conversation) for your mood or what you're doing, like happy, angry or studying."},
                 "emoji": {"type": "string", "description": "Optional: one standard emoji for your mood, shown after your name in this server. Never a custom server emoji: names can't show them."}
             },
