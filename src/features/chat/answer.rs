@@ -71,6 +71,9 @@ struct Screen {
     text: String,
     /// The model's latest progress note, shown above the status.
     note: Option<String>,
+    /// The notes since the last text. When nothing is written after them, they were
+    /// the answer, and go into the text at the end.
+    unanswered: Vec<String>,
     status: Option<String>,
     /// What Discord shows now, to skip edits that change nothing.
     shown: Vec<String>,
@@ -93,6 +96,28 @@ impl Screen {
 /// The reply's first look, before any slow work: no text, just the Thinking status.
 pub(super) fn placeholder() -> Vec<String> {
     render("", None, Some(&activity_status(&Activity::Thinking)))
+}
+
+/// Keeps `note` in `notes`. A note arrives again each time it grows, so one that starts
+/// with the last one replaces it.
+fn add_note(notes: &mut Vec<String>, note: &str) {
+    match notes.last_mut() {
+        Some(last) if note.starts_with(last.as_str()) => *last = note.to_string(),
+        _ => notes.push(note.to_string()),
+    }
+}
+
+/// `text` with `notes` after it, a paragraph each.
+fn with_notes(text: &str, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return text.to_string();
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if !text.trim().is_empty() {
+        parts.push(text.trim_end());
+    }
+    parts.extend(notes.iter().map(|n| n.trim()).filter(|n| !n.is_empty()));
+    parts.join("\n\n")
 }
 
 /// The messages to show: the text split to fit, with the note and the status as the last
@@ -202,6 +227,7 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
         reply: job.reply,
         text: String::new(),
         note: None,
+        unanswered: Vec::new(),
         status: Some(activity_status(&Activity::Thinking)),
         shown: Vec::new(),
         message_ids: job.message_ids,
@@ -218,6 +244,13 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
 
     let (end, written) = match result {
         Ok(Some((done, rounds, files))) => {
+            // Claude Opus 5.5 turns text written right before a tool call into a progress
+            // note, even when it's the answer ("My pick is…", then a tool to remember
+            // it). Notes with nothing written after them stay in the reply, unless a
+            // tool's message (like a voice message) was the whole answer.
+            if !screen.text.trim().is_empty() || job.asker.posted.ids().is_empty() {
+                screen.text = with_notes(&screen.text, &screen.unanswered);
+            }
             screen.note = None;
             screen.status = None;
             if let Err(err) = attach_files(ctx, provider, &mut screen, &files).await {
@@ -321,6 +354,7 @@ async fn stream_answer(
                         screen.text.push_str(&delta);
                         // The text itself now says what's going on.
                         screen.note = None;
+                        screen.unanswered.clear();
                         screen.status = Some(activity_status(&Activity::Writing));
                     }
                     Some(Ok(ChatEvent::Activity(activity))) => {
@@ -331,7 +365,10 @@ async fn stream_answer(
                         }
                         screen.status = Some(activity_status(&activity));
                     }
-                    Some(Ok(ChatEvent::Progress(note))) => screen.note = Some(note),
+                    Some(Ok(ChatEvent::Progress(note))) => {
+                        add_note(&mut screen.unanswered, &note);
+                        screen.note = Some(note);
+                    }
                     Some(Ok(ChatEvent::Done(done))) => break done,
                 },
             }
@@ -601,6 +638,21 @@ mod tests {
     #[test]
     fn placeholder_matches_the_first_render() {
         assert_eq!(placeholder(), ["-# 💭 Thinking…"]);
+    }
+
+    #[test]
+    fn notes_nothing_followed_stay_in_the_answer() {
+        let mut notes = Vec::new();
+        add_note(&mut notes, "Let me");
+        add_note(&mut notes, "Let me look.");
+        add_note(&mut notes, "My pick is pensivesnail.");
+        assert_eq!(notes, ["Let me look.", "My pick is pensivesnail."]);
+        assert_eq!(
+            with_notes("Checking the emoji.", &notes[1..]),
+            "Checking the emoji.\n\nMy pick is pensivesnail."
+        );
+        assert_eq!(with_notes("", &notes[1..]), "My pick is pensivesnail.");
+        assert_eq!(with_notes("Hi\n", &[]), "Hi\n");
     }
 
     #[test]
