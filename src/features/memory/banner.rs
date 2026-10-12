@@ -22,6 +22,12 @@ pub(super) struct Settings {
     banners_dir: Option<String>,
 }
 
+/// The banners folder, if one is set.
+pub(super) fn dir(ctx: &BotCtx) -> Option<PathBuf> {
+    let settings: Settings = ctx.config.feature_part("memory").ok()?;
+    settings.banners_dir.map(PathBuf::from)
+}
+
 /// The time of day at `hour` (0 to 23, local time).
 fn period(hour: u32) -> &'static str {
     match hour {

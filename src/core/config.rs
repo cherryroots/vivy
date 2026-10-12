@@ -67,17 +67,21 @@ impl Default for Config {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct LoggingConfig {
-    /// Channel that receives warnings, errors and start/stop notices.
-    pub discord_channel: Option<u64>,
-    /// The lowest level posted to that channel: "error", "warn" or "info".
-    pub discord_level: String,
+    /// Channel that receives warnings, errors and start/stop notices. The old key name
+    /// `discord_channel` still works.
+    #[serde(alias = "discord_channel")]
+    pub log_channel: Option<u64>,
+    /// The lowest level posted to that channel: "error", "warn" or "info". The old key
+    /// name `discord_level` still works.
+    #[serde(alias = "discord_level")]
+    pub log_level: String,
 }
 
 impl Default for LoggingConfig {
     fn default() -> Self {
         LoggingConfig {
-            discord_channel: None,
-            discord_level: "warn".to_string(),
+            log_channel: None,
+            log_level: "warn".to_string(),
         }
     }
 }
@@ -233,10 +237,20 @@ Copy config.example.toml to start one.",
         Ok(())
     }
 
-    /// What to warn about once logging is up: problems found while loading, and
-    /// `[features.<name>]` sections that match none of `features` (a typo in the name).
+    /// What to warn about once logging is up: problems found while loading, the common
+    /// mistakes (no admins, a setting the AI will refuse), and `[features.<name>]` sections
+    /// that match none of `features` (a typo in the name).
     pub fn startup_warnings(&self, features: &[&str]) -> Vec<String> {
         let mut warnings = self.warnings.clone();
+        // A missing file already says there are no admins.
+        if self.admins.is_empty() && !warnings.iter().any(|w| w.contains("not found")) {
+            warnings.push(
+                "config.toml: `admins` is empty, so nobody can use the admin commands \
+(/memory delete, /snail_backfill, the wheel's admin commands). Add your user ID."
+                    .to_string(),
+            );
+        }
+        warnings.extend(crate::ai::config_warnings(&self.ai));
         let mut unknown: Vec<&String> = self
             .features
             .keys()
@@ -295,7 +309,7 @@ Copy config.example.toml to start one.",
             }
             let path = format!("features.{name}.{path}");
             if self.warned.lock().unwrap().insert(path.clone()) {
-                warn!("config.toml: unknown key `{path}` is ignored");
+                warn!(target: "config", "config.toml: unknown key `{path}` is ignored");
             }
         }
     }
@@ -373,6 +387,8 @@ mod tests {
     fn warns_about_unknown_keys() {
         let config = Config::parse(
             r#"
+            admins = [1]
+
             [features.chat]
             enable = false
             deny_channel = [1]
@@ -397,7 +413,8 @@ mod tests {
             #[allow(dead_code)]
             interval: u64,
         }
-        let config = Config::parse("[features.x]\nenabled = true\nintervall = 5").unwrap();
+        let config =
+            Config::parse("admins = [1]\n[features.x]\nenabled = true\nintervall = 5").unwrap();
         config.feature::<Settings>("x").unwrap();
         assert!(
             config
@@ -473,9 +490,47 @@ mod tests {
             let warning = format!("config.toml: unknown key `{path}` is ignored");
             assert!(warnings.contains(&warning), "{path}: {warnings:?}");
         }
-        assert_eq!(warnings.len(), 5, "{warnings:?}");
+        // Plus one for `admins` being empty (the typo above left it so).
+        assert_eq!(warnings.len(), 6, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("`admins` is empty")));
         // The keys that are right still count.
-        assert_eq!(config.logging.discord_level, "warn");
+        assert_eq!(config.logging.log_level, "warn");
+    }
+
+    #[test]
+    fn old_key_names_still_work() {
+        let config =
+            Config::parse("admins = [1]\n[logging]\ndiscord_channel = 5\ndiscord_level = \"info\"")
+                .unwrap();
+        assert_eq!(config.logging.log_channel, Some(5));
+        assert_eq!(config.logging.log_level, "info");
+        assert!(config.startup_warnings(&[]).is_empty());
+
+        let config =
+            Config::parse("admins = [1]\n[logging]\nlog_channel = 5\nlog_level = \"info\"")
+                .unwrap();
+        assert_eq!(config.logging.log_channel, Some(5));
+        assert_eq!(config.logging.log_level, "info");
+    }
+
+    #[test]
+    fn settings_the_ai_would_refuse_warn_at_startup() {
+        let config = Config::parse(
+            "admins = [1]\n[ai.claude]\neffort = \"mediun\"\n[ai.openai]\nverbosity = \"loud\"\n[ai.openai.jobs.mood]\neffort = \"max\"",
+        )
+        .unwrap();
+        let warnings = config.startup_warnings(&[]);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert!(
+            warnings[0].contains("ai.claude.effort = \"mediun\""),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("ai.openai.jobs.mood.effort"))
+        );
+        assert!(warnings.iter().any(|w| w.contains("ai.openai.verbosity")));
     }
 
     #[test]

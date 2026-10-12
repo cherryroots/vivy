@@ -71,6 +71,9 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
     // in between.
     let mut history = History::new();
     let samples = ctx.timers.add("Status graphs", "every 15m");
+    // Whether the last update failed. The first failure is a warning (which reaches the
+    // log channel); the ones after it, every minute, only go to the log at info level.
+    let mut failing = false;
 
     loop {
         // biased: check shutdown first, so a due tick can't win and skip the OFFLINE picture.
@@ -99,14 +102,26 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
             online(dashboard).await
         };
         match show(&ctx, channel, message, status).await {
-            Ok(id) if Some(id) != message => {
-                message = Some(id);
-                if let Err(err) = save_message_id(&ctx, channel, id).await {
-                    warn!("couldn't save the status message ID: {err:#}");
+            Ok(id) => {
+                failing = false;
+                if Some(id) != message {
+                    message = Some(id);
+                    if let Err(err) = save_message_id(&ctx, channel, id).await {
+                        warn!("couldn't save the status message ID: {err:#}");
+                    }
                 }
             }
-            Ok(_) => {}
-            Err(err) => warn!("couldn't update the status message: {err:#}"),
+            Err(err) if failing => {
+                tracing::info!("still couldn't update the status message: {err:#}");
+            }
+            Err(err) => {
+                failing = true;
+                warn!(
+                    "couldn't update the status message in <#{channel}> \
+(features.control_panel.status_channel in config.toml): {err:#}. Is the bot in that \
+channel? Further tries are logged at info level until one works."
+                );
+            }
         }
         if stopping {
             break;

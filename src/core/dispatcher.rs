@@ -66,7 +66,7 @@ pub async fn handle_event(event: &FullEvent, bot: &BotCtx) -> Result<()> {
                 // The config is read before logging starts, so its warnings wait until now.
                 let names: Vec<&str> = bot.features.iter().map(|f| f.name()).collect();
                 for warning in bot.config.startup_warnings(&names) {
-                    warn!("{warning}");
+                    warn!(target: "config", "{warning}");
                 }
             }
         }

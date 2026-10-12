@@ -6,10 +6,12 @@ The control panel lets admins watch the bot from two Discord channels. The **log
 
 There are no commands. Both channels are set in `config.toml`:
 
-- the log channel under `[logging]` (`discord_channel`, `discord_level`);
-- the status channel under `[features.control_panel]` (`status_channel`, `status_interval_secs`).
+- the log channel under `[logging]` (`log_channel`, `log_level`; the old names `discord_channel` and `discord_level` still work);
+- the status channel under `[features.control_panel]` (`status_channel`, `status_interval_seconds`; the old `status_interval_secs` still works).
 
-`config.example.toml` explains each key. Setup is in the README. Without a `status_channel` the feature does nothing; without a `discord_channel` nothing is posted to Discord, but logs still go to stdout.
+The bot has to be a member of both channels. When it can't post to the log channel, stderr says so with the key name; when it can't update the status message, the first failure is a warning (with the key name and the channel) and the ones after it, every refresh, are logged at info level until one works.
+
+`config.example.toml` explains each key. Setup is in the README. Without a `status_channel` the feature does nothing; without a `log_channel` nothing is posted to Discord, but logs still go to stdout. A `log_level` that isn't a level falls back to `warn` with a warning, instead of stopping the bot.
 
 The two halves are independent. The log channel is part of the core logging setup, so it keeps working with the control panel turned off, and errors from startup (before any feature runs) still reach Discord.
 
@@ -33,7 +35,7 @@ The picture is drawn as SVG text, then turned into a PNG by the shared `src/util
 The bot logs with the `tracing` crate's macros (`info!`, `warn!`, `error!`). `logging::init` runs first thing in `main`, before the bot connects. It sets up two **layers** (outputs that each see every log event):
 
 - **stdout**: one compact line per event (`Compact`), or JSON when the `LOG_FORMAT=json` environment variable is set. `RUST_LOG` picks what is shown.
-- **Discord** (`DiscordLayer`): sees events at `discord_level` or above from any crate, plus every line with the target `"lifecycle"`, whatever its level.
+- **Discord** (`DiscordLayer`): sees events at `log_level` or above from any crate, plus every line with the target `"lifecycle"`, whatever its level.
 
 The dispatcher wraps every handler in a **span** (a named scope that log lines inside it belong to) with the feature, server, channel and message ID. `DiscordLayer` walks a log line's spans to find these, so each posted line names its feature (or the module that logged it, outside a handler) and links to the message that triggered it. When a handler fails, the dispatcher logs `"<feature> failed: {err:#}"`; the `{:#}` format prints the whole error chain (each "while doing X" context the error picked up).
 
@@ -51,7 +53,7 @@ The layer also counts errors for the status picture: `record_error` keeps the ti
 
 ### The status message (`status.rs`)
 
-`ControlPanel::start` reads `Settings`, and if there is a `status_channel`, spawns `status::run`. The refresh interval is `status_interval_secs` (default 60), never below 10 seconds, to stay far under Discord's edit rate limit. A slow update skips ticks instead of catching up in a burst.
+`ControlPanel::start` reads `Settings`, and if there is a `status_channel`, spawns `status::run`. The refresh interval is `status_interval_seconds` (default 60), never below 10 seconds, to stay far under Discord's edit rate limit. A slow update skips ticks instead of catching up in a burst.
 
 Each tick:
 
@@ -130,7 +132,7 @@ The cache hit rate and cost per job are read from the core `ai_spend_jobs` table
 |---|---|---|
 | `Status graphs` | `every 15m` | Marks when the status loop saves graph samples. |
 
-The status refresh itself (every `status_interval_secs`) and the log poster (every 5 seconds) are background tasks without a timer.
+The status refresh itself (every `status_interval_seconds`) and the log poster (every 5 seconds) are background tasks without a timer.
 
 ## Adding to the status picture
 
@@ -140,6 +142,6 @@ A feature gets on the status picture through its `Feature` methods (`src/core/fe
 - **A graph on the card**: give a stat a plain number as its value (like `Stat::new("Pending", 4)`). It is saved every 15 minutes and drawn over 7 days. Keep the stat's name stable, since the history is stored under it.
 - **A box of longer text**: implement `panels` and return `Panel`s, each a title, rows (`Stat`s, wrapped to up to three lines), and an optional picture as a PNG `data:` URL. Use `Panel::about_bot(ctx, rows)` to add rows to the shared "Vivy's mind" box.
 - **A timer**: in a loop started from `start`, call `ctx.timers.add(name, every)` once and report with `running()`, `sleeping()` or `next_at()` as shown above.
-- **Something on the log channel**: just log it. `warn!` and `error!` reach the channel at the default `discord_level`; use `info!(target: "lifecycle", ...)` only for start and stop notices.
+- **Something on the log channel**: just log it. `warn!` and `error!` reach the channel at the default `log_level`; use `info!(target: "lifecycle", ...)` only for start and stop notices.
 
 The fallback embed (`online_embed`) shows stats, panels and timers too, so these appear even when the picture can't be drawn.
