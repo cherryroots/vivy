@@ -20,7 +20,7 @@ pub fn defs() -> Vec<ToolDef> {
                 "properties": {
                     "when": {
                         "type": "string",
-                        "description": "When, in English, in one of these forms: \"in 2h30m\", \"at 16:30 CET\", \"tomorrow at 9am\", \"next friday\", \"on 2026-12-24 at noon\". For a recurring reminder: \"every day at 9:00\", \"every weekday at 8:30\", \"every monday\", \"every 2 hours\". Rules: digits with a unit (\"in 1 hour\", not \"in an hour\"); clock times need minutes or am/pm (\"7:00\" or \"7pm\", never \"7\"); dates as YYYY-MM-DD; one weekday per repeat. Turn the asker's words into one of these forms. Times without a zone use the asker's timezone."
+                        "description": "When, in English, in one of these forms: \"in 2h30m\", \"in an hour and a half\", \"at 16:30 CET\", \"tomorrow at 9am\", \"tomorrow evening\", \"tonight\", \"this friday\", \"next week\", \"on the 15th\", \"march 3\", \"on 2026-12-24 at noon\". For a recurring reminder: \"every day at 9:00\", \"every weekday at 8:30\", \"every monday\", \"every other week\", \"every 2 hours\". Rules: clock times need minutes or am/pm (\"7:00\" or \"7pm\", never \"7\"); one weekday per repeat (\"every monday and wednesday\" is two reminders); only one time per reminder. Turn the asker's words into one of these forms. Times without a zone use the asker's timezone."
                     },
                     "message": {"type": "string", "description": "What to remind them of."}
                 },

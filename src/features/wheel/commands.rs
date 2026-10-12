@@ -7,7 +7,7 @@ use poise::CreateReply;
 use serenity::all::{GuildId, User};
 use tracing::info;
 
-use super::actions::{Game, active_game, status_message};
+use super::actions::{Game, active_game, redraw_last, remember_status, status_message};
 use super::ledger::Bet;
 use super::{names, store, ui};
 use crate::core::{Context, Result, user_error};
@@ -60,13 +60,27 @@ pub async fn wheel_status(
             .ok_or_else(|| user_error(format!("Pick a round from 1 to {count}.")))?,
     };
     let status = status_message(ctx.data(), guild, &game, index).await?;
-    ctx.send(
-        CreateReply::default()
-            .attachment(status.picture)
-            .components(status.buttons),
-    )
-    .await?;
+    let handle = ctx
+        .send(
+            CreateReply::default()
+                .attachment(status.picture)
+                .components(status.buttons),
+        )
+        .await?;
+    // The current round's message is the one admin commands redraw later.
+    if index == count - 1 && game.active {
+        let sent = handle.message().await?;
+        remember_status(ctx.data(), guild, sent.channel_id, sent.id).await;
+    }
     Ok(())
+}
+
+/// The last line of an admin command's reply: whether the public picture was updated.
+async fn redraw_note(bot: &crate::core::BotCtx, guild: GuildId) -> String {
+    match redraw_last(bot, guild).await {
+        Some(true) => "The wheel picture is updated.".to_string(),
+        _ => "Run /wheel_status to show the new wheel.".to_string(),
+    }
 }
 
 /// Add users to the wheel with the movies they picked, or take them off (admins)
@@ -160,6 +174,7 @@ pub async fn wheel_add(
         }
         lines.push(line);
     }
+    lines.push(redraw_note(ctx.data(), guild).await);
     ctx.say(lines.join("\n")).await?;
     Ok(())
 }
@@ -199,6 +214,7 @@ pub async fn wheel_movie(
     if on_wheel {
         info!("{text}");
     }
+    let text = format!("{text}\n{}", redraw_note(ctx.data(), guild).await);
     ctx.say(text).await?;
     Ok(())
 }

@@ -7,6 +7,10 @@ use serenity::all::{
     CreateSelectMenuOption, InputTextStyle, UserId,
 };
 
+use chrono::DateTime;
+use chrono_tz::Tz;
+
+use super::parse;
 use super::store::{Reminder, Summary};
 use crate::util::{count, shorten};
 
@@ -95,7 +99,11 @@ pub fn confirmation(
         text.push_str(&format!(" (with {})", count(images, "image")));
     }
     if zone_hint {
-        text.push_str("\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.");
+        text.push_str(match repeat {
+            // A repeat saves its zone, so setting one later doesn't move this reminder.
+            Some(_) => "\n-# This repeats at UTC time because you have no timezone set. Run `/timezone`, then set it again.",
+            None => "\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.",
+        });
     }
     if !skipped.is_empty() {
         text.push_str(&format!(
@@ -116,8 +124,9 @@ pub fn cancel_button(id: i64) -> CreateActionRow {
 
 /// The delivered reminder: pings only its owner, links to the message that set it, and
 /// carries its images and snooze buttons. With `with_images` false the images are left off
-/// (used when Discord refused the upload) and counted in the "missing" hint instead.
-pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> CreateMessage {
+/// (used when Discord refused the upload) and counted in the "missing" hint instead. `zone`
+/// is the owner's timezone, so a repeat reads "every day at 9:00" without the zone's name.
+pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz) -> CreateMessage {
     let set = match reminder.source_message_id {
         Some(message) => {
             let guild = reminder
@@ -142,7 +151,10 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
         content.push_str(&format!(", due <t:{}:R>", reminder.fire_at));
     }
     if let Some(repeat) = &reminder.repeat {
-        content.push_str(&format!(" · 🔁 {repeat}"));
+        content.push_str(&format!(
+            " · 🔁 {}",
+            parse::repeat_for_display(repeat, zone)
+        ));
     }
     let mut missing = reminder.missing_images as usize;
     if !with_images {
@@ -212,8 +224,14 @@ fn with_line(original: &str, line: &str) -> String {
 }
 
 /// The `/reminders` list, with a menu to delete one. Discord menus hold at most 25 options.
-/// `note` goes first, like "✅ Reminder deleted." after a delete.
-pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<CreateActionRow>) {
+/// `note` goes first, like "✅ Reminder deleted." after a delete. `zone` is the viewer's
+/// timezone, for the menu (its descriptions can't show Discord's `<t:>` times) and for how
+/// repeats read.
+pub fn list_message(
+    reminders: &[Summary],
+    note: Option<&str>,
+    zone: Tz,
+) -> (String, Vec<CreateActionRow>) {
     let mut text = note.map(|note| format!("{note}\n")).unwrap_or_default();
     if reminders.is_empty() {
         text.push_str("You have no pending reminders.");
@@ -229,12 +247,14 @@ pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<C
             n => format!(" ({n} images)"),
         };
         let repeat = match &reminder.repeat {
-            Some(repeat) => format!(" 🔁 {repeat}"),
+            Some(repeat) => format!(" 🔁 {}", parse::repeat_for_display(repeat, zone)),
             None => String::new(),
         };
+        // The day and time too, not only "in 3 days".
         text.push_str(&format!(
-            "{}. <t:{}:R>{repeat}: {}{images}\n",
+            "{}. <t:{}:R> (<t:{}:f>){repeat}: {}{images}\n",
             n + 1,
+            reminder.fire_at,
             reminder.fire_at,
             shorten(&reminder.message, 60)
         ));
@@ -248,7 +268,20 @@ pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<C
         .enumerate()
         .map(|(n, reminder)| {
             let label = shorten(&format!("{}. {}", n + 1, reminder.message), 100);
+            // Two reminders with the same words are told apart by when they fire.
+            let when = DateTime::from_timestamp(reminder.fire_at, 0)
+                .map(|t| {
+                    t.with_timezone(&zone)
+                        .format("%a %Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let description = match &reminder.repeat {
+                Some(repeat) => format!("{when} · {}", parse::repeat_for_display(repeat, zone)),
+                None => when,
+            };
             CreateSelectMenuOption::new(label, reminder.id.to_string())
+                .description(shorten(&description, 100))
         })
         .collect();
     let menu = CreateSelectMenu::new(
@@ -292,7 +325,7 @@ mod tests {
 
     #[test]
     fn fired_message_links_to_the_source() {
-        let text = content(&fired_message(&reminder(), 1000, true));
+        let text = content(&fired_message(&reminder(), 1000, true, Tz::UTC));
         assert_eq!(
             text,
             "<@2> ⏰ check the oven\n-# [Reminder set](<https://discord.com/channels/4/3/5>) <t:500:f>"
@@ -300,23 +333,28 @@ mod tests {
 
         let mut dm = reminder();
         dm.guild_id = None;
-        assert!(content(&fired_message(&dm, 1000, true)).contains("/channels/@me/3/5"));
+        assert!(content(&fired_message(&dm, 1000, true, Tz::UTC)).contains("/channels/@me/3/5"));
 
         let mut imported = reminder();
         imported.source_message_id = None;
         assert!(
-            content(&fired_message(&imported, 1000, true)).contains("-# Reminder set <t:500:f>")
+            content(&fired_message(&imported, 1000, true, Tz::UTC))
+                .contains("-# Reminder set <t:500:f>")
         );
     }
 
     #[test]
     fn fired_message_counts_missing_images() {
         let mut r = reminder();
-        assert!(!content(&fired_message(&r, 1000, true)).contains("missing"));
-        assert!(content(&fired_message(&r, 1000, false)).ends_with(" · [image missing]"));
+        assert!(!content(&fired_message(&r, 1000, true, Tz::UTC)).contains("missing"));
+        assert!(content(&fired_message(&r, 1000, false, Tz::UTC)).ends_with(" · [image missing]"));
         r.missing_images = 2;
-        assert!(content(&fired_message(&r, 1000, true)).ends_with(" · [2 images missing]"));
-        assert!(content(&fired_message(&r, 1000, false)).ends_with(" · [3 images missing]"));
+        assert!(
+            content(&fired_message(&r, 1000, true, Tz::UTC)).ends_with(" · [2 images missing]")
+        );
+        assert!(
+            content(&fired_message(&r, 1000, false, Tz::UTC)).ends_with(" · [3 images missing]")
+        );
     }
 
     #[test]
@@ -333,7 +371,8 @@ mod tests {
         let mut r = reminder();
         r.repeat = Some("every monday at 9:00 UTC".into());
         assert!(
-            content(&fired_message(&r, 1000, true)).ends_with(" · 🔁 every monday at 9:00 UTC")
+            content(&fired_message(&r, 1000, true, Tz::UTC))
+                .ends_with(" · 🔁 every monday at 9:00")
         );
         let list = [Summary {
             id: 1,
@@ -342,20 +381,25 @@ mod tests {
             image_count: 0,
             repeat: r.repeat.clone(),
         }];
-        let (text, rows) = list_message(&list, Some("✅ Reminder deleted."));
+        let (text, rows) = list_message(&list, Some("✅ Reminder deleted."), Tz::UTC);
         assert_eq!(
             text,
-            "✅ Reminder deleted.\n**Your reminders**\n1. <t:1000:R> 🔁 every monday at 9:00 UTC: trash\n"
+            "✅ Reminder deleted.\n**Your reminders**\n1. <t:1000:R> (<t:1000:f>) 🔁 every monday at 9:00: trash\n"
         );
         assert_eq!(rows.len(), 1);
-        let (text, rows) = list_message(&[], Some("✅ Reminder deleted."));
+        let json = serde_json::to_value(&rows).unwrap();
+        assert_eq!(
+            json[0]["components"][0]["options"][0]["description"],
+            "Thu 1970-01-01 00:16 · every monday at 9:00"
+        );
+        let (text, rows) = list_message(&[], Some("✅ Reminder deleted."), Tz::UTC);
         assert_eq!(text, "✅ Reminder deleted.\nYou have no pending reminders.");
         assert!(rows.is_empty());
     }
 
     #[test]
     fn snooze_buttons() {
-        let json = serde_json::to_value(fired_message(&reminder(), 1000, true)).unwrap();
+        let json = serde_json::to_value(fired_message(&reminder(), 1000, true, Tz::UTC)).unwrap();
         let labels: Vec<&str> = json["components"][0]["components"]
             .as_array()
             .unwrap()

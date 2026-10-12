@@ -14,9 +14,9 @@ use chrono::Utc;
 use rusqlite::Connection;
 use serenity::all::{
     ActionRowComponent, ChannelId, ComponentInteraction, ComponentInteractionDataKind,
-    CreateActionRow, CreateAttachment, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, EditInteractionResponse,
-    EditMessage, GuildId, MessageId, ModalInteraction, UserId,
+    CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateInteractionResponse,
+    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
+    EditInteractionResponse, EditMessage, GuildId, MessageId, ModalInteraction, UserId,
 };
 use tracing::{info, warn};
 
@@ -107,12 +107,68 @@ pub async fn status_message(
     })
 }
 
-/// One lock per server, held while a status message is read, drawn and edited.
-static REDRAWS: LazyLock<Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>> =
-    LazyLock::new(Mutex::default);
+/// Posts round `index` as a new message in `channel` and remembers it as the server's
+/// status message. `content` is the line above the picture.
+pub async fn post_status(
+    ctx: &BotCtx,
+    channel: ChannelId,
+    guild: GuildId,
+    game: &Game,
+    index: usize,
+    content: &str,
+) -> Result<()> {
+    let status = status_message(ctx, guild, game, index).await?;
+    let message = CreateMessage::new()
+        .content(content)
+        .add_file(status.picture)
+        .components(status.buttons)
+        .allowed_mentions(CreateAllowedMentions::new());
+    let sent = channel.send_message(&ctx.http, message).await?;
+    remember_status(ctx, guild, channel, sent.id).await;
+    Ok(())
+}
+
+/// Saves which message shows the wheel in this server (see [`redraw_last`]).
+pub async fn remember_status(ctx: &BotCtx, guild: GuildId, channel: ChannelId, message: MessageId) {
+    let (g, c, m) = (guild.get(), channel.get(), message.get());
+    if let Err(err) = ctx
+        .db
+        .call(move |conn| Ok(store::set_status_message(conn, g, c, m)?))
+        .await
+    {
+        warn!("couldn't remember the wheel status message: {err:#}");
+    }
+}
+
+/// Redraws the server's newest status message after an admin command changed the wheel.
+/// `Some(true)` when it was updated, `Some(false)` when the message is gone, `None` when
+/// none was ever posted.
+pub async fn redraw_last(ctx: &BotCtx, guild: GuildId) -> Option<bool> {
+    let g = guild.get();
+    let (channel, message) = ctx
+        .db
+        .call(move |conn| Ok(store::status_message(conn, g)?))
+        .await
+        .ok()
+        .flatten()?;
+    let game = ctx.db.call(move |conn| active_game(conn, g)).await.ok()?;
+    let index = game.latest();
+    let channel = ChannelId::new(channel);
+    Some(edit_status(ctx, channel, MessageId::new(message), guild, &game, index).await)
+}
+
+/// One lock per server, held while a status message is read, drawn and edited, plus how
+/// many redraws are waiting for it.
+#[derive(Default)]
+struct Redraw {
+    lock: tokio::sync::Mutex<()>,
+    waiting: std::sync::atomic::AtomicUsize,
+}
+
+static REDRAWS: LazyLock<Mutex<HashMap<u64, Arc<Redraw>>>> = LazyLock::new(Mutex::default);
 
 /// The server's redraw lock (made the first time it's needed).
-fn redraw_lock(guild: GuildId) -> Arc<tokio::sync::Mutex<()>> {
+fn redraw_lock(guild: GuildId) -> Arc<Redraw> {
     REDRAWS
         .lock()
         .unwrap()
@@ -153,8 +209,8 @@ async fn update_status(
     game: &Game,
     index: usize,
 ) -> Result<()> {
-    let lock = redraw_lock(guild);
-    let _turn = lock.lock().await;
+    let redraw = redraw_lock(guild);
+    let _turn = redraw.lock.lock().await;
     let status = fresh_status(ctx, guild, game, index).await?;
     i.edit_response(&ctx.http, status.update()).await?;
     Ok(())
@@ -561,13 +617,23 @@ async fn open_menu(
 
     i.defer_ephemeral(&ctx.http).await?;
     let names = names::lookup(ctx, guild, &choices).await;
+    // Under each name: the movie, or for Remove bet how much is on it.
+    let descriptions: HashMap<u64, String> = match kind {
+        PickKind::Remove => game.season.rounds[game.latest()]
+            .bets
+            .iter()
+            .filter(|b| b.by == user)
+            .map(|b| (b.on, format!("Your bet: {}", b.amount)))
+            .collect(),
+        _ => game.season.movies.clone(),
+    };
     let (content, menu) = ui::pick_menu(
         kind,
         round,
         i.message.id.get(),
         &choices,
         &names,
-        &game.season.movies,
+        &descriptions,
     );
     let menu = EditInteractionResponse::new()
         .content(content)
@@ -660,6 +726,16 @@ async fn picked(
             let text = format!("Set {winner} as the winner of round {number}.");
             i.create_response(&ctx.http, update_text(text)).await?;
             edit_status(ctx, i.channel_id, message, guild, &game, resolved).await;
+            // The channel only saw a blurred picture so far: open the new round under it,
+            // with its buttons, so nobody has to press View Current Round first.
+            let next = game.season.rounds[game.latest()].number;
+            let line =
+                format!("Round {number} is over. Round {next} is open: claim and bet below.");
+            if let Err(err) =
+                post_status(ctx, i.channel_id, guild, &game, game.latest(), &line).await
+            {
+                warn!("couldn't post the new round: {err:#}");
+            }
         }
     }
     Ok(())
@@ -892,8 +968,15 @@ async fn edit_status(
     game: &Game,
     index: usize,
 ) -> bool {
-    let lock = redraw_lock(guild);
-    let _turn = lock.lock().await;
+    use std::sync::atomic::Ordering;
+    let redraw = redraw_lock(guild);
+    redraw.waiting.fetch_add(1, Ordering::SeqCst);
+    let _turn = redraw.lock.lock().await;
+    // Ten people claiming at once would mean ten pictures in a row. The redraw queued
+    // behind this one reads the season fresh, so it shows this change too: let it draw.
+    if redraw.waiting.fetch_sub(1, Ordering::SeqCst) > 1 {
+        return true;
+    }
     let edit = match fresh_status(ctx, guild, game, index).await {
         Ok(status) => status.edit(),
         Err(err) => {

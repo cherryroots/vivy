@@ -62,7 +62,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | claude (in `ai/`) | `claude_uploads` |
 | chat | `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | reminders | `reminders`, `reminder_images` |
-| wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids` |
+| wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids`, `wheel_status_messages` |
 | memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
 | voice | `voice_messages` |
 | drawing | `drawings` |
@@ -144,6 +144,8 @@ The port went in stages, one pull request each, all merged into `main`.
 | #38 | | OpenAI: one prompt cache key for chat in every channel, so a quiet channel reads what a busy one cached |
 | #39 | | Claude: at most 5 web searches per request (`web_search_max_uses`) |
 | #40 | | UX run: shorter button labels, plainer messages and errors, first-person `/memory` replies, Check Snail lines that fit a phone |
+| #41 | | UX run: the new round posted after a winner, admin commands redraw the wheel, `/memory forget` asks first, dates in `/reminders` |
+| #42 | | UX run: reminder times the way people say them (`in an hour and a half`, `tomorrow evening`, `on the 15th`, `every other week`), clearer refusals, repeats shown in your own timezone, `/timezone` suggests abbreviations |
 
 ## Not built yet
 

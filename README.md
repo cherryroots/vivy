@@ -43,7 +43,7 @@ With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either ch
 
 ### Reminders
 
-`@Vivy remind me in 2h30m to …`, `at 16:30 CET`, `tomorrow at 9am`, `next friday` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every 2 hours`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
+`@Vivy remind me in 2h30m to …`, `in an hour and a half`, `at 16:30 CET`, `tomorrow evening`, `tonight`, `this friday`, `next week`, `on the 15th`, `march 3` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every other week`, `every 2 hours`, `daily`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
 
 ### Movie wheel
 

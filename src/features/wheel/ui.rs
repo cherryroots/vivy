@@ -372,16 +372,17 @@ pub fn status_buttons(view: &View) -> Vec<CreateActionRow> {
 const MENU_OPTIONS: usize = 25;
 const MAX_MENUS: usize = 5;
 
-/// The menus after Place Bet, Remove Bet or Set Winner. `users` are the choices, sorted by
-/// name, each with its movie under it if one is set. Discord shows at most 25 in a menu, so a big wheel gets several menus, each saying
-/// which names it holds; past 125 the rest are left out and the text says so.
+/// The menus after Bet, Remove bet or Winner. `users` are the choices, sorted by name,
+/// each with its `description` under it if one is set (the movie, or for Remove bet the
+/// amount). Discord shows at most 25 in a menu, so a big wheel gets several menus, each
+/// saying which names it holds; past 125 the rest are left out and the text says so.
 pub fn pick_menu(
     kind: PickKind,
     round: i64,
     message: u64,
     users: &[u64],
     names: &Names,
-    movies: &HashMap<u64, String>,
+    descriptions: &HashMap<u64, String>,
 ) -> (String, Vec<CreateActionRow>) {
     let (title, placeholder) = match kind {
         PickKind::Place => ("Place a Bet", "Pick who to bet on"),
@@ -400,8 +401,8 @@ pub fn pick_menu(
             .map(|&user| {
                 let option =
                     CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string());
-                match movies.get(&user) {
-                    Some(movie) => option.description(shorten(movie, 100)),
+                match descriptions.get(&user) {
+                    Some(text) => option.description(shorten(text, 100)),
                     None => option,
                 }
             })
