@@ -423,13 +423,20 @@ fn route_custom_id<'a>(bot: &BotCtx, custom_id: &'a str) -> Option<(Arc<dyn Feat
     Some((feature.clone(), action))
 }
 
-/// Removes `<@bot>` and `<@!bot>` from a message.
+/// Removes the `<@bot>` or `<@!bot>` a message starts with, so "@Vivy remind me ..." routes
+/// on "remind me". Mentions of her later in the text stay: in "stop being mean to @Vivy"
+/// she is who the message is about, and chat shows them as "@Vivy".
 pub fn strip_mentions(content: &str, bot: UserId) -> String {
-    content
-        .replace(&format!("<@{bot}>"), "")
-        .replace(&format!("<@!{bot}>"), "")
-        .trim()
-        .to_string()
+    let mut text = content.trim();
+    loop {
+        let rest = text
+            .strip_prefix(&format!("<@{bot}>"))
+            .or_else(|| text.strip_prefix(&format!("<@!{bot}>")));
+        match rest {
+            Some(rest) => text = rest.trim_start(),
+            None => return text.trim_end().to_string(),
+        }
+    }
 }
 
 /// Picks the feature whose mention prefix matches the start of `text`, and returns the text
@@ -600,5 +607,11 @@ mod tests {
         let bot = UserId::new(42);
         assert_eq!(strip_mentions("<@42> remind me", bot), "remind me");
         assert_eq!(strip_mentions("  <@!42>  hi <@7>", bot), "hi <@7>");
+        assert_eq!(strip_mentions("<@42> <@42> hi", bot), "hi");
+        assert_eq!(
+            strip_mentions("stop being mean to <@42>", bot),
+            "stop being mean to <@42>"
+        );
+        assert_eq!(strip_mentions("<@42> is <@42> ok?", bot), "is <@42> ok?");
     }
 }

@@ -7,6 +7,7 @@
 //! - `store.rs`: the `chat_turns` and `chat_messages` tables
 //! - `tools.rs`: chat's own tools (time, channel, users, messages, pins, events)
 //! - `search.rs`: the `search_messages` tool
+//! - `look_back.rs`: the `look_back_at_answers` tool, her own earlier answers step by step
 //! - `chime.rs`: chiming in now and then without being mentioned
 //! - `follow_up.rs`: check-ins Vivy plans for herself, and their delivery
 //! - `emoji.rs`: the server's custom emoji, described once from their pictures
@@ -22,6 +23,7 @@ mod chime;
 mod emoji;
 mod follow_up;
 mod history;
+mod look_back;
 mod search;
 mod store;
 mod tools;
@@ -111,6 +113,7 @@ impl Feature for Chat {
         defs.push(avatar::def());
         defs.push(emoji::def());
         defs.push(follow_up::def());
+        defs.push(look_back::def());
         defs
     }
 
@@ -126,6 +129,7 @@ impl Feature for Chat {
             "get_pinned_messages" => "📌 Reading the pins…",
             "list_server_events" => "📅 Checking the events…",
             "list_server_emoji" => "😀 Looking at the emoji…",
+            look_back::TOOL => "🪞 Looking back at what I did…",
             // Check-ins are a quiet surprise, so the status doesn't give them away.
             "schedule_follow_up" => "💭 Thinking…",
             _ => return None,
@@ -142,6 +146,7 @@ impl Feature for Chat {
         match name {
             "list_server_emoji" => emoji::list(ctx, asker).await,
             "schedule_follow_up" => follow_up::schedule(ctx, asker, args, &self.follow_ups).await,
+            look_back::TOOL => look_back::run(ctx, asker, args).await,
             _ => tools::run(ctx, asker, name, args).await,
         }
     }
@@ -190,6 +195,8 @@ impl Feature for Chat {
             channel_id: msg.channel_id.get(),
             parts: history::read_message(ctx, &msg, rest, false).await,
             written: None,
+            started_at: None,
+            error: None,
             created_at: Utc::now().timestamp(),
         };
         let message_id = msg.id.get();
@@ -320,6 +327,7 @@ impl Chat {
             add_context(&mut input, texts);
         }
 
+        let started_at = Utc::now().timestamp();
         let job = Job {
             asker: asker.clone(),
             reply,
@@ -338,6 +346,12 @@ impl Chat {
         if outcome.message_ids.is_empty() {
             return Ok(());
         }
+        // Kept so she can look back at what went wrong (`look_back_at_answers`).
+        let error = match &outcome.end {
+            End::Finished => None,
+            End::Stopped => Some("stopped with ❌".to_string()),
+            End::Failed(err) => Some(format!("{err:#}")),
+        };
         let answer_turn = NewTurn {
             parent_id: Some(question_id),
             role: Role::Assistant,
@@ -345,6 +359,8 @@ impl Chat {
             channel_id: asker.channel.get(),
             parts: vec![StoredPart::Text { text: outcome.text }],
             written: outcome.written,
+            started_at: Some(started_at),
+            error,
             created_at: Utc::now().timestamp(),
         };
         let ids: Vec<u64> = outcome.message_ids.iter().map(|id| id.get()).collect();

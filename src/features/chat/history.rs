@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use anyhow::Context as _;
 use serde_json::{Value, json};
-use serenity::all::{ContentSafeOptions, Message, content_safe};
+use serenity::all::{Message, content_safe};
 use serenity::futures::future::join_all;
 use tracing::warn;
 
@@ -78,7 +78,7 @@ pub async fn read_message(
     let text = content_safe(
         &ctx.cache,
         text,
-        &ContentSafeOptions::default().clean_channel(false),
+        &channels::mention_options(msg),
         &msg.mentions,
     );
     let text = channels::name_channels(ctx, &text).await;
@@ -388,6 +388,8 @@ pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::R
         channel_id: referenced.channel_id.get(),
         parts,
         written: None,
+        started_at: None,
+        error: None,
         created_at: referenced.timestamp.unix_timestamp(),
     };
     ctx.db

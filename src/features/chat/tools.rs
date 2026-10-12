@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
 use serenity::all::{
-    Activity, ActivityType, ChannelId, ChannelType, ContentSafeOptions, GetMessages, GuildChannel,
-    GuildId, Member, Message, MessageId, OnlineStatus, Presence, ReactionType,
-    ScheduledEventStatus, UserId, content_safe,
+    Activity, ActivityType, ChannelId, ChannelType, GetMessages, GuildChannel, GuildId, Member,
+    Message, MessageId, OnlineStatus, Presence, ReactionType, ScheduledEventStatus, UserId,
+    content_safe,
 };
 
 use super::{channels, search};
@@ -431,7 +431,7 @@ pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> Str
     let text = content_safe(
         &ctx.cache,
         &msg.content,
-        &ContentSafeOptions::default().clean_channel(false),
+        &channels::mention_options(msg),
         &msg.mentions,
     );
     let text = channels::name_channels(ctx, &text).await;

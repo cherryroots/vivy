@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::Range;
 
-use serenity::all::{Channel, ChannelId, ChannelType, GuildChannel};
+use serenity::all::{Channel, ChannelId, ChannelType, ContentSafeOptions, GuildChannel, Message};
 use serenity::http::HttpError;
 use tracing::warn;
 
@@ -21,6 +21,16 @@ struct Found {
     span: Range<usize>,
     /// A mention is replaced by the name; a link keeps its text and gets the name after it.
     link: bool,
+}
+
+/// How `content_safe` should treat `msg`: people by their server nickname when the cache
+/// has them, and channel mentions left for [`name_channels`].
+pub fn mention_options(msg: &Message) -> ContentSafeOptions {
+    let options = ContentSafeOptions::default().clean_channel(false);
+    match msg.guild_id {
+        Some(guild) => options.display_as_member_from(guild),
+        None => options,
+    }
 }
 
 /// `text` with "<#123>" replaced by "#name", and " (#name)" after each link to a channel

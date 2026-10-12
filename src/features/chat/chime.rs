@@ -165,6 +165,7 @@ pub async fn speak(
     instructions: &str,
     mention: Option<UserId>,
 ) -> Result<()> {
+    let started_at = Utc::now().timestamp();
     let provider = ctx.ai.chat().context("chat has no model")?;
     let transcript = read_along(ctx, asker.guild, asker.channel, last).await?;
     let question = format!("{transcript}\n{instructions}");
@@ -234,6 +235,8 @@ pub async fn speak(
         channel_id: asker.channel.get(),
         parts: stored,
         written: None,
+        started_at: None,
+        error: None,
         created_at: Utc::now().timestamp(),
     };
     let written = Written {
@@ -253,6 +256,8 @@ pub async fn speak(
                 channel_id: question.channel_id,
                 parts: vec![StoredPart::Text { text: line }],
                 written: Some(written),
+                started_at: Some(started_at),
+                error: None,
                 created_at: Utc::now().timestamp(),
             };
             store::add_turn(conn, &answer, &ids)

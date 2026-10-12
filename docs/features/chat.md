@@ -28,6 +28,7 @@ All under `src/features/chat/`, in a good reading order:
 | `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `can_read`) |
 | `search.rs` | The `search_messages` tool, which calls Discord's search endpoint directly |
+| `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
@@ -92,7 +93,7 @@ Every message the bot answers and every answer gets a turn in `chat_turns`. A tu
 
 `content_json` holds `StoredPart`s (`store.rs`), which are provider-neutral:
 
-- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>`, with attachment and embed text inside. `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. User mentions become names through serenity's `content_safe`. Channel mentions and channel links get names from `channels.rs`, which also knows threads and forum posts (cache first, then Discord, for archived threads); a channel the bot can't see is called `#hidden-channel`, not `#deleted-channel`. The tool results that show messages (`format_message`) do the same.
+- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>`, with attachment and embed text inside. `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. User mentions become names through serenity's `content_safe` (server nickname when the member is cached). Only a mention of Vivy at the very start is removed (by the dispatcher); one later in the text stays, so "stop being mean to @Vivy" still says who. Channel mentions and channel links get names from `channels.rs`, which also knows threads and forum posts (cache first, then Discord, for archived threads); a channel the bot can't see is called `#hidden-channel`, not `#deleted-channel`. The tool results that show messages (`format_message`) do the same.
 - `Media`: a link to a picture, GIF or video (at most 8 per message), with its kind and MIME type.
 - `File`: a link to any other attachment, like a PDF or spreadsheet (at most 10 per message, 50 MB each).
 - `Context`: what features added to the question when it was first answered.
@@ -165,6 +166,7 @@ Chat's own tools:
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
 | `schedule_follow_up` | `follow_up.rs` | Plans a check-in with the asker after something they mentioned |
+| `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
 
 Tools from other features:
 
@@ -178,6 +180,19 @@ Tools from other features:
 | `set_mood` | [memory](memory.md) | Changes her mood, status and face in this server when a conversation moves her |
 | `send_voice_message` | [voice](voice.md) | Speaks a short script and posts it as a voice message replying to the asker. Only offered when `ELEVENLABS_API_KEY` is set |
 
+### Looking back at her own answers
+
+`look_back_at_answers` lets her check what she actually did in an earlier answer instead of guessing, for example when someone asks why she said something or says something went wrong. The system prompt has one general line about it ("check what actually happened instead of guessing"); the tool's description says when to use it.
+
+- **Without `answer`** it lists her recent answers in this channel, newest first, one line each: the answer number, time (in the asker's timezone), how long it took, the provider, the tools she called (`web_search ×2`), how it ended if it didn't finish, and the first words of the question and the answer. `channel` picks another channel, or `"all"` for every channel in the server the asker can read (it looks through the newest 200 answers). `before` pages back, `count` is 1 to 20 (default 10).
+- **With `answer`** (a number from the list, a link to or ID of one of her messages or of the question, or `"replied"` for the answer the current message replies to) it shows that answer step by step: the question, the context features added to it, then each round with what she thought (when the provider gives thinking text), wrote and called, each call with its input and what came back, errors included. Then what she sent and, for an answer that didn't finish, the error or that ❌ stopped it.
+
+The steps come from `native_json`. Claude's content blocks and OpenAI's output items have different `type`s (`tool_use` and `server_tool_use` against `function_call`, `web_search_call` and `code_interpreter_call`), so `look_back::steps` reads both without asking which provider wrote it. Built-in tool results are summarized (a web search's result titles, a fetch's URL, code's exit code and output); web search results left out of the history say so. Every step is cut to 500 characters and the whole view to 9000, so one long answer can't fill her context. Once `native_json` is cleared (60 days) only the question and what she sent are left.
+
+It only shows answers in channels the asker can read (`tools::can_read`, the same rule as `get_message`); in a DM only that DM. So a conversation never shows up in a place it didn't happen.
+
+Failed and stopped answers keep their reason in the `error` column, and every answer since migration 3 keeps `started_at`, so "how long it took" is the time from when work began to when it was saved. Older answers show no time. A failed answer keeps no rounds (only finished answers save `native_json`, since a half-finished round can't be replayed), so for those she sees the error, not the tool calls before it.
+
 A tool that posts its own message (like the voice tool) records it in `Asker::posted`. Chat then treats it as part of the answer: it's linked to the answer turn, ❌ deletes it, and its text goes into the history.
 
 ## Feature hooks it uses
@@ -185,12 +200,12 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | Hook | What chat does with it |
 |---|---|
 | `name` | `"chat"` |
-| `migrations` | `store::MIGRATIONS` (two migrations, see below) |
+| `migrations` | `store::MIGRATIONS` (three migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) and "Follow-ups" (check-ins planned) for the status message |
 | `panels` | The next planned check-in in a server, in the box about Vivy on the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def` and `follow_up::def`) |
-| `run_tool` | Runs them: `list_server_emoji` and `schedule_follow_up` directly, the rest through `tools::run` |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `follow_up::def` and `look_back::def`) |
+| `run_tool` | Runs them: `list_server_emoji`, `schedule_follow_up` and `look_back_at_answers` directly, the rest through `tools::run` |
 | `run_tool_with_pictures` | `look_at_profile_picture`, which answers with a picture; every other tool goes to `run_tool`. Chat always calls this one |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the follow-up and emoji tasks |
@@ -208,6 +223,7 @@ From `store::MIGRATIONS` in `store.rs`:
 | 1 | `chat_messages` | Discord message ID, turn ID | Which turn each Discord message belongs to |
 | 2 | `chat_follow_ups` | ID, server (NULL in DMs), channel, user, the message it was planned from, note, due time, created time | Planned check-ins |
 | 2 | `chat_emoji` | Emoji ID, server, name, description | One line describing each custom emoji |
+| 3 | `chat_turns` | Adds `error` (why an answer failed or stopped) and `started_at` (when work on an answer began), and an index on channel, role and ID | `look_back_at_answers` |
 
 ## Background loops
 

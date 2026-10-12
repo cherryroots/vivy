@@ -126,7 +126,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | Event | Who gets it |
 |---|---|
 | A message from a human | Every feature's `on_message`. Messages from bots are dropped. |
-| A message that @-mentions the bot | Also: the mention is removed, and the feature whose `mention_prefixes` match the start of the text gets `on_mention` with the rest. Matching ignores case, needs a whole word ("remind" doesn't match "reminders") and the longest prefix wins. Chat declares the empty prefix `""`, so it gets every mention nobody else claimed. A feature that can't use the mention returns `Mention::PassOn`, and chat gets the whole text instead: "remind me what the movie was called" gets an answer instead of an error. |
+| A message that @-mentions the bot | Also: the mention at the start is removed (later ones stay, so "stop being mean to @Vivy" keeps its last word), and the feature whose `mention_prefixes` match the start of the text gets `on_mention` with the rest. Matching ignores case, needs a whole word ("remind" doesn't match "reminders") and the longest prefix wins. Chat declares the empty prefix `""`, so it gets every mention nobody else claimed. A feature that can't use the mention returns `Mention::PassOn`, and chat gets the whole text instead: "remind me what the movie was called" gets an answer instead of an error. |
 | A reaction | Every feature's `on_reaction_add`, except the bot's own reactions. |
 | An edit (or a link preview Discord adds later) | Every feature's `on_message_edit`, except edits of bot messages. |
 | A deleted message, or many at once | Every feature's `on_messages_deleted`. |
