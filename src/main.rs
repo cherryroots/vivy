@@ -167,7 +167,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
                     bot_id: ready.user.id,
                     started_at: Utc::now(),
                 };
-                if let Some(channel) = config.logging.discord_channel {
+                if let Some(channel) = config.logging.log_channel {
                     let channel = serenity::ChannelId::new(channel);
                     logging::spawn_discord_poster(
                         bot.http.clone(),

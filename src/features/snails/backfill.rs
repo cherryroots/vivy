@@ -94,17 +94,21 @@ pub async fn snail_backfill(
                 .to_string()
         }
         Action::Status => {
-            let (status, failures, dropped) = bot
+            let (status, next, failures, dropped) = bot
                 .db
                 .call(move |conn| {
                     Ok((
                         store::crawl_status(conn, g)?,
+                        store::next_crawl_channel(conn, g)?,
                         store::failures_by_host(conn, g)?,
                         store::dropped_by_host(conn, g)?,
                     ))
                 })
                 .await?;
             let mut text = describe(&status);
+            if let (true, Some((channel, _))) = (status.running, next) {
+                text.push_str(&format!("\nReading <#{channel}> now."));
+            }
             text.push_str(&describe_failures(&failures));
             text.push_str(&describe_dropped(&dropped));
             text

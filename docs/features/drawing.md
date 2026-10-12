@@ -25,7 +25,7 @@ All under `src/features/drawing/`. The Image API call itself is in `src/ai/opena
 
 1. Checks that `ctx.ai.images` exists (it does when `OPENAI_TOKEN` is set) and that the prompt isn't empty.
 2. Checks `monthly_pictures` and `per_user_monthly_pictures` (the asker's pictures) against `drawings` for this UTC month (`over_limit`). Past either, she gets an error telling her to say so in text.
-3. With `use_pictures`, fetches the asker's message and takes the still pictures (not GIFs or videos) from it and from the message it replies to, at most 4, through `util::media`. None found is an error she can read.
+3. With `use_pictures`, fetches the asker's message and takes the still pictures (not GIFs or videos) from it and from the message it replies to, at most 4, through `util::media` (`pictures_around`). When the reply is to one of Vivy's own answers, her messages right next to that one count too (up to 4 each way, stopping at anyone else's message), because an answer's text and its picture are separate messages: "make it night" works replying to either. None found is an error she can read.
 4. Draws it with `Images::draw`: `model` for a new picture, `edit_model` when there are pictures to draw from. `shape` picks the size: square 1024x1024 (the default), landscape 1536x1024, portrait 1024x1536.
 5. Posts the picture (`drawing.png`) as a reply to the asker, pinging only them.
 6. Adds it to `Asker::posted` as `[Picture you drew] <prompt>`, so chat treats it like part of the answer: a reply to it continues the conversation, ❌ deletes it, and the history keeps what she drew. Records it in `drawings`.

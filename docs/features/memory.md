@@ -6,7 +6,7 @@ Vivy remembers people and places between conversations. She keeps a folder of sh
 
 - **In chat**, nothing special is needed. The chat model reads and writes the folder with the `memory` tool, and changes her mood with `set_mood` (see [Chat tools](#chat-tools)). People can ask "remember that I ..." or "what do you know about me?".
 - **`/memory show [path]`** shows memory files. With no path it shows your own folder in a server (everything, in DMs). Any path in the folder can be shown, like `/memories/server/culture.md` or `/memories` for all of it. Long output comes as a file. Answers are only visible to you.
-- **`/memory forget [file]`** deletes one of your own files (autocompleted), or with no file your whole folder (in DMs, everything).
+- **`/memory forget [file]`** deletes one of your own files (autocompleted). With no file it asks first ("This deletes all 4 files I saved about you here. Sure?") with **Forget everything** and **Cancel** buttons (`memory:forget:<user>` / `memory:keep:<user>`, only for the person who asked), then deletes your whole folder (in DMs, everything). The answer says that other people's files and the server's notes may still mention you.
 - **`/memory delete <path>`** (admins, from `admins` in config.toml) deletes any file or folder.
 
 Settings live under `[features.memory]`: `diary_channels`, `mood_checks_per_day`, `timezone`, `faces_dir`, `face_zoom`, `face_center`, `banners_dir` and `nickname`, plus the usual gate keys like `guilds`. `config.example.toml` explains each one. Setup is in the README.

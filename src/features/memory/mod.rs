@@ -59,6 +59,15 @@ impl Feature for Memory {
         vec![tool::def(), set_mood::def()]
     }
 
+    async fn on_component(
+        &self,
+        ctx: &BotCtx,
+        i: &serenity::all::ComponentInteraction,
+        action: &str,
+    ) -> Result<()> {
+        commands::on_component(ctx, i, action).await
+    }
+
     fn tool_status(&self, tool: &str, args: &Value) -> Option<&'static str> {
         // Reading her notes isn't saving anything about the asker, so it says so.
         let reading = args.get("command").and_then(Value::as_str) == Some("view");
@@ -122,6 +131,22 @@ impl Feature for Memory {
                 config.ignored_by::<name::Settings>(self.name()),
             ],
         );
+        // A folder that isn't there (a typo, or a path relative to the wrong place) would
+        // otherwise only show as a Vivy with no face.
+        for (key, what, dir) in [
+            ("faces_dir", "faces", face::dir(ctx)),
+            ("banners_dir", "banners", banner::dir(ctx)),
+        ] {
+            if let Some(dir) = dir
+                && std::fs::read_dir(&dir).is_err()
+            {
+                tracing::warn!(
+                    target: "config",
+                    "config.toml: features.memory.{key} = {dir:?} can't be read (paths are \
+                relative to the folder the bot runs in), so she has no {what}"
+                );
+            }
+        }
         reflect::spawn(ctx);
         Ok(())
     }

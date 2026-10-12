@@ -178,11 +178,14 @@ impl Feature for Reminders {
                 parsed.when,
                 When::At { zone: None, .. } | When::Every(Repeat { zone: None, .. })
             );
+        let repeat_text = repeat
+            .as_deref()
+            .map(|saved| parse::repeat_for_display(saved, home));
         let reply = CreateMessage::new()
             .content(ui::confirmation(
                 fire_at,
                 &parsed.message,
-                repeat.as_deref(),
+                repeat_text.as_deref(),
                 zone_hint,
                 image_count,
                 &skipped,
@@ -288,7 +291,10 @@ impl Reminders {
             .db
             .call(move |conn| Ok(store::list_pending(conn, user)?))
             .await?;
-        let (text, menu) = ui::list_message(&list, Some(note));
+        let zone = settings::timezone(&ctx.db, i.user.id)
+            .await?
+            .unwrap_or(Tz::UTC);
+        let (text, menu) = ui::list_message(&list, Some(note), zone);
         let response = CreateInteractionResponseMessage::new()
             .content(text)
             .components(menu);

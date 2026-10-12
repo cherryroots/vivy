@@ -71,6 +71,15 @@ pub fn split_message(text: &str, max: usize) -> Vec<String> {
     parts
 }
 
+/// `text` with a code block that is still open at its end closed, so a line added after it
+/// (like chat's status line) doesn't show as code. Unchanged when no block is open.
+pub fn close_code_block(text: &str) -> String {
+    match fence_state_after(text, None) {
+        Some(_) => format!("{text}\n```"),
+        None => text.to_string(),
+    }
+}
+
 /// Walks the lines of `chunk` and returns which code block, if any, is open at its end.
 fn fence_state_after(chunk: &str, mut open: Option<String>) -> Option<String> {
     for line in chunk.lines() {
@@ -165,6 +174,13 @@ mod tests {
             assert!(part.starts_with("```\nline"), "{part}");
             assert!(part.ends_with("\n```"), "{part}");
         }
+    }
+
+    #[test]
+    fn closes_an_open_code_block() {
+        assert_eq!(close_code_block("```py\nx = 1"), "```py\nx = 1\n```");
+        assert_eq!(close_code_block("```py\nx = 1\n```"), "```py\nx = 1\n```");
+        assert_eq!(close_code_block("plain"), "plain");
     }
 
     #[test]
