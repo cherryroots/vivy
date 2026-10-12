@@ -129,7 +129,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
                 "#{} {} {}",
                 ctx.channel_name(guild, channel)
                     .unwrap_or_else(|| "unknown".to_string()),
-                format_message(ctx, message, zone),
+                format_message(ctx, message, zone).await,
                 message_link(Some(guild), channel, message.id)
             ));
         }

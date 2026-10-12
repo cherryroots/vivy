@@ -13,7 +13,7 @@ use serenity::all::{
     ScheduledEventStatus, UserId, content_safe,
 };
 
-use super::search;
+use super::{channels, search};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::shorten;
@@ -410,15 +410,15 @@ async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<Stri
     // Discord returns newest first.
     messages.reverse();
     let zone = home_zone(ctx, asker.user).await;
-    let lines: Vec<String> = messages
-        .iter()
-        .map(|m| format_message(ctx, m, zone))
-        .collect();
+    let mut lines = Vec::new();
+    for m in &messages {
+        lines.push(format_message(ctx, m, zone).await);
+    }
     Ok(lines.join("\n"))
 }
 
 /// "[2026-10-09 14:02] Cherry: text (2 attachments)"
-pub(super) fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
+pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
     let time = DateTime::from_timestamp(msg.timestamp.unix_timestamp(), 0)
         .unwrap_or_default()
         .with_timezone(&zone)
@@ -431,9 +431,10 @@ pub(super) fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
     let text = content_safe(
         &ctx.cache,
         &msg.content,
-        &ContentSafeOptions::default(),
+        &ContentSafeOptions::default().clean_channel(false),
         &msg.mentions,
     );
+    let text = channels::name_channels(ctx, &text).await;
     let mut line = format!("[{time}] {name}: {}", shorten(&text, MAX_MESSAGE_CHARS));
     if !msg.attachments.is_empty() {
         line.push_str(&format!(" ({} attachments)", msg.attachments.len()));
@@ -518,7 +519,7 @@ async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<St
         .await
         .map_err(|_| user_error("I couldn't load that message. It may be deleted."))?;
     let zone = home_zone(ctx, asker.user).await;
-    Ok(format_message(ctx, &msg, zone))
+    Ok(format_message(ctx, &msg, zone).await)
 }
 
 /// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
@@ -575,17 +576,14 @@ async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
         return Ok("This channel has no pinned messages.".to_string());
     }
     let zone = home_zone(ctx, asker.user).await;
-    let lines: Vec<String> = pins
-        .iter()
-        .take(MAX_PINS)
-        .map(|m| {
-            format!(
-                "{} {}",
-                format_message(ctx, m, zone),
-                message_link(asker.guild, m.channel_id, m.id)
-            )
-        })
-        .collect();
+    let mut lines = Vec::new();
+    for m in pins.iter().take(MAX_PINS) {
+        lines.push(format!(
+            "{} {}",
+            format_message(ctx, m, zone).await,
+            message_link(asker.guild, m.channel_id, m.id)
+        ));
+    }
     Ok(lines.join("\n"))
 }
 
@@ -625,7 +623,7 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
         }
         lines.push(when);
         if let Some(channel) = event.channel_id {
-            lines.push(format!("Where: <#{channel}>"));
+            lines.push(format!("Where: {}", channels::describe(ctx, channel).await));
         } else if let Some(place) = event.metadata.as_ref().and_then(|m| m.location.clone()) {
             lines.push(format!("Where: {place}"));
         }
