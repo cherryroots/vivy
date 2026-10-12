@@ -2,12 +2,12 @@
 //! any other string), and [`round_png`] turns that into a PNG with the shared drawing
 //! helpers in `util::svg`, which also explain the fonts.
 
-use super::ledger::{BET_CAP, OutcomeKind, Rules, Standing, TAX_THRESHOLD, outcomes};
+use super::ledger::{OutcomeKind, Rules, Standing, TAX_THRESHOLD, outcomes};
 use super::ui::View;
 use crate::util::count;
 use crate::util::svg::{
-    ACCENT, AMBER, BG, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, columns, markup,
-    text_width, to_png,
+    AMBER, BG, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, columns, markup, text_width,
+    to_png,
 };
 
 /// Width of the picture in SVG units.
@@ -77,7 +77,9 @@ fn standings_table(svg: &mut Svg, view: &View) {
     if standings.is_empty() {
         svg.note("Nobody has played yet. Press Claim to get started.");
     } else {
-        let (bar, money, bet, percent, note) = (170.0, 330.0, 400.0, 460.0, WIDTH - 24.0);
+        // Phones show the picture at about a third of this size, so the text is big and
+        // there's no decoration: the numbers say it.
+        let (money, bet, percent, note) = (300.0, 380.0, 450.0, WIDTH - 24.0);
         svg.y += 6.0;
         for (x, label) in [
             (money, "Money"),
@@ -89,32 +91,26 @@ fn standings_table(svg: &mut Svg, view: &View) {
                 x,
                 svg.y + 8.0,
                 label,
-                Style::new(11.0, DIM).weight(500).end(),
+                Style::new(12.0, DIM).weight(500).end(),
             );
         }
         svg.y += 16.0;
-        let richest = standings.iter().map(|s| s.money).max().unwrap_or(0).max(1);
         for (n, s) in standings.iter().enumerate() {
             let y = svg.y;
-            svg.stripe(n, 30.0);
+            svg.stripe(n, 32.0);
             let rank = (n + 1).to_string();
             svg.text(
                 36.0,
-                y + 20.0,
+                y + 21.0,
                 &rank,
-                Style::new(12.0, DIM).weight(600).middle(),
+                Style::new(13.0, DIM).weight(600).middle(),
             );
             svg.text(
                 52.0,
-                y + 20.0,
+                y + 21.0,
                 &short(view.name(s.user)),
-                Style::new(14.0, TEXT).weight(600),
+                Style::new(16.0, TEXT).weight(600),
             );
-            svg.rect([bar, y + 11.0, 110.0, 8.0], LINE, 4.0, "");
-            if s.money > 0 {
-                let width = (110.0 * s.money as f32 / richest as f32).max(8.0);
-                svg.rect([bar, y + 11.0, width, 8.0], ACCENT, 4.0, "");
-            }
             let row = |x: f32, text: &str, style: Style| (x, text.to_string(), style);
             let bet_text = if s.bet > 0 {
                 s.bet.to_string()
@@ -137,39 +133,33 @@ fn standings_table(svg: &mut Svg, view: &View) {
                 row(
                     money,
                     &s.money.to_string(),
-                    Style::new(14.0, TEXT).weight(600).end(),
+                    Style::new(16.0, TEXT).weight(600).end(),
                 ),
-                row(bet, &bet_text, Style::new(14.0, MUTED).end()),
+                row(bet, &bet_text, Style::new(16.0, MUTED).end()),
                 row(
                     percent,
                     &format!("{}%", s.bet_percent),
-                    Style::new(14.0, percent_color).weight(percent_weight).end(),
+                    Style::new(16.0, percent_color).weight(percent_weight).end(),
                 ),
                 row(
                     note,
                     &note_text,
-                    Style::new(13.0, note_color).weight(600).end(),
+                    Style::new(15.0, note_color).weight(600).end(),
                 ),
             ] {
-                svg.text(x, y + 20.0, &text, style);
+                svg.text(x, y + 21.0, &text, style);
             }
-            svg.y += 30.0;
+            svg.y += 32.0;
         }
+        // The tax rule itself is in Help; one short line is enough here.
         svg.y += 18.0;
         svg.text(
             24.0,
             svg.y,
-            &match numbers.rules {
-                Rules::Classic => format!(
-                    "Bet at least {TAX_THRESHOLD}% of your money each round, or lose 3% of it per missing point."
-                ),
-                Rules::Pool => format!(
-                    "Bet {TAX_THRESHOLD}–{BET_CAP}% of your money each round. Under {TAX_THRESHOLD}%, 3% per missing point goes to the pot."
-                ),
-            },
-            Style::new(11.0, DIM),
+            &format!("Bet at least {TAX_THRESHOLD}% each round to avoid the tax."),
+            Style::new(13.0, DIM),
         );
-        svg.y += 16.0;
+        svg.y += 14.0;
     }
 }
 
@@ -183,6 +173,7 @@ fn bets_table(svg: &mut Svg, view: &View) {
     } else {
         svg.y += 4.0;
         let total = |option: u64| numbers.total_on(option);
+        let mut empty_options = 0;
         let mut options = numbers.options_left.clone();
         options.sort_by(|a, b| {
             total(*b)
@@ -208,49 +199,51 @@ fn bets_table(svg: &mut Svg, view: &View) {
                 .filter(|b| b.on == option)
                 .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
                 .collect();
-            let lines = wrap_pieces(&pieces, &plain, WIDTH - 32.0 - 300.0, 13.0);
+            let lines = wrap_pieces(&pieces, &plain, WIDTH - 32.0 - 300.0, 15.0);
             let movie = view.movie(option);
             // A movie takes a second line under the name.
             let rows = lines.len().max(if movie.is_some() { 2 } else { 1 });
-            let height = 30.0 + 20.0 * (rows - 1) as f32;
+            let height = 34.0 + 22.0 * (rows - 1) as f32;
             let y = svg.y;
             if pieces.is_empty() {
                 let dashed = format!("stroke=\"{LINE}\" stroke-dasharray=\"3 3\"");
                 svg.rect([16.0, y, WIDTH - 32.0, height], BG, 6.0, &dashed);
                 svg.text(
                     32.0,
-                    y + 20.0,
+                    y + 22.0,
                     &short(view.name(option)),
-                    Style::new(14.0, DIM).weight(600),
+                    Style::new(16.0, DIM).weight(600),
                 );
-                let empty = match numbers.rules {
-                    Rules::Classic => "no bets",
-                    Rules::Pool => "no bets: a bet here takes the whole pot",
-                };
-                svg.text(WIDTH - 32.0, y + 20.0, empty, Style::new(13.0, DIM).end());
+                svg.text(
+                    WIDTH - 32.0,
+                    y + 22.0,
+                    "no bets yet",
+                    Style::new(15.0, DIM).end(),
+                );
+                empty_options += 1;
             } else {
                 svg.rect([16.0, y, WIDTH - 32.0, height], ROW, 6.0, "");
                 svg.text(
                     32.0,
-                    y + 20.0,
+                    y + 22.0,
                     &short(view.name(option)),
-                    Style::new(14.0, TEXT).weight(600),
+                    Style::new(16.0, TEXT).weight(600),
                 );
                 svg.text(
-                    170.0,
-                    y + 20.0,
+                    180.0,
+                    y + 22.0,
                     &match numbers.odds(option) {
                         Some(odds) => format!("{} on it  ·  ×{odds:.1}", total(option)),
                         None => format!("{} on it", total(option)),
                     },
-                    Style::new(13.0, MUTED).weight(500),
+                    Style::new(15.0, MUTED).weight(500),
                 );
                 for (n, line) in lines.iter().enumerate() {
                     svg.raw_text(
                         WIDTH - 32.0,
-                        y + 20.0 + 20.0 * n as f32,
+                        y + 22.0 + 22.0 * n as f32,
                         line,
-                        Style::new(13.0, MUTED).end(),
+                        Style::new(15.0, MUTED).end(),
                     );
                 }
             }
@@ -258,12 +251,23 @@ fn bets_table(svg: &mut Svg, view: &View) {
             if let Some(movie) = movie {
                 svg.text(
                     32.0,
-                    y + 39.0,
-                    &fit(movie, MOVIE_WIDTH, 12.0),
-                    Style::new(12.0, DIM).weight(500),
+                    y + 42.0,
+                    &fit(movie, MOVIE_WIDTH, 13.0),
+                    Style::new(13.0, DIM).weight(500),
                 );
             }
             svg.y += height + 4.0;
+        }
+        // Said once under the table, not on every empty row.
+        if empty_options > 0 && numbers.rules == Rules::Pool {
+            svg.y += 14.0;
+            svg.text(
+                24.0,
+                svg.y,
+                "A bet on an option nobody backed takes the whole pot.",
+                Style::new(13.0, DIM),
+            );
+            svg.y += 14.0;
         }
     }
 }
@@ -299,14 +303,14 @@ fn waiting_on(svg: &mut Svg, view: &View) {
         for (label, names) in groups {
             let names: Vec<String> = names.iter().map(|n| short(n)).collect();
             let pieces: Vec<String> = names.iter().map(|n| markup(n)).collect();
-            for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 180.0, 13.0)
+            for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 190.0, 15.0)
                 .into_iter()
                 .enumerate()
             {
                 lines.push((if n == 0 { label } else { "" }, line));
             }
         }
-        let height = 12.0 + 22.0 * lines.len() as f32;
+        let height = 14.0 + 24.0 * lines.len() as f32;
         svg.rect(
             [16.0, svg.y, WIDTH - 32.0, height],
             AMBER,
@@ -315,9 +319,9 @@ fn waiting_on(svg: &mut Svg, view: &View) {
         );
         svg.rect([16.0, svg.y, 4.0, height], AMBER, 2.0, "");
         for (n, (label, line)) in lines.iter().enumerate() {
-            let y = svg.y + 22.0 + 22.0 * n as f32;
-            svg.text(32.0, y, label, Style::new(13.0, AMBER).weight(600));
-            svg.raw_text(180.0, y, line, Style::new(13.0, TEXT).weight(500));
+            let y = svg.y + 24.0 + 24.0 * n as f32;
+            svg.text(32.0, y, label, Style::new(15.0, AMBER).weight(600));
+            svg.raw_text(190.0, y, line, Style::new(15.0, TEXT).weight(500));
         }
         svg.y += height;
     }
@@ -338,7 +342,7 @@ fn already_won(svg: &mut Svg, view: &View) {
             24.0,
             svg.y,
             &format!("Already won: {}", won.join(" · ")),
-            Style::new(12.0, DIM).weight(500),
+            Style::new(13.0, DIM).weight(500),
         );
     }
 }
@@ -378,8 +382,8 @@ fn resolved(svg: &mut Svg, view: &View) {
         svg.text(
             32.0,
             svg.y + 68.0,
-            &fit(movie, WIDTH - 64.0, 14.0),
-            Style::new(14.0, MUTED).weight(500),
+            &fit(movie, WIDTH - 64.0, 15.0),
+            Style::new(15.0, MUTED).weight(500),
         );
     }
     svg.text(
@@ -400,7 +404,7 @@ fn resolved(svg: &mut Svg, view: &View) {
             WIDTH - 32.0,
             svg.y + 35.0,
             &next,
-            Style::new(13.0, MUTED).weight(500).end(),
+            Style::new(14.0, MUTED).weight(500).end(),
         );
     }
     svg.y += height + 14.0;
@@ -419,7 +423,7 @@ fn resolved(svg: &mut Svg, view: &View) {
             x,
             svg.y + 8.0,
             label,
-            Style::new(11.0, DIM).weight(500).end(),
+            Style::new(12.0, DIM).weight(500).end(),
         );
     }
     svg.y += 16.0;
@@ -438,55 +442,55 @@ fn resolved(svg: &mut Svg, view: &View) {
         .collect();
     for (n, s) in rows.iter().enumerate() {
         let y = svg.y;
-        svg.stripe(n, 30.0);
+        svg.stripe(n, 32.0);
         let shown = short(view.name(s.user));
-        svg.text(name, y + 20.0, &shown, Style::new(14.0, TEXT).weight(600));
+        svg.text(name, y + 21.0, &shown, Style::new(16.0, TEXT).weight(600));
         if picked.contains(&s.user) {
-            let x = name + text_width(&shown, 14.0) + 10.0;
-            svg.text(x, y + 20.0, "★", Style::new(13.0, GREEN).weight(700));
+            let x = name + text_width(&shown, 16.0) + 10.0;
+            svg.text(x, y + 21.0, "★", Style::new(15.0, GREEN).weight(700));
         }
         let delta = s.after() - s.money;
         svg.text(
             before,
-            y + 20.0,
+            y + 21.0,
             &s.money.to_string(),
-            Style::new(14.0, MUTED).weight(500).end(),
+            Style::new(16.0, MUTED).weight(500).end(),
         );
         svg.text(
             bets,
-            y + 20.0,
+            y + 21.0,
             &signed(s.payout),
-            Style::new(14.0, sign_color(s.payout, GREEN))
+            Style::new(16.0, sign_color(s.payout, GREEN))
                 .weight(600)
                 .end(),
         );
         let tax_color = if s.tax > 0 { AMBER } else { DIM };
         svg.text(
             tax,
-            y + 20.0,
+            y + 21.0,
             &signed(-s.tax),
-            Style::new(14.0, tax_color).weight(600).end(),
+            Style::new(16.0, tax_color).weight(600).end(),
         );
         svg.text(
             after,
-            y + 20.0,
+            y + 21.0,
             &s.after().to_string(),
-            Style::new(14.0, TEXT).weight(700).end(),
+            Style::new(16.0, TEXT).weight(700).end(),
         );
         svg.text(
             change,
-            y + 20.0,
+            y + 21.0,
             &signed(delta),
-            Style::new(14.0, sign_color(delta, GREEN)).weight(700).end(),
+            Style::new(16.0, sign_color(delta, GREEN)).weight(700).end(),
         );
-        svg.y += 30.0;
+        svg.y += 32.0;
     }
     if !picked.is_empty() {
         svg.raw_text(
             24.0,
             svg.y + 24.0,
             &format!("<tspan fill=\"{GREEN}\">★</tspan> bet on the winner"),
-            Style::new(12.0, DIM).weight(500),
+            Style::new(13.0, DIM).weight(500),
         );
         svg.y += 16.0;
     }
@@ -512,8 +516,8 @@ fn header(svg: &mut Svg, view: &View, state: &str, color: &'static str, sub: &st
         "Movie wheel",
         Style::new(12.0, DIM).weight(500).end(),
     );
-    svg.text(24.0, 70.0, sub, Style::new(13.0, MUTED));
-    svg.y = 90.0;
+    svg.text(24.0, 72.0, sub, Style::new(14.0, MUTED));
+    svg.y = 92.0;
 }
 
 fn sorted_by_money<'a>(view: &View, standings: &'a [Standing]) -> Vec<&'a Standing> {
@@ -752,6 +756,77 @@ mod tests {
             names: &names,
         };
         assert!(round_png(&view).unwrap().starts_with(b"\x89PNG"));
+    }
+
+    /// A busy pool-rules round, like movie night: six players, movies, several bets. Also
+    /// writes the pictures to `$WHEEL_MOCKUP_DIR` when it's set, to look at them.
+    #[test]
+    fn pool_round_pictures() {
+        let names: Names = [
+            (1, "Alice"),
+            (2, "Bob"),
+            (3, "Charlie"),
+            (4, "Dana"),
+            (5, "Eve 🎬"),
+            (6, "Frank"),
+        ]
+        .into_iter()
+        .map(|(id, name)| (id, name.to_string()))
+        .collect();
+        let season = Season {
+            id: 1,
+            number: 3,
+            rules: Rules::Pool,
+            options: vec![1, 2, 3, 4, 5, 6],
+            movies: [
+                (2, "Alien".to_string()),
+                (3, "Paddington 2".to_string()),
+                (
+                    4,
+                    "The Lord of the Rings: The Return of the King".to_string(),
+                ),
+                (5, "Heat".to_string()),
+            ]
+            .into(),
+            rounds: vec![
+                Round {
+                    id: 1,
+                    number: 1,
+                    winner: Some(1),
+                    claims: vec![1, 2, 3, 4, 5, 6],
+                    bets: vec![bet(2, 1, 30), bet(3, 4, 20), bet(4, 1, 50), bet(5, 2, 10)],
+                },
+                Round {
+                    id: 2,
+                    number: 2,
+                    winner: Some(6),
+                    claims: vec![1, 2, 3, 4, 5, 6],
+                    bets: vec![bet(1, 6, 40), bet(2, 3, 25), bet(3, 6, 30), bet(5, 4, 20)],
+                },
+                Round {
+                    id: 3,
+                    number: 3,
+                    winner: None,
+                    claims: vec![1, 2, 3, 5],
+                    bets: vec![bet(1, 2, 60), bet(2, 4, 45), bet(3, 2, 30), bet(5, 3, 15)],
+                },
+            ],
+        };
+        let numbers = ledger(&season);
+        for (index, name) in [(2, "pool-open"), (1, "pool-resolved")] {
+            let view = View {
+                season: &season,
+                ledger: &numbers,
+                index,
+                active: true,
+                names: &names,
+            };
+            let png = round_png(&view).unwrap();
+            assert!(png.starts_with(b"\x89PNG"));
+            if let Ok(dir) = std::env::var("WHEEL_MOCKUP_DIR") {
+                std::fs::write(format!("{dir}/wheel-{name}.png"), png).unwrap();
+            }
+        }
     }
 
     #[test]
