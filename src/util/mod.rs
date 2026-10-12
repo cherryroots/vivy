@@ -40,6 +40,27 @@ pub fn shorten(text: &str, max: usize) -> String {
     short
 }
 
+/// Like [`shorten`], but cuts at the last space before the limit, so no word is split.
+pub fn shorten_at_word(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let short: String = text.chars().take(max.saturating_sub(1)).collect();
+    let cut = short.rfind(char::is_whitespace).unwrap_or(short.len());
+    let mut short = short[..cut].trim_end().to_string();
+    short.push('…');
+    short
+}
+
+/// "1 bet", "3 bets": a number with its noun, for messages people read.
+pub fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

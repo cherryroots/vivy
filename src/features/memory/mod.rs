@@ -59,9 +59,12 @@ impl Feature for Memory {
         vec![tool::def(), set_mood::def()]
     }
 
-    fn tool_status(&self, tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, tool: &str, args: &Value) -> Option<&'static str> {
+        // Reading her notes isn't saving anything about the asker, so it says so.
+        let reading = args.get("command").and_then(Value::as_str) == Some("view");
         match tool {
             set_mood::NAME => Some("💭 Thinking…"),
+            _ if reading => Some("📖 Checking my notes…"),
             _ => Some("📝 Remembering…"),
         }
     }

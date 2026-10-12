@@ -40,7 +40,7 @@ const MAX_ROUNDS: usize = 8;
 /// Discord allows 10 files per message.
 const MAX_FILES: usize = 10;
 /// Shown when the model answered with tools or files only.
-const EMPTY_ANSWER: &str = "🤷";
+const EMPTY_ANSWER: &str = "-# (nothing to say this time; 🔁 asks again)";
 
 pub struct Job {
     pub asker: Asker,
@@ -128,12 +128,44 @@ fn activity_status(activity: &Activity) -> String {
     }
 }
 
+/// The status line when the answer failed: what happened in plain words and what to do,
+/// not the provider's error (that goes to the log). The failed turn is saved, so 🔁 retries.
+fn friendly_error(err: &anyhow::Error) -> String {
+    let text = format!("{err:#}").to_lowercase();
+    let what = if text.contains("declined to answer") || text.contains("refus") {
+        "I can't answer that one."
+    } else if text.contains("kept calling tools") || text.contains("kept pausing") {
+        "I got stuck going round in circles. 🔁 to try again."
+    } else if text.contains("out of credit")
+        || text.contains("insufficient")
+        || text.contains("billing")
+        || text.contains("quota")
+    {
+        "The AI is out of credit this month. 🔁 later to try again."
+    } else if text.contains("overloaded")
+        || text.contains("timed out")
+        || text.contains("stream ended")
+        || text.contains("answered 5")
+        || text.contains("answered 429")
+        || text.contains("connect")
+    {
+        "The AI is overloaded right now. 🔁 in a minute to try again."
+    } else {
+        "Something went wrong (it's logged). 🔁 to try again."
+    };
+    format!("⚠️ {what}")
+}
+
 /// The status line while a tool runs: the label its feature gives it
 /// ([`Feature::tool_status`]), or the tool's name as words.
-fn tool_status(owners: &HashMap<&'static str, Arc<dyn Feature>>, name: &str) -> String {
+fn tool_status(
+    owners: &HashMap<&'static str, Arc<dyn Feature>>,
+    name: &str,
+    args: &serde_json::Value,
+) -> String {
     match owners
         .get(name)
-        .and_then(|feature| feature.tool_status(name))
+        .and_then(|feature| feature.tool_status(name, args))
     {
         Some(label) => label.to_string(),
         None => plain_tool_status(name),
@@ -196,14 +228,11 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
             (End::Finished, Some(written))
         }
         Ok(None) => {
-            screen.status = Some("⏹️ Stopped".into());
+            screen.status = Some("⏹️ Stopped · ❌ again removes this, 🔁 retries".into());
             (End::Stopped, None)
         }
         Err(err) => {
-            screen.status = Some(format!(
-                "⚠️ Something went wrong: {}",
-                shorten(&format!("{err:#}"), 150)
-            ));
+            screen.status = Some(friendly_error(&err));
             (End::Failed(err), None)
         }
     };
@@ -307,7 +336,7 @@ async fn stream_answer(
         // Run the tools, then continue the answer with their results.
         let mut results = Vec::new();
         for call in &done.tool_calls {
-            screen.status = Some(tool_status(&owners, &call.name));
+            screen.status = Some(tool_status(&owners, &call.name, &call.args));
             screen.show(ctx).await?;
             let reply = tokio::select! {
                 reply = run_tool(ctx, asker, &owners, call) => reply,
@@ -439,7 +468,8 @@ fn file_name(path: &str) -> String {
 }
 
 /// Replaces `sandbox:/mnt/data/plot.png` links with the Discord link of the attached file
-/// of the same name. Names that match no file, or several, are left alone.
+/// of the same name. A name that matches no file (it wasn't attached) becomes the plain
+/// file name, so nobody taps a link that goes nowhere; `[label](sandbox:…)` keeps its label.
 fn link_files(text: &str, files: &[(String, String)]) -> String {
     let mut result = String::new();
     let mut rest = text;
@@ -453,10 +483,24 @@ fn link_files(text: &str, files: &[(String, String)]) -> String {
         let name = file_name(link.trim_start_matches("sandbox:"));
         let matches: Vec<&(String, String)> = files.iter().filter(|(f, _)| *f == name).collect();
         match matches.as_slice() {
-            [(_, url)] => result.push_str(url),
-            _ => result.push_str(link),
+            [(_, url)] => {
+                result.push_str(url);
+                rest = after;
+            }
+            _ if result.ends_with("](") && after.starts_with(')') => {
+                // "[label](sandbox:x.png)" → "label (x.png)"
+                result.truncate(result.len() - 2);
+                if let Some(open) = result.rfind('[') {
+                    result.remove(open);
+                }
+                result.push_str(&format!(" ({name})"));
+                rest = &after[1..];
+            }
+            _ => {
+                result.push_str(&name);
+                rest = after;
+            }
         }
-        rest = after;
     }
     result.push_str(rest);
     result
@@ -536,7 +580,12 @@ mod tests {
                 "See [plot](sandbox:/mnt/data/plot.png) and (sandbox:/mnt/data/a.csv).",
                 &files
             ),
-            "See [plot](https://cdn/plot.png) and (sandbox:/mnt/data/a.csv)."
+            "See [plot](https://cdn/plot.png) and (a.csv)."
+        );
+        // A file that wasn't attached: no dead link, the label and name stay.
+        assert_eq!(
+            link_files("Here: [the chart](sandbox:/mnt/data/missing.png).", &files),
+            "Here: the chart (missing.png)."
         );
         assert_eq!(link_files("no links", &files), "no links");
         assert_eq!(file_name("sandbox:/mnt/data/"), "file");

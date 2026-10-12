@@ -889,7 +889,7 @@ mod tests {
         assert!(svg.contains(">$26.84<") && svg.contains(">of $100<"));
         assert!(svg.contains(">$5.62<") && svg.contains(">of $25<"));
         assert!(svg.contains(">AI SPEND THIS MONTH<") && svg.contains(">OPENAI<"));
-        assert!(svg.contains("pace $"));
+        assert!(svg.contains("on pace for $"));
         assert!(svg.contains(">in 2h 14m<"));
         assert!(svg.contains(">VIVY&apos;S MIND<") || svg.contains(">VIVY'S MIND<"));
         assert!(svg.contains(">in 5h 20m with Sam (2 planned): ask how the job"));

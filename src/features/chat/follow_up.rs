@@ -87,8 +87,18 @@ pub async fn schedule(ctx: &BotCtx, asker: &Asker, args: &Value, wake: &Notify) 
         })
         .await?;
     wake.notify_one();
+    // A readable time, so the model can tell when "3 a.m. Sunday" is a bad idea.
+    let zone = super::tools::home_zone(ctx, asker.user).await;
+    let when = chrono::DateTime::from_timestamp(due_at, 0)
+        .map(|t| {
+            t.with_timezone(&zone)
+                .format("%A %Y-%m-%d %H:%M")
+                .to_string()
+        })
+        .unwrap_or_default();
     Ok(format!(
-        "Planned. You'll check in around <t:{due_at}:f>. Don't mention it unless asked."
+        "Planned for {when} ({}). Don't mention it unless asked.",
+        zone.name()
     ))
 }
 

@@ -53,8 +53,10 @@ pub trait Feature: Send + Sync + 'static {
     }
 
     /// The line chat shows under its answer while one of [`Feature::tools`] runs, like
-    /// "🎨 Drawing, this can take a minute…". `None` shows a plain "🔧 Tool name…".
-    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+    /// "🎨 Drawing, this can take a minute…". `args` are the call's arguments, for tools
+    /// that do different things ("📖 Checking my notes…" vs "📝 Remembering…"). `None`
+    /// shows a plain "🔧 Tool name…".
+    fn tool_status(&self, _tool: &str, _args: &serde_json::Value) -> Option<&'static str> {
         None
     }
 

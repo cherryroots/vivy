@@ -143,6 +143,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | | | Chat status names the web search query and the site being read; text after a search starts a new paragraph |
 | #38 | | OpenAI: one prompt cache key for chat in every channel, so a quiet channel reads what a busy one cached |
 | #39 | | Claude: at most 5 web searches per request (`web_search_max_uses`) |
+| #40 | | UX run: shorter button labels, plainer messages and errors, first-person `/memory` replies, Check Snail lines that fit a phone |
 
 ## Not built yet
 

@@ -81,7 +81,7 @@ pub enum Action {
         message: u64,
         part: u8,
     },
-    /// The button under "Only the current round can be changed": shows the current round on
+    /// The button under "This message shows an older round": shows the current round on
     /// status message `message`.
     Refresh {
         message: u64,
@@ -313,29 +313,19 @@ pub fn status_buttons(view: &View) -> Vec<CreateActionRow> {
     };
     let buttons = if view.is_latest() {
         vec![
-            button(
-                Action::Claim { round },
-                "Claim!",
-                '📈',
-                ButtonStyle::Primary,
-            ),
-            button(
-                Action::Bet { round },
-                "Place Bet!",
-                '💸',
-                ButtonStyle::Secondary,
-            ),
+            button(Action::Claim { round }, "Claim", '📈', ButtonStyle::Primary),
+            button(Action::Bet { round }, "Bet", '💸', ButtonStyle::Secondary),
             button(
                 Action::Unbet { round },
-                "Remove Bet!",
-                '💰',
+                "Remove bet",
+                '↩',
                 ButtonStyle::Secondary,
             ),
             button(
                 Action::Winner { round },
-                "Set Winner!",
+                "Winner",
                 '✨',
-                ButtonStyle::Success,
+                ButtonStyle::Secondary,
             ),
         ]
     } else {
@@ -394,8 +384,8 @@ pub fn pick_menu(
     movies: &HashMap<u64, String>,
 ) -> (String, Vec<CreateActionRow>) {
     let (title, placeholder) = match kind {
-        PickKind::Place => ("Place a Bet", "Select an option to bet on"),
-        PickKind::Remove => ("Remove a Bet", "Select a bet to remove"),
+        PickKind::Place => ("Place a Bet", "Pick who to bet on"),
+        PickKind::Remove => ("Remove a Bet", "Pick a bet to remove"),
         PickKind::Winner => ("Pick a Winner", "Select the winner"),
     };
     let mut sorted: Vec<u64> = users.to_vec();
@@ -416,12 +406,14 @@ pub fn pick_menu(
                 }
             })
             .collect();
-        // With several menus, each placeholder says which names it holds: "(Alice … Dana)".
+        // With several menus, each placeholder starts with the names it holds ("Alice … Dana:
+        // pick who to bet on"), since a phone shows only the first few words of a placeholder.
         let placeholder = match (groups.len(), group.first(), group.last()) {
             (2.., Some(&first), Some(&last)) => format!(
-                "{placeholder} ({} … {})",
+                "{} … {}: {}",
                 shorten(name(names, first), 20),
-                shorten(name(names, last), 20)
+                shorten(name(names, last), 20),
+                placeholder.to_lowercase()
             ),
             _ => placeholder.to_string(),
         };
@@ -500,9 +492,11 @@ pub fn bet_slip(
             numbers.options_left.len().saturating_sub(1)
         ),
     });
+    // Changing a bet frees its old amount, so the cap counts the existing bet too (like the
+    // buttons below do).
+    let cap = numbers.usable(user) + mine.map_or(0, |b| b.amount);
     lines.push(format!(
-        "You have {money} this round and have bet {bet} of it. You can bet {} more.",
-        numbers.usable(user)
+        "You have {money} this round and have bet {bet} of it. You can put up to {cap} on {on_name}."
     ));
     if let Some(mine) = mine {
         let back = numbers.result(mine, on) + mine.amount;
@@ -544,7 +538,7 @@ pub fn bet_slip(
             .style(if current {
                 ButtonStyle::Success
             } else {
-                ButtonStyle::Secondary
+                ButtonStyle::Primary
             })
             .disabled(current || !allowed)
         })
@@ -552,7 +546,7 @@ pub fn bet_slip(
     buttons.push(
         CreateButton::new(Action::Other { round, on, message }.custom_id())
             .label("Other amount…")
-            .style(ButtonStyle::Primary),
+            .style(ButtonStyle::Secondary),
     );
     (lines.join("\n"), vec![CreateActionRow::Buttons(buttons)])
 }
@@ -653,10 +647,20 @@ pub fn help_text(rules: Rules) -> String {
         }
         Rules::Classic => String::new(),
     };
+    let short = match rules {
+        Rules::Pool => format!(
+            "Each round: press **Claim**, then **Bet** {TAX_THRESHOLD}–{BET_CAP}% of your money on who you think wins. Winners share the pot."
+        ),
+        Rules::Classic => format!(
+            "Each round: press **Claim**, then **Bet** at least {TAX_THRESHOLD}% of your money on who you think wins. Winning bets pay out, losing ones are lost."
+        ),
+    };
     format!(
         "**How the movie wheel works**
-- **Claim!** gives you {CLAIM} once every round.
-- **Place Bet!** on the options you think will win: pick an option, then a share of your money, or type an amount like `50` under Other amount. The bet slip shows what the option pays right now. You can bet on up to half of the options left.{cap} Betting on the same option again changes that bet, and **Remove Bet!** takes it back while the round is open.
+{short}
+
+- **Claim** gives you {CLAIM} once every round.
+- **Bet** on the options you think will win: pick an option, then a share of your money, or type an amount like `50` under Other amount. The bet slip shows what the option pays right now. You can bet on up to half of the options left.{cap} Betting on the same option again changes that bet, and **Remove bet** takes it back while the round is open.
 - **Bet at least {TAX_THRESHOLD}%** of your money every round. Otherwise you lose 3% of your money for every missing percentage point when the round ends, up to 30%.{tax}
 {payouts}
 - **Change Name** sets the name the wheel shows for you; leave it empty to go back to your Discord name.
@@ -774,10 +778,10 @@ mod tests {
         assert_eq!(
             labels(&season, 1, true),
             [
-                "Claim!",
-                "Place Bet!",
-                "Remove Bet!",
-                "Set Winner!",
+                "Claim",
+                "Bet",
+                "Remove bet",
+                "Winner",
                 "Change Name",
                 "Help"
             ]
@@ -895,7 +899,7 @@ mod tests {
         assert_eq!(ids[4], "wheel:pick:place:3:99:4");
         assert_eq!(
             menus[1]["placeholder"].as_str().unwrap(),
-            "Select an option to bet on (P026 … P050)"
+            "P026 … P050: pick who to bet on"
         );
         assert!(text.contains("only fit 125 of the 130"), "{text}");
 
@@ -940,9 +944,9 @@ mod tests {
         let (text, rows) = bet_slip(&season, &numbers[0], 1, 2, "Bob", 99, Some("✅ Bet 40."));
         assert!(text.contains("✅ Bet 40."), "{text}");
         assert!(text.contains("40 is on it, which pays ×2.5 right now. The pot is 100."));
-        assert!(
-            text.contains("You have 200 this round and have bet 40 of it. You can bet 60 more.")
-        );
+        assert!(text.contains(
+            "You have 200 this round and have bet 40 of it. You can put up to 100 on Bob."
+        ));
         assert!(text.contains("Your bet on Bob: **40**. If Bob won now, you'd get 100 back."));
         let rows = serde_json::to_value(rows).unwrap();
         let buttons = rows[0]["components"].as_array().unwrap();

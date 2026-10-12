@@ -8,10 +8,11 @@ use serenity::all::{
 };
 
 use super::store::{Reminder, Summary};
-use crate::util::shorten;
+use crate::util::{count, shorten};
 
 /// The snooze buttons under a delivered reminder that add a fixed time: (label, minutes).
-/// "Tomorrow" and "Snooze…" come after them.
+/// "Tomorrow 9:00" and "Pick a time…" come after them. The labels are short so all four
+/// fit one row on a phone.
 const SNOOZES: [(&str, i64); 2] = [("10 min", 10), ("1 hour", 60)];
 
 /// Every button, menu and modal this feature makes. The ID text is built and parsed only
@@ -25,7 +26,7 @@ pub enum Action {
     Snooze { id: i64, minutes: i64 },
     /// "Snooze until tomorrow": 09:00 the next morning in the owner's timezone.
     Tomorrow { id: i64 },
-    /// "Snooze…": opens the modal to type a time.
+    /// "Pick a time…": opens the modal to type a time.
     AskSnooze { id: i64 },
     /// The snooze modal.
     SnoozeTo { id: i64 },
@@ -77,6 +78,7 @@ pub fn confirmation(
     message: &str,
     repeat: Option<&str>,
     zone_hint: bool,
+    images: usize,
     skipped: &[String],
 ) -> String {
     let mut text = match repeat {
@@ -89,6 +91,9 @@ pub fn confirmation(
             shorten(message, 1500)
         ),
     };
+    if images > 0 {
+        text.push_str(&format!(" (with {})", count(images, "image")));
+    }
     if zone_hint {
         text.push_str("\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.");
     }
@@ -157,10 +162,10 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
     };
     let mut buttons: Vec<CreateButton> = SNOOZES
         .iter()
-        .map(|&(label, minutes)| button(Action::Snooze { id, minutes }, &format!("Snooze {label}")))
+        .map(|&(label, minutes)| button(Action::Snooze { id, minutes }, label))
         .collect();
     buttons.push(button(Action::Tomorrow { id }, "Tomorrow 9:00"));
-    buttons.push(button(Action::AskSnooze { id }, "Snooze…"));
+    buttons.push(button(Action::AskSnooze { id }, "Pick a time…"));
 
     let mut message = CreateMessage::new()
         .content(content)
@@ -178,7 +183,7 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool) -> Create
     message
 }
 
-/// The modal behind "Snooze…".
+/// The modal behind "Pick a time…".
 pub fn snooze_modal(id: i64) -> CreateModal {
     let input = CreateInputText::new(InputTextStyle::Short, "When?", "when")
         .placeholder("in 30m, at 18:00, tomorrow at 9am, friday")
@@ -359,7 +364,7 @@ mod tests {
             .collect();
         assert_eq!(
             labels,
-            ["Snooze 10 min", "Snooze 1 hour", "Tomorrow 9:00", "Snooze…"]
+            ["10 min", "1 hour", "Tomorrow 9:00", "Pick a time…"]
         );
     }
 

@@ -12,6 +12,7 @@ use super::index::{self, LoadedPicture};
 use super::store::{self, Candidate, Failure, Indexed, Posted};
 use super::{backfill, collect};
 use crate::core::{BotCtx, Context, Result};
+use crate::util::count;
 
 /// At most this many close pictures get the detail check (each needs a download).
 const MAX_CANDIDATES: usize = 12;
@@ -29,15 +30,16 @@ pub async fn check_snail(ctx: Context<'_>, msg: Message) -> Result<()> {
     let text = match find_snails(ctx.data(), guild, &msg).await? {
         None => "This message has no links or pictures to check.".to_string(),
         Some((snails, unchecked, failed)) => {
-            let mut text = if snails.is_empty() {
-                "No snails: this hasn't been posted here before.".to_string()
-            } else {
-                describe(guild, &snails, unchecked)
+            let mut text = match (snails.is_empty(), failed) {
+                (true, 0) => "No snails: this hasn't been posted here before.".to_string(),
+                (true, _) => "No snails among what could be checked.".to_string(),
+                (false, _) => describe(guild, &snails, unchecked),
             };
             if failed > 0 {
                 text.push_str(&format!(
-                    "\n({failed} picture(s) couldn't be downloaded, so they weren't checked. \
-                     They'll be retried later.)"
+                    "\n-# {} couldn't be downloaded, so {} not checked. Try again in a few minutes.",
+                    count(failed, "picture"),
+                    if failed == 1 { "it was" } else { "they were" }
                 ));
             }
             text
@@ -333,14 +335,16 @@ fn describe(guild: GuildId, snails: &[Snail], unchecked: usize) -> String {
         } else {
             "same picture"
         };
+        // A masked link and a channel chip keep each line short on a phone.
         text.push_str(&format!(
-            "\n- <t:{when}:d> by <@{}>, {what}: https://discord.com/channels/{guild}/{}/{}",
-            p.author, p.channel, p.message
+            "\n- <t:{when}:d> <@{}> in <#{}>, {what}: [jump](https://discord.com/channels/{guild}/{}/{})",
+            p.author, p.channel, p.channel, p.message
         ));
     }
     if unchecked > 0 {
         text.push_str(&format!(
-            "\n…and {unchecked} more post(s) of the same link, not checked one by one."
+            "\n…and {} of the same link, not checked one by one.",
+            count(unchecked, "more post")
         ));
     }
     text

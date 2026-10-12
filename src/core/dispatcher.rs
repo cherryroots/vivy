@@ -216,7 +216,7 @@ async fn on_component(bot: &BotCtx, i: &ComponentInteraction) {
         return;
     };
     if !bot.allows(feature.name(), i.guild_id, i.channel_id) {
-        tell_user(bot, &reply, TURNED_OFF).await;
+        tell_user(bot, &reply, &turned_off(feature.name())).await;
         return;
     }
     let span = info_span!(
@@ -244,7 +244,7 @@ async fn on_modal(bot: &BotCtx, i: &ModalInteraction) {
         return;
     };
     if !bot.allows(feature.name(), i.guild_id, i.channel_id) {
-        tell_user(bot, &reply, TURNED_OFF).await;
+        tell_user(bot, &reply, &turned_off(feature.name())).await;
         return;
     }
     let span = info_span!(
@@ -295,7 +295,13 @@ pub fn spawn_bot_events(bot: &BotCtx) {
 // ---------------------------------------------------------------------------------------
 
 const STALE: &str = "This button is from an older version of the bot and no longer works.";
-const TURNED_OFF: &str = "This is turned off here.";
+/// "The wheel is turned off in this channel.": names the feature, so the person knows what.
+fn turned_off(feature: &str) -> String {
+    format!(
+        "The {} is turned off in this channel.",
+        feature.replace('_', " ")
+    )
+}
 
 /// Where to tell the user that something went wrong.
 enum ReplyTo {
@@ -332,7 +338,7 @@ async fn report(bot: &BotCtx, feature: &str, reply: &ReplyTo, err: &Error) {
     if is_user_error(err) {
         debug!("{feature}: told the user: {err}");
     } else {
-        error!("{feature} failed: {err:#}");
+        error!("failed: {err:#}");
     }
     tell_user(bot, reply, &user_message(err)).await;
 }
@@ -500,8 +506,13 @@ pub fn on_error(error: FrameworkError<'_, super::BotCtx, Error>) -> BoxFuture<'_
                 }
             }
             FrameworkError::CommandCheckFailed { ctx, .. } => {
+                let feature = ctx.command().category.as_deref().unwrap_or("bot");
                 let _ = ctx
-                    .send(CreateReply::default().content(TURNED_OFF).ephemeral(true))
+                    .send(
+                        CreateReply::default()
+                            .content(turned_off(feature))
+                            .ephemeral(true),
+                    )
                     .await;
             }
             other => {

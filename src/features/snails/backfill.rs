@@ -47,7 +47,7 @@ pub enum Action {
     Status,
 }
 
-/// Hash the server's older messages for Check Snail (admins)
+/// Read the server's older messages so Check Snail knows them (admins)
 #[poise::command(slash_command, guild_only, ephemeral)]
 pub async fn snail_backfill(
     ctx: Context<'_>,
@@ -81,6 +81,7 @@ pub async fn snail_backfill(
             spawn_worker(bot, guild);
             format!(
                 "Started. Found {total} channels and threads ({added} new to the backfill). \
+                 This can take hours and keeps going after restarts; \
                  `/snail_backfill status` shows how far it is."
             )
         }

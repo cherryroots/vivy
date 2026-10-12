@@ -364,7 +364,7 @@ async fn spend_view(ctx: &BotCtx, spend: &Spend) -> std::result::Result<SpendVie
     let admin_key_failing = matches!(admin_key, AdminKey::Failing(_));
     let admin_key = match admin_key {
         AdminKey::Off => "Admin key: off".to_string(),
-        AdminKey::Unused => "Admin key: set, but `billed_spend` is off".to_string(),
+        AdminKey::Unused => "Admin key: set, but billed_spend is off".to_string(),
         AdminKey::Starting => "Admin key: on, reading the bill".to_string(),
         AdminKey::Working => "Admin key: on".to_string(),
         AdminKey::Failing(why) => format!("Admin key: failing ({})", shorten(&why, 120)),

@@ -41,7 +41,7 @@ async fn show(
     let folder = load(ctx).await?;
     let text = dump(&folder, &path);
     let reply = if text.is_empty() && path == own_area(ctx) {
-        CreateReply::default().content("Vivy hasn't saved anything about you here.")
+        CreateReply::default().content("I haven't saved anything about you here.")
     } else if text.is_empty() {
         CreateReply::default().content(format!("There's nothing at {path}."))
     } else if text.len() <= MAX_INLINE {
@@ -78,10 +78,11 @@ async fn forget(
     };
     let text = match remove(ctx, &path).await? {
         0 => "There was nothing to forget.".to_string(),
-        _ if path == own_area(ctx) => {
-            "Done. Vivy has forgotten what it saved about you here.".to_string()
-        }
-        _ => format!("Done. Vivy has forgotten {path}."),
+        _ if path == own_area(ctx) => "Done. I've forgotten what I saved about you here. \
+            Notes other people or the server's own files may still mention you; \
+            an admin can remove those with /memory delete."
+            .to_string(),
+        _ => format!("Done. I've forgotten {path}."),
     };
     ctx.say(text).await?;
     Ok(())
@@ -96,7 +97,9 @@ async fn delete(
     path: String,
 ) -> Result<()> {
     if !ctx.data().is_admin(ctx.author().id) {
-        return Err(user_error("Only admins can delete other memory files."));
+        return Err(user_error(
+            "Only admins can use /memory delete. To remove your own notes, use /memory forget.",
+        ));
     }
     let path = folder::clean_path(&path).map_err(user_error)?;
     let count = remove(ctx, &path).await?;
