@@ -131,6 +131,22 @@ impl Feature for Memory {
                 config.ignored_by::<name::Settings>(self.name()),
             ],
         );
+        // A folder that isn't there (a typo, or a path relative to the wrong place) would
+        // otherwise only show as a Vivy with no face.
+        for (key, what, dir) in [
+            ("faces_dir", "faces", face::dir(ctx)),
+            ("banners_dir", "banners", banner::dir(ctx)),
+        ] {
+            if let Some(dir) = dir
+                && std::fs::read_dir(&dir).is_err()
+            {
+                tracing::warn!(
+                    target: "config",
+                    "config.toml: features.memory.{key} = {dir:?} can't be read (paths are \
+                relative to the folder the bot runs in), so she has no {what}"
+                );
+            }
+        }
         reflect::spawn(ctx);
         Ok(())
     }
