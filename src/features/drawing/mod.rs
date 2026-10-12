@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, Message};
+use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message};
 use tracing::{info, warn};
 
 use crate::ai::{PictureRequest, ToolDef};
@@ -33,6 +33,8 @@ use crate::util::{env_key, month_start};
 const TOOL: &str = "draw_picture";
 /// The most pictures sent along to draw from.
 const MAX_PICTURES: usize = 4;
+/// How many messages before and after one of Vivy's answers are checked for its pictures.
+const NEIGHBOURS: u8 = 4;
 
 /// `[features.drawing]` settings.
 #[derive(Debug, Deserialize)]
@@ -111,6 +113,52 @@ fn pictures_in(msg: &Message) -> Vec<media::Media> {
     found.retain(|media| media.kind == MediaKind::Image);
     found.truncate(MAX_PICTURES);
     found
+}
+
+/// [`pictures_in`], plus the rest of Vivy's answer when the message replies to one of hers:
+/// an answer's text and its picture are separate messages, so "make it night" replying to
+/// the text should still find the picture. The answer's other messages are her messages
+/// right next to the one replied to, up to [`NEIGHBOURS`] each way, until someone else's.
+async fn pictures_around(ctx: &BotCtx, msg: &Message) -> Vec<media::Media> {
+    let mut found = pictures_in(msg);
+    if let Some(replied) = &msg.referenced_message
+        && replied.author.id == ctx.bot_id
+    {
+        let before = GetMessages::new().before(replied.id).limit(NEIGHBOURS);
+        let after = GetMessages::new().after(replied.id).limit(NEIGHBOURS);
+        // Discord lists newest first; walking away from the replied message means going
+        // backwards through "before" and forwards through "after".
+        let before = neighbours(ctx, msg, before).await;
+        let mut after = neighbours(ctx, msg, after).await;
+        after.reverse();
+        for message in own_run(ctx, before).chain(own_run(ctx, after)) {
+            found.extend(
+                media::find_media(&message)
+                    .into_iter()
+                    .filter(|media| media.kind == MediaKind::Image),
+            );
+        }
+        found.truncate(MAX_PICTURES);
+    }
+    found
+}
+
+async fn neighbours(ctx: &BotCtx, msg: &Message, which: GetMessages) -> Vec<Message> {
+    match msg.channel_id.messages(&ctx.http, which).await {
+        Ok(messages) => messages,
+        Err(err) => {
+            warn!("couldn't read the messages around an answer: {err:#}");
+            Vec::new()
+        }
+    }
+}
+
+/// The bot's own messages at the start of `messages`, stopping at the first from anyone else.
+fn own_run(ctx: &BotCtx, messages: Vec<Message>) -> impl Iterator<Item = Message> {
+    let bot = ctx.bot_id;
+    messages
+        .into_iter()
+        .take_while(move |message| message.author.id == bot)
 }
 
 pub struct Drawing;
@@ -194,7 +242,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                 .get_message(asker.channel, asker.message)
                 .await
                 .context("reading the asker's message")?;
-            for found in pictures_in(&msg) {
+            for found in pictures_around(ctx, &msg).await {
                 match media::load_for_model(&found).await {
                     Ok(loaded) => pictures.extend(loaded),
                     Err(err) => warn!("couldn't download a picture to draw from: {err:#}"),

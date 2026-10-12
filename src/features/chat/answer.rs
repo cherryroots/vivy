@@ -24,7 +24,7 @@ use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Feature};
 use crate::util::reply::LiveReply;
 use crate::util::shorten;
-use crate::util::split::{DISCORD_LIMIT, split_message};
+use crate::util::split::{DISCORD_LIMIT, close_code_block, split_message};
 
 use super::store::Written;
 
@@ -90,10 +90,19 @@ impl Screen {
     }
 }
 
+/// The reply's first look, before any slow work: no text, just the Thinking status.
+pub(super) fn placeholder() -> Vec<String> {
+    render("", None, Some(&activity_status(&Activity::Thinking)))
+}
+
 /// The messages to show: the text split to fit, with the note and the status as the last
 /// lines.
 fn render(text: &str, note: Option<&str>, status: Option<&str>) -> Vec<String> {
-    let mut parts = split_message(text, DISCORD_LIMIT - STATUS_ROOM);
+    // Every part but the last fills a whole message; the last keeps room for the lines below.
+    let mut parts = split_message(text, DISCORD_LIMIT);
+    if let Some(last) = parts.pop() {
+        parts.extend(split_message(&last, DISCORD_LIMIT - STATUS_ROOM));
+    }
     // Each is cut to fit, so the last message stays under Discord's limit.
     let mut lines = Vec::new();
     if let Some(note) = note {
@@ -108,6 +117,9 @@ fn render(text: &str, note: Option<&str>, status: Option<&str>) -> Vec<String> {
         let line = lines.join("\n");
         match parts.last_mut() {
             Some(last) => {
+                // While code streams, the block is still open: close it, or the lines
+                // below would show as code.
+                *last = close_code_block(last);
                 last.push('\n');
                 last.push_str(&line);
             }
@@ -534,6 +546,27 @@ mod tests {
         // Only the last part has the note and the status.
         assert_eq!(parts.iter().filter(|p| p.contains("-# ")).count(), 1);
         assert!(parts.last().unwrap().ends_with("-# ✍️ Writing…"));
+        // The parts before the last one use the whole message.
+        assert!(parts[0].chars().count() > DISCORD_LIMIT - STATUS_ROOM);
+    }
+
+    #[test]
+    fn status_stays_out_of_an_open_code_block() {
+        assert_eq!(
+            render("```py\nx = 1", None, Some("✍️ Writing…")),
+            ["```py\nx = 1\n```\n-# ✍️ Writing…"]
+        );
+        // A finished block is left alone, and so is the text when the status is gone.
+        assert_eq!(
+            render("```py\nx = 1\n```", None, Some("✍️ Writing…")),
+            ["```py\nx = 1\n```\n-# ✍️ Writing…"]
+        );
+        assert_eq!(render("```py\nx = 1", None, None), ["```py\nx = 1"]);
+    }
+
+    #[test]
+    fn placeholder_matches_the_first_render() {
+        assert_eq!(placeholder(), ["-# 💭 Thinking…"]);
     }
 
     #[test]

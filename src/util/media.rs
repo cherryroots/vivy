@@ -53,11 +53,22 @@ const TYPES: &[(&str, &str, MediaKind)] = &[
     ("jpeg", "image/jpeg", MediaKind::Image),
     ("png", "image/png", MediaKind::Image),
     ("webp", "image/webp", MediaKind::Image),
+    // Phone photos and the odd old format. Models don't take these; `load_for_model`
+    // converts them to PNG.
+    ("heic", "image/heic", MediaKind::Image),
+    ("heif", "image/heif", MediaKind::Image),
+    ("avif", "image/avif", MediaKind::Image),
+    ("bmp", "image/bmp", MediaKind::Image),
+    ("tiff", "image/tiff", MediaKind::Image),
+    ("tif", "image/tiff", MediaKind::Image),
     ("gif", "image/gif", MediaKind::Gif),
     ("mp4", "video/mp4", MediaKind::Video),
     ("webm", "video/webm", MediaKind::Video),
     ("mov", "video/quicktime", MediaKind::Video),
 ];
+
+/// The picture formats models accept as they are. Anything else in `TYPES` is converted.
+const MODEL_IMAGE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 /// Works out what a file is: from the content type Discord reports when there is one,
 /// otherwise from the URL's file extension.
@@ -431,9 +442,18 @@ pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
         .await
         .with_context(|| format!("downloading {}", media.url))?;
     if media.kind == MediaKind::Image {
+        if MODEL_IMAGE_TYPES.contains(&media.mime) {
+            return Ok(vec![ModelImage {
+                mime: media.mime,
+                data,
+            }]);
+        }
+        let png = frames::to_png(&data)
+            .await
+            .with_context(|| format!("converting {} to PNG", media.url))?;
         return Ok(vec![ModelImage {
-            mime: media.mime,
-            data,
+            mime: "image/png",
+            data: png,
         }]);
     }
     let grids = frames::frame_grids(&data, frames::Layout::for_kind(media.kind))
@@ -485,6 +505,14 @@ mod tests {
         assert_eq!(
             classify(None, "https://x/a.gif"),
             Some((MediaKind::Gif, "image/gif"))
+        );
+        assert_eq!(
+            classify(Some("image/heic"), "https://x/IMG_0001"),
+            Some((MediaKind::Image, "image/heic"))
+        );
+        assert_eq!(
+            classify(None, "https://x/scan.tif"),
+            Some((MediaKind::Image, "image/tiff"))
         );
         assert_eq!(classify(None, "https://x/watch?v=1"), None);
         assert_eq!(classify(None, "not a url.png"), None);
