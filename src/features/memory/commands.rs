@@ -4,13 +4,15 @@
 use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
-    AutocompleteChoice, CreateAllowedMentions, CreateAttachment, CreateAutocompleteResponse,
+    AutocompleteChoice, ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
+    CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateInteractionResponse,
+    CreateInteractionResponseMessage,
 };
 use tracing::info;
 
 use super::folder::{self, Folder, ROOT};
 use super::store;
-use crate::core::{Context, Result, user_error};
+use crate::core::{BotCtx, Context, Result, user_error};
 
 /// Longest file shown in the message itself; longer ones come as an attachment.
 const MAX_INLINE: usize = 1800;
@@ -64,27 +66,89 @@ async fn forget(
     #[autocomplete = "own_file"]
     file: Option<String>,
 ) -> Result<()> {
-    let path = match file {
-        Some(file) => {
-            let path = folder::clean_path(&file).map_err(user_error)?;
-            if !is_own(ctx, &path) {
-                return Err(user_error(
-                    "You can only forget your own files. Pick one from the list.",
-                ));
-            }
-            path
+    let Some(file) = file else {
+        // Nothing picked means everything: that's easy to do by accident on a phone, so it
+        // asks first. The button does the deleting (see `on_component`).
+        let area = own_area(ctx);
+        let folder = load(ctx).await?;
+        let prefix = format!("{area}/");
+        let files = folder
+            .keys()
+            .filter(|p| **p == area || p.starts_with(&prefix) || area == ROOT)
+            .count();
+        if files == 0 {
+            ctx.say("There was nothing to forget.").await?;
+            return Ok(());
         }
-        None => own_area(ctx),
+        let user = ctx.author().id.get();
+        let buttons = CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("memory:forget:{user}"))
+                .label("Forget everything")
+                .style(ButtonStyle::Danger),
+            CreateButton::new(format!("memory:keep:{user}"))
+                .label("Cancel")
+                .style(ButtonStyle::Secondary),
+        ]);
+        ctx.send(
+            CreateReply::default()
+                .content(format!(
+                    "This deletes all {} I saved about you here. Sure?",
+                    crate::util::count(files, "file")
+                ))
+                .components(vec![buttons]),
+        )
+        .await?;
+        return Ok(());
     };
+    let path = folder::clean_path(&file).map_err(user_error)?;
+    if !is_own(ctx, &path) {
+        return Err(user_error(
+            "You can only forget your own files. Pick one from the list.",
+        ));
+    }
     let text = match remove(ctx, &path).await? {
         0 => "There was nothing to forget.".to_string(),
-        _ if path == own_area(ctx) => "Done. I've forgotten what I saved about you here. \
-            Notes other people or the server's own files may still mention you; \
-            an admin can remove those with /memory delete."
-            .to_string(),
         _ => format!("Done. I've forgotten {path}."),
     };
     ctx.say(text).await?;
+    Ok(())
+}
+
+/// The reply after everything about a person was forgotten.
+const FORGOTTEN: &str = "Done. I've forgotten what I saved about you here. \
+    Notes other people or the server's own files may still mention you; \
+    an admin can remove those with /memory delete.";
+
+/// The "Forget everything" and "Cancel" buttons under `/memory forget`'s question.
+/// `action` is `forget:<user>` or `keep:<user>`.
+pub async fn on_component(bot: &BotCtx, i: &ComponentInteraction, action: &str) -> Result<()> {
+    let (verb, user) = action.split_once(':').unwrap_or((action, ""));
+    let user: u64 = user
+        .parse()
+        .map_err(|_| user_error("That button is broken."))?;
+    if i.user.id.get() != user {
+        return Err(user_error("Only the person who asked can press this."));
+    }
+    let text = match verb {
+        "forget" => {
+            let guild = i.guild_id.map(|g| g.get());
+            let area = match guild {
+                Some(_) => format!("{ROOT}/users/{user}"),
+                None => ROOT.to_string(),
+            };
+            remove_in(bot, guild, user, &area).await?;
+            FORGOTTEN
+        }
+        _ => "Kept everything.",
+    };
+    let response = CreateInteractionResponseMessage::new()
+        .content(text)
+        .components(Vec::new());
+    i.create_response(
+        &bot.http,
+        CreateInteractionResponse::UpdateMessage(response),
+    )
+    .await?;
     Ok(())
 }
 
@@ -180,12 +244,17 @@ async fn load(ctx: Context<'_>) -> Result<Folder> {
 
 /// Deletes a file, or everything under a directory, and logs it. Returns how many files.
 async fn remove(ctx: Context<'_>, path: &str) -> Result<usize> {
-    let scope = scope(ctx);
-    let user = ctx.author().id.get();
+    let guild = ctx.guild_id().map(|g| g.get());
+    remove_in(ctx.data(), guild, ctx.author().id.get(), path).await
+}
+
+/// Deletes `path` (a file, or a folder with everything in it) from the memory of `guild`
+/// (or the DM folder of `user`), as `user`. Returns how many files went.
+async fn remove_in(bot: &BotCtx, guild: Option<u64>, user: u64, path: &str) -> Result<usize> {
+    let scope = store::scope(guild, user);
     let target = path.to_string();
     let log_scope = scope.clone();
-    let count = ctx
-        .data()
+    let count = bot
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;

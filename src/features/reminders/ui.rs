@@ -7,6 +7,9 @@ use serenity::all::{
     CreateSelectMenuOption, InputTextStyle, UserId,
 };
 
+use chrono::DateTime;
+use chrono_tz::Tz;
+
 use super::store::{Reminder, Summary};
 use crate::util::{count, shorten};
 
@@ -95,7 +98,11 @@ pub fn confirmation(
         text.push_str(&format!(" (with {})", count(images, "image")));
     }
     if zone_hint {
-        text.push_str("\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.");
+        text.push_str(match repeat {
+            // A repeat saves its zone, so setting one later doesn't move this reminder.
+            Some(_) => "\n-# This repeats at UTC time because you have no timezone set. Run `/timezone`, then set it again.",
+            None => "\n-# Times without a timezone are read as UTC. Set yours with `/timezone`.",
+        });
     }
     if !skipped.is_empty() {
         text.push_str(&format!(
@@ -212,8 +219,13 @@ fn with_line(original: &str, line: &str) -> String {
 }
 
 /// The `/reminders` list, with a menu to delete one. Discord menus hold at most 25 options.
-/// `note` goes first, like "✅ Reminder deleted." after a delete.
-pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<CreateActionRow>) {
+/// `note` goes first, like "✅ Reminder deleted." after a delete. `zone` is the viewer's
+/// timezone, for the menu (its descriptions can't show Discord's `<t:>` times).
+pub fn list_message(
+    reminders: &[Summary],
+    note: Option<&str>,
+    zone: Tz,
+) -> (String, Vec<CreateActionRow>) {
     let mut text = note.map(|note| format!("{note}\n")).unwrap_or_default();
     if reminders.is_empty() {
         text.push_str("You have no pending reminders.");
@@ -232,9 +244,11 @@ pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<C
             Some(repeat) => format!(" 🔁 {repeat}"),
             None => String::new(),
         };
+        // The day and time too, not only "in 3 days".
         text.push_str(&format!(
-            "{}. <t:{}:R>{repeat}: {}{images}\n",
+            "{}. <t:{}:R> (<t:{}:f>){repeat}: {}{images}\n",
             n + 1,
+            reminder.fire_at,
             reminder.fire_at,
             shorten(&reminder.message, 60)
         ));
@@ -248,7 +262,20 @@ pub fn list_message(reminders: &[Summary], note: Option<&str>) -> (String, Vec<C
         .enumerate()
         .map(|(n, reminder)| {
             let label = shorten(&format!("{}. {}", n + 1, reminder.message), 100);
+            // Two reminders with the same words are told apart by when they fire.
+            let when = DateTime::from_timestamp(reminder.fire_at, 0)
+                .map(|t| {
+                    t.with_timezone(&zone)
+                        .format("%a %Y-%m-%d %H:%M")
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let description = match &reminder.repeat {
+                Some(repeat) => format!("{when} · {repeat}"),
+                None => when,
+            };
             CreateSelectMenuOption::new(label, reminder.id.to_string())
+                .description(shorten(&description, 100))
         })
         .collect();
     let menu = CreateSelectMenu::new(
@@ -342,13 +369,18 @@ mod tests {
             image_count: 0,
             repeat: r.repeat.clone(),
         }];
-        let (text, rows) = list_message(&list, Some("✅ Reminder deleted."));
+        let (text, rows) = list_message(&list, Some("✅ Reminder deleted."), Tz::UTC);
         assert_eq!(
             text,
-            "✅ Reminder deleted.\n**Your reminders**\n1. <t:1000:R> 🔁 every monday at 9:00 UTC: trash\n"
+            "✅ Reminder deleted.\n**Your reminders**\n1. <t:1000:R> (<t:1000:f>) 🔁 every monday at 9:00 UTC: trash\n"
         );
         assert_eq!(rows.len(), 1);
-        let (text, rows) = list_message(&[], Some("✅ Reminder deleted."));
+        let json = serde_json::to_value(&rows).unwrap();
+        assert_eq!(
+            json[0]["components"][0]["options"][0]["description"],
+            "Thu 1970-01-01 00:16 · every monday at 9:00 UTC"
+        );
+        let (text, rows) = list_message(&[], Some("✅ Reminder deleted."), Tz::UTC);
         assert_eq!(text, "✅ Reminder deleted.\nYou have no pending reminders.");
         assert!(rows.is_empty());
     }

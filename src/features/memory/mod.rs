@@ -59,6 +59,15 @@ impl Feature for Memory {
         vec![tool::def(), set_mood::def()]
     }
 
+    async fn on_component(
+        &self,
+        ctx: &BotCtx,
+        i: &serenity::all::ComponentInteraction,
+        action: &str,
+    ) -> Result<()> {
+        commands::on_component(ctx, i, action).await
+    }
+
     fn tool_status(&self, tool: &str, args: &Value) -> Option<&'static str> {
         // Reading her notes isn't saving anything about the asker, so it says so.
         let reading = args.get("command").and_then(Value::as_str) == Some("view");

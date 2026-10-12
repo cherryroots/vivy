@@ -288,7 +288,10 @@ impl Reminders {
             .db
             .call(move |conn| Ok(store::list_pending(conn, user)?))
             .await?;
-        let (text, menu) = ui::list_message(&list, Some(note));
+        let zone = settings::timezone(&ctx.db, i.user.id)
+            .await?
+            .unwrap_or(Tz::UTC);
+        let (text, menu) = ui::list_message(&list, Some(note), zone);
         let response = CreateInteractionResponseMessage::new()
             .content(text)
             .components(menu);
