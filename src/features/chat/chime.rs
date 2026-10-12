@@ -214,7 +214,9 @@ pub async fn speak(
         .channel
         .send_message(
             &ctx.http,
-            CreateMessage::new().content(&line).allowed_mentions(pings),
+            CreateMessage::new()
+                .content(answer::discord_links(&line))
+                .allowed_mentions(pings),
         )
         .await?;
     let ids = vec![sent.id.get()];

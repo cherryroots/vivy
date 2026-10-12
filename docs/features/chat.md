@@ -81,6 +81,8 @@ Above the status, while she works through tools, goes her latest progress note: 
 
 When the answer is done both lines go away, or the status becomes `-# ⏹️ Stopped · ❌ again removes this, 🔁 retries` (❌) or a `-# ⚠️` line in plain words (`friendly_error`: overloaded, out of credit, stuck in tool rounds, declined, or "something went wrong (it's logged)"), each saying that 🔁 tries again. The provider's own error text goes to the log, not the channel. Only the last message of a long answer carries them; `render` keeps 300 characters free there (`STATUS_ROOM`): up to 190 for the note, flattened to one line, and 95 for the status. The messages before the last fill the whole 2000. While a code block is still streaming, `render` closes it (`split::close_code_block`) before adding the lines, so the status isn't shown as code. `LiveReply::show` only edits messages whose text changed, so a tick with nothing new costs no API call.
 
+Slack-style links the model sometimes writes, `<https://…|text>`, are turned into Discord masked links, `[text](<https://…>)`, before each edit and in chime-ins (`discord_links`); Discord would otherwise show the `|text` as part of a broken link.
+
 Replies ping only the person they reply to, whatever the text says, and are sent with the `SUPPRESS_EMBEDS` flag so links don't make previews (`src/util/reply.rs`).
 
 ### History: `chat_turns` and `chat_messages`
