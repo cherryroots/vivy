@@ -155,7 +155,7 @@ Chat's own tools:
 | `get_current_time` | `tools.rs` | The date and time in the asker's timezone (set with `/timezone`), or in an IANA zone the model gives |
 | `get_channel_info` | `tools.rs` | The channel's name, topic and type, its parent channel or category, and the server name |
 | `list_channels` | `tools.rs` | Every channel the asker can see, by category, with topics |
-| `get_user_info` | `tools.rs` | A member's names, ID, roles, join date and timezone (the asker when no `user` is given) |
+| `get_user_info` | `tools.rs` | A member's names, ID, roles, join date, timezone, online status and current activities, custom status included (the asker when no `user` is given). Status comes from the Presence intent, so it's read from the cache. |
 | `look_at_profile_picture` | `avatar.rs` | Shows the model someone's profile picture as a picture: their picture for this server if they set one, otherwise their main one (Discord's default when they have none). `me` is Vivy herself, so in a server it's her current face. Downloaded as a 512 px PNG (an animated one gives its first frame). Only the text stays in the history |
 | `read_recent_messages` | `tools.rs` | The messages just before the one being answered, 1 to 50 (default 20), oldest first |
 | `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel |
