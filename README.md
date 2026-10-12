@@ -63,7 +63,7 @@ A status picture in a channel of your choice, refreshed every minute: uptime, ve
 
 1. Create an application at <https://discord.com/developers/applications> and add a bot to it.
 2. Under **Bot**, turn on the **Message Content Intent** and copy the token.
-3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions. Add Change Nickname if you use `nickname`, and Send Voice Messages if you use voice.
+3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Messages (to take people's ❌ and 🔁 reactions off chat answers again). Add Change Nickname if you use `nickname`, and Send Voice Messages if you use voice.
 4. Create two private channels for the control panel, for example `#bot-logs` and `#bot-status`, and copy their IDs (turn on Developer Mode in Discord, then right-click the channel).
 
 ### 2. Build

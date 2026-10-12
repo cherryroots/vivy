@@ -8,8 +8,9 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 
 - **Ask:** `@Vivy what's in this picture?` Any mention that no other feature claims comes to chat (reminders claims "remind me", for example). A mention another feature can't make sense of is passed on to chat too.
 - **Continue:** reply to any message of an answer, mentioning her (Discord's reply ping counts). You can also reply to someone else's message, or an old voltgpt answer, and mention her: that message becomes the start of the conversation.
-- **❌** on an answer: stops it while it's being written, deletes it once it's done.
-- **🔁** on an answer: writes it again in the same messages. The bot removes your 🔁 so you can use it again.
+- **❌** on an answer: stops it while it's being written, deletes it once it's done. The status says so after a stop: "❌ again removes this, 🔁 retries".
+- **🔁** on an answer: writes it again in the same messages.
+- The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
 
 Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance` and `chime_cooldown_minutes`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
@@ -39,7 +40,7 @@ Chat also leans on a few helpers in `src/util/` (described in [architecture](../
 ### An answer from start to end
 
 1. The dispatcher (`src/core/dispatcher.rs`) sees a message from a human that mentions the bot. It strips the mention, finds the feature with the longest matching mention prefix, and calls its `on_mention`. Chat declares the empty prefix `""`, so it gets every mention nobody else claimed, and every mention a feature returned `Mention::PassOn` for.
-2. `Chat::on_mention` (`mod.rs`) takes a provider with `ctx.ai.chat()`. With no AI key it returns a user error: "Chat is turned off: the bot has no AI key."
+2. `Chat::on_mention` (`mod.rs`) takes a provider with `ctx.ai.chat()`. With no AI key it returns a user error: "Chat is turned off: the bot has no AI key." It then sends the reply right away as `-# 💭 Thinking…` (`answer::placeholder`), before the slow steps below, so a question with a few phone photos doesn't sit there in silence while they download.
 3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later. Links written as `<link>` never get a preview, so a message with only those (or with previews turned off) isn't waited for.
 4. If the message is a reply, `history::turn_for_reference` finds the replied-to message's turn, or saves that message as a new turn without a parent.
 5. The question is saved as a turn (`store::add_turn`), with the message's text and links to its media and files (`history::read_message`).
@@ -78,7 +79,7 @@ The reply's last line is a small status in Discord's `-#` subtext markdown, redr
 
 Above the status, while she works through tools, goes her latest progress note: `-# 💬 Found the reminder, moving it to Friday now`. These are the short notes Claude Opus 5.5 writes between tool calls (what it just found, what it does next). Claude returns them as `thinking` blocks whose text is empty by default, which is why she used to look silent; chat requests now ask for them with `thinking.display: "updates"` (see [AI providers](../ai.md)), and `collect.rs` sends each one as a `ChatEvent::Progress`. The system prompt asks for these updates in her own voice and mood: a few words before the first tool, then what she found and what's next. On OpenAI, which has no such notes, the same instruction makes her write that text into the reply itself. Each note Claude writes is logged as `Claude progress note: …`, so `grep "progress note"` in the logs shows whether she wrote any. When she writes her updates as ordinary text instead (she has in every live test so far), that text stays in the reply, so people can read what she said. A new note replaces the old one, and the note goes away once she starts writing text, since the text says the rest. Her other thinking stays hidden, and it costs nothing extra: thinking is billed the same whether its text comes back or not.
 
-When the answer is done both lines go away, or the status becomes `-# ⏹️ Stopped · ❌ again removes this, 🔁 retries` (❌) or a `-# ⚠️` line in plain words (`friendly_error`: overloaded, out of credit, stuck in tool rounds, declined, or "something went wrong (it's logged)"), each saying that 🔁 tries again. The provider's own error text goes to the log, not the channel. Only the last message of a long answer carries them; `render` keeps 300 characters free there (`STATUS_ROOM`): up to 190 for the note, flattened to one line, and 95 for the status. `LiveReply::show` only edits messages whose text changed, so a tick with nothing new costs no API call.
+When the answer is done both lines go away, or the status becomes `-# ⏹️ Stopped · ❌ again removes this, 🔁 retries` (❌) or a `-# ⚠️` line in plain words (`friendly_error`: overloaded, out of credit, stuck in tool rounds, declined, or "something went wrong (it's logged)"), each saying that 🔁 tries again. The provider's own error text goes to the log, not the channel. Only the last message of a long answer carries them; `render` keeps 300 characters free there (`STATUS_ROOM`): up to 190 for the note, flattened to one line, and 95 for the status. The messages before the last fill the whole 2000. While a code block is still streaming, `render` closes it (`split::close_code_block`) before adding the lines, so the status isn't shown as code. `LiveReply::show` only edits messages whose text changed, so a tick with nothing new costs no API call.
 
 Replies ping only the person they reply to, whatever the text says, and are sent with the `SUPPRESS_EMBEDS` flag so links don't make previews (`src/util/reply.rs`).
 
@@ -114,7 +115,7 @@ Turns are never deleted or rewritten, with one exception: the `Context` parts ar
 
 ### Media and GIFs
 
-`util::media::find_media` finds pictures, GIFs and videos in attachments and embeds. GIFs from Discord's picker (Klipy, Tenor, Giphy) are a link to the GIF's page plus a `gifv` embed with an MP4 `video` and a still `thumbnail`; the MP4 is read and the still is skipped. `media::load_for_model` turns GIFs and videos into a few PNG grids of frames with one `ffmpeg` run (`util::frames`), since models read still images. Other attachments (`find_files`) become `File` parts; what each provider does with them is in [ai](../ai.md).
+`util::media::find_media` finds pictures, GIFs and videos in attachments and embeds. GIFs from Discord's picker (Klipy, Tenor, Giphy) are a link to the GIF's page plus a `gifv` embed with an MP4 `video` and a still `thumbnail`; the MP4 is read and the still is skipped. `media::load_for_model` turns GIFs and videos into a few PNG grids of frames with one `ffmpeg` run (`util::frames`), since models read still images. Pictures in formats models don't take (HEIC and HEIF from iPhones, AVIF, BMP, TIFF) are converted to PNG the same way (`frames::to_png`); whether HEIC works depends on the server's ffmpeg (7.1 or newer reads it). Other attachments (`find_files`) become `File` parts; what each provider does with them is in [ai](../ai.md).
 
 ### Chiming in
 
