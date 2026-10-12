@@ -178,11 +178,14 @@ impl Feature for Reminders {
                 parsed.when,
                 When::At { zone: None, .. } | When::Every(Repeat { zone: None, .. })
             );
+        let repeat_text = repeat
+            .as_deref()
+            .map(|saved| parse::repeat_for_display(saved, home));
         let reply = CreateMessage::new()
             .content(ui::confirmation(
                 fire_at,
                 &parsed.message,
-                repeat.as_deref(),
+                repeat_text.as_deref(),
                 zone_hint,
                 image_count,
                 &skipped,
