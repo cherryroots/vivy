@@ -145,6 +145,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #39 | | Claude: at most 5 web searches per request (`web_search_max_uses`) |
 | #40 | | UX run: shorter button labels, plainer messages and errors, first-person `/memory` replies, Check Snail lines that fit a phone |
 | #41 | | UX run: the new round posted after a winner, admin commands redraw the wheel, `/memory forget` asks first, dates in `/reminders` |
+| #42 | | UX run: reminder times the way people say them (`in an hour and a half`, `tomorrow evening`, `on the 15th`, `every other week`), clearer refusals, repeats shown in your own timezone, `/timezone` suggests abbreviations |
 
 ## Not built yet
 
