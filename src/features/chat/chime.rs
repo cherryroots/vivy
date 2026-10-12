@@ -34,7 +34,7 @@ use crate::core::{Asker, BotCtx, Feature, Result};
 use crate::util::shorten_at_word;
 
 /// How many messages she reads before deciding.
-const READ_MESSAGES: u8 = 25;
+const READ_MESSAGES: u8 = 15;
 /// Rounds of tool calls (saving to memory) before she has to decide.
 const MAX_ROUNDS: usize = 4;
 /// The longest line she posts.
@@ -72,8 +72,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
-            chime_chance: 0.03,
-            chime_cooldown_minutes: 60,
+            chime_chance: 0.04,
+            chime_cooldown_minutes: 30,
         }
     }
 }
@@ -461,8 +461,8 @@ mod tests {
     #[test]
     fn settings_default_to_a_small_chance() {
         let settings: Settings = toml::from_str("enabled = true").unwrap();
-        assert_eq!(settings.chime_chance, 0.03);
-        assert_eq!(settings.chime_cooldown_minutes, 60);
+        assert_eq!(settings.chime_chance, 0.04);
+        assert_eq!(settings.chime_cooldown_minutes, 30);
         let off: Settings = toml::from_str("chime_chance = 0.0").unwrap();
         assert_eq!(off.chime_chance, 0.0);
     }

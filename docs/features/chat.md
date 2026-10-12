@@ -119,11 +119,11 @@ Turns are never deleted or rewritten, with one exception: the `Context` parts ar
 
 ### Chiming in
 
-`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.03). A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 60) right away, so two quick messages can't both start one. Messages that mention her or reply to her are skipped, since they get a real answer.
+`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.04). A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. Messages that mention her or reply to her are skipped, since they get a real answer.
 
 On a hit, `speak`:
 
-1. Reads the last 25 messages (`read_along`) into a `<recent_messages>` transcript.
+1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript.
 2. Builds one question: the transcript plus `INSTRUCTIONS` (pass, react, or one short line; or a short question when she doesn't know what people mean). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
 3. Runs it with `ai::complete` (the tool loop without Discord output, at most 4 rounds) and `job: "chime"`. The request carries every tool, like an answer, so it starts the same way and reads the system prompt and tools from the prompt cache; `Runner` turns down any tool outside `UNPROMPTED_TOOLS`.
 4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel.
