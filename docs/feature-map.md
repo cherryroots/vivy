@@ -152,6 +152,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #47 | | Command names: the wheel commands are `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet` and `/wheel reset` (were `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`); `/snails` became `/snails top` and `/snail_backfill` became `/snails backfill` |
 | #48 | | Chime-ins: she reads the last 15 messages (was 25), 4% chance per message (was 3%), 30-minute cooldown per channel (was 60) |
 | #49 | | Chat: Slack-style `<url\|text>` links become Discord masked links, so they no longer show as one broken link; the prompt asks for `[text](url)` |
+| #50 | | Snails: a flat picture under 3 pixels on a side (a 1×1 pixel) no longer crashes the fingerprint; it used to be trimmed down to nothing |
 
 ## Not built yet
 
