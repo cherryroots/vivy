@@ -98,8 +98,9 @@ pub(super) fn placeholder() -> Vec<String> {
 /// The messages to show: the text split to fit, with the note and the status as the last
 /// lines.
 fn render(text: &str, note: Option<&str>, status: Option<&str>) -> Vec<String> {
+    let text = discord_links(text);
     // Every part but the last fills a whole message; the last keeps room for the lines below.
-    let mut parts = split_message(text, DISCORD_LIMIT);
+    let mut parts = split_message(&text, DISCORD_LIMIT);
     if let Some(last) = parts.pop() {
         parts.extend(split_message(&last, DISCORD_LIMIT - STATUS_ROOM));
     }
@@ -518,6 +519,39 @@ fn link_files(text: &str, files: &[(String, String)]) -> String {
     result
 }
 
+/// Turns Slack-style links, `<https://example.com|the text>`, into Discord's masked links,
+/// `[the text](<https://example.com>)`. Models sometimes write them (or copy them from wiki
+/// markup), and Discord would show the `|text` as part of a broken link.
+pub(super) fn discord_links(text: &str) -> String {
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        result.push_str(&rest[..start]);
+        let link = &rest[start + 1..];
+        let slack = link
+            .find(['>', '<', '\n'])
+            .filter(|&end| link.as_bytes()[end] == b'>')
+            .and_then(|end| {
+                let (url, label) = link[..end].split_once('|')?;
+                let label = label.trim();
+                let is_web = url.starts_with("https://") || url.starts_with("http://");
+                (is_web && !url.contains(' ') && !label.is_empty()).then_some((url, label, end))
+            });
+        match slack {
+            Some((url, label, end)) => {
+                result.push_str(&format!("[{label}](<{url}>)"));
+                rest = &link[end + 1..];
+            }
+            None => {
+                result.push('<');
+                rest = link;
+            }
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,6 +632,30 @@ mod tests {
         assert_eq!(
             plain_tool_status("read_recent_messages"),
             "🔧 Read recent messages…"
+        );
+    }
+
+    #[test]
+    fn slack_links_become_masked_links() {
+        assert_eq!(
+            discord_links(
+                "From the <https://wowpedia.fandom.com/wiki/Summon_Dreadsteed|Dreadsteed of Xoroth> quest."
+            ),
+            "From the [Dreadsteed of Xoroth](<https://wowpedia.fandom.com/wiki/Summon_Dreadsteed>) quest."
+        );
+        // Plain and unfinished links, mentions and comparisons stay as they are.
+        for text in [
+            "<https://example.com> and <@123>",
+            "a <b and c> d",
+            "<https://example.com|Exam",
+            "<https://example.com|>",
+            "x < y | z > w",
+        ] {
+            assert_eq!(discord_links(text), text);
+        }
+        assert_eq!(
+            render("<https://a.com|A>", None, None),
+            ["[A](<https://a.com>)"]
         );
     }
 
