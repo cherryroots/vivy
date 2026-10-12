@@ -5,8 +5,8 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 ## Using it
 
 - **Check Snail** (right-click a message, then Apps): a private reply that lists up to 10 earlier posts of the same link or picture, oldest first, each with the date, the author and a jump link, and whether it was the same link or the same picture. If a picture could not be downloaded, the reply says so and that it will be retried.
-- **`/snails`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
-- **`/snail_backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
+- **`/snails top`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
+- **`/snails backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
 The only setting is the usual gate in `[features.snails]` (`enabled`, plus the shared `guilds` / `channels` keys); `config.example.toml` explains them. Setup is in the README.
 
@@ -22,8 +22,8 @@ All in `src/features/snails/`. The first three are pure functions (no Discord, n
 | `store/` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection, all reached as `store::name`. `mod.rs` has the tables and saving a message; `matches.rs` finds older messages with the same links or pictures and counts snails; `failures.rs` is the retry list; `crawl.rs` is the backfill's bookkeeping. |
 | `index.rs` | Downloading, fingerprinting and saving one message (`sync_message`, `index_message`). |
 | `check.rs` | The Check Snail command, and the quiet snail count for new messages (`on_new_message`). |
-| `board.rs` | `/snails`, the leaderboard (`store::top_snailers`). |
-| `backfill.rs` | `/snail_backfill`, the history crawl, and the startup catch-up. |
+| `board.rs` | `/snails top`, the leaderboard (`store::top_snailers`). |
+| `backfill.rs` | `/snails backfill`, the history crawl, and the startup catch-up. |
 | `retry.rs` | The loop that tries failed pictures again. |
 | `mod.rs` | The `Snails` struct and its `Feature` methods, which tie the rest together. |
 
@@ -113,7 +113,7 @@ If snails was turned off in that channel since, the failure is pushed back an ho
 
 ### The backfill (`backfill.rs`)
 
-`/snail_backfill start` lists every channel with messages: text, news, voice and stage chats, active threads, and public and private archived threads (forum posts are threads). Private archived threads need the Manage Threads permission; without it they are skipped. The archived-thread pages are requested by hand (`archived_threads`) because serenity's helper sends the paging timestamp in a form Discord doesn't accept. Each channel gets a row in `snail_crawl`, and the server is marked running in `snail_backfills`.
+`/snails backfill start` lists every channel with messages: text, news, voice and stage chats, active threads, and public and private archived threads (forum posts are threads). Private archived threads need the Manage Threads permission; without it they are skipped. The archived-thread pages are requested by hand (`archived_threads`) because serenity's helper sends the paging timestamp in a form Discord doesn't accept. Each channel gets a row in `snail_crawl`, and the server is marked running in `snail_backfills`.
 
 `crawl` then reads one channel at a time (lowest channel ID first), 100 messages per page (`PAGE`), from the newest back. `read_page` indexes up to 8 messages at once (`PARALLEL`) with `index::index_message`, which skips messages read before and does **not** count snails: old reposts are history, not new catches. After every page it saves its place (`before_id`), so pausing, a restart or a network failure loses nothing. A channel the bot can't read is marked finished with its error. Any other failure waits 60 seconds (`RETRY_AFTER`) and tries the page again.
 
@@ -128,7 +128,7 @@ On every start, `spawn_catch_up` reads what was posted while the bot was offline
 | Method | What it does here |
 |---|---|
 | `name` | `"snails"` |
-| `commands` | Check Snail (`check::check_snail`), `/snail_backfill` (`backfill::snail_backfill`) and `/snails` (`board::snails`). |
+| `commands` | Check Snail (`check::check_snail`) and `/snails` (`board::snails`), whose subcommands are `top` (`board::top`) and `backfill` (`backfill::snail_backfill`). |
 | `migrations` | `store::MIGRATIONS` |
 | `start` | Resumes crawls that were running (in servers the gate allows), starts the catch-up, and starts the retry loop. Never starts a new crawl. |
 | `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews, unless every link already has one or an edit was read first. |
@@ -152,7 +152,7 @@ All created by `store::MIGRATIONS`.
 
 **Migration 2**
 
-- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails`.
+- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails top`.
 
 **Migration 3** (edits, deletes, failed downloads, catch-up)
 
@@ -165,7 +165,7 @@ All created by `store::MIGRATIONS`.
 
 - `snail_dropped`: server, host, and how many pictures from that host were dropped after their last try.
 
-**Migration 5** adds the index `snail_caught_guild` on `(guild_id, caught_at)` for `/snails`.
+**Migration 5** adds the index `snail_caught_guild` on `(guild_id, caught_at)` for `/snails top`.
 
 ## Background loops
 

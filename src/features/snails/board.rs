@@ -1,4 +1,6 @@
-//! `/snails`: the server's top snailers, this week and of all time. Counts the new messages
+//! `/snails`, with the subcommands `top` (here) and `backfill` (in `backfill.rs`).
+//!
+//! `/snails top`: the server's top snailers, this week and of all time. Counts the new messages
 //! that repeated an earlier post (`snail_caught`), not what the backfill found in old history.
 
 use anyhow::Context as _;
@@ -6,6 +8,7 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::CreateAllowedMentions;
 
+use super::backfill::snail_backfill;
 use super::store;
 use crate::core::{Context, Result};
 
@@ -13,9 +16,20 @@ use crate::core::{Context, Result};
 const TOP: usize = 10;
 const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
 
+/// Reposted links and pictures
+#[poise::command(
+    slash_command,
+    guild_only,
+    subcommands("top", "snail_backfill"),
+    subcommand_required
+)]
+pub async fn snails(_ctx: Context<'_>) -> Result<()> {
+    Ok(())
+}
+
 /// Who reposts the most in this server
 #[poise::command(slash_command, guild_only)]
-pub async fn snails(ctx: Context<'_>) -> Result<()> {
+pub async fn top(ctx: Context<'_>) -> Result<()> {
     let guild = ctx
         .guild_id()
         .context("guild_only command without a server")?
@@ -80,6 +94,14 @@ fn list(rows: &[(u64, u64)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subcommands_have_short_names() {
+        let snails = snails();
+        let names: Vec<&str> = snails.subcommands.iter().map(|c| c.name.as_ref()).collect();
+        assert_eq!(snails.name, "snails");
+        assert_eq!(names, ["top", "backfill"]);
+    }
 
     #[test]
     fn board_text() {

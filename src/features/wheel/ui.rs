@@ -105,14 +105,14 @@ pub enum Action {
         on: u64,
         message: u64,
     },
-    /// The button of `/reset_wheel`, which opens the confirm modal. `season` is the
+    /// The button of `/wheel reset`, which opens the confirm modal. `season` is the
     /// season that was active when the command ran (0 if there was none), so a
     /// confirmation from before another reset can't end the season that reset started.
     Reset {
         keep_options: bool,
         season: i64,
     },
-    /// The confirm modal of `/reset_wheel`, with the same values as [`Action::Reset`].
+    /// The confirm modal of `/wheel reset`, with the same values as [`Action::Reset`].
     NewSeason {
         keep_options: bool,
         season: i64,
@@ -604,7 +604,7 @@ pub fn clean_name(input: &str) -> Result<Option<String>, String> {
 /// the name and allow 100 there.
 pub const MAX_MOVIE: usize = 100;
 
-/// Checks a movie title from `/wheel_add` or `/wheel_movie`. `None` means no movie.
+/// Checks a movie title from `/wheel add` or `/wheel movie`. `None` means no movie.
 pub fn clean_movie(input: &str) -> Result<Option<String>, String> {
     clean_text(input, MAX_MOVIE, "movie title", "Movie titles")
 }
@@ -665,11 +665,11 @@ pub fn help_text(rules: Rules) -> String {
 - **Bet at least {TAX_THRESHOLD}%** of your money every round. Otherwise you lose 3% of your money for every missing percentage point when the round ends, up to 30%.{tax}
 {payouts}
 - **Change Name** sets the name the wheel shows for you; leave it empty to go back to your Discord name.
-- An option leaves the wheel once it has won. Admins add options with `/wheel_add` and start a new season with `/reset_wheel`."
+- An option leaves the wheel once it has won. Admins add options with `/wheel add` and start a new season with `/wheel reset`."
     )
 }
 
-/// The `/reset_wheel` confirmation. `season` is the active season (0 if none).
+/// The `/wheel reset` confirmation. `season` is the active season (0 if none).
 pub fn reset_confirmation(keep_options: bool, season: i64) -> (String, Vec<CreateActionRow>) {
     let kept = if keep_options {
         " with the same options"
@@ -677,7 +677,7 @@ pub fn reset_confirmation(keep_options: bool, season: i64) -> (String, Vec<Creat
         " with an empty wheel"
     };
     let text = format!(
-        "This ends the current season and starts a new one{kept}. The old season stays viewable with `/wheel_status season:`."
+        "This ends the current season and starts a new one{kept}. The old season stays viewable with `/wheel status season:`."
     );
     let action = Action::Reset {
         keep_options,

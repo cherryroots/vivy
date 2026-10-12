@@ -1,6 +1,6 @@
 //! Pictures that failed to download get tried again later, with a growing wait (see
 //! `store::retry_delay`) up to `store::MAX_ATTEMPTS` tries. After the last one the picture
-//! is dropped and counted for its host, shown in `/snail_backfill status`.
+//! is dropped and counted for its host, shown in `/snails backfill status`.
 //!
 //! Discord's attachment links expire, so a retry reads the message again for fresh links
 //! instead of keeping the old one. A message that was deleted in the meantime is forgotten.

@@ -47,11 +47,11 @@ With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either ch
 
 ### Movie wheel
 
-voltgpt's betting game for movie night. `/wheel_status` shows the round as a picture with buttons to claim, bet and set the winner. Bets and taxes go into a pot that the bets on the winner share by stake, and a player can bet at most half their money per round. Admins use `/wheel_add` (up to five people at once, each with the movie they picked), `/wheel_movie` (sets or changes a pick later), `/insert_bet` and `/reset_wheel` (which starts a new season). The Help button explains the rules.
+voltgpt's betting game for movie night. `/wheel status` shows the round as a picture with buttons to claim, bet and set the winner. Bets and taxes go into a pot that the bets on the winner share by stake, and a player can bet at most half their money per round. Admins use `/wheel add` (up to five people at once, each with the movie they picked), `/wheel movie` (sets or changes a pick later), `/wheel bet` and `/wheel reset` (which starts a new season). The Help button explains the rules.
 
 ### Snail detection
 
-Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails` shows the server's top snailers this week and of all time. Admins can read older history with `/snail_backfill start`.
+Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails top` shows the server's top snailers this week and of all time. Admins can read older history with `/snails backfill start`.
 
 ### Control panel
 

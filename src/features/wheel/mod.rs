@@ -9,7 +9,7 @@
 //! - `ui.rs`: the status buttons, menus and modal, and their IDs
 //! - `render.rs`: the round as a picture
 //! - `names.rs`: display names for the stored user IDs
-//! - `commands.rs`: `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`
+//! - `commands.rs`: `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`
 //! - `import.rs`: the running game from voltgpt's database
 //! - `tools.rs`: `get_wheel_status` for chat
 
@@ -41,13 +41,7 @@ impl Feature for Wheel {
     }
 
     fn commands(&self) -> Vec<Command> {
-        vec![
-            commands::wheel_status(),
-            commands::wheel_add(),
-            commands::wheel_movie(),
-            commands::insert_bet(),
-            commands::reset_wheel(),
-        ]
+        vec![commands::wheel()]
     }
 
     fn migrations(&self) -> &'static [&'static str] {

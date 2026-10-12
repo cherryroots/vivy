@@ -2,15 +2,15 @@
 //! already seen.
 //!
 //! Every new message's links and pictures are saved as it arrives, and a new message that
-//! repeats an earlier post is counted (quietly, for the control panel and `/snails`). "Check Snail" (right-click a
-//! message → Apps) lists the earlier posts of the same thing. `/snail_backfill` reads the
+//! repeats an earlier post is counted (quietly, for the control panel and `/snails top`). "Check Snail" (right-click a
+//! message → Apps) lists the earlier posts of the same thing. `/snails backfill` reads the
 //! server's older history, but only when an admin starts it; after that, each start catches
 //! up on what those channels got while the bot was offline.
 //!
 //! Edits are read again (links and pictures added count, removed ones stop counting), and
 //! deleted messages are forgotten. A snail that gets deleted stays counted as caught: it was
 //! posted. Pictures that fail to download are retried later and listed by host in
-//! `/snail_backfill status`.
+//! `/snails backfill status`.
 //!
 //! - `links.rs`: links to keys, so mirrors and tracking junk share one key (pure)
 //! - `fingerprint.rs`: picture fingerprints and the detail check (pure)
@@ -18,8 +18,8 @@
 //! - `store.rs`: the tables and queries
 //! - `index.rs`: downloading and saving one message
 //! - `check.rs`: the Check Snail command
-//! - `board.rs`: `/snails`, the leaderboard
-//! - `backfill.rs`: `/snail_backfill`, the history crawl and the startup catch-up
+//! - `board.rs`: `/snails top`, the leaderboard
+//! - `backfill.rs`: `/snails backfill`, the history crawl and the startup catch-up
 //! - `retry.rs`: trying failed pictures again
 
 mod backfill;
@@ -69,11 +69,7 @@ impl Feature for Snails {
     }
 
     fn commands(&self) -> Vec<Command> {
-        vec![
-            check::check_snail(),
-            backfill::snail_backfill(),
-            board::snails(),
-        ]
+        vec![check::check_snail(), board::snails()]
     }
 
     fn migrations(&self) -> &'static [&'static str] {

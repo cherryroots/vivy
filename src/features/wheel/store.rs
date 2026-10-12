@@ -75,7 +75,7 @@ pub const MIGRATIONS: &[&str] = &[
     );",
 ];
 
-/// Remembers the server's newest status message (the one `/wheel_status` or a new round
+/// Remembers the server's newest status message (the one `/wheel status` or a new round
 /// posted), so it can be redrawn later.
 pub fn set_status_message(
     conn: &Connection,

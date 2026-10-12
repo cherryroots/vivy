@@ -1,6 +1,6 @@
-//! `/snail_backfill`: reads the server's history so older posts count as snails too.
+//! `/snails backfill`: reads the server's history so older posts count as snails too.
 //!
-//! Nothing starts on its own: an admin runs `/snail_backfill start`. The crawl goes channel by
+//! Nothing starts on its own: an admin runs `/snails backfill start`. The crawl goes channel by
 //! channel, 100 messages at a time from the newest back, and saves its place after every page,
 //! so pausing, restarting the bot or a network failure never loses work. A crawl an admin
 //! started (and didn't pause) carries on when the bot restarts.
@@ -48,7 +48,7 @@ pub enum Action {
 }
 
 /// Read the server's older messages so Check Snail knows them (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
+#[poise::command(slash_command, guild_only, ephemeral, rename = "backfill")]
 pub async fn snail_backfill(
     ctx: Context<'_>,
     #[description = "start (or continue), pause, or show progress"] action: Action,
@@ -82,7 +82,7 @@ pub async fn snail_backfill(
             format!(
                 "Started. Found {total} channels and threads ({added} new to the backfill). \
                  This can take hours and keeps going after restarts; \
-                 `/snail_backfill status` shows how far it is."
+                 `/snails backfill status` shows how far it is."
             )
         }
         Action::Pause => {
@@ -90,7 +90,7 @@ pub async fn snail_backfill(
                 .call(move |conn| Ok(store::set_running(conn, g, false)?))
                 .await?;
             info!(guild = g, "snail backfill paused");
-            "Paused after the current page. `/snail_backfill start` continues where it stopped."
+            "Paused after the current page. `/snails backfill start` continues where it stopped."
                 .to_string()
         }
         Action::Status => {
