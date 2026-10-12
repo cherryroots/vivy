@@ -126,11 +126,11 @@ show_job_costs = true
 [features.chat]
 # Answers @-mentions that no other feature claimed.
 enabled = true
-# Now and then Vivy reads the last 25 messages and chimes in with one line, a question,
+# Now and then Vivy reads the last 15 messages and chimes in with one line, a question,
 # an emoji reaction, or nothing. The chance per message (0 turns it off), and how long a
 # channel waits before she considers it again.
-chime_chance = 0.03
-chime_cooldown_minutes = 60
+chime_chance = 0.04
+chime_cooldown_minutes = 30
 
 [features.reminders]
 enabled = true

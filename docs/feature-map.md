@@ -150,6 +150,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #44 | | UX run: startup warnings for an empty `admins`, an unreadable `faces_dir`/`banners_dir` and an `effort` the API would refuse; a bad `log_level` falls back to warn; a wrong status channel warns once; `log_channel`/`log_level`/`status_interval_seconds` key names (old ones still work); config warnings labelled `config`; the example config no longer turns on `fallback`, `service_tier` or a `voice_id` |
 | #45 | | UX run: the wheel picture drawn for a phone: bigger text, no money bar, "no bets yet" rows, the tax rule as one line |
 | #47 | | Command names: the wheel commands are `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet` and `/wheel reset` (were `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`); `/snails` became `/snails top` and `/snail_backfill` became `/snails backfill` |
+| #48 | | Chime-ins: she reads the last 15 messages (was 25), 4% chance per message (was 3%), 30-minute cooldown per channel (was 60) |
 
 ## Not built yet
 
