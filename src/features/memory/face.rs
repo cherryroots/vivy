@@ -91,7 +91,7 @@ fn crop(ctx: &BotCtx) -> Option<Crop> {
 }
 
 /// The faces folder, if one is set.
-fn dir(ctx: &BotCtx) -> Option<PathBuf> {
+pub(super) fn dir(ctx: &BotCtx) -> Option<PathBuf> {
     let settings: Settings = ctx.config.feature_part("memory").ok()?;
     settings.faces_dir.map(PathBuf::from)
 }

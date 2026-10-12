@@ -167,6 +167,13 @@ impl Feature for Chat {
 
     async fn on_mention(&self, ctx: &BotCtx, msg: &Message, rest: &str) -> Result<Mention> {
         let provider = provider(ctx)?;
+        // The reply starts now, as "💭 Thinking…", before the slow part: waiting for link
+        // previews, downloading pictures, reading video frames. Otherwise a question with a
+        // few phone photos shows nothing for many seconds.
+        let mut reply = LiveReply::new(msg.channel_id, Some(msg.id));
+        if let Err(err) = reply.show(&ctx.http, &answer::placeholder()).await {
+            warn!("couldn't start the reply: {err:#}");
+        }
         let msg = media::with_previews(&ctx.http, msg).await;
 
         // The message this one replies to, if any, is the conversation so far.
@@ -197,7 +204,6 @@ impl Feature for Chat {
             message: msg.id,
             posted: Default::default(),
         };
-        let reply = LiveReply::new(msg.channel_id, Some(msg.id));
         self.answer(ctx, provider.as_ref(), asker, question_id, reply)
             .await?;
         Ok(Mention::Handled)
@@ -225,7 +231,11 @@ impl Feature for Chat {
         match emoji.as_str() {
             STOP => {
                 if self.is_running(reaction.message_id) {
-                    self.stop(reaction.message_id, user);
+                    if self.stop(reaction.message_id, user) {
+                        // Taken away again, like 🔁: the status says a second ❌ deletes
+                        // the answer, and that one should be a fresh press.
+                        let _ = reaction.delete(&ctx.http).await;
+                    }
                     Ok(())
                 } else {
                     self.delete(ctx, reaction, user).await
@@ -343,13 +353,17 @@ impl Chat {
         Ok(())
     }
 
-    /// ❌: stops the answer that `message` belongs to, if `user` asked for it.
-    fn stop(&self, message: MessageId, user: UserId) {
+    /// ❌: stops the answer that `message` belongs to, if `user` asked for it. Returns
+    /// whether there was one to stop.
+    fn stop(&self, message: MessageId, user: UserId) -> bool {
+        let mut stopped = false;
         for running in self.running.lock().unwrap().iter() {
             if running.requester == user && running.message_ids.lock().unwrap().contains(&message) {
                 running.cancel.cancel();
+                stopped = true;
             }
         }
+        stopped
     }
 
     fn is_running(&self, message: MessageId) -> bool {

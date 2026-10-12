@@ -336,6 +336,60 @@ pub struct AiConfig {
     pub claude: ClaudeConfig,
 }
 
+const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+const OPENAI_EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
+const VERBOSITIES: [&str; 3] = ["low", "medium", "high"];
+
+/// Settings the APIs would refuse, found at startup instead of on the first answer: an
+/// `effort` or `verbosity` that isn't one of the allowed words. Each gives one warning
+/// naming the key.
+pub fn config_warnings(config: &AiConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let mut check = |key: String, value: &str, allowed: &[&str]| {
+        if !allowed.contains(&value) {
+            let words: Vec<String> = allowed.iter().map(|word| format!("{word:?}")).collect();
+            warnings.push(format!(
+                "config.toml: `{key} = {value:?}` isn't one of {}, so the API will refuse those requests",
+                words.join(", ")
+            ));
+        }
+    };
+    check(
+        "ai.claude.effort".into(),
+        &config.claude.effort,
+        &CLAUDE_EFFORTS,
+    );
+    for (name, job) in &config.claude.jobs {
+        if let Some(effort) = &job.effort {
+            check(
+                format!("ai.claude.jobs.{name}.effort"),
+                effort,
+                &CLAUDE_EFFORTS,
+            );
+        }
+    }
+    check(
+        "ai.openai.reasoning_effort".into(),
+        &config.openai.reasoning_effort,
+        &OPENAI_EFFORTS,
+    );
+    for (name, job) in &config.openai.jobs {
+        if let Some(effort) = &job.effort {
+            check(
+                format!("ai.openai.jobs.{name}.effort"),
+                effort,
+                &OPENAI_EFFORTS,
+            );
+        }
+    }
+    check(
+        "ai.openai.verbosity".into(),
+        &config.openai.verbosity,
+        &VERBOSITIES,
+    );
+    warnings
+}
+
 /// `provider = "openai"` or `provider = "claude"` under `[ai]`. Any other value stops the
 /// bot at startup with a config error. Left out, it's OpenAI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]

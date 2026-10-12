@@ -19,15 +19,16 @@ use crate::core::{BotCtx, Feature, Result};
 struct Settings {
     /// Channel for the status message. Without one this feature does nothing.
     status_channel: Option<u64>,
-    /// Seconds between refreshes.
-    status_interval_secs: u64,
+    /// Seconds between refreshes. The old key name `status_interval_secs` still works.
+    #[serde(alias = "status_interval_secs")]
+    status_interval_seconds: u64,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
             status_channel: None,
-            status_interval_secs: 60,
+            status_interval_seconds: 60,
         }
     }
 }
@@ -51,7 +52,7 @@ impl Feature for ControlPanel {
             return Ok(());
         };
         // Discord allows about 5 edits per 5 seconds; stay far below that.
-        let interval = settings.status_interval_secs.max(10);
+        let interval = settings.status_interval_seconds.max(10);
         let span = info_span!("status", feature = "control_panel");
         let task = status::run(ctx.clone(), ChannelId::new(channel), interval).instrument(span);
         ctx.tasks.spawn(task);

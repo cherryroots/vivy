@@ -19,7 +19,7 @@ use tracing::{Instrument as _, error, info, info_span, warn};
 use super::parse;
 use super::store::{self, Reminder};
 use super::ui;
-use crate::core::{BotCtx, BotEvent, Result};
+use crate::core::{BotCtx, BotEvent, Result, settings};
 
 /// Failed sends before a reminder is dropped (about 8 hours of retrying).
 const MAX_ATTEMPTS: u32 = 10;
@@ -83,9 +83,13 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
         .call(move |conn| Ok(store::images(conn, id)?))
         .await?;
     let channel = ChannelId::new(reminder.channel_id);
+    // The owner's timezone, so a repeat reads without the zone's name for them.
+    let zone = settings::timezone(&ctx.db, UserId::new(reminder.user_id))
+        .await?
+        .unwrap_or(Tz::UTC);
 
     let mut sent = channel
-        .send_message(&ctx.http, ui::fired_message(&reminder, now, true))
+        .send_message(&ctx.http, ui::fired_message(&reminder, now, true, zone))
         .await;
     // If the images were the problem (too big for the server now, say), send it without
     // them. The reminder links to the original message, which still has them.
@@ -98,7 +102,7 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
             "couldn't send a reminder with its images, sending it without: {err}"
         );
         sent = channel
-            .send_message(&ctx.http, ui::fired_message(&reminder, now, false))
+            .send_message(&ctx.http, ui::fired_message(&reminder, now, false, zone))
             .await;
     }
 

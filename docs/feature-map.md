@@ -145,6 +145,9 @@ The port went in stages, one pull request each, all merged into `main`.
 | #39 | | Claude: at most 5 web searches per request (`web_search_max_uses`) |
 | #40 | | UX run: shorter button labels, plainer messages and errors, first-person `/memory` replies, Check Snail lines that fit a phone |
 | #41 | | UX run: the new round posted after a winner, admin commands redraw the wheel, `/memory forget` asks first, dates in `/reminders` |
+| #42 | | UX run: reminder times the way people say them (`in an hour and a half`, `tomorrow evening`, `on the 15th`, `every other week`), clearer refusals, repeats shown in your own timezone, `/timezone` suggests abbreviations |
+| #43 | | UX run: chat replies start with "Thinking…" before downloads, the status line stays out of code blocks, long answers fill each message, HEIC/AVIF photos converted, "make it night" finds the picture from any message of the answer, ❌ taken off after a stop |
+| #44 | | UX run: startup warnings for an empty `admins`, an unreadable `faces_dir`/`banners_dir` and an `effort` the API would refuse; a bad `log_level` falls back to warn; a wrong status channel warns once; `log_channel`/`log_level`/`status_interval_seconds` key names (old ones still work); config warnings labelled `config`; the example config no longer turns on `fallback`, `service_tier` or a `voice_id` |
 
 ## Not built yet
 

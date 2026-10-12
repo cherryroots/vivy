@@ -31,6 +31,15 @@ const SAFE_INPUT: [&str; 4] = [
     "file",
 ];
 
+/// The same, for still pictures: plain image files (`image2` and the `*_pipe` readers) and
+/// the MP4-like containers HEIC and AVIF come in, which the `mov` reader opens.
+const SAFE_IMAGE_INPUT: [&str; 4] = [
+    "-format_whitelist",
+    "image2,bmp_pipe,tiff_pipe,png_pipe,jpeg_pipe,webp_pipe,mov,mp4,m4a,3gp,3g2,mj2",
+    "-protocol_whitelist",
+    "file",
+];
+
 /// How the frames of one file are laid out.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Layout {
@@ -142,6 +151,38 @@ pub async fn frame_grids(data: &[u8], layout: Layout) -> anyhow::Result<Vec<Vec<
     Ok(grids)
 }
 
+/// Turns a still picture in a format models don't take (HEIC from an iPhone, AVIF, BMP,
+/// TIFF) into a PNG. ffmpeg reads them all; only the output format changes.
+pub async fn to_png(data: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let _turn = RUNS.acquire().await.context("waiting for ffmpeg")?;
+    let dir = tempfile::tempdir().context("creating a temporary folder")?;
+    let input = dir.path().join("input");
+    tokio::fs::write(&input, data).await?;
+    let output = dir.path().join("picture.png");
+    let mut command = Command::new("ffmpeg");
+    command
+        .args(["-hide_banner", "-loglevel", "error"])
+        .args(SAFE_IMAGE_INPUT)
+        .arg("-i")
+        .arg(&input)
+        .args(["-frames:v", "1"])
+        .arg(&output)
+        .kill_on_drop(true);
+    let result = tokio::time::timeout(TIMEOUT, command.output())
+        .await
+        .context("ffmpeg took too long")?
+        .context("running ffmpeg (is it installed?)")?;
+    if !result.status.success() {
+        bail!(
+            "ffmpeg failed: {}",
+            String::from_utf8_lossy(&result.stderr).trim()
+        );
+    }
+    tokio::fs::read(&output)
+        .await
+        .context("reading the converted picture")
+}
+
 /// The length of a GIF or video in seconds, from ffprobe.
 async fn probe_duration(path: &std::path::Path) -> anyhow::Result<f64> {
     let mut command = Command::new("ffprobe");
@@ -205,6 +246,38 @@ mod tests {
             .expect("ffmpeg must be installed to run this test");
         assert!(status.success());
         tokio::fs::read(&path).await.unwrap()
+    }
+
+    /// A one-frame picture in `extension`'s format (bmp, tiff), from ffmpeg's test pattern.
+    async fn test_picture(extension: &str) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("picture.{extension}"));
+        let status = Command::new("ffmpeg")
+            .args([
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x48",
+            ])
+            .args(["-frames:v", "1"])
+            .arg(&path)
+            .status()
+            .await
+            .expect("ffmpeg must be installed to run this test");
+        assert!(status.success());
+        tokio::fs::read(&path).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn converts_pictures_to_png() {
+        for extension in ["bmp", "tiff"] {
+            let png = to_png(&test_picture(extension).await).await.unwrap();
+            assert!(png.starts_with(b"\x89PNG"), "{extension}");
+            assert_eq!(png_size(&png), (64, 48), "{extension}");
+        }
+        assert!(to_png(b"not a picture").await.is_err());
     }
 
     /// Width and height of a PNG, read from its header.

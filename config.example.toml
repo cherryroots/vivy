@@ -15,10 +15,11 @@ database = "vivy.db"
 old_database = "old.db"
 
 [logging]
-# Channel that receives warnings, errors, and start/stop notices.
-# discord_channel = 123456789012345678
+# Channel that receives warnings, errors, and start/stop notices. The bot must be a member
+# of the channel (add it like a person).
+# log_channel = 123456789012345678
 # Lowest level posted there: "error", "warn" or "info".
-discord_level = "warn"
+log_level = "warn"
 
 [ai]
 # Which provider chats: "claude" or "openai" (left out: "openai"). Only that provider's key
@@ -26,8 +27,9 @@ discord_level = "warn"
 provider = "claude"
 # The provider chat moves to while the main one can't answer (leave out for none; its key
 # must be in .env too). Out of credit: the main one is tried again a day later. Down: an
-# hour later. The first answer that works on it moves chat back.
-fallback = "openai"
+# hour later. The first answer that works on it moves chat back. Leave it out unless you
+# want both providers' keys in use.
+# fallback = "openai"
 
 # Claude settings. The key goes in .env (ANTHROPIC_API_KEY).
 [ai.claude]
@@ -99,7 +101,7 @@ reasoning_effort = "medium"
 verbosity = "low"
 # The service tier of chat answers ("fast" costs twice as much). Leave out for the
 # account's default. Background jobs always use the default.
-service_tier = "fast"
+# service_tier = "fast"
 # OpenAI's monthly cost in USD, chat and pictures together, for the status message and the
 # warnings in the log channel at 80% and 100% (estimated from list prices). 0 turns the
 # warnings off. Shown whenever OPENAI_TOKEN is set.
@@ -170,8 +172,9 @@ face_center = 0.5
 # Voice messages: Vivy can answer with a Discord voice message in her own voice, made with
 # ElevenLabs. The key goes in .env (ELEVENLABS_API_KEY); without it she can't send them.
 enabled = true
-# The ElevenLabs voice she speaks with (from Voice Design or the voice library).
-voice_id = "DIIk31SqVXDOEFbJGJl9"
+# The ElevenLabs voice she speaks with (from Voice Design or the voice library). Required
+# for voice messages: without it she can't send them.
+# voice_id = "DIIk31SqVXDOEFbJGJl9"
 # "eleven_v4", or "eleven_v4_turbo" for faster and half the price.
 model = "eleven_v4"
 # 0 to 1: lower is more expressive and varied, higher is steadier.
@@ -216,6 +219,6 @@ per_user_monthly_pictures = 20
 enabled = true
 
 [features.control_panel]
-# Channel with the status message the bot keeps up to date.
+# Channel with the status message the bot keeps up to date. The bot must be a member of it.
 # status_channel = 123456789012345678
-status_interval_secs = 60
+status_interval_seconds = 60

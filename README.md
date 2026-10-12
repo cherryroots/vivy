@@ -43,7 +43,7 @@ With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either ch
 
 ### Reminders
 
-`@Vivy remind me in 2h30m to …`, `at 16:30 CET`, `tomorrow at 9am`, `next friday` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every 2 hours`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
+`@Vivy remind me in 2h30m to …`, `in an hour and a half`, `at 16:30 CET`, `tomorrow evening`, `tonight`, `this friday`, `next week`, `on the 15th`, `march 3` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every other week`, `every 2 hours`, `daily`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
 
 ### Movie wheel
 
@@ -63,8 +63,8 @@ A status picture in a channel of your choice, refreshed every minute: uptime, ve
 
 1. Create an application at <https://discord.com/developers/applications> and add a bot to it.
 2. Under **Bot**, turn on the **Message Content Intent** and copy the token.
-3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions. Add Change Nickname if you use `nickname`, and Send Voice Messages if you use voice.
-4. Create two private channels for the control panel, for example `#bot-logs` and `#bot-status`, and copy their IDs (turn on Developer Mode in Discord, then right-click the channel).
+3. Invite the bot with the `bot` and `applications.commands` scopes and these permissions: View Channels, Send Messages, Send Messages in Threads, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Messages (to take people's ❌ and 🔁 reactions off chat answers again). Add Change Nickname if you use `nickname`, and Send Voice Messages if you use voice.
+4. Create two private channels for the control panel, for example `#bot-logs` and `#bot-status`, add the bot to both (it can't post in a private channel it isn't a member of), and copy their IDs (turn on Developer Mode in Discord, then right-click the channel).
 
 ### 2. Build
 

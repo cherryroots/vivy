@@ -64,12 +64,20 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
             .boxed()
     };
 
-    let min_level = Level::from_str(&config.discord_level)
-        .map_err(|_| anyhow::anyhow!("unknown logging.discord_level {:?}", config.discord_level))?;
+    // A typo here shouldn't stop the bot (systemd would restart it every few seconds):
+    // fall back to "warn" and say so, on stderr now and in the log channel once it's up.
+    let min_level = Level::from_str(&config.log_level).unwrap_or(Level::WARN);
+    let bad_level = Level::from_str(&config.log_level).is_err();
+    if bad_level {
+        eprintln!(
+            "config.toml: logging.log_level = {:?} isn't \"error\", \"warn\" or \"info\"; using \"warn\"",
+            config.log_level
+        );
+    }
     let (sender, receiver) = mpsc::channel(1000);
     let discord = DiscordLayer { sender }.with_filter(filter::filter_fn(move |meta| {
         // The layer sees our own spans (for their fields), lifecycle lines, and anything
-        // at `discord_level` or above.
+        // at `log_level` or above.
         (meta.is_span() && meta.target().starts_with("vivy"))
             || meta.target() == "lifecycle"
             || *meta.level() <= min_level
@@ -80,6 +88,13 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
         .with(discord);
     tracing::subscriber::set_global_default(subscriber)?;
     bridge_log_crate()?;
+    if bad_level {
+        tracing::warn!(
+            target: "config",
+            "config.toml: `logging.log_level = {:?}` isn't \"error\", \"warn\" or \"info\"; using \"warn\"",
+            config.log_level
+        );
+    }
 
     // Log panics like errors, with the span they happened in.
     std::panic::set_hook(Box::new(|info| {
@@ -426,7 +441,10 @@ pub fn spawn_discord_poster(
                     .allowed_mentions(CreateAllowedMentions::new());
                 // Not `tracing`: a failure here would log a line that fails to post again.
                 if let Err(err) = channel.send_message(&http, message).await {
-                    eprintln!("could not post to the log channel: {err}");
+                    eprintln!(
+                        "could not post to the log channel {channel} (logging.log_channel in \
+config.toml): {err}. Is the bot in that channel?"
+                    );
                 }
             }
             if stopping {
