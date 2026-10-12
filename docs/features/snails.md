@@ -59,7 +59,7 @@ A plain picture hash fails on crops: cut 10% off one side and the hash looks lik
 
 **1. Fingerprint.** `fingerprint` does this to each picture:
 
-- `prepare` turns it grayscale, cuts away flat borders, and shrinks it so the longest side is at most `WORK_SIZE` (256). `trim` removes rows and columns whose pixels all sit within 12 shades of the top-left pixel (letterboxing, bars around a screenshot). If that would leave less than a third of a side, the picture is left as it is.
+- `prepare` turns it grayscale, cuts away flat borders, and shrinks it so the longest side is at most `WORK_SIZE` (256). `trim` removes rows and columns whose pixels all sit within 12 shades of the top-left pixel (letterboxing, bars around a screenshot). If that would leave less than a third of a side (or nothing at all, for a flat picture under 3 pixels on a side), the picture is left as it is.
 - It takes 81 regions of the picture. `AXIS` lists 9 positions per side: the whole side, 92% of it at 3 offsets, and 84% of it at 5 offsets. Crossing the two sides gives 9 × 9 = 81 regions (`HASHES`), with the whole picture first.
 - Each region gets a 16×16 **difference hash** (dHash) from the `image_hasher` crate: the region is shrunk to a tiny grayscale grid, and each of the 256 bits says whether a pixel is brighter than its neighbour. That is 32 bytes (`HASH_BYTES`) per region.
 

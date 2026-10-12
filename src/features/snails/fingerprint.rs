@@ -170,8 +170,10 @@ fn trim(gray: GrayImage) -> GrayImage {
     while right > left && flat_col(right - 1, top, bottom) {
         right -= 1;
     }
-    // A mostly flat picture would be cut down to nearly nothing: leave it as it is.
-    if bottom - top < h / 3 || right - left < w / 3 {
+    // A mostly flat picture would be cut down to nearly nothing: leave it as it is. The
+    // `max(1)` keeps a flat picture under 3 pixels on a side (a 1×1 pixel) from being cut
+    // down to 0×0, which the crops can't handle.
+    if bottom - top < (h / 3).max(1) || right - left < (w / 3).max(1) {
         return gray;
     }
     imageops::crop_imm(&gray, left, top, right - left, bottom - top).to_image()
@@ -356,6 +358,18 @@ mod tests {
 
         let other = fingerprint(&picture(9, 400, 300));
         assert!(distance(&fp, &other) > MATCH_DISTANCE);
+    }
+
+    #[test]
+    fn tiny_flat_pictures_dont_panic() {
+        // These used to be trimmed down to 0×0 and panic in `crop`.
+        for (w, h) in [(1, 1), (2, 2), (1, 300), (300, 1), (2, 500)] {
+            let flat = DynamicImage::ImageRgb8(RgbImage::from_pixel(w, h, Rgb([200, 30, 30])));
+            assert_eq!(trim(flat.to_luma8()).dimensions(), (w, h), "{w}×{h}");
+            let fp = fingerprint(&flat);
+            assert_eq!(fp.hashes.len(), HASHES * HASH_BYTES, "{w}×{h}");
+            detail_difference(&flat, &picture(1, 400, 300));
+        }
     }
 
     #[test]
