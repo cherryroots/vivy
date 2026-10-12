@@ -131,6 +131,13 @@ enabled = true
 # channel waits before she considers it again.
 chime_chance = 0.04
 chime_cooldown_minutes = 30
+# Other chances for some people's messages (0 to 1, like chime_chance): [user ID, chance]
+# for anywhere, or [user ID, chance, channel ID] for one channel, which wins over anywhere.
+# 0 means she never chimes in on their messages there. The channel's cooldown still applies.
+# chime_chance_per_user = [
+#     [123456789012345678, 0.5],
+#     [123456789012345678, 0.0, 234567890123456789],
+# ]
 
 [features.reminders]
 enabled = true
