@@ -456,9 +456,21 @@ pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
             data: png,
         }]);
     }
-    let grids = frames::frame_grids(&data, frames::Layout::for_kind(media.kind))
-        .await
-        .with_context(|| format!("reading frames from {}", media.url))?;
+    let grids = match frames::frame_grids(&data, frames::Layout::for_kind(media.kind)).await {
+        Ok(grids) => grids,
+        // A GIF ffmpeg can't read may still decode as a picture: send its first frame, so
+        // the model sees something instead of nothing.
+        Err(error) if media.kind == MediaKind::Gif => {
+            let png = first_frame_png(data)
+                .await
+                .with_context(|| format!("reading frames from {}: {error:#}", media.url))?;
+            warn!(url = %media.url, "couldn't read the GIF's frames ({error:#}), sending its first frame");
+            vec![png]
+        }
+        Err(error) => {
+            return Err(error.context(format!("reading frames from {}", media.url)));
+        }
+    };
     Ok(grids
         .into_iter()
         .map(|data| ModelImage {
@@ -466,6 +478,20 @@ pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
             data,
         })
         .collect())
+}
+
+/// The first frame of a GIF as a PNG, decoded without ffmpeg.
+async fn first_frame_png(data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    tokio::task::spawn_blocking(move || {
+        let picture = image::load_from_memory_with_format(&data, image::ImageFormat::Gif)
+            .context("decoding the GIF")?;
+        let mut png = Vec::new();
+        picture
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .context("encoding the PNG")?;
+        Ok(png)
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -655,6 +681,18 @@ mod tests {
             let _ = socket.write_all(&body).await;
         });
         format!("http://{address}/file.png")
+    }
+
+    #[tokio::test]
+    async fn first_frame_of_a_gif() {
+        let mut gif = Vec::new();
+        image::RgbImage::new(4, 3)
+            .write_to(&mut std::io::Cursor::new(&mut gif), image::ImageFormat::Gif)
+            .unwrap();
+        let png = first_frame_png(gif).await.unwrap();
+        let picture = image::load_from_memory(&png).unwrap();
+        assert_eq!((picture.width(), picture.height()), (4, 3));
+        assert!(first_frame_png(b"not a gif".to_vec()).await.is_err());
     }
 
     #[tokio::test]

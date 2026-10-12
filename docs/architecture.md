@@ -231,7 +231,7 @@ Since features never import each other, the core gives them four ways to work to
 | `split.rs` | `split_message`: long text into Discord-sized parts, cut at Markdown boundaries by the `text-splitter` crate, never inside an emoji, with code blocks closed and reopened across parts |
 | `reply.rs` | `LiveReply`: a reply that can span several messages and change over time. `show(parts)` edits, sends or deletes messages until Discord matches. Chat streams answers through it. |
 | `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `preview_links` (the links Discord may preview: not `<link>` ones) and `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network |
-| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames. At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. |
+| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames. At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. A GIF ffmpeg can't read falls back to its first frame, decoded by `media.rs`. |
 | `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in, plus the parts both pictures draw, like the rounded `pill` label. The wheel and the status picture use it. |
 | `http.rs` | `client_builder`: the user agent and timeouts every HTTP client starts from |
 | `text.rs` | Text from text-file attachments and embeds, for chat |

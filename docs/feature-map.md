@@ -158,6 +158,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #53 | | Chat: threads and forum posts mentioned or linked in a message show their real name to her (with the channel they're in), instead of `#deleted-channel`; a channel she can't see says so |
 | #54 | | Chat: `look_back_at_answers` lets Vivy read her own earlier answers (tools called, what came back, errors, model, time taken) to explain or debug what she did; failed answers keep their error |
 | #55 | | Chat: a mention of Vivy later in a message ("stop being mean to @Vivy") is no longer removed, so she knows the message is about her; mentioned people show by their server nickname |
+| #56 | | Chat: a still (one-frame) GIF reaches her as a picture instead of "ffmpeg found no frames"; a GIF ffmpeg can't read sends its first frame |
 
 ## Not built yet
 

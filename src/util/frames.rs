@@ -109,8 +109,10 @@ pub async fn frame_grids(data: &[u8], layout: Layout) -> anyhow::Result<Vec<Vec<
     let duration = probe_duration(&input).await.unwrap_or(0.0);
     let (fps, columns, rows) = plan(duration, layout);
     let cell = layout.cell;
+    // `eof_action=pass`: by default `fps` rounds the last frame away when the clip ends
+    // before its next pick, which drops the only frame of a still (one-frame) GIF.
     let filter = format!(
-        "fps={fps},\
+        "fps={fps}:eof_action=pass,\
          scale={cell}:{cell}:force_original_aspect_ratio=decrease,\
          pad={cell}:{cell}:(ow-iw)/2:(oh-ih)/2:color=white,\
          tile={columns}x{rows}:color=white"
@@ -303,6 +305,34 @@ mod tests {
             .unwrap();
         assert_eq!(grids.len(), 2);
         assert_eq!(png_size(&grids[0]), (1200, 1200));
+    }
+
+    #[tokio::test]
+    async fn still_gif_becomes_one_grid() {
+        // A one-frame GIF used to give "ffmpeg found no frames".
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("still.gif");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=64x48",
+            ])
+            .args(["-frames:v", "1"])
+            .arg(&path)
+            .status()
+            .await
+            .expect("ffmpeg must be installed to run this test");
+        assert!(status.success());
+        let still = tokio::fs::read(&path).await.unwrap();
+        let grids = frame_grids(&still, Layout::for_kind(MediaKind::Gif))
+            .await
+            .unwrap();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(png_size(&grids[0]), (400, 400));
     }
 
     #[tokio::test]
