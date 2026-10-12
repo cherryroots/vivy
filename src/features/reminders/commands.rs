@@ -16,7 +16,10 @@ pub async fn reminders(ctx: Context<'_>) -> Result<()> {
         .db
         .call(move |conn| Ok(store::list_pending(conn, user)?))
         .await?;
-    let (text, menu) = ui::list_message(&list, None);
+    let zone = settings::timezone(&ctx.data().db, ctx.author().id)
+        .await?
+        .unwrap_or(chrono_tz::Tz::UTC);
+    let (text, menu) = ui::list_message(&list, None, zone);
     ctx.send(CreateReply::default().content(text).components(menu))
         .await?;
     Ok(())

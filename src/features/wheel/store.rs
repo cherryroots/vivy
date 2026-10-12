@@ -66,7 +66,41 @@ pub const MIGRATIONS: &[&str] = &[
         SELECT 1, coalesce(max(id), 0) FROM wheel_rounds;",
     // 5: the movie each option picked, set by admins. NULL when not set.
     "ALTER TABLE wheel_options ADD COLUMN movie TEXT;",
+    // 6: the newest status message in each server, so admin commands can redraw it and a
+    // new round can be posted under it.
+    "CREATE TABLE wheel_status_messages (
+        guild_id INTEGER PRIMARY KEY,
+        channel_id INTEGER NOT NULL,
+        message_id INTEGER NOT NULL
+    );",
 ];
+
+/// Remembers the server's newest status message (the one `/wheel_status` or a new round
+/// posted), so it can be redrawn later.
+pub fn set_status_message(
+    conn: &Connection,
+    guild: u64,
+    channel: u64,
+    message: u64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO wheel_status_messages (guild_id, channel_id, message_id) VALUES (?1, ?2, ?3)
+         ON CONFLICT (guild_id) DO UPDATE SET channel_id = excluded.channel_id,
+                                              message_id = excluded.message_id",
+        params![guild, channel, message],
+    )?;
+    Ok(())
+}
+
+/// The server's newest status message: (channel, message), if one was posted.
+pub fn status_message(conn: &Connection, guild: u64) -> rusqlite::Result<Option<(u64, u64)>> {
+    conn.query_row(
+        "SELECT channel_id, message_id FROM wheel_status_messages WHERE guild_id = ?1",
+        [guild],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+}
 
 /// A season's row, without its rounds.
 #[derive(Debug, Clone, PartialEq)]

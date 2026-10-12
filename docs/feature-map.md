@@ -62,7 +62,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | claude (in `ai/`) | `claude_uploads` |
 | chat | `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | reminders | `reminders`, `reminder_images` |
-| wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids` |
+| wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids`, `wheel_status_messages` |
 | memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
 | voice | `voice_messages` |
 | drawing | `drawings` |

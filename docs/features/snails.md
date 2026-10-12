@@ -6,7 +6,7 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 
 - **Check Snail** (right-click a message, then Apps): a private reply that lists up to 10 earlier posts of the same link or picture, oldest first, each with the date, the author and a jump link, and whether it was the same link or the same picture. If a picture could not be downloaded, the reply says so and that it will be retried.
 - **`/snails`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
-- **`/snail_backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got, the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
+- **`/snail_backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
 The only setting is the usual gate in `[features.snails]` (`enabled`, plus the shared `guilds` / `channels` keys); `config.example.toml` explains them. Setup is in the README.
 
