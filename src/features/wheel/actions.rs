@@ -28,7 +28,7 @@ use crate::core::{BotCtx, BotEvent, Result, user_error};
 
 const SERVER_ONLY: &str = "The wheel only works in a server.";
 const NO_GAME: &str = "There's no game running. Start one with /wheel_status.";
-const NOT_CURRENT: &str = "Only the current round can be changed from this message.";
+const NOT_CURRENT: &str = "This message shows an older round. Tap below to update it.";
 const SEASON_CHANGED: &str =
     "The season changed since this confirmation was made. Run /reset_wheel again.";
 
@@ -469,10 +469,14 @@ async fn refresh(
     // Looking up names and drawing can take longer than Discord waits for an answer.
     i.defer(&ctx.http).await?;
     let index = game.latest();
-    edit_status(ctx, i.channel_id, message, guild, &game, index).await;
     let number = game.season.rounds[index].number;
+    let text = if edit_status(ctx, i.channel_id, message, guild, &game, index).await {
+        format!("The wheel message now shows round {number}.")
+    } else {
+        "That wheel message is gone. Run /wheel_status for the current round.".to_string()
+    };
     let note = EditInteractionResponse::new()
-        .content(format!("The wheel message now shows round {number}."))
+        .content(text)
         .components(Vec::new());
     i.edit_response(&ctx.http, note).await?;
     Ok(())
@@ -535,7 +539,7 @@ async fn open_menu(
         PickKind::Place => {
             if current.money(user) <= 0 {
                 return Err(user_error(format!(
-                    "You have nothing to bet yet. Press Claim! for {CLAIM}."
+                    "You have nothing to bet yet. Press Claim for {CLAIM}."
                 )));
             }
             current.options_left.clone()
@@ -855,7 +859,7 @@ async fn reset(
     Ok(())
 }
 
-/// The private note after Claim!: what the player has now and the bet that avoids the tax.
+/// The private note after Claim: what the player has now and the bet that avoids the tax.
 fn claimed_text(game: &Game, user: u64) -> String {
     let numbers = ledger(&game.season);
     match numbers.last().and_then(|n| n.standing(user)) {
@@ -887,18 +891,22 @@ async fn edit_status(
     guild: GuildId,
     game: &Game,
     index: usize,
-) {
+) -> bool {
     let lock = redraw_lock(guild);
     let _turn = lock.lock().await;
     let edit = match fresh_status(ctx, guild, game, index).await {
         Ok(status) => status.edit(),
         Err(err) => {
             warn!("couldn't draw the wheel status: {err:#}");
-            return;
+            return false;
         }
     };
-    if let Err(err) = channel.edit_message(&ctx.http, message, edit).await {
-        warn!("couldn't update the wheel status message: {err}");
+    match channel.edit_message(&ctx.http, message, edit).await {
+        Ok(_) => true,
+        Err(err) => {
+            warn!("couldn't update the wheel status message: {err}");
+            false
+        }
     }
 }
 

@@ -9,7 +9,7 @@ Reminders let people ask Vivy to ping them later. `@Vivy remind me in 2h30m to c
 - **Cancel** under the "I'll remind you" reply deletes that reminder. Only the person who set it can use it.
 - **`/reminders`**: a private list of your pending reminders (soonest first, up to 25 shown, recurring ones marked 🔁 with how they repeat) with a menu to delete one. The list stays open after a delete, reloaded, so you can delete several.
 - **`/timezone [zone]`**: sets the timezone used for times without one, like `Europe/Oslo` or `CET`. The option autocompletes zone names. Without a zone it tells you your current setting and the local time there.
-- **Snooze buttons** under a delivered reminder: 10 min, 1 hour, Tomorrow 9:00 (09:00 the next morning in your timezone; before 04:00 it means this morning), and **Snooze…**, which opens a box to type a time like `in 30m`, `at 18:00` or `friday`. Only the person the reminder is for can use them.
+- **Snooze buttons** under a delivered reminder: 10 min, 1 hour, Tomorrow 9:00 (09:00 the next morning in your timezone; before 04:00 it means this morning), and **Pick a time…**, which opens a box to type a time like `in 30m`, `at 18:00` or `friday`. Only the person the reminder is for can use them.
 - **Chat**: in a normal conversation the model can create, list and cancel reminders with its [chat tools](#chat-tools).
 
 Settings: the feature has a `[features.reminders]` section with only the common keys (`enabled`, `guilds`, and so on); `config.example.toml` explains them. Setup is in the README.
@@ -103,7 +103,7 @@ A reminder is marked sent only after Discord accepted the message:
 
 ### Snooze and delete
 
-A snooze button does not create a new reminder. "Tomorrow 9:00" asks `parse::tomorrow_morning` for 09:00 the next morning in the owner's timezone (this morning's, before 04:00). "Snooze…" opens a modal; what is typed there goes through `parse::parse_when` and `parse::resolve`, like a reminder's time (a repeat is refused). Snooze buttons from before "Tomorrow 9:00" existed add 24 hours, as they always did. `store::snooze` moves the delivered reminder (with its images) back into the queue: it sets a new `fire_at` and clears `sent_at` and `attempts`. The `UPDATE` only matches a sent reminder of that user, so a double press or a retry snoozes it once. The delivered message then loses its buttons and gets a "Snoozed until ..." line. Sent reminders are kept for a week for this; after that the button answers "This reminder is too old to snooze."
+A snooze button does not create a new reminder. "Tomorrow 9:00" asks `parse::tomorrow_morning` for 09:00 the next morning in the owner's timezone (this morning's, before 04:00). "Pick a time…" opens a modal; what is typed there goes through `parse::parse_when` and `parse::resolve`, like a reminder's time (a repeat is refused). Snooze buttons from before "Tomorrow 9:00" existed add 24 hours, as they always did. `store::snooze` moves the delivered reminder (with its images) back into the queue: it sets a new `fire_at` and clears `sent_at` and `attempts`. The `UPDATE` only matches a sent reminder of that user, so a double press or a retry snoozes it once. The delivered message then loses its buttons and gets a "Snoozed until ..." line. Sent reminders are kept for a week for this; after that the button answers "This reminder is too old to snooze."
 
 The `/reminders` menu calls `store::delete_pending`, which only deletes a pending reminder of the person who picked it, then shows the list again with "✅ Reminder deleted." on top.
 
@@ -136,7 +136,7 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 | `start` | Spawns the scheduler. |
 | `on_mention` | Parses and saves a reminder, or passes the mention on to chat. |
 | `on_component` | The delete menu, the Cancel button and the snooze buttons. |
-| `on_modal` | The "Snooze…" modal. |
+| `on_modal` | The "Pick a time…" modal. |
 
 After each delivery it publishes `BotEvent::ReminderFired { reminder_id, user_id, channel_id }`. No feature listens to it yet.
 
@@ -149,7 +149,7 @@ Built and parsed only in `ui::Action`. The dispatcher strips the `reminders:` pr
 | `reminders:delete` | The `/reminders` select menu. The reminder ID is the selected value. |
 | `reminders:snooze:<reminder id>:<minutes>` | The 10 min and 1 hour snooze buttons (older messages also have 1440, a day). |
 | `reminders:tomorrow:<reminder id>` | Snooze until 09:00 tomorrow. |
-| `reminders:asksnooze:<reminder id>` | "Snooze…": opens the modal. |
+| `reminders:asksnooze:<reminder id>` | "Pick a time…": opens the modal. |
 | `reminders:snoozeto:<reminder id>` | The snooze modal. |
 | `reminders:cancel:<reminder id>` | Cancel under the "I'll remind you" reply. |
 

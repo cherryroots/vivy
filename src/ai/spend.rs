@@ -232,10 +232,19 @@ impl Spend {
     fn warn(&self, result: anyhow::Result<(f64, Option<i64>)>) {
         let name = display_name(self.provider);
         match result {
-            Ok((total, Some(percent))) => warn!(
-                "{name} has cost ${total:.2} this month, {percent}% of the ${:.2} budget",
-                self.budget
-            ),
+            Ok((total, Some(percent))) => {
+                // Nothing stops at 100%: the budget is a warning line, not a cap (voice and
+                // drawing have their own caps). Say so, since that's the first question.
+                let then = if percent >= 100 {
+                    " She keeps answering; nothing is turned off."
+                } else {
+                    ""
+                };
+                warn!(
+                    "{name} has cost ${total:.2} this month, {percent}% of the ${:.0} budget.{then}",
+                    self.budget
+                )
+            }
             Ok((_, None)) => {}
             Err(err) => warn!("couldn't save what {name} cost: {err:#}"),
         }

@@ -80,13 +80,13 @@ fn over_limit(settings: &Settings, drawn: u64, by_asker: u64) -> Option<String> 
     let limit = settings.monthly_pictures;
     if limit > 0 && drawn >= limit {
         return Some(format!(
-            "you've drawn {drawn} of {limit} pictures this month, which is all of them. Say so in text."
+            "the month's pictures are used up ({drawn} of {limit}, all servers together); drawing starts again on the 1st. Tell the asker plainly, and don't draw with code instead."
         ));
     }
     let own = settings.per_user_monthly_pictures;
     if own > 0 && by_asker >= own {
         return Some(format!(
-            "you've drawn {by_asker} pictures for the asker this month, which is as many as one person gets ({own}). Say so in text; it starts again next month."
+            "the asker has had their {own} pictures for this month ({by_asker} drawn); it starts again on the 1st. Tell them plainly, and don't draw with code instead."
         ));
     }
     None
@@ -148,7 +148,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
         }]
     }
 
-    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, _tool: &str, _args: &Value) -> Option<&'static str> {
         Some("🎨 Drawing, this can take a minute…")
     }
 
@@ -313,15 +313,11 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(over_limit(&settings, 0, 0), None);
         assert_eq!(over_limit(&settings, 99, 19), None);
-        assert!(
-            over_limit(&settings, 100, 0)
-                .unwrap()
-                .contains("all of them")
-        );
+        assert!(over_limit(&settings, 100, 0).unwrap().contains("used up"));
         assert!(
             over_limit(&settings, 50, 20)
                 .unwrap()
-                .contains("one person")
+                .contains("for this month")
         );
         // 0 turns a limit off.
         let open = Settings {

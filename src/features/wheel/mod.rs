@@ -65,7 +65,7 @@ impl Feature for Wheel {
         tools::defs()
     }
 
-    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, _tool: &str, _args: &serde_json::Value) -> Option<&'static str> {
         Some("🎡 Checking the wheel…")
     }
 

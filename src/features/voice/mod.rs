@@ -104,7 +104,7 @@ The voice message is your whole answer, so usually write no text with it.",
         }]
     }
 
-    fn tool_status(&self, _tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, _tool: &str, _args: &Value) -> Option<&'static str> {
         Some("🎙️ Recording a voice message…")
     }
 

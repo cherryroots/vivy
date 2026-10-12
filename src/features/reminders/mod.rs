@@ -75,7 +75,7 @@ impl Feature for Reminders {
         tools::defs()
     }
 
-    fn tool_status(&self, tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, tool: &str, _args: &serde_json::Value) -> Option<&'static str> {
         match tool {
             "create_reminder" => Some("⏰ Setting a reminder…"),
             "cancel_reminder" => Some("⏰ Cancelling a reminder…"),
@@ -163,6 +163,7 @@ impl Feature for Reminders {
             },
         };
         let repeat = new.repeat.clone();
+        let image_count = new.images.len();
         let id = ctx
             .db
             .call(move |conn| Ok(store::add(conn, &new)?))
@@ -183,6 +184,7 @@ impl Feature for Reminders {
                 &parsed.message,
                 repeat.as_deref(),
                 zone_hint,
+                image_count,
                 &skipped,
             ))
             .components(vec![ui::cancel_button(id)])
@@ -312,7 +314,7 @@ impl Reminders {
         }
         if !self.remove(ctx, id, i.user.id).await? {
             return Err(user_error(
-                "That reminder was already sent or deleted. Pending ones, and recurring ones, are in /reminders.",
+                "That reminder has already gone out or been deleted. Anything still pending is in /reminders.",
             ));
         }
         info!(reminder = id, "reminder cancelled");

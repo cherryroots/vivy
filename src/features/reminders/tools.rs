@@ -14,13 +14,13 @@ pub fn defs() -> Vec<ToolDef> {
     vec![
         ToolDef {
             name: "create_reminder",
-            description: "Reminds the asker of something later, in this channel, once or again and again. Use it when someone asks to be reminded of something.",
+            description: "Reminds the asker of something later, in this channel, once or on a repeating schedule. Use it when someone asks to be reminded of something.",
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "when": {
                         "type": "string",
-                        "description": "When, in English: \"in 2h30m\", \"at 16:30 CET\", \"tomorrow at 9am\", \"next friday\". For a recurring reminder: \"every day at 9:00\", \"every weekday at 8:30\", \"every monday\", \"every 2 hours\". Times without a zone use the asker's timezone."
+                        "description": "When, in English, in one of these forms: \"in 2h30m\", \"at 16:30 CET\", \"tomorrow at 9am\", \"next friday\", \"on 2026-12-24 at noon\". For a recurring reminder: \"every day at 9:00\", \"every weekday at 8:30\", \"every monday\", \"every 2 hours\". Rules: digits with a unit (\"in 1 hour\", not \"in an hour\"); clock times need minutes or am/pm (\"7:00\" or \"7pm\", never \"7\"); dates as YYYY-MM-DD; one weekday per repeat. Turn the asker's words into one of these forms. Times without a zone use the asker's timezone."
                     },
                     "message": {"type": "string", "description": "What to remind them of."}
                 },

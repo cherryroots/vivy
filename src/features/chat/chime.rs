@@ -31,7 +31,7 @@ use super::store::{self, NewTurn, StoredPart, Written};
 use super::tools::{format_message, parse_link};
 use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete};
 use crate::core::{Asker, BotCtx, Feature, Result};
-use crate::util::shorten;
+use crate::util::shorten_at_word;
 
 /// How many messages she reads before deciding.
 const READ_MESSAGES: u8 = 25;
@@ -329,7 +329,7 @@ fn decide(text: &str) -> Decision {
             None => Decision::Pass,
         };
     }
-    Decision::Say(shorten(text, MAX_LINE))
+    Decision::Say(shorten_at_word(text, MAX_LINE))
 }
 
 /// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message (or the

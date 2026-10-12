@@ -4,6 +4,7 @@
 
 use super::ledger::{BET_CAP, OutcomeKind, Rules, Standing, TAX_THRESHOLD, outcomes};
 use super::ui::View;
+use crate::util::count;
 use crate::util::svg::{
     ACCENT, AMBER, BG, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, columns, markup,
     text_width, to_png,
@@ -74,7 +75,7 @@ fn standings_table(svg: &mut Svg, view: &View) {
     svg.section("Standings");
     let standings = sorted_by_money(view, &numbers.standings);
     if standings.is_empty() {
-        svg.note("Nobody has played yet. Press Claim! to get started.");
+        svg.note("Nobody has played yet. Press Claim to get started.");
     } else {
         let (bar, money, bet, percent, note) = (170.0, 330.0, 400.0, 460.0, WIDTH - 24.0);
         svg.y += 6.0;
@@ -322,13 +323,13 @@ fn waiting_on(svg: &mut Svg, view: &View) {
     }
 }
 
-/// "Already won: round 1 Alice · round 2 Bob", for the earlier rounds of the season.
+/// "Already won: R1 Alice · R2 Bob", for the earlier rounds of the season.
 fn already_won(svg: &mut Svg, view: &View) {
     let won: Vec<String> = view.season.rounds[..view.index]
         .iter()
         .filter_map(|r| {
             r.winner
-                .map(|w| format!("round {} {}", r.number, short(view.name(w))))
+                .map(|w| format!("R{} {}", r.number, short(view.name(w))))
         })
         .collect();
     if !won.is_empty() {
@@ -358,9 +359,9 @@ fn resolved(svg: &mut Svg, view: &View) {
         Rules::Pool => format!("pot {}", numbers.pot),
     };
     let sub = format!(
-        "{} claims  ·  {} bets  ·  {payouts}",
-        round.claims.len(),
-        round.bets.len()
+        "{}  ·  {}  ·  {payouts}",
+        count(round.claims.len(), "claim"),
+        count(round.bets.len(), "bet")
     );
     header(svg, view, "RESOLVED", RED, &sub);
 
@@ -676,7 +677,7 @@ mod tests {
         // Bob hasn't claimed; Charlie claimed but hasn't bet.
         assert!(svg.contains(">Haven't claimed<"));
         assert!(svg.contains(">Claimed, no bet yet<"));
-        assert!(svg.contains("Already won: round 1 Bob"));
+        assert!(svg.contains("Already won: R1 Bob"));
     }
 
     #[test]

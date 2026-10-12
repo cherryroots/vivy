@@ -99,20 +99,33 @@ pub async fn read_message(
 
     let mut parts = vec![StoredPart::Text { text }];
     if !from_bot {
-        for found in media::find_media(msg)
-            .into_iter()
-            .take(MAX_MEDIA_PER_MESSAGE)
-        {
+        let media = media::find_media(msg);
+        let files = media::find_files(msg);
+        // The model is told what it doesn't get, so it doesn't answer as if it saw it all.
+        let left_out = [
+            (
+                media.len().saturating_sub(MAX_MEDIA_PER_MESSAGE),
+                "pictures",
+            ),
+            (files.len().saturating_sub(MAX_FILES_PER_MESSAGE), "files"),
+        ]
+        .into_iter()
+        .filter(|(n, _)| *n > 0)
+        .map(|(n, what)| format!("{n} more {what}"))
+        .collect::<Vec<_>>();
+        if !left_out.is_empty() {
+            parts.push(StoredPart::Text {
+                text: format!("[{} in this message were left out]", left_out.join(" and ")),
+            });
+        }
+        for found in media.into_iter().take(MAX_MEDIA_PER_MESSAGE) {
             parts.push(StoredPart::Media {
                 url: found.url,
                 kind: found.kind.into(),
                 mime: found.mime.to_string(),
             });
         }
-        for found in media::find_files(msg)
-            .into_iter()
-            .take(MAX_FILES_PER_MESSAGE)
-        {
+        for found in files.into_iter().take(MAX_FILES_PER_MESSAGE) {
             parts.push(StoredPart::File {
                 url: found.url,
                 name: found.name,

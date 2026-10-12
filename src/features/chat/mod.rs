@@ -112,7 +112,7 @@ impl Feature for Chat {
         defs
     }
 
-    fn tool_status(&self, tool: &str) -> Option<&'static str> {
+    fn tool_status(&self, tool: &str, _args: &Value) -> Option<&'static str> {
         Some(match tool {
             "get_current_time" => "🕒 Checking the time…",
             "get_channel_info" | "list_channels" => "🧭 Looking around the server…",

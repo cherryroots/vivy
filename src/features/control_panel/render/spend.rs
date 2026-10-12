@@ -159,7 +159,7 @@ fn spend_card(
         summary.push(format!("{:.0}%", share * 100.0));
     }
     if let Some(pace) = pace {
-        summary.push(format!("pace ${pace:.2}"));
+        summary.push(format!("on pace for ${pace:.2}"));
     }
     if let Some(hits) = spend.cache_hits {
         summary.push(format!("{:.0}% cache hits", hits * 100.0));

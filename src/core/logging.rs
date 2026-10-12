@@ -460,7 +460,7 @@ fn render(lines: &[LogLine]) -> Vec<String> {
                 Level::WARN => "⚠️",
                 _ => "ℹ️",
             };
-            format!("{icon} **{}** `{}` {}", line.level, line.source, line.text)
+            format!("{icon} `{}` {}", line.source, line.text)
         };
         text = truncate(&text, 1700);
         if count > 1 {
@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(
             messages[0],
-            "❌ **ERROR** `reminders` boom **×2**\n⚠️ **WARN** `reminders` hmm"
+            "❌ `reminders` boom **×2**\n⚠️ `reminders` hmm"
         );
     }
 

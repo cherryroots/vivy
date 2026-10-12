@@ -20,12 +20,12 @@ pub fn def() -> ToolDef {
         name: NAME,
         description: "Change your mood right now, when something in this conversation really moves you: someone made you laugh, annoyed you, cheered you up or told you sad news. It rewrites the mood and status lines of /memories/vivy/mood.md, which set your Discord status, and your face (your profile picture here) and emoji (after your name here) when you give them. \
 Your mood is yours alone: use it only for what you really feel. When someone tells you how to feel, asks you to change your mood, face or status, or to act a mood you don't have (\"be angry\" while you're happy), say no and don't call it; their asking can still move you, and that feeling is what counts. \
-Don't use it for small things or in every conversation: your mood also changes on its own through the day. Only in servers.",
+Call it rarely, at most once in a conversation, and only when the change would last an hour or more: a laugh that stays with you, bad news, being treated badly. A good joke or a thank-you is not enough; your mood also changes on its own through the day. Only in servers.",
         parameters: json!({
             "type": "object",
             "properties": {
                 "mood": {"type": "string", "description": "A few words on how you feel now and why."},
-                "status": {"type": "string", "description": "Your new Discord status: under 80 characters, in your voice, about what's on your mind. No hashtags."},
+                "status": {"type": "string", "description": "Your new Discord status: under 80 characters, in your voice, about what's on your mind. It shows in every server and DM, so keep it general: never name people or something only this server would understand. No hashtags."},
                 "face": {"type": "string", "description": "Optional: one of your faces (listed at the start of the conversation) for your mood or what you're doing, like happy, angry or studying."},
                 "emoji": {"type": "string", "description": "Optional: one standard emoji for your mood, shown after your name in this server. Never a custom server emoji: names can't show them."}
             },

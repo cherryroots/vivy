@@ -50,7 +50,10 @@ fn board(week: &[(u64, u64)], all_time: &[(u64, u64)]) -> String {
     text.push_str(&list(week));
     text.push_str("\n**All time**\n");
     text.push_str(&list(all_time));
-    text.push_str("\n-# A snail is a link or picture the server had already seen.");
+    text.push_str(
+        "\n-# A snail is a link or picture the server had already seen. \
+         Counted since Vivy started watching.",
+    );
     text
 }
 
@@ -60,14 +63,16 @@ fn list(rows: &[(u64, u64)]) -> String {
     }
     let mut text = String::new();
     for (n, (user, count)) in rows.iter().enumerate() {
-        let medal = match n {
-            0 => "🥇",
-            1 => "🥈",
-            2 => "🥉",
-            _ => "▫️",
+        // Medals for the top three, then plain numbers (a small square glyph is blank on some
+        // phone fonts).
+        let place = match n {
+            0 => "🥇".to_string(),
+            1 => "🥈".to_string(),
+            2 => "🥉".to_string(),
+            _ => format!("{}.", n + 1),
         };
         let snails = if *count == 1 { "snail" } else { "snails" };
-        text.push_str(&format!("{medal} <@{user}>: {count} {snails}\n"));
+        text.push_str(&format!("{place} <@{user}>: {count} {snails}\n"));
     }
     text
 }
