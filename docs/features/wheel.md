@@ -4,11 +4,11 @@ The movie wheel is a betting game for movie night. Admins put people (the "optio
 
 ## Using it
 
-- **`/wheel_status [round] [season]`**: posts the status picture of a round (default: the current one) of a season (default: the one being played; seasons count from 1 per server). If the server has no game yet, this starts one. Past seasons are shown without buttons.
-- **`/wheel_add user [movie] [user2 movie2 … user5 movie5] [remove]`** (admins): puts up to five people on the wheel at once, each with the movie they picked (optional), or takes them off with `remove:true`. A movie for someone already on the wheel replaces theirs. A `movie2` without a `user2` is refused. The answer has a line per person, and a last line saying whether the server's wheel picture was redrawn (`actions::redraw_last`, which edits the newest status message, remembered in `wheel_status_messages`) or `/wheel_status` is needed. `/wheel_movie` ends the same way.
-- **`/wheel_movie user [movie]`** (admins): sets or changes the movie someone on the wheel picked; leaving `movie` out clears it. It shows on the next status picture.
-- **`/insert_bet by on amount round`** (admins): sets a bet in any round of the current season by round number; `amount:0` removes it. This is for fixing mistakes, so it skips the betting rules.
-- **`/reset_wheel [keep_options]`** (admins): asks for confirmation, then ends the season and starts a new one, empty or with the same options.
+- **`/wheel status [round] [season]`**: posts the status picture of a round (default: the current one) of a season (default: the one being played; seasons count from 1 per server). If the server has no game yet, this starts one. Past seasons are shown without buttons.
+- **`/wheel add user [movie] [user2 movie2 … user5 movie5] [remove]`** (admins): puts up to five people on the wheel at once, each with the movie they picked (optional), or takes them off with `remove:true`. A movie for someone already on the wheel replaces theirs. A `movie2` without a `user2` is refused. The answer has a line per person, and a last line saying whether the server's wheel picture was redrawn (`actions::redraw_last`, which edits the newest status message, remembered in `wheel_status_messages`) or `/wheel status` is needed. `/wheel movie` ends the same way.
+- **`/wheel movie user [movie]`** (admins): sets or changes the movie someone on the wheel picked; leaving `movie` out clears it. It shows on the next status picture.
+- **`/wheel bet by on amount round`** (admins): sets a bet in any round of the current season by round number; `amount:0` removes it. This is for fixing mistakes, so it skips the betting rules.
+- **`/wheel reset [keep_options]`** (admins): asks for confirmation, then ends the season and starts a new one, empty or with the same options.
 - **Buttons under an open round**: Claim, Bet, Remove bet, Winner (admins), and in a second row Change Name and Help.
 - **Buttons under a resolved round**: View Current Round, Undo Winner (admins, only when allowed), Change Name, Help.
 
@@ -26,7 +26,7 @@ All in `src/features/wheel/`, starting with the pure logic.
 | `render.rs` | The round as a picture: `round_svg` writes SVG text, `round_png` turns it into a PNG with the shared helpers in `src/util/svg.rs`. |
 | `names.rs` | Display names for the stored user IDs, with a cache. |
 | `actions.rs` | The handlers for buttons, menus and modals, and `status_message`, which builds a status picture with its buttons. |
-| `commands.rs` | The five slash commands, written with `poise`. |
+| `commands.rs` | `/wheel` and its five subcommands (`status`, `add`, `movie`, `bet`, `reset`), written with `poise`. Each subcommand function keeps its old name (`wheel_status`, `insert_bet`, …); `rename` sets the name Discord shows. |
 | `tools.rs` | The chat tool `get_wheel_status`. |
 | `import.rs` | voltgpt's running game, read from its `game_state` JSON. |
 | `sim.rs` | Simulated games that compare the payout rules. Test-only (`#[cfg(test)]`, an ignored test). |
@@ -38,9 +38,9 @@ All in `src/features/wheel/`, starting with the pure logic.
 
 A **season** has a list of options (user IDs) and numbered rounds. The active season is the one with no end time; there is at most one per server. A **round** has claims, bets and, once resolved, a winner. Setting a winner starts the next round. An option leaves the wheel once it has won, so the options left in a round are the season's options minus earlier winners (`options_left`). **Players** are everyone who claimed or bet in the season; there is no separate players table.
 
-Each option can have the **movie** they picked (`wheel_options.movie`), up to 100 characters with the same character rules as Change Name (`ui::clean_movie`). It is shown under the option's name in the bets table, under the winner's name on a resolved round, under each name in the Bet and Winner menus (the option's description, which Discord caps at 100), in the "Set … as the winner" answer, and in the chat tool. `/reset_wheel keep_options:true` keeps the movies of the options that haven't won yet; the winners' movies were watched, so they start the new season without one.
+Each option can have the **movie** they picked (`wheel_options.movie`), up to 100 characters with the same character rules as Change Name (`ui::clean_movie`). It is shown under the option's name in the bets table, under the winner's name on a resolved round, under each name in the Bet and Winner menus (the option's description, which Discord caps at 100), in the "Set … as the winner" answer, and in the chat tool. `/wheel reset keep_options:true` keeps the movies of the options that haven't won yet; the winners' movies were watched, so they start the new season without one.
 
-Options are stored per season, not per round. Adding or removing one with `/wheel_add` therefore also changes `options_left` of earlier rounds, which under classic rules changes what their winning bets paid.
+Options are stored per season, not per round. Adding or removing one with `/wheel add` therefore also changes `options_left` of earlier rounds, which under classic rules changes what their winning bets paid.
 
 ### The money rules (`ledger.rs`)
 
@@ -85,7 +85,7 @@ When a private menu changes the game, the public status message is edited by its
 
 ### New seasons
 
-`/reset_wheel` replies privately with a "Start a new season" button. The button's ID remembers which season was active when the command ran (0 for none). Pressing it opens a modal where the admin types `START` (any case). On submit, in one transaction, the bot checks that the active season is still the one the button was made for, ends it, and starts the next one with round 1, keeping the options if `keep_options` was set. So a double submit, or an old confirmation, can't end the season that was just started. A unique index also stops a server from ever having two active seasons.
+`/wheel reset` replies privately with a "Start a new season" button. The button's ID remembers which season was active when the command ran (0 for none). Pressing it opens a modal where the admin types `START` (any case). On submit, in one transaction, the bot checks that the active season is still the one the button was made for, ends it, and starts the next one with round 1, keeping the options if `keep_options` was set. So a double submit, or an old confirmation, can't end the season that was just started. A unique index also stops a server from ever having two active seasons.
 
 ### Names
 
@@ -113,7 +113,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | Method | What it does here |
 |---|---|
 | `name` | `"wheel"`: the config section, the custom ID prefix and the log label. |
-| `commands` | `/wheel_status`, `/wheel_add`, `/wheel_movie`, `/insert_bet`, `/reset_wheel`. |
+| `commands` | `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`. |
 | `migrations` | `store::MIGRATIONS`. |
 | `legacy_import` | The `wheel` part, run by `import::import`. |
 | `tools`, `run_tool` | `get_wheel_status`. |
@@ -144,7 +144,7 @@ Built and parsed only in `ui::Action`. The dispatcher strips the `wheel:` prefix
 | `wheel:stake:<round>:<on>:<message>:<percent>` | A bet slip percentage button. |
 | `wheel:other:<round>:<on>:<message>` | The bet slip's "Other amount…" button. |
 | `wheel:amount:<round>:<on>:<message>` | The bet amount modal. |
-| `wheel:reset:<keep options>:<season id>` | The `/reset_wheel` button (season 0 when none was active). |
+| `wheel:reset:<keep options>:<season id>` | The `/wheel reset` button (season 0 when none was active). |
 | `wheel:newseason:<keep options>:<season id>` | The `START` confirmation modal. |
 | `wheel:help:<season id>` | Help. |
 | `wheel:rename:<round>` | Change Name; the round is the one the status message shows, to redraw it. |
@@ -168,7 +168,7 @@ From `store::MIGRATIONS`. Every child table uses `ON DELETE CASCADE`.
 
 **Migration 3** adds `wheel_names` (`guild_id`, `user_id`, `name`): the names players chose with Change Name, per server.
 
-**Migration 6** adds `wheel_status_messages`: the newest status message per server (channel and message ID), written by `/wheel_status` for the current round and by the message posted after a winner. `/wheel_add` and `/wheel_movie` redraw it; if it's gone, their answer says to run `/wheel_status`.
+**Migration 6** adds `wheel_status_messages`: the newest status message per server (channel and message ID), written by `/wheel status` for the current round and by the message posted after a winner. `/wheel add` and `/wheel movie` redraw it; if it's gone, their answer says to run `/wheel status`.
 
 **Migration 4** adds `wheel_round_ids`, a single row holding the highest round ID ever used. Undo Winner deletes the newest round, and SQLite would hand its ID to the next round, so a button made for the deleted round would work on its replacement. `store::add_round` takes new IDs from this counter instead.
 
@@ -188,12 +188,12 @@ The old.db import code is planned for removal once the imports are confirmed: `s
 
 ## Compared to voltgpt
 
-- **Tables instead of a JSON blob.** voltgpt saved the whole game as one JSON value and rewrote it after every change. Seasons, Undo Winner, `/insert_bet` and the chat tool all need to find or change one claim or bet, and the keys enforce rules for free (one claim per round, one bet per option).
+- **Tables instead of a JSON blob.** voltgpt saved the whole game as one JSON value and rewrote it after every change. Seasons, Undo Winner, `/wheel bet` and the chat tool all need to find or change one claim or bet, and the keys enforce rules for free (one claim per round, one bet per option).
 - **One ledger function.** voltgpt recomputed a player's money from round 0 for every row of its status embed. Here `ledger` runs once and everything reads from it. It is pure, so it is tested without Discord or a database.
 - **User IDs, not user objects.** voltgpt saved whole Discord users, so names and avatars went stale. Names are looked up when shown.
 - **Undo Winner.** In voltgpt a mis-clicked winner was permanent.
 - **Winner without bets.** voltgpt refused to set a winner when nobody bet ("No bets!"), which blocked the wheel if a movie was watched without bets.
-- **Seasons instead of a hard reset.** voltgpt's `/reset_wheel` deleted everything without asking. Here it asks for `START` and keeps the old season viewable.
+- **Seasons instead of a hard reset.** voltgpt's `/wheel reset` deleted everything without asking. Here it asks for `START` and keeps the old season viewable.
 - **One game per server** instead of one global game.
 - **No lock held during Discord calls.** voltgpt held `gamble.Mu` while calling the Discord API. Here each action is a short transaction and Discord comes after it.
 - **New**: pool betting with the 50% bet cap, the bet slip, Change Name, Help, the movie each option picked, a picture instead of an embed, and the chat tool.

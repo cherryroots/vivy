@@ -1,5 +1,5 @@
-//! Slash commands: `/wheel_status` for everyone, `/wheel_add`, `/wheel_movie`,
-//! `/insert_bet` and `/reset_wheel` for admins.
+//! `/wheel`, with `status` for everyone and `add`, `movie`, `bet` and `reset` for admins.
+//! Each subcommand keeps its old function name; `rename` sets the name Discord shows.
 
 use anyhow::Context as _;
 use chrono::Utc;
@@ -12,8 +12,25 @@ use super::ledger::Bet;
 use super::{names, store, ui};
 use crate::core::{Context, Result, user_error};
 
-/// Movie wheel: the current round, or an earlier one
-#[poise::command(slash_command, guild_only)]
+/// The movie wheel
+#[poise::command(
+    slash_command,
+    guild_only,
+    subcommands(
+        "wheel_status",
+        "wheel_add",
+        "wheel_movie",
+        "insert_bet",
+        "reset_wheel"
+    ),
+    subcommand_required
+)]
+pub async fn wheel(_ctx: Context<'_>) -> Result<()> {
+    Ok(())
+}
+
+/// The current round, or an earlier one
+#[poise::command(slash_command, guild_only, rename = "status")]
 pub async fn wheel_status(
     ctx: Context<'_>,
     #[description = "Which round to show (default: the current one)"]
@@ -79,12 +96,12 @@ pub async fn wheel_status(
 async fn redraw_note(bot: &crate::core::BotCtx, guild: GuildId) -> String {
     match redraw_last(bot, guild).await {
         Some(true) => "The wheel picture is updated.".to_string(),
-        _ => "Run /wheel_status to show the new wheel.".to_string(),
+        _ => "Run /wheel status to show the new wheel.".to_string(),
     }
 }
 
 /// Add users to the wheel with the movies they picked, or take them off (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
+#[poise::command(slash_command, guild_only, ephemeral, rename = "add")]
 #[allow(clippy::too_many_arguments)]
 pub async fn wheel_add(
     ctx: Context<'_>,
@@ -180,7 +197,7 @@ pub async fn wheel_add(
 }
 
 /// Set or change the movie someone on the wheel picked (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
+#[poise::command(slash_command, guild_only, ephemeral, rename = "movie")]
 pub async fn wheel_movie(
     ctx: Context<'_>,
     #[description = "Who picked the movie"] user: User,
@@ -207,7 +224,7 @@ pub async fn wheel_movie(
     let names = names::lookup(ctx.data(), guild, &[id]).await;
     let name = ui::name(&names, id);
     let text = match (on_wheel, movie) {
-        (false, _) => format!("{name} isn't on the wheel. Add them with /wheel_add."),
+        (false, _) => format!("{name} isn't on the wheel. Add them with /wheel add."),
         (true, Some(movie)) => format!("{name}'s movie is now {movie}."),
         (true, None) => format!("Cleared {name}'s movie."),
     };
@@ -220,7 +237,7 @@ pub async fn wheel_movie(
 }
 
 /// Add, change or remove a bet in any round of the current season (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
+#[poise::command(slash_command, guild_only, ephemeral, rename = "bet")]
 pub async fn insert_bet(
     ctx: Context<'_>,
     #[description = "Who made the bet"] by: User,
@@ -281,7 +298,7 @@ pub async fn insert_bet(
 }
 
 /// Start a new season of the wheel; the old one stays viewable (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
+#[poise::command(slash_command, guild_only, ephemeral, rename = "reset")]
 pub async fn reset_wheel(
     ctx: Context<'_>,
     #[description = "Keep the current wheel options"] keep_options: Option<bool>,
@@ -311,5 +328,16 @@ fn require_admin(ctx: Context<'_>) -> Result<()> {
         Ok(())
     } else {
         Err(user_error("Only admins can use this command."))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn subcommands_have_short_names() {
+        let wheel = super::wheel();
+        let names: Vec<&str> = wheel.subcommands.iter().map(|c| c.name.as_ref()).collect();
+        assert_eq!(wheel.name, "wheel");
+        assert_eq!(names, ["status", "add", "movie", "bet", "reset"]);
     }
 }

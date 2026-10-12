@@ -27,10 +27,10 @@ use crate::core::errors::UserError;
 use crate::core::{BotCtx, BotEvent, Result, user_error};
 
 const SERVER_ONLY: &str = "The wheel only works in a server.";
-const NO_GAME: &str = "There's no game running. Start one with /wheel_status.";
+const NO_GAME: &str = "There's no game running. Start one with /wheel status.";
 const NOT_CURRENT: &str = "This message shows an older round. Tap below to update it.";
 const SEASON_CHANGED: &str =
-    "The season changed since this confirmation was made. Run /reset_wheel again.";
+    "The season changed since this confirmation was made. Run /wheel reset again.";
 
 /// A season as loaded, and whether it's the one being played.
 pub struct Game {
@@ -529,7 +529,7 @@ async fn refresh(
     let text = if edit_status(ctx, i.channel_id, message, guild, &game, index).await {
         format!("The wheel message now shows round {number}.")
     } else {
-        "That wheel message is gone. Run /wheel_status for the current round.".to_string()
+        "That wheel message is gone. Run /wheel status for the current round.".to_string()
     };
     let note = EditInteractionResponse::new()
         .content(text)
@@ -611,7 +611,7 @@ async fn open_menu(
     if choices.is_empty() {
         return Err(user_error(match kind {
             PickKind::Remove => "You don't have any bets in this round.",
-            _ => "Nobody is on the wheel yet. Admins add options with /wheel_add.",
+            _ => "Nobody is on the wheel yet. Admins add options with /wheel add.",
         }));
     }
 
@@ -854,7 +854,7 @@ async fn name_entered(
     Ok(())
 }
 
-/// The button of `/reset_wheel`: opens the confirm modal, if the season it was made for is
+/// The button of `/wheel reset`: opens the confirm modal, if the season it was made for is
 /// still the one being played.
 async fn confirm_reset(
     ctx: &BotCtx,
@@ -878,7 +878,7 @@ async fn confirm_reset(
     Ok(())
 }
 
-/// The confirm modal of `/reset_wheel`: ends season `season` (0: none) and starts the next.
+/// The confirm modal of `/wheel reset`: ends season `season` (0: none) and starts the next.
 async fn reset(
     ctx: &BotCtx,
     i: &ModalInteraction,
@@ -929,7 +929,7 @@ async fn reset(
         })
         .await?;
     info!("started season {number}");
-    let text = format!("Started season {number}. Show it with /wheel_status.");
+    let text = format!("Started season {number}. Show it with /wheel status.");
     // Replaces the confirmation the modal came from, so its button is gone.
     i.create_response(&ctx.http, update_text(text)).await?;
     Ok(())

@@ -246,7 +246,7 @@ Copy config.example.toml to start one.",
         if self.admins.is_empty() && !warnings.iter().any(|w| w.contains("not found")) {
             warnings.push(
                 "config.toml: `admins` is empty, so nobody can use the admin commands \
-(/memory delete, /snail_backfill, the wheel's admin commands). Add your user ID."
+(/memory delete, /snails backfill, the wheel's admin commands). Add your user ID."
                     .to_string(),
             );
         }

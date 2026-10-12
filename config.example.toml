@@ -215,7 +215,7 @@ per_user_monthly_pictures = 20
 [features.snails]
 # Repost detection. New messages' links and pictures are saved as they arrive; right-click a
 # message → Apps → Check Snail lists earlier posts of the same link or picture.
-# Older history is only read when an admin runs `/snail_backfill start`.
+# Older history is only read when an admin runs `/snails backfill start`.
 enabled = true
 
 [features.control_panel]

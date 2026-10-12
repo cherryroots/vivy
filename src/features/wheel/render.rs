@@ -169,7 +169,7 @@ fn bets_table(svg: &mut Svg, view: &View) {
     let numbers = &view.ledger[view.index];
     svg.section("Bets this round");
     if numbers.options_left.is_empty() {
-        svg.note("Nobody is on the wheel yet. Admins add options with /wheel_add.");
+        svg.note("Nobody is on the wheel yet. Admins add options with /wheel add.");
     } else {
         svg.y += 4.0;
         let total = |option: u64| numbers.total_on(option);

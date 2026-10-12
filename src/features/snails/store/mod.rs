@@ -97,14 +97,14 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE snail_crawl ADD COLUMN newest_id INTEGER;",
     // 4: pictures dropped after their last try.
     "-- Pictures dropped after their last failed try, counted per host for
-    -- `/snail_backfill status`.
+    -- `/snails backfill status`.
     CREATE TABLE snail_dropped (
         guild_id INTEGER NOT NULL,
         host TEXT NOT NULL,
         count INTEGER NOT NULL,
         PRIMARY KEY (guild_id, host)
     );",
-    // 5: `/snails`, the leaderboard, counts a server's snails since a time.
+    // 5: `/snails top`, the leaderboard, counts a server's snails since a time.
     "CREATE INDEX snail_caught_guild ON snail_caught (guild_id, caught_at);",
 ];
 
