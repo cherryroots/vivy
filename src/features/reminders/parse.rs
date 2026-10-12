@@ -15,7 +15,7 @@ use chrono::{
 use chrono_tz::Tz;
 use winnow::ModalResult;
 use winnow::ascii::{Caseless, dec_uint, space0, space1};
-use winnow::combinator::{alt, cut_err, not, opt, preceded, repeat, terminated};
+use winnow::combinator::{alt, cut_err, fail, not, opt, peek, preceded, repeat, terminated};
 use winnow::error::{ContextError, ErrMode, StrContext, StrContextValue};
 use winnow::prelude::*;
 use winnow::token::{literal, one_of, take_while};
@@ -72,12 +72,21 @@ pub enum Unit {
 pub enum Day {
     Today,
     Tomorrow,
+    /// "next week": seven days from today.
+    NextWeek,
     /// `next: true` for "next friday", which never means today.
     Weekday {
         day: Weekday,
         next: bool,
     },
     Date(NaiveDate),
+    /// "on the 15th": the next 15th, this month or next.
+    Monthly(u32),
+    /// "march 3", "3rd of march", "24.12": the next such date, this year or next.
+    Yearly {
+        month: u32,
+        day: u32,
+    },
 }
 
 /// A reminder message split into its time and its text.
@@ -97,7 +106,18 @@ pub fn parse_reminder(text: &str) -> Result<Parsed, String> {
     // 1. The time comes first: "in 2h check the oven".
     let mut input = text;
     let leading_error = match when.parse_next(&mut input) {
-        Ok(when) => return Ok(day_then_time(when, input)),
+        Ok(when) => {
+            let parsed = day_then_time(when, input);
+            // "in 2 weeks on friday …", "every monday and wednesday …": the rest of the
+            // schedule would silently become the message. Better to say so and let chat
+            // sort it out.
+            if let Some(more) = more_schedule(&parsed.message) {
+                return Err(format!(
+                    "That has more than one time in it (\"{more}\"). Which one do you mean?"
+                ));
+            }
+            return Ok(parsed);
+        }
         Err(err) => (text.len() - input.len(), err),
     };
 
@@ -128,7 +148,8 @@ pub fn parse_reminder(text: &str) -> Result<Parsed, String> {
 }
 
 /// The time was at the start and `rest` is the message after it. For "tomorrow call mom at
-/// 5pm" the start only gave a day, so the time at the end of `rest` is used with it.
+/// 5pm" the start only gave a day, so the time at the end of `rest` is used with it; for
+/// "at 5pm call mom tomorrow" the start only gave a time, so the day at the end is.
 fn day_then_time(when: When, rest: &str) -> Parsed {
     if let When::At {
         day: Some(day),
@@ -153,21 +174,67 @@ fn day_then_time(when: When, rest: &str) -> Parsed {
             message: clean_message(&rest[..start]),
         };
     }
+    if let When::At {
+        day: None,
+        time: Some(time),
+        zone,
+    } = when
+        && let Some((start, day)) = day_at_end(rest)
+    {
+        return Parsed {
+            when: When::At {
+                day: Some(day),
+                time: Some(time),
+                zone,
+            },
+            message: clean_message(&rest[..start]),
+        };
+    }
     Parsed {
         when,
         message: clean_message(rest),
     }
 }
 
+/// A day on its own at the end of `text` ("call mom tomorrow"): where it starts, and the day.
+fn day_at_end(text: &str) -> Option<(usize, Day)> {
+    for start in word_starts(text) {
+        let mut tail = &text[start..];
+        if let Ok(day) = day.parse_next(&mut tail)
+            && tail.trim_end_matches(['.', '!', '?', ' ']).is_empty()
+        {
+            return Some((start, day));
+        }
+    }
+    None
+}
+
+/// The schedule words at the start of a message that should have been part of the time:
+/// "on friday …", "and wednesday …", "evening …". Returns them for the error message.
+fn more_schedule(message: &str) -> Option<&str> {
+    let mut input = message;
+    let found = alt((
+        (word("on"), space1, day).take(),
+        (word("and"), space1, weekday).take(),
+        (opt(in_the), day_part).take(),
+    ))
+    .parse_next(&mut input)
+    .ok()?;
+    Some(found.trim_end())
+}
+
+/// Where each word after the first starts.
+fn word_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
+    text.char_indices()
+        .filter(|(_, c)| c.is_whitespace())
+        .map(|(i, c)| i + c.len_utf8())
+}
+
 /// Finds a time at the end of `text`: tries every word as the start of the time, from the
 /// left, and takes the first one that reads all the way to the end. Returns where the time
 /// starts and the time.
 fn time_at_end(text: &str) -> Option<(usize, When)> {
-    let word_starts = text
-        .char_indices()
-        .filter(|(_, c)| c.is_whitespace())
-        .map(|(i, c)| i + c.len_utf8());
-    for start in word_starts {
+    for start in word_starts(text) {
         let mut tail = &text[start..];
         if let Ok(when) = when.parse_next(&mut tail)
             && tail.trim_end_matches(['.', '!', '?', ' ']).is_empty()
@@ -221,6 +288,36 @@ pub fn resolve(when: &When, now: DateTime<Utc>, home: Tz) -> Result<DateTime<Utc
                 }
                 Some(Day::Today) => today,
                 Some(Day::Tomorrow) => today.succ_opt().ok_or_else(too_far)?,
+                Some(Day::NextWeek) => today + Days::new(7),
+                // The next 15th: this month's if its time is still ahead, else next month's.
+                Some(Day::Monthly(day)) => {
+                    let candidate = |months: u32| {
+                        today
+                            .checked_add_months(Months::new(months))
+                            .and_then(|d| d.with_day(*day))
+                    };
+                    let this_month = candidate(0).filter(|&date| {
+                        date > today
+                            || (date == today && to_utc(zone, date, time).is_ok_and(|t| t > now))
+                    });
+                    match this_month.or_else(|| candidate(1)) {
+                        Some(date) => date,
+                        None => return Err(format!("No month has a day {day}.")),
+                    }
+                }
+                // The next March 3: this year's if still ahead, else next year's.
+                Some(Day::Yearly { month, day }) => {
+                    let candidate =
+                        |years: i32| NaiveDate::from_ymd_opt(today.year() + years, *month, *day);
+                    let this_year = candidate(0).filter(|&date| {
+                        date > today
+                            || (date == today && to_utc(zone, date, time).is_ok_and(|t| t > now))
+                    });
+                    match this_year.or_else(|| candidate(1)) {
+                        Some(date) => date,
+                        None => return Err(format!("There's no day {day} in that month.")),
+                    }
+                }
                 Some(Day::Weekday { day, next }) => {
                     let ahead = (7 + day.num_days_from_monday()
                         - today.weekday().num_days_from_monday())
@@ -348,20 +445,61 @@ pub fn tomorrow_morning(now: DateTime<Utc>, zone: Tz) -> Result<DateTime<Utc>, S
 /// Single words that aren't abbreviations are rejected on purpose, because tz names like
 /// "Turkey" or "Japan" are also ordinary words in a reminder.
 pub fn lookup_zone(name: &str) -> Option<Tz> {
+    // Two letters are only a zone in capitals, so "at 5pm et voilà" stays in the user's own
+    // zone while "5pm ET" means New York.
+    if name.len() == 2 && name != name.to_ascii_uppercase() {
+        return None;
+    }
     let zone = match name.to_ascii_uppercase().as_str() {
         "UTC" | "GMT" | "Z" => Tz::UTC,
         "EST" | "EDT" | "ET" => Tz::America__New_York,
         "CST" | "CDT" | "CT" => Tz::America__Chicago,
         "MST" | "MDT" | "MT" => Tz::America__Denver,
         "PST" | "PDT" | "PT" => Tz::America__Los_Angeles,
+        "AKST" | "AKDT" => Tz::America__Anchorage,
+        "HST" => Tz::Pacific__Honolulu,
+        "WET" | "WEST" => Tz::Europe__Lisbon,
         "CET" | "CEST" => Tz::Europe__Paris,
+        "EET" | "EEST" => Tz::Europe__Helsinki,
         "BST" => Tz::Europe__London,
+        "MSK" => Tz::Europe__Moscow,
+        "SAST" => Tz::Africa__Johannesburg,
+        "HKT" => Tz::Asia__Hong_Kong,
+        "SGT" => Tz::Asia__Singapore,
         "JST" => Tz::Asia__Tokyo,
+        "KST" => Tz::Asia__Seoul,
         "AEST" | "AEDT" => Tz::Australia__Sydney,
+        "NZST" | "NZDT" => Tz::Pacific__Auckland,
         _ if name.contains('/') => return Tz::from_str_insensitive(name).ok(),
         _ => return None,
     };
     Some(zone)
+}
+
+/// The abbreviations [`lookup_zone`] knows, for `/timezone`'s suggestions.
+pub const ZONE_ABBREVIATIONS: &[&str] = &[
+    "UTC", "GMT", "ET", "EST", "EDT", "CT", "CST", "CDT", "MT", "MST", "MDT", "PT", "PST", "PDT",
+    "AKST", "HST", "WET", "CET", "CEST", "EET", "BST", "MSK", "SAST", "HKT", "SGT", "JST", "KST",
+    "AEST", "AEDT", "NZST",
+];
+
+/// How a saved repeat reads to a person: "every day at 9:00", with the zone only when it
+/// isn't the viewer's own ("every day at 9:00 in Europe/Oslo").
+pub fn repeat_for_display(saved: &str, viewer: Tz) -> String {
+    let Some(repeat) = parse_repeat(saved) else {
+        return saved.to_string();
+    };
+    let zone = repeat.zone.unwrap_or(viewer);
+    let full = describe_repeat(&repeat, viewer);
+    // `describe_repeat` ends with the zone (except for hourly repeats): take it off.
+    let plain = full
+        .strip_suffix(zone.name())
+        .map_or(full.as_str(), str::trim_end);
+    if zone == viewer {
+        plain.to_string()
+    } else {
+        format!("{plain} in {}", zone.name())
+    }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -369,45 +507,161 @@ pub fn lookup_zone(name: &str) -> Option<Tz> {
 // ---------------------------------------------------------------------------------------
 
 const NINE_AM: NaiveTime = NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+/// "tonight", "night": 20:00.
+const EVENING_LATE: NaiveTime = NaiveTime::from_hms_opt(20, 0, 0).unwrap();
 
 /// The whole time expression.
 fn when(input: &mut &str) -> ModalResult<When> {
-    alt((in_duration, at_time, every, on_day)).parse_next(input)
+    alt((
+        in_duration,
+        at_time,
+        every,
+        shorthand_repeat,
+        tonight,
+        on_day,
+    ))
+    .parse_next(input)
+}
+
+/// "daily", "daily at 9:00", "weekly", "monthly", "hourly": "every day/week/month/hour" in
+/// one word. Only "daily" takes a clock; the others count from now, like "every week".
+fn shorthand_repeat(input: &mut &str) -> ModalResult<When> {
+    let rule = alt((
+        word("daily").value(Rule::Daily),
+        word("weekly").value(Rule::Interval(1, Unit::Week)),
+        word("monthly").value(Rule::Interval(1, Unit::Month)),
+        word("hourly").value(Rule::Interval(1, Unit::Hour)),
+    ))
+    .parse_next(input)?;
+    let time = day_clock.parse_next(input)?;
+    if time.is_some() && rule != Rule::Daily {
+        return refuse(
+            input,
+            "a repeat with a day for that time, like every monday at 10:00",
+        );
+    }
+    let zone = opt(preceded(space1, zone)).parse_next(input)?;
+    Ok(When::Every(Repeat { rule, time, zone }))
+}
+
+/// "tonight": today at 20:00.
+fn tonight(input: &mut &str) -> ModalResult<When> {
+    word("tonight").parse_next(input)?;
+    let zone = opt(preceded(space1, zone)).parse_next(input)?;
+    Ok(When::At {
+        day: Some(Day::Today),
+        time: Some(EVENING_LATE),
+        zone,
+    })
+}
+
+/// Stop parsing with a hint. Used where a phrase is understood well enough to know it
+/// can't be done, so the user gets a reason instead of a generic "couldn't read that".
+fn refuse<T>(input: &mut &str, hint: &'static str) -> ModalResult<T> {
+    cut_err(fail).context(describe(hint)).parse_next(input)
 }
 
 /// "every day at 9:00", "every weekday 8:30 CET", "every monday", "every 2 hours",
 /// "every 3 days Europe/Oslo"
 fn every(input: &mut &str) -> ModalResult<When> {
     (word("every"), space1).parse_next(input)?;
+    // "every other monday" would need a rule the scheduler doesn't have (a weekday every
+    // second week), so it's refused with a hint rather than read as every Monday.
+    if peek((word("other"), space1, weekday))
+        .parse_next(input)
+        .is_ok()
+    {
+        return refuse(
+            input,
+            "a repeat I can do: every other week works, every other monday doesn't yet",
+        );
+    }
     let (rule, time) = cut_err(alt((
-        (
-            repeat_days,
-            opt(preceded((space1, opt((word("at"), space1))), clock)),
-        ),
+        (repeat_days, day_clock),
         repeat_interval.map(|rule| (rule, None)),
     )))
     .context(describe(
         "a repeat like every day at 9:00, every monday or every 2 hours",
     ))
     .parse_next(input)?;
+    // "every monday and wednesday": one weekday per reminder, so say so.
+    if peek((space1, word("and"), space1, weekday))
+        .parse_next(input)
+        .is_ok()
+    {
+        return refuse(
+            input,
+            "one weekday per repeat: set a second reminder for the other day",
+        );
+    }
     let zone = opt(preceded(space1, zone)).parse_next(input)?;
     Ok(When::Every(Repeat { rule, time, zone }))
 }
 
-/// "day", "weekday", "monday"
+/// "day", "weekday", "weekend" (Saturday), "monday"
 fn repeat_days(input: &mut &str) -> ModalResult<Rule> {
     alt((
         word("day").value(Rule::Daily),
         any_word(&["weekdays", "weekday"]).value(Rule::Weekdays),
+        any_word(&["weekends", "weekend"]).value(Rule::Weekly(Weekday::Sat)),
         weekday.map(Rule::Weekly),
     ))
     .parse_next(input)
 }
 
-/// "2 hours", "hour", "3 days", "week". Minutes and seconds are refused: a reminder every
-/// few minutes would only be noise.
+/// The optional clock after a day or a repeat: " at 9:30", " 9:30", " morning". A bare
+/// hour ("tomorrow at 7") is an error rather than nothing, so "7" isn't silently 09:00 with
+/// "at 7" left in the message.
+fn day_clock(input: &mut &str) -> ModalResult<Option<NaiveTime>> {
+    let time = opt(preceded(
+        space1,
+        alt((
+            preceded(opt((word("at"), space1)), clock),
+            preceded(opt(in_the), day_part),
+        )),
+    ))
+    .parse_next(input)?;
+    if time.is_none()
+        && peek((
+            space1,
+            word("at"),
+            space1,
+            take_while(1..=2, |c: char| c.is_ascii_digit()),
+        ))
+        .parse_next(input)
+        .is_ok()
+    {
+        return refuse(
+            input,
+            "a clock time with minutes or am/pm, like 7:00 or 7pm",
+        );
+    }
+    Ok(time)
+}
+
+/// "in the " before a part of the day: "tomorrow in the evening".
+fn in_the(input: &mut &str) -> ModalResult<()> {
+    (word("in"), space1, word("the"), space1)
+        .void()
+        .parse_next(input)
+}
+
+/// "morning" (09:00), "afternoon" (14:00), "evening" (18:00), "night" (20:00).
+fn day_part(input: &mut &str) -> ModalResult<NaiveTime> {
+    alt((
+        word("morning").value(NINE_AM),
+        word("afternoon").value(NaiveTime::from_hms_opt(14, 0, 0).unwrap()),
+        word("evening").value(NaiveTime::from_hms_opt(18, 0, 0).unwrap()),
+        word("night").value(EVENING_LATE),
+    ))
+    .parse_next(input)
+}
+
+/// "2 hours", "hour", "3 days", "week", "other week" (2 weeks). Minutes and seconds are
+/// refused: a reminder every few minutes would only be noise.
 fn repeat_interval(input: &mut &str) -> ModalResult<Rule> {
-    let n: Option<u32> = opt(terminated(dec_uint, space0)).parse_next(input)?;
+    let n: Option<u32> =
+        opt(terminated(alt((dec_uint, word("other").value(2))), space0)).parse_next(input)?;
     let unit = unit.parse_next(input)?;
     match (n.unwrap_or(1), unit) {
         (0, _) | (_, Unit::Minute | Unit::Second) => backtrack(),
@@ -450,7 +704,7 @@ fn at_time(input: &mut &str) -> ModalResult<When> {
 /// "tomorrow", "friday at 3pm", "next friday 9:30 CET", "on 2026-12-24 at noon"
 fn on_day(input: &mut &str) -> ModalResult<When> {
     let day = day.parse_next(input)?;
-    let time = opt(preceded((space1, opt((word("at"), space1))), clock)).parse_next(input)?;
+    let time = day_clock.parse_next(input)?;
     let zone = match time {
         Some(_) => opt(preceded(space1, zone)).parse_next(input)?,
         None => None,
@@ -465,15 +719,71 @@ fn on_day(input: &mut &str) -> ModalResult<When> {
 /// One or more "<number> <unit>" parts, optionally separated by spaces, commas or "and".
 fn duration(input: &mut &str) -> ModalResult<Vec<(u32, Unit)>> {
     let separator = (space0, opt((alt((",", word("and"))), space0)));
-    repeat(1.., preceded(separator, duration_part)).parse_next(input)
+    let parts: Vec<Vec<(u32, Unit)>> =
+        repeat(1.., preceded(separator, duration_part)).parse_next(input)?;
+    Ok(parts.into_iter().flatten().collect())
 }
 
-/// "2h", "30 minutes"
-fn duration_part(input: &mut &str) -> ModalResult<(u32, Unit)> {
-    let n: u32 = dec_uint.parse_next(input)?;
+/// "2h", "30 minutes", "an hour", "half an hour", "1.5 hours", "1h30", "an hour and a half".
+/// Fractions become the next smaller unit, so the parts stay whole numbers.
+fn duration_part(input: &mut &str) -> ModalResult<Vec<(u32, Unit)>> {
+    // "half an hour", "half a day"
+    // `opt` puts the input back where it was when the words aren't there.
+    if opt((word("half"), space1, any_word(&["an", "a"]), space1))
+        .parse_next(input)?
+        .is_some()
+    {
+        let unit = unit.parse_next(input)?;
+        return halve(unit).map(|part| vec![part]);
+    }
+    let n: u32 = alt((dec_uint, any_word(&["an", "a"]).value(1))).parse_next(input)?;
+    let tenths: Option<u32> = opt(preceded(
+        '.',
+        take_while(1, |c: char| c.is_ascii_digit()).parse_to(),
+    ))
+    .parse_next(input)?;
     space0.parse_next(input)?;
     let unit = unit.parse_next(input)?;
-    Ok((n, unit))
+    let mut parts = vec![(n, unit)];
+    if let Some(tenths) = tenths.filter(|&t| t > 0) {
+        let (per, smaller) = smaller_unit(unit)?;
+        parts.push((per * tenths / 10, smaller));
+    }
+    // "1h30": minutes glued to the hours.
+    if unit == Unit::Hour
+        && let Some(minutes) = opt(terminated(
+            two_digits,
+            not(one_of(|c: char| c.is_alphanumeric() || c == ':')),
+        ))
+        .parse_next(input)?
+    {
+        parts.push((minutes, Unit::Minute));
+    }
+    // "an hour and a half"
+    if opt((space1, word("and"), space1, word("a"), space1, word("half")))
+        .parse_next(input)?
+        .is_some()
+    {
+        parts.push(halve(unit)?);
+    }
+    Ok(parts)
+}
+
+/// How many of the next smaller unit make one of `unit`: an hour is 60 minutes.
+fn smaller_unit(unit: Unit) -> ModalResult<(u32, Unit)> {
+    Ok(match unit {
+        Unit::Week => (7, Unit::Day),
+        Unit::Day => (24, Unit::Hour),
+        Unit::Hour => (60, Unit::Minute),
+        Unit::Minute => (60, Unit::Second),
+        _ => return backtrack(),
+    })
+}
+
+/// Half of `unit` in the next smaller one: half an hour is 30 minutes.
+fn halve(unit: Unit) -> ModalResult<(u32, Unit)> {
+    let (per, smaller) = smaller_unit(unit)?;
+    Ok((per / 2, smaller))
 }
 
 fn unit(input: &mut &str) -> ModalResult<Unit> {
@@ -530,20 +840,136 @@ fn numeric_clock(input: &mut &str) -> ModalResult<NaiveTime> {
     }
 }
 
-/// "today", "tomorrow", "friday", "next friday", "on friday", "2026-12-24", "on 2026-12-24"
+/// "today", "tomorrow", "friday", "this friday", "next friday", "next week", "on friday",
+/// "2026-12-24", "on 2026-12-24", "on the 15th", "on march 3", "3rd of march", "24.12"
 fn day(input: &mut &str) -> ModalResult<Day> {
     alt((
         word("today").value(Day::Today),
         word("tomorrow").value(Day::Tomorrow),
+        (word("next"), space1, word("week")).value(Day::NextWeek),
         preceded((word("next"), space1), weekday).map(|day| Day::Weekday { day, next: true }),
+        preceded((word("this"), space1), weekday).map(|day| Day::Weekday { day, next: false }),
         preceded(
             (word("on"), space1),
-            alt((date.map(Day::Date), plain_weekday)),
+            alt((date.map(Day::Date), calendar_day, plain_weekday)),
         ),
         date.map(Day::Date),
+        calendar_day,
         plain_weekday,
     ))
     .parse_next(input)
+}
+
+/// A date without a year: "the 15th", "15th", "march 3", "3rd of march", "3 march", "24.12".
+fn calendar_day(input: &mut &str) -> ModalResult<Day> {
+    alt((
+        // "24.12", "24.12.2026"
+        (
+            day_number,
+            '.',
+            month_number,
+            opt(preceded('.', year_number)),
+        )
+            .verify_map(|(day, _, month, year)| match year {
+                Some(year) => NaiveDate::from_ymd_opt(year, month, day).map(Day::Date),
+                None => Some(Day::Yearly { month, day }),
+            }),
+        // "march 3", "march 3rd"
+        (month_name, space1, ordinal).map(|(month, _, day)| Day::Yearly { month, day }),
+        // "3rd of march", "3 march"
+        (ordinal, space1, opt((word("of"), space1)), month_name)
+            .map(|(day, _, _, month)| Day::Yearly { month, day }),
+        // "the 15th", "15th" (not a bare number: "5 things" isn't a date)
+        preceded(opt((word("the"), space1)), ordinal_only).map(Day::Monthly),
+    ))
+    .parse_next(input)
+}
+
+/// "3", "3rd", "15th": a day of the month, 1 to 31.
+fn ordinal(input: &mut &str) -> ModalResult<u32> {
+    let day = day_number.parse_next(input)?;
+    opt(any_word(&["st", "nd", "rd", "th"])).parse_next(input)?;
+    Ok(day)
+}
+
+/// "3rd", "15th": like [`ordinal`], but the suffix is required.
+fn ordinal_only(input: &mut &str) -> ModalResult<u32> {
+    let day = day_number.parse_next(input)?;
+    any_word(&["st", "nd", "rd", "th"]).parse_next(input)?;
+    Ok(day)
+}
+
+fn day_number(input: &mut &str) -> ModalResult<u32> {
+    let n: u32 = take_while(1..=2, |c: char| c.is_ascii_digit())
+        .parse_to()
+        .parse_next(input)?;
+    if (1..=31).contains(&n) {
+        Ok(n)
+    } else {
+        backtrack()
+    }
+}
+
+fn month_number(input: &mut &str) -> ModalResult<u32> {
+    let n: u32 = take_while(1..=2, |c: char| c.is_ascii_digit())
+        .parse_to()
+        .parse_next(input)?;
+    if (1..=12).contains(&n) {
+        Ok(n)
+    } else {
+        backtrack()
+    }
+}
+
+fn year_number(input: &mut &str) -> ModalResult<i32> {
+    take_while(4, |c: char| c.is_ascii_digit())
+        .parse_to()
+        .parse_next(input)
+}
+
+/// "january", "jan", … as 1 to 12.
+fn month_name(input: &mut &str) -> ModalResult<u32> {
+    let name = any_word(&[
+        "january",
+        "jan",
+        "february",
+        "feb",
+        "march",
+        "mar",
+        "april",
+        "apr",
+        "may",
+        "june",
+        "jun",
+        "july",
+        "jul",
+        "august",
+        "aug",
+        "september",
+        "sept",
+        "sep",
+        "october",
+        "oct",
+        "november",
+        "nov",
+        "december",
+        "dec",
+    ])
+    .parse_next(input)?;
+    Ok(match name[..3].to_ascii_lowercase().as_str() {
+        "jan" => 1,
+        "feb" => 2,
+        "mar" => 3,
+        "apr" => 4,
+        "may" => 5,
+        "jun" => 6,
+        "jul" => 7,
+        "aug" => 8,
+        "sep" => 9,
+        "oct" => 10,
+        "nov" => 11,
+        _ => 12,
+    })
 }
 
 fn plain_weekday(input: &mut &str) -> ModalResult<Day> {
@@ -1128,5 +1554,158 @@ mod tests {
         assert_eq!(lookup_zone("America/New_York"), Some(Tz::America__New_York));
         assert_eq!(lookup_zone("Turkey"), None);
         assert_eq!(lookup_zone("Mars/Base"), None);
+    }
+    #[test]
+    fn plainer_durations() {
+        let cases = [
+            ("in an hour tea", TimeDelta::hours(1), "tea"),
+            ("in a minute tea", TimeDelta::minutes(1), "tea"),
+            ("in half an hour tea", TimeDelta::minutes(30), "tea"),
+            ("in 1.5 hours tea", TimeDelta::minutes(90), "tea"),
+            ("in 1h30 tea", TimeDelta::minutes(90), "tea"),
+            ("in an hour and a half tea", TimeDelta::minutes(90), "tea"),
+            ("in 2.5 days tea", TimeDelta::hours(60), "tea"),
+            ("tea in half an hour", TimeDelta::minutes(30), "tea"),
+        ];
+        for (text, delta, message) in cases {
+            let (at, msg) = run(text);
+            assert_eq!(at - now(), delta, "{text}");
+            assert_eq!(msg, message, "{text}");
+        }
+    }
+
+    #[test]
+    fn plainer_days() {
+        // now() is Sunday 2026-02-22 12:00 UTC.
+        let cases = [
+            ("tomorrow evening dinner", utc(2026, 2, 23, 18, 0), "dinner"),
+            ("tomorrow morning run", utc(2026, 2, 23, 9, 0), "run"),
+            (
+                "tomorrow in the afternoon nap",
+                utc(2026, 2, 23, 14, 0),
+                "nap",
+            ),
+            ("tonight game", utc(2026, 2, 22, 20, 0), "game"),
+            ("game tonight", utc(2026, 2, 22, 20, 0), "game"),
+            ("this friday party", utc(2026, 2, 27, 9, 0), "party"),
+            ("next week review", utc(2026, 3, 1, 9, 0), "review"),
+            (
+                "next week at 10:00 review",
+                utc(2026, 3, 1, 10, 0),
+                "review",
+            ),
+            ("on the 15th rent", utc(2026, 3, 15, 9, 0), "rent"),
+            ("15th rent", utc(2026, 3, 15, 9, 0), "rent"),
+            ("march 3 dentist", utc(2026, 3, 3, 9, 0), "dentist"),
+            (
+                "on march 3rd at 2pm dentist",
+                utc(2026, 3, 3, 14, 0),
+                "dentist",
+            ),
+            ("3rd of march dentist", utc(2026, 3, 3, 9, 0), "dentist"),
+            ("3 mar dentist", utc(2026, 3, 3, 9, 0), "dentist"),
+            ("24.12 presents", utc(2026, 12, 24, 9, 0), "presents"),
+            ("24.12.2027 presents", utc(2027, 12, 24, 9, 0), "presents"),
+            // A date that has passed this year rolls to next year.
+            ("january 5 taxes", utc(2027, 1, 5, 9, 0), "taxes"),
+            // Time first, day last.
+            (
+                "at 5pm call mom tomorrow",
+                utc(2026, 2, 23, 17, 0),
+                "call mom",
+            ),
+            (
+                "at 9:00 standup on monday",
+                utc(2026, 2, 23, 9, 0),
+                "standup",
+            ),
+        ];
+        for (text, at, message) in cases {
+            assert_eq!(run(text), (at, message.into()), "{text}");
+        }
+        // "5 things" is not a date, and neither is "at 10am CT scan" a scan in Chicago.
+        assert_eq!(run("5 things to do tomorrow").1, "5 things to do");
+    }
+
+    #[test]
+    fn plainer_repeats() {
+        let (times, msg) = repeats("daily stretch", Tz::UTC, 2);
+        assert_eq!(times, [utc(2026, 2, 23, 9, 0), utc(2026, 2, 24, 9, 0)]);
+        assert_eq!(msg, "stretch");
+
+        let (times, _) = repeats("daily at 10:00 report", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 2, 23, 10, 0)]);
+
+        let (times, _) = repeats("weekly report", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 3, 1, 12, 0)]);
+
+        let (times, _) = repeats("monthly rent", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 3, 22, 12, 0)]);
+
+        let (times, _) = repeats("every other week laundry", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 3, 8, 12, 0)]);
+
+        let (times, _) = repeats("every weekend sleep in", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 2, 28, 9, 0)]);
+
+        let (times, _) = repeats("every day in the evening walk", Tz::UTC, 1);
+        assert_eq!(times, [utc(2026, 2, 22, 18, 0)]);
+    }
+
+    #[test]
+    fn plainer_errors() {
+        let err = parse_reminder("tomorrow at 7 call").unwrap_err();
+        assert!(err.contains("7:00 or 7pm"), "{err}");
+
+        let err = parse_reminder("every monday and wednesday standup").unwrap_err();
+        assert!(err.contains("one weekday"), "{err}");
+
+        let err = parse_reminder("every other monday standup").unwrap_err();
+        assert!(err.contains("every other week"), "{err}");
+
+        let err = parse_reminder("weekly at 10:00 report").unwrap_err();
+        assert!(err.contains("every monday at 10:00"), "{err}");
+
+        let err = parse_reminder("in 2 weeks on friday review").unwrap_err();
+        assert!(err.contains("more than one time"), "{err}");
+        assert!(err.contains("\"on friday\""), "{err}");
+
+        // Not a date: 31.02 doesn't exist and 5 isn't a day on its own.
+        assert!(parse_reminder("31.02.2026 nope").is_err());
+        assert_eq!(
+            parse_reminder("5 nope").unwrap_err(),
+            "I couldn't find a time in that."
+        );
+    }
+
+    #[test]
+    fn repeats_read_in_the_viewers_zone() {
+        let oslo = Tz::Europe__Oslo;
+        assert_eq!(
+            repeat_for_display("every day at 9:00 Europe/Oslo", oslo),
+            "every day at 9:00"
+        );
+        assert_eq!(
+            repeat_for_display("every day at 9:00 Europe/Oslo", Tz::UTC),
+            "every day at 9:00 in Europe/Oslo"
+        );
+        assert_eq!(repeat_for_display("every 2 hours", oslo), "every 2 hours");
+        assert_eq!(
+            repeat_for_display("every 3 days Europe/Oslo", oslo),
+            "every 3 days"
+        );
+        assert_eq!(repeat_for_display("not a repeat", oslo), "not a repeat");
+    }
+
+    #[test]
+    fn two_letter_zones_need_capitals() {
+        assert_eq!(lookup_zone("CT"), Some(Tz::America__Chicago));
+        assert_eq!(lookup_zone("ct"), None);
+        assert_eq!(lookup_zone("et"), None);
+        assert_eq!(run("at 5pm et voilà").1, "et voilà");
+        assert_eq!(
+            run("at 5pm ET voilà"),
+            (utc(2026, 2, 22, 22, 0), "voilà".into())
+        );
     }
 }

@@ -157,3 +157,4 @@ The port went in stages, one pull request each, all merged into `main`.
 | More faces | Mischievous, grossed out, lonely, celebrating |
 | Listeners for bot events | `ReminderFired` and `WheelRoundResolved` are published, but nothing listens yet |
 | Voice channels | Not asked for; voice is messages only |
+| #42 | | UX run: reminder times the way people say them (`in an hour and a half`, `tomorrow evening`, `on the 15th`, `every other week`), clearer refusals, repeats shown in your own timezone, `/timezone` suggests abbreviations |
