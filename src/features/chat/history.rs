@@ -8,6 +8,7 @@ use serenity::all::{ContentSafeOptions, Message, content_safe};
 use serenity::futures::future::join_all;
 use tracing::warn;
 
+use super::channels;
 use super::store::{self, StoredPart, Turn};
 use crate::ai::{self, ChatProvider, Input, ModelFile, NativeRound, Part, Role};
 use crate::core::BotCtx;
@@ -73,13 +74,14 @@ pub async fn read_message(
     text: &str,
     from_bot: bool,
 ) -> Vec<StoredPart> {
-    // "<@123>" becomes "@name", so the model sees who was mentioned.
+    // "<@123>" becomes "@name" and "<#123>" "#name", so the model sees who and where.
     let text = content_safe(
         &ctx.cache,
         text,
-        &ContentSafeOptions::default(),
+        &ContentSafeOptions::default().clean_channel(false),
         &msg.mentions,
     );
+    let text = channels::name_channels(ctx, &text).await;
     let text = if from_bot {
         text
     } else {

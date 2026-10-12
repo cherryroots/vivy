@@ -2,6 +2,7 @@
 //! reply. Replying to an answer continues the conversation.
 //!
 //! - `answer.rs`: one answer: streaming, the status line, tool calls, files
+//! - `channels.rs`: names for channel mentions and links in messages, threads included
 //! - `history.rs`: Discord messages to chat turns, and stored turns to model input
 //! - `store.rs`: the `chat_turns` and `chat_messages` tables
 //! - `tools.rs`: chat's own tools (time, channel, users, messages, pins, events)
@@ -16,6 +17,7 @@
 
 mod answer;
 mod avatar;
+mod channels;
 mod chime;
 mod emoji;
 mod follow_up;

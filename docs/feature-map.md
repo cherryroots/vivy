@@ -155,6 +155,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #50 | | Snails: a flat picture under 3 pixels on a side (a 1×1 pixel) no longer crashes the fingerprint; it used to be trimmed down to nothing |
 | #51 | | Chat: `get_user_info` shows a member's online status and current activities (playing, listening, custom status); needs the Presence Intent turned on in the Developer Portal |
 | #52 | | Chat: a progress note with nothing written after it (her answer, when a tool call followed it) stays in the reply instead of disappearing |
+| #53 | | Chat: threads and forum posts mentioned or linked in a message show their real name to her (with the channel they're in), instead of `#deleted-channel`; a channel she can't see says so |
 
 ## Not built yet
 

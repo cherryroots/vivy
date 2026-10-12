@@ -23,6 +23,7 @@ All under `src/features/chat/`, in a good reading order:
 |---|---|
 | `mod.rs` | The `Chat` struct and its `Feature` impl: `on_mention`, reactions (❌ / 🔁), the list of running answers, saving the question and answer turns |
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
+| `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
 | `history.rs` | Turning a Discord message into stored parts (`read_message`), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
 | `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `can_read`) |
@@ -91,7 +92,7 @@ Every message the bot answers and every answer gets a turn in `chat_turns`. A tu
 
 `content_json` holds `StoredPart`s (`store.rs`), which are provider-neutral:
 
-- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>`, with attachment and embed text inside. `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. Mentions become names through serenity's `content_safe`.
+- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>`, with attachment and embed text inside. `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. User mentions become names through serenity's `content_safe`. Channel mentions and channel links get names from `channels.rs`, which also knows threads and forum posts (cache first, then Discord, for archived threads); a channel the bot can't see is called `#hidden-channel`, not `#deleted-channel`. The tool results that show messages (`format_message`) do the same.
 - `Media`: a link to a picture, GIF or video (at most 8 per message), with its kind and MIME type.
 - `File`: a link to any other attachment, like a PDF or spreadsheet (at most 10 per message, 50 MB each).
 - `Context`: what features added to the question when it was first answered.

@@ -299,10 +299,10 @@ async fn read_along(
                 .map(|c| c.name.clone())
         })
         .unwrap_or_default();
-    let lines: Vec<String> = messages
-        .iter()
-        .map(|m| format_message(ctx, m, Tz::UTC))
-        .collect();
+    let mut lines = Vec::new();
+    for m in &messages {
+        lines.push(format_message(ctx, m, Tz::UTC).await);
+    }
     Ok(format!(
         "<recent_messages channel=\"#{name}\">\n{}\n</recent_messages>",
         lines.join("\n")
