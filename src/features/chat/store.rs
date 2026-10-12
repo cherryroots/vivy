@@ -54,6 +54,10 @@ pub const MIGRATIONS: &[&str] = &[
         name TEXT NOT NULL,
         description TEXT NOT NULL
     );",
+    // 3: for `look_back_at_answers`, how an answer ended and how long it took.
+    "ALTER TABLE chat_turns ADD COLUMN error TEXT;          -- why an answer failed or stopped
+    ALTER TABLE chat_turns ADD COLUMN started_at INTEGER;   -- when work on an answer began
+    CREATE INDEX chat_turns_channel ON chat_turns (channel_id, role, id);",
 ];
 
 /// One piece of a stored turn. Media is kept as a link and downloaded again when an old
@@ -130,6 +134,10 @@ pub struct NewTurn {
     pub parts: Vec<StoredPart>,
     /// Set for answers.
     pub written: Option<Written>,
+    /// For answers: when work on it began (`created_at` is when it was saved, at the end).
+    pub started_at: Option<i64>,
+    /// For answers that didn't finish: the error, or that ❌ stopped it.
+    pub error: Option<String>,
     pub created_at: i64,
 }
 
@@ -145,6 +153,10 @@ pub struct Turn {
     pub continuation_id: Option<String>,
     /// The provider's raw output, for answers.
     pub native_json: Option<String>,
+    pub channel_id: u64,
+    pub started_at: Option<i64>,
+    pub error: Option<String>,
+    pub created_at: i64,
 }
 
 /// Adds a turn and links its Discord messages to it. Linking a message that already
@@ -159,8 +171,9 @@ pub fn add_turn(conn: &mut Connection, turn: &NewTurn, messages: &[u64]) -> anyh
     let optional = |s: String| (!s.is_empty()).then_some(s);
     tx.execute(
         "INSERT INTO chat_turns (parent_id, role, author_id, channel_id, content_json,
-                                 native_json, provider, model, continuation_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                                 native_json, provider, model, continuation_id, created_at,
+                                 started_at, error)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             turn.parent_id,
             role,
@@ -172,6 +185,8 @@ pub fn add_turn(conn: &mut Connection, turn: &NewTurn, messages: &[u64]) -> anyh
             optional(written.model),
             written.continuation_id,
             turn.created_at,
+            turn.started_at,
+            turn.error,
         ],
     )?;
     let id = tx.last_insert_rowid();
@@ -219,10 +234,42 @@ pub fn turn_for_message(conn: &Connection, message_id: u64) -> anyhow::Result<Op
 pub fn get_turn(conn: &Connection, id: i64) -> anyhow::Result<Option<Turn>> {
     let row = conn
         .query_row(
-            "SELECT id, parent_id, role, author_id, content_json, provider, model, continuation_id,
-                    native_json
-             FROM chat_turns WHERE id = ?1",
+            &format!("SELECT {TURN_COLUMNS} FROM chat_turns WHERE id = ?1"),
             [id],
+            read_row,
+        )
+        .optional()?;
+    row.map(into_turn).transpose()
+}
+
+/// Her answers, newest first: in one channel or everywhere, and only those older than
+/// answer `before` when it's given.
+pub fn recent_answers(
+    conn: &Connection,
+    channel: Option<u64>,
+    before: Option<i64>,
+    limit: usize,
+) -> anyhow::Result<Vec<Turn>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {TURN_COLUMNS} FROM chat_turns
+         WHERE role = 'assistant' AND (?1 IS NULL OR channel_id = ?1) AND (?2 IS NULL OR id < ?2)
+         ORDER BY id DESC LIMIT ?3"
+    ))?;
+    let rows = stmt
+        .query_map(params![channel, before, limit as i64], read_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter().map(into_turn).collect()
+}
+
+/// The newest answer to a question turn.
+pub fn answer_to(conn: &Connection, question_id: i64) -> anyhow::Result<Option<Turn>> {
+    let row = conn
+        .query_row(
+            &format!(
+                "SELECT {TURN_COLUMNS} FROM chat_turns
+                 WHERE parent_id = ?1 AND role = 'assistant' ORDER BY id DESC LIMIT 1"
+            ),
+            [question_id],
             read_row,
         )
         .optional()?;
@@ -272,50 +319,39 @@ pub fn forget_old_rounds(conn: &Connection, before: i64) -> rusqlite::Result<usi
     )
 }
 
-type RawRow = (
-    i64,
-    Option<i64>,
-    String,
-    u64,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+/// The columns [`read_row`] reads, in its order.
+const TURN_COLUMNS: &str = "id, parent_id, role, author_id, content_json, provider, model,
+    continuation_id, native_json, channel_id, started_at, error, created_at";
 
-fn read_row(row: &Row) -> rusqlite::Result<RawRow> {
-    Ok((
-        row.get(0)?,
-        row.get(1)?,
-        row.get(2)?,
-        row.get(3)?,
-        row.get(4)?,
-        row.get(5)?,
-        row.get(6)?,
-        row.get(7)?,
-        row.get(8)?,
-    ))
-}
-
-fn into_turn(row: RawRow) -> anyhow::Result<Turn> {
-    let (id, parent_id, role, author_id, content, provider, model, continuation_id, native_json) =
-        row;
-    Ok(Turn {
-        id,
-        parent_id,
+/// A row as SQLite returns it; [`into_turn`] then reads the JSON, which can fail in its
+/// own way.
+fn read_row(row: &Row) -> rusqlite::Result<(Turn, String)> {
+    let role: String = row.get(2)?;
+    let turn = Turn {
+        id: row.get(0)?,
+        parent_id: row.get(1)?,
         role: if role == "assistant" {
             Role::Assistant
         } else {
             Role::User
         },
-        author_id,
-        parts: serde_json::from_str(&content)?,
-        provider,
-        model,
-        continuation_id,
-        native_json,
-    })
+        author_id: row.get(3)?,
+        parts: Vec::new(),
+        provider: row.get(5)?,
+        model: row.get(6)?,
+        continuation_id: row.get(7)?,
+        native_json: row.get(8)?,
+        channel_id: row.get(9)?,
+        started_at: row.get(10)?,
+        error: row.get(11)?,
+        created_at: row.get(12)?,
+    };
+    Ok((turn, row.get(4)?))
+}
+
+fn into_turn((mut turn, content): (Turn, String)) -> anyhow::Result<Turn> {
+    turn.parts = serde_json::from_str(&content)?;
+    Ok(turn)
 }
 
 /// A check-in Vivy planned for herself.
@@ -457,6 +493,8 @@ mod tests {
                 continuation_id: Some(format!("resp_{text}")),
                 native_json: Some("[]".into()),
             }),
+            started_at: None,
+            error: None,
             created_at: 0,
         }
     }
@@ -558,6 +596,48 @@ mod tests {
         .unwrap();
         assert_eq!(turn_for_message(&conn, 11).unwrap().unwrap().id, again);
         assert_eq!(turn_for_message(&conn, 12).unwrap().unwrap().id, answer);
+    }
+
+    #[test]
+    fn recent_answers_by_channel() {
+        let mut conn = test_connection("chat", MIGRATIONS);
+        let question = add_turn(&mut conn, &new_turn(None, Role::User, "q"), &[10]).unwrap();
+        let mut first = new_turn(Some(question), Role::Assistant, "a");
+        first.started_at = Some(5);
+        first.error = Some("stopped with ❌".into());
+        let first = add_turn(&mut conn, &first, &[11]).unwrap();
+        let mut elsewhere = new_turn(None, Role::Assistant, "b");
+        elsewhere.channel_id = 3;
+        let elsewhere = add_turn(&mut conn, &elsewhere, &[]).unwrap();
+        let again = add_turn(
+            &mut conn,
+            &new_turn(Some(question), Role::Assistant, "c"),
+            &[],
+        )
+        .unwrap();
+
+        let ids = |turns: Vec<Turn>| turns.iter().map(|t| t.id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(recent_answers(&conn, None, None, 10).unwrap()),
+            [again, elsewhere, first]
+        );
+        assert_eq!(
+            ids(recent_answers(&conn, Some(2), None, 10).unwrap()),
+            [again, first]
+        );
+        assert_eq!(
+            ids(recent_answers(&conn, Some(2), Some(again), 10).unwrap()),
+            [first]
+        );
+        assert_eq!(ids(recent_answers(&conn, None, None, 1).unwrap()), [again]);
+
+        let saved = get_turn(&conn, first).unwrap().unwrap();
+        assert_eq!(saved.started_at, Some(5));
+        assert_eq!(saved.error.as_deref(), Some("stopped with ❌"));
+        assert_eq!(saved.channel_id, 2);
+        // A question leads to its newest answer.
+        assert_eq!(answer_to(&conn, question).unwrap().unwrap().id, again);
+        assert!(answer_to(&conn, again).unwrap().is_none());
     }
 
     #[test]

@@ -388,6 +388,8 @@ pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::R
         channel_id: referenced.channel_id.get(),
         parts,
         written: None,
+        started_at: None,
+        error: None,
         created_at: referenced.timestamp.unix_timestamp(),
     };
     ctx.db
