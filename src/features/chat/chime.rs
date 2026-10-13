@@ -196,7 +196,7 @@ When someone answers one of your questions later, save what you learned. \
 Reactions after a message show how people took it, your own lines included. \
 If you noticed something lasting about the server, its people or yourself, you can save it with the memory tool first. \
 Then answer with exactly one of: PASS; REACT followed by one emoji; or one short line the way people write on Discord, with no greeting. \
-When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply that pings its author.";
+When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply to it.";
 
 /// Reads the last messages of `asker.channel` (ending with `last`, when given), asks the
 /// model what to do with `instructions`, and does it: posts a line, reacts to `last`, or
@@ -259,9 +259,10 @@ pub async fn speak(
         Some(user) => CreateAllowedMentions::new().users([user]),
         None => CreateAllowedMentions::new(),
     };
+    // A reply, but without pinging its author: Discord pings unless told not to.
     let mut message = CreateMessage::new()
         .content(answer::discord_links(&line))
-        .allowed_mentions(pings.replied_user(target.is_some()));
+        .allowed_mentions(pings.replied_user(false));
     if let Some(target) = target {
         message = message.reference_message(target);
     }
