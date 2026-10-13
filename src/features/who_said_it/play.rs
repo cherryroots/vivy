@@ -1,4 +1,4 @@
-//! Running games: `/whosaidit` starts one in its channel, a task posts each question and
+//! Running games: `/games whosaidit` starts one in its channel, a task posts each question and
 //! its answer, and button presses are recorded as they come in.
 //!
 //! The games running now are kept in [`GAMES`], by channel, so a button press can find its
@@ -33,7 +33,7 @@ struct Running {
 }
 
 /// The channels with a game: `None` while its quotes are being read, so a second
-/// `/whosaidit` can't start another one meanwhile.
+/// `/games whosaidit` can't start another one meanwhile.
 static GAMES: LazyLock<Mutex<HashMap<ChannelId, Option<Arc<Running>>>>> =
     LazyLock::new(Mutex::default);
 
@@ -44,6 +44,17 @@ impl Drop for Leave {
     fn drop(&mut self) {
         GAMES.lock().unwrap().remove(&self.0);
     }
+}
+
+/// Games to play in the channel
+#[poise::command(
+    slash_command,
+    guild_only,
+    subcommands("who_said_it"),
+    subcommand_required
+)]
+pub async fn games(_ctx: Context<'_>) -> Result<()> {
+    Ok(())
 }
 
 /// Guess who wrote old messages from this channel

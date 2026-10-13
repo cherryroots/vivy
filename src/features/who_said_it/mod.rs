@@ -1,10 +1,10 @@
-//! Who said it?: a game in plain Discord messages. `/whosaidit` digs up messages from the
+//! Who said it?: a game in plain Discord messages. `/games whosaidit` digs up messages from the
 //! channel's history; for each one, everyone races to press the button of who wrote it.
 //!
 //! - `game.rs`: the rules: rounds, picks, points (pure)
 //! - `quotes.rs`: reading the channel's history and cleaning messages into quotes
 //! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
-//! - `play.rs`: `/whosaidit`, the task that runs a game, and button presses
+//! - `play.rs`: `/games whosaidit`, the task that runs a game, and button presses
 
 mod game;
 mod play;
@@ -21,7 +21,7 @@ use crate::core::{BotCtx, Command, Feature, Result};
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Questions per game, when `/whosaidit` doesn't say.
+    /// Questions per game, when `/games whosaidit` doesn't say.
     pub rounds: usize,
     /// Seconds to answer each question (at least 5).
     pub answer_seconds: u64,
@@ -57,7 +57,7 @@ impl Feature for WhoSaidIt {
     }
 
     fn commands(&self) -> Vec<Command> {
-        vec![play::who_said_it()]
+        vec![play::games()]
     }
 
     async fn on_component(

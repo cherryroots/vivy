@@ -55,7 +55,7 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 ### Who said it?
 
-`/whosaidit` digs up old messages from the channel, and everyone races to press the button of who wrote each one. Faster right answers score more, and Vivy posts the scores at the end.
+`/games whosaidit` digs up old messages from the channel, and everyone races to press the button of who wrote each one. Faster right answers score more, and Vivy posts the scores at the end.
 
 ### Control panel
 
