@@ -166,6 +166,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #58 | | Snails: `/snails reset` (admins) starts the leaderboard over and keeps the saved links and pictures; custom emoji, stickers, avatars and other Discord-owned pictures sent as links, and GIFs uploaded to or linked from Discord, no longer count as snails; only messages from the last 7 days count, so old messages reached by an edit, a retried picture or the catch-up no longer land on the board |
 | #59 | | Who said it?: `/games whosaidit`, the channel guesses who wrote old messages with buttons, scores at the end |
 | #60 | | Who said it?: `channel` and `whole_server` options; only channels everyone can read, and questions say which channel they're from |
+| #61 | | Chime-ins: a line that ends with a quote keeps its closing quote (it was cut off, so lines looked unfinished); a line answering one of the messages she read is posted as a reply that pings its author |
 
 ## Not built yet
 
