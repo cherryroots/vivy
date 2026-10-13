@@ -1,42 +1,29 @@
-//! Who said it?: a Discord Activity (a game window inside Discord) where everyone in a
-//! channel sees a message from the channel's history and races to pick who wrote it.
-//!
-//! Vivy serves the page and runs the games. Discord shows the page in an iframe and sends
-//! its requests through its proxy to `listen`, by way of the URL mappings in the Developer
-//! Portal. The setup is in `docs/features/who-said-it.md`.
+//! Who said it?: a game in plain Discord messages. `/whosaidit` digs up messages from the
+//! channel's history; for each one, everyone races to press the button of who wrote it.
 //!
 //! - `game.rs`: the rules: rounds, picks, points (pure)
 //! - `quotes.rs`: reading the channel's history and cleaning messages into quotes
-//! - `room.rs`: one task per game, which players' connections talk to
-//! - `web.rs`: the web server: the page, the login, the WebSockets
-//! - `page/`: the page itself (HTML, JavaScript, CSS, and Discord's SDK in one file)
-//!
-//! It needs `DISCORD_CLIENT_SECRET` in .env. Without it nothing is served.
+//! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
+//! - `play.rs`: `/whosaidit`, the task that runs a game, and button presses
 
 mod game;
+mod play;
 mod quotes;
-mod room;
-mod web;
-
-use std::sync::Arc;
+mod ui;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tracing::{error, info};
+use serenity::all::ComponentInteraction;
 
-use crate::core::{BotCtx, Feature, Result};
-use crate::util::env_key;
+use crate::core::{BotCtx, Command, Feature, Result};
 
 /// `[features.who_said_it]` settings.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// The address and port the page is served on. Your web server (or tunnel) forwards
-    /// the Activity's requests here.
-    pub listen: String,
-    /// Questions per game.
+    /// Questions per game, when `/whosaidit` doesn't say.
     pub rounds: usize,
-    /// Seconds to answer each question.
+    /// Seconds to answer each question (at least 5).
     pub answer_seconds: u64,
     /// How far back quotes come from.
     pub lookback_days: i64,
@@ -46,21 +33,17 @@ pub struct Settings {
     /// People whose messages are never used. They aren't offered as choices either, since
     /// the choices come from the people who wrote the quotes.
     pub exclude_users: Vec<u64>,
-    /// Post the final scores in the channel when a game ends.
-    pub post_results: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            listen: "127.0.0.1:8787".to_string(),
             rounds: 10,
             answer_seconds: 20,
             lookback_days: 365,
             min_length: 20,
             max_length: 300,
             exclude_users: Vec::new(),
-            post_results: true,
         }
     }
 }
@@ -73,25 +56,16 @@ impl Feature for WhoSaidIt {
         "who_said_it"
     }
 
-    /// Starts the web server, when the client secret is there.
-    async fn start(&self, ctx: &BotCtx) -> Result<()> {
-        let settings: Settings = ctx.config.feature(self.name())?;
-        let Some(secret) = env_key("DISCORD_CLIENT_SECRET") else {
-            info!("DISCORD_CLIENT_SECRET is not set in .env, so Who said it? is off");
-            return Ok(());
-        };
-        // A bot's application ID, which the Activity's login needs. Serenity learns it when
-        // the bot connects; for bots it's the same as the bot's user ID.
-        let client_id = ctx
-            .http
-            .application_id()
-            .map_or(ctx.bot_id.get(), |id| id.get());
-        let ctx2 = ctx.clone();
-        ctx.tasks.spawn(async move {
-            if let Err(err) = web::serve(ctx2, Arc::new(settings), client_id, secret).await {
-                error!("Who said it? stopped: {err:#}");
-            }
-        });
-        Ok(())
+    fn commands(&self) -> Vec<Command> {
+        vec![play::who_said_it()]
+    }
+
+    async fn on_component(
+        &self,
+        ctx: &BotCtx,
+        interaction: &ComponentInteraction,
+        action: &str,
+    ) -> Result<()> {
+        play::on_component(ctx, interaction, action).await
     }
 }

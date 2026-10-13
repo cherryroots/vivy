@@ -55,7 +55,7 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 ### Who said it?
 
-A game in a Discord Activity (a window inside Discord): Vivy digs up old messages from the channel, and everyone races to pick who wrote each one. It needs its own setup (a public HTTPS address and a few Developer Portal settings), described in [docs/features/who-said-it.md](docs/features/who-said-it.md).
+`/whosaidit` digs up old messages from the channel, and everyone races to press the button of who wrote each one. Faster right answers score more, and Vivy posts the scores at the end.
 
 ### Control panel
 
@@ -94,7 +94,7 @@ sudo chmod 600 /opt/vivy/.env
 
 Then fill in the two files:
 
-- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY` and/or `OPENAI_TOKEN` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY`, `DISCORD_CLIENT_SECRET` (for Who said it?) and the two admin keys.
+- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY` and/or `OPENAI_TOKEN` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY` and the two admin keys.
 - `config.toml` holds everything else: your user ID in `admins`, `main_server`, the log and status channel IDs, and per-feature settings.
 
 ### 4. Run with systemd

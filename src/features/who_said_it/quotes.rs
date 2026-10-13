@@ -1,8 +1,8 @@
 //! Finding quotes: messages from the channel the game is played in, from random moments in
 //! its history, cleaned up so they read well on their own.
 //!
-//! Only the channel the Activity runs in is read. Everyone playing is in that channel, so
-//! the game never shows a message someone couldn't already scroll up to.
+//! Only the channel the game is played in is read. Everyone who sees the game can already
+//! scroll up to those messages, so it never shows anything they couldn't see.
 
 use std::collections::{HashMap, HashSet};
 
@@ -21,7 +21,7 @@ const READS: usize = 6;
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 
 /// Reads the channel and returns the quotes found, in random order, and the people who
-/// wrote them (with the name and avatar from their messages; [`use_nicknames`] swaps in
+/// wrote them (with the name from their messages; [`use_nicknames`] swaps in
 /// their server ones later, only for the people a game ends up showing).
 pub async fn load(
     ctx: &BotCtx,
@@ -61,7 +61,6 @@ pub async fn load(
             people.entry(msg.author.id.get()).or_insert_with(|| Person {
                 id: msg.author.id.get(),
                 name: msg.author.display_name().to_string(),
-                avatar: Some(proxied(&msg.author.face())),
             });
             quotes.push(Quote {
                 author: msg.author.id.get(),
@@ -76,7 +75,7 @@ pub async fn load(
     Ok((quotes, people.into_values().collect()))
 }
 
-/// Swaps in server nicknames and avatars for everyone the rounds show. Someone who left the
+/// Swaps in server nicknames for everyone the rounds show. Someone who left the
 /// server keeps the name from their message.
 pub async fn use_nicknames(ctx: &BotCtx, guild: GuildId, rounds: &mut [Round]) {
     let mut found: HashMap<u64, Person> = HashMap::new();
@@ -94,27 +93,17 @@ pub async fn use_nicknames(ctx: &BotCtx, guild: GuildId, rounds: &mut [Round]) {
     }
 }
 
-/// A server member's nickname and avatar, or `None` when they aren't in the server.
-pub async fn member(ctx: &BotCtx, guild: GuildId, user: UserId) -> Option<Person> {
+/// A server member's nickname, or `None` when they aren't in the server.
+async fn member(ctx: &BotCtx, guild: GuildId, user: UserId) -> Option<Person> {
     match guild.member(&ctx.http, user).await {
         Ok(member) => Some(Person {
             id: user.get(),
             name: member.display_name().to_string(),
-            avatar: Some(proxied(&member.face())),
         }),
         Err(err) => {
             debug!("couldn't look up {user}: {err}");
             None
         }
-    }
-}
-
-/// A Discord picture link the Activity can load. Its page may only reach its own server,
-/// so pictures go through the `/cdn` URL mapping (see the feature's doc page).
-pub fn proxied(url: &str) -> String {
-    match url.strip_prefix("https://cdn.discordapp.com/") {
-        Some(rest) => format!("/.proxy/cdn/{rest}"),
-        None => url.to_string(),
     }
 }
 
@@ -229,13 +218,5 @@ mod tests {
         let at = DateTime::from_timestamp_millis(DISCORD_EPOCH_MS + 1000).unwrap();
         assert_eq!(id_at(at).get(), 1000 << 22);
         assert_eq!(*id_at(at).created_at(), at);
-    }
-
-    #[test]
-    fn avatars_go_through_the_mapping() {
-        assert_eq!(
-            proxied("https://cdn.discordapp.com/avatars/1/abc.webp?size=1024"),
-            "/.proxy/cdn/avatars/1/abc.webp?size=1024"
-        );
     }
 }

@@ -103,7 +103,7 @@ Which feature uses which hook:
 
 | Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | who_said_it |
 |---|---|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | |
+| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ |
 | `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `mention_prefixes` | `""` | `remind me`, ... | | | | | | | |
 | `legacy_import` | | ✓ | ✓ | | | | | | |
@@ -111,13 +111,13 @@ Which feature uses which hook:
 | `chat_context` | | | | ✓ | | | | | |
 | `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | `panels` | ✓ | | | ✓ | | | | | |
-| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | ✓ |
+| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | |
 | `on_mention` | ✓ | ✓ | | | | | | |
 | `on_message` | ✓ | | | | ✓ | | | |
 | `on_reaction_add` | ✓ | | | | | | | |
 | `on_message_edit` | | | | | ✓ | | | |
 | `on_messages_deleted` | | | | | ✓ | | | |
-| `on_component` | | ✓ | ✓ | | | | | |
+| `on_component` | | ✓ | ✓ | | | | | | ✓ |
 | `on_modal` | | ✓ | ✓ | | | | | |
 
 ## How events reach features
@@ -318,4 +318,3 @@ A path through the code for learning it, from small to large:
 | `dotenvy` | Loading `.env` |
 | `fastrand` | Dice rolls, like whether Vivy chimes in |
 | `tempfile` | Temporary files for ffmpeg |
-| `axum` | The web server for the Who said it? Activity: its page, login and WebSockets |

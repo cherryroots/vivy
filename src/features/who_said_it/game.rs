@@ -1,15 +1,12 @@
-//! The rules of one game, with no Discord, network or clock in it: the caller passes the
-//! time in (`now`, in milliseconds), so the tests can play a whole game in a few lines.
+//! The rules of one game, with no Discord or clock in it: the caller says how long each
+//! pick took, so the tests can play a whole game in a few lines.
 //!
-//! A game goes Lobby → Loading → (Question → Reveal) × rounds → Done, and from Done (or
-//! the Lobby after a failed load) back to Loading when someone presses Start again.
+//! Anyone in the channel can play: a player is whoever presses a button. Each round, the
+//! first button a player presses is their answer. When the round ends, right answers score
+//! 100 points plus up to 100 more for answering fast.
 
 use std::collections::HashMap;
 
-use serde::Serialize;
-
-/// How long the answer stays on screen before the next question.
-pub const REVEAL_MS: u64 = 6_000;
 /// Points for a right answer, plus up to this much again for answering fast.
 const POINTS: u32 = 100;
 
@@ -18,8 +15,6 @@ const POINTS: u32 = 100;
 pub struct Person {
     pub id: u64,
     pub name: String,
-    /// An avatar URL the page can load, or `None` to show the first letter instead.
-    pub avatar: Option<String>,
 }
 
 /// A message to guess the author of.
@@ -27,7 +22,7 @@ pub struct Person {
 pub struct Quote {
     pub author: u64,
     pub text: String,
-    /// When it was posted, as shown under the quote ("March 2025").
+    /// When it was posted, shown under the quote ("March 2025").
     pub posted: String,
     /// A link to the message, shown with the answer.
     pub link: String,
@@ -38,10 +33,8 @@ pub struct Quote {
 pub struct Round {
     pub quote: Quote,
     pub choices: Vec<Person>,
-    /// What each player picked, and how many milliseconds they took.
+    /// Player → (who they picked, how many milliseconds they took).
     picks: HashMap<u64, (u64, u64)>,
-    /// What each player got for this round, filled in when it's revealed.
-    gained: HashMap<u64, u32>,
 }
 
 impl Round {
@@ -50,271 +43,146 @@ impl Round {
             quote,
             choices,
             picks: HashMap::new(),
-            gained: HashMap::new(),
         }
+    }
+
+    /// The person who wrote the quote.
+    pub fn author(&self) -> &Person {
+        self.choices
+            .iter()
+            .find(|c| c.id == self.quote.author)
+            .expect("a round's choices include its author")
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Player {
-    pub person: Person,
-    pub score: u32,
-    /// Whether their window is open. Players who leave keep their score, so closing the
-    /// window by mistake and coming back loses nothing.
-    pub connected: bool,
+/// What happened to a button press.
+#[derive(Debug, PartialEq)]
+pub enum Pick {
+    /// Their answer is in.
+    Locked,
+    /// They had already answered this round with this person.
+    Already(u64),
+    /// The round is over (an old message's button).
+    TooLate,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Phase {
-    Lobby,
-    Loading,
-    /// Round `index` is being answered; it ends at `ends_at`.
-    Question {
-        index: usize,
-        started_at: u64,
-        ends_at: u64,
-    },
-    /// Round `index`'s answer is shown until `ends_at`.
-    Reveal {
-        index: usize,
-        ends_at: u64,
-    },
-    Done,
+/// How a round went, for the answer message.
+#[derive(Debug, PartialEq)]
+pub struct Outcome {
+    /// Who got it right and their points, fastest first.
+    pub right: Vec<(String, u32)>,
+    /// Who got it wrong.
+    pub wrong: Vec<String>,
 }
 
 pub struct Game {
-    pub phase: Phase,
-    /// In the order they joined.
-    pub players: Vec<Player>,
     rounds: Vec<Round>,
+    /// The round being answered, or `rounds.len()` once the game is over.
+    current: usize,
+    /// Whether the current round still takes answers.
+    open: bool,
     answer_ms: u64,
-    /// Why the last load failed, shown in the lobby.
-    error: Option<String>,
+    /// Every player's name and score, in the order they first answered.
+    players: Vec<(u64, String, u32)>,
 }
 
 impl Game {
-    pub fn new(answer_seconds: u64) -> Self {
+    pub fn new(rounds: Vec<Round>, answer_seconds: u64) -> Self {
         Game {
-            phase: Phase::Lobby,
-            players: Vec::new(),
-            rounds: Vec::new(),
+            rounds,
+            current: 0,
+            open: true,
             answer_ms: answer_seconds.max(5) * 1000,
-            error: None,
+            players: Vec::new(),
         }
     }
 
-    /// Adds a player, or marks one who left as back.
-    pub fn join(&mut self, person: Person) {
-        match self.players.iter_mut().find(|p| p.person.id == person.id) {
-            Some(player) => {
-                player.person = person;
-                player.connected = true;
-            }
-            None => self.players.push(Player {
-                person,
-                score: 0,
-                connected: true,
-            }),
+    /// The number of the current round (from 0), and the round.
+    pub fn round(&self) -> Option<(usize, &Round)> {
+        self.rounds.get(self.current).map(|r| (self.current, r))
+    }
+
+    pub fn total(&self) -> usize {
+        self.rounds.len()
+    }
+
+    /// Records a button press on round `index`: `player` (with their name) picked `choice`
+    /// after `took` milliseconds.
+    pub fn pick(&mut self, index: usize, player: u64, name: &str, choice: u64, took: u64) -> Pick {
+        if index != self.current || !self.open {
+            return Pick::TooLate;
         }
-    }
-
-    pub fn leave(&mut self, id: u64) {
-        if let Some(player) = self.players.iter_mut().find(|p| p.person.id == id) {
-            player.connected = false;
-        }
-    }
-
-    pub fn anyone_here(&self) -> bool {
-        self.players.iter().any(|p| p.connected)
-    }
-
-    /// Starts loading quotes, if no game is running. Returns whether it started.
-    pub fn start_loading(&mut self) -> bool {
-        if !matches!(self.phase, Phase::Lobby | Phase::Done) {
-            return false;
-        }
-        self.phase = Phase::Loading;
-        self.error = None;
-        true
-    }
-
-    /// Loading failed: back to the lobby, with the reason shown there.
-    pub fn load_failed(&mut self, reason: String) {
-        self.phase = Phase::Lobby;
-        self.error = Some(reason);
-    }
-
-    /// The quotes are ready: scores go back to 0 and the first question starts.
-    pub fn begin(&mut self, rounds: Vec<Round>, now: u64) {
-        // People who left during an earlier game are dropped; their scores are over.
-        self.players.retain(|p| p.connected);
-        for player in &mut self.players {
-            player.score = 0;
-        }
-        self.rounds = rounds;
-        self.ask(0, now);
-    }
-
-    fn ask(&mut self, index: usize, now: u64) {
-        self.phase = if index < self.rounds.len() {
-            Phase::Question {
-                index,
-                started_at: now,
-                ends_at: now + self.answer_ms,
-            }
-        } else {
-            Phase::Done
+        let Some(round) = self.rounds.get_mut(index) else {
+            return Pick::TooLate;
         };
+        if let Some(&(earlier, _)) = round.picks.get(&player) {
+            return Pick::Already(earlier);
+        }
+        if !round.choices.iter().any(|c| c.id == choice) {
+            return Pick::TooLate;
+        }
+        round.picks.insert(player, (choice, took));
+        match self.players.iter_mut().find(|p| p.0 == player) {
+            Some(p) => p.1 = name.to_string(),
+            None => self.players.push((player, name.to_string(), 0)),
+        }
+        Pick::Locked
     }
 
-    /// Records a player's answer. Only the first pick counts, and only one of the choices.
-    /// Returns true when every player who is here has answered, so the round can end early.
-    pub fn pick(&mut self, player: u64, choice: u64, now: u64) -> bool {
-        let Phase::Question {
-            index, started_at, ..
-        } = self.phase
-        else {
-            return false;
+    /// How many players have answered the current round.
+    pub fn answers(&self) -> usize {
+        self.round().map_or(0, |(_, r)| r.picks.len())
+    }
+
+    /// Ends the current round: scores it and stops taking answers.
+    pub fn close_round(&mut self) -> Outcome {
+        self.open = false;
+        let Some(round) = self.rounds.get(self.current) else {
+            return Outcome {
+                right: Vec::new(),
+                wrong: Vec::new(),
+            };
         };
-        if !self.players.iter().any(|p| p.person.id == player) {
-            return false;
-        }
-        let round = &mut self.rounds[index];
-        if round.choices.iter().any(|c| c.id == choice) {
-            round
-                .picks
-                .entry(player)
-                .or_insert((choice, now.saturating_sub(started_at)));
-        }
-        self.players
+        let mut picks: Vec<(u64, u64, u64)> = round
+            .picks
             .iter()
-            .filter(|p| p.connected)
-            .all(|p| round.picks.contains_key(&p.person.id))
-    }
+            .map(|(&player, &(choice, took))| (player, choice, took))
+            .collect();
+        picks.sort_by_key(|&(_, _, took)| took);
 
-    /// Ends the question: scores it and shows the answer.
-    pub fn reveal(&mut self, now: u64) {
-        let Phase::Question { index, .. } = self.phase else {
-            return;
-        };
-        let round = &mut self.rounds[index];
-        for (&player, &(choice, took)) in &round.picks {
-            if choice != round.quote.author {
+        let mut right = Vec::new();
+        let mut wrong = Vec::new();
+        for (player, choice, took) in picks {
+            let Some(entry) = self.players.iter_mut().find(|p| p.0 == player) else {
                 continue;
-            }
-            let gained = points(took, self.answer_ms);
-            round.gained.insert(player, gained);
-            if let Some(p) = self.players.iter_mut().find(|p| p.person.id == player) {
-                p.score += gained;
-            }
-        }
-        self.phase = Phase::Reveal {
-            index,
-            ends_at: now + REVEAL_MS,
-        };
-    }
-
-    /// When the current phase ends by itself, if it does.
-    pub fn deadline(&self) -> Option<u64> {
-        match self.phase {
-            Phase::Question { ends_at, .. } | Phase::Reveal { ends_at, .. } => Some(ends_at),
-            _ => None,
-        }
-    }
-
-    /// Moves on when the deadline has passed: a question to its answer, an answer to the
-    /// next question (or the end).
-    pub fn tick(&mut self, now: u64) {
-        match self.phase {
-            Phase::Question { ends_at, .. } if now >= ends_at => self.reveal(now),
-            Phase::Reveal { index, ends_at } if now >= ends_at => self.ask(index + 1, now),
-            _ => {}
-        }
-    }
-
-    /// The players by score, best first, for the final board.
-    pub fn standings(&self) -> Vec<&Player> {
-        let mut players: Vec<&Player> = self.players.iter().collect();
-        players.sort_by_key(|p| std::cmp::Reverse(p.score));
-        players
-    }
-
-    /// What every window shows, as JSON. IDs are strings: JavaScript numbers can't hold a
-    /// Discord ID exactly.
-    pub fn view(&self, now: u64) -> View {
-        let (phase, round) = match self.phase {
-            Phase::Lobby => ("lobby", None),
-            Phase::Loading => ("loading", None),
-            Phase::Done => ("done", None),
-            Phase::Question { index, ends_at, .. } => (
-                "question",
-                Some(self.round_view(index, ends_at, now, false)),
-            ),
-            Phase::Reveal { index, ends_at } => {
-                ("reveal", Some(self.round_view(index, ends_at, now, true)))
-            }
-        };
-        let answered = |id: u64| match self.phase {
-            Phase::Question { index, .. } => self.rounds[index].picks.contains_key(&id),
-            _ => false,
-        };
-        View {
-            phase,
-            error: self.error.clone(),
-            players: self
-                .players
-                .iter()
-                .map(|p| PlayerView {
-                    id: p.person.id.to_string(),
-                    name: p.person.name.clone(),
-                    avatar: p.person.avatar.clone(),
-                    score: p.score,
-                    connected: p.connected,
-                    answered: answered(p.person.id),
-                })
-                .collect(),
-            round,
-        }
-    }
-
-    fn round_view(&self, index: usize, ends_at: u64, now: u64, revealed: bool) -> RoundView {
-        let round = &self.rounds[index];
-        let ids = |map: &HashMap<u64, (u64, u64)>| {
-            map.iter()
-                .map(|(player, (choice, _))| (player.to_string(), choice.to_string()))
-                .collect()
-        };
-        RoundView {
-            number: index + 1,
-            total: self.rounds.len(),
-            text: round.quote.text.clone(),
-            posted: round.quote.posted.clone(),
-            choices: round
-                .choices
-                .iter()
-                .map(|c| PersonView {
-                    id: c.id.to_string(),
-                    name: c.name.clone(),
-                    avatar: c.avatar.clone(),
-                })
-                .collect(),
-            ends_in_ms: ends_at.saturating_sub(now),
-            answer_ms: self.answer_ms,
-            // What people picked and the answer stay hidden until the reveal, so nobody can
-            // read them from the page while the question is open.
-            answer: revealed.then(|| round.quote.author.to_string()),
-            link: revealed.then(|| round.quote.link.clone()),
-            picks: if revealed {
-                ids(&round.picks)
+            };
+            if choice == round.quote.author {
+                let gained = points(took, self.answer_ms);
+                entry.2 += gained;
+                right.push((entry.1.clone(), gained));
             } else {
-                HashMap::new()
-            },
-            gained: round
-                .gained
-                .iter()
-                .map(|(player, points)| (player.to_string(), *points))
-                .collect(),
+                wrong.push(entry.1.clone());
+            }
         }
+        Outcome { right, wrong }
+    }
+
+    /// Moves on to the next round. Returns false when the game is over.
+    pub fn next_round(&mut self) -> bool {
+        self.current += 1;
+        self.open = true;
+        self.current < self.rounds.len()
+    }
+
+    /// Everyone who played, best score first.
+    pub fn standings(&self) -> Vec<(String, u32)> {
+        let mut players: Vec<(String, u32)> = self
+            .players
+            .iter()
+            .map(|(_, name, score)| (name.clone(), *score))
+            .collect();
+        players.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
+        players
     }
 }
 
@@ -323,48 +191,6 @@ impl Game {
 fn points(took: u64, answer_ms: u64) -> u32 {
     let left = answer_ms.saturating_sub(took);
     POINTS + (u64::from(POINTS) * left / answer_ms.max(1)) as u32
-}
-
-#[derive(Debug, Serialize)]
-pub struct View {
-    pub phase: &'static str,
-    pub error: Option<String>,
-    pub players: Vec<PlayerView>,
-    pub round: Option<RoundView>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PlayerView {
-    pub id: String,
-    pub name: String,
-    pub avatar: Option<String>,
-    pub score: u32,
-    pub connected: bool,
-    pub answered: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct PersonView {
-    pub id: String,
-    pub name: String,
-    pub avatar: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct RoundView {
-    pub number: usize,
-    pub total: usize,
-    pub text: String,
-    pub posted: String,
-    pub choices: Vec<PersonView>,
-    pub ends_in_ms: u64,
-    pub answer_ms: u64,
-    pub answer: Option<String>,
-    pub link: Option<String>,
-    /// Player ID → the person they picked, after the reveal.
-    pub picks: HashMap<String, String>,
-    /// Player ID → points they got this round, after the reveal.
-    pub gained: HashMap<String, u32>,
 }
 
 /// Picks up to `count` rounds from `quotes`, with up to 4 choices each: the author and
@@ -425,7 +251,6 @@ mod tests {
         Person {
             id,
             name: format!("person {id}"),
-            avatar: None,
         }
     }
 
@@ -447,7 +272,7 @@ mod tests {
         assert_eq!(rounds.len(), 2);
         for round in &rounds {
             assert_eq!(round.choices.len(), 4);
-            assert!(round.choices.iter().any(|c| c.id == round.quote.author));
+            assert_eq!(round.author().id, round.quote.author);
         }
     }
 
@@ -477,65 +302,39 @@ mod tests {
     #[test]
     fn a_whole_game() {
         let people: Vec<Person> = (1..=4).map(person).collect();
-        let mut game = Game::new(20);
-        game.join(person(10));
-        game.join(person(11));
-        assert!(game.start_loading());
-        assert!(!game.start_loading(), "can't start twice");
-        game.begin(
-            make_rounds(vec![quote(1), quote(2)], &people, 2, no_shuffle),
-            0,
+        let rounds = make_rounds(vec![quote(1), quote(2)], &people, 2, no_shuffle);
+        let mut game = Game::new(rounds, 20);
+
+        // Round 1: Ann is right at once, Bo is wrong, and Ann's second press doesn't count.
+        assert_eq!(game.pick(0, 10, "Ann", 1, 0), Pick::Locked);
+        assert_eq!(game.pick(0, 10, "Ann", 2, 100), Pick::Already(1));
+        assert_eq!(game.pick(0, 11, "Bo", 3, 5_000), Pick::Locked);
+        assert_eq!(game.answers(), 2);
+        let outcome = game.close_round();
+        assert_eq!(outcome.right, vec![("Ann".to_string(), 200)]);
+        assert_eq!(outcome.wrong, vec!["Bo".to_string()]);
+        assert_eq!(game.pick(0, 12, "Cy", 1, 0), Pick::TooLate);
+
+        // Round 2: Bo is right halfway through; a press on round 1's message is too late.
+        assert!(game.next_round());
+        assert_eq!(game.pick(0, 11, "Bo", 1, 0), Pick::TooLate);
+        assert_eq!(game.pick(1, 11, "Bo", 2, 10_000), Pick::Locked);
+        game.close_round();
+        assert!(!game.next_round());
+        assert!(game.round().is_none());
+
+        assert_eq!(
+            game.standings(),
+            vec![("Ann".to_string(), 200), ("Bo".to_string(), 150)]
         );
-
-        // Round 1: player 10 is right at once, 11 is wrong. Both answered, so it can end.
-        assert!(!game.pick(10, 1, 0));
-        assert!(!game.pick(10, 2, 0), "only the first pick counts");
-        assert!(game.pick(11, 3, 5_000));
-        // The answer isn't sent while the question is open.
-        assert_eq!(game.view(0).round.unwrap().answer, None);
-        game.reveal(5_000);
-        let view = game.view(5_000);
-        assert_eq!(view.phase, "reveal");
-        assert_eq!(view.round.unwrap().answer.as_deref(), Some("1"));
-        assert_eq!(game.players[0].score, 200);
-        assert_eq!(game.players[1].score, 0);
-
-        // The reveal ends by itself, then round 2 times out with no answers.
-        game.tick(5_000 + REVEAL_MS);
-        assert!(matches!(game.phase, Phase::Question { index: 1, .. }));
-        let deadline = game.deadline().unwrap();
-        game.tick(deadline);
-        game.tick(deadline + REVEAL_MS);
-        assert_eq!(game.phase, Phase::Done);
-        assert_eq!(game.standings()[0].person.id, 10);
-
-        // Playing again starts the scores over.
-        assert!(game.start_loading());
-        game.begin(make_rounds(vec![quote(1)], &people, 1, no_shuffle), 0);
-        assert!(game.players.iter().all(|p| p.score == 0));
     }
 
     #[test]
-    fn someone_who_left_doesnt_hold_up_the_round() {
+    fn a_pick_must_be_one_of_the_choices() {
         let people: Vec<Person> = (1..=4).map(person).collect();
-        let mut game = Game::new(20);
-        game.join(person(10));
-        game.join(person(11));
-        game.start_loading();
-        game.begin(make_rounds(vec![quote(1)], &people, 1, no_shuffle), 0);
-        game.leave(11);
-        assert!(game.pick(10, 1, 100));
-    }
-
-    #[test]
-    fn coming_back_keeps_the_score() {
-        let mut game = Game::new(20);
-        game.join(person(10));
-        game.players[0].score = 300;
-        game.leave(10);
-        assert!(!game.anyone_here());
-        game.join(person(10));
-        assert_eq!(game.players.len(), 1);
-        assert_eq!(game.players[0].score, 300);
+        let rounds = make_rounds(vec![quote(1)], &people, 1, no_shuffle);
+        let mut game = Game::new(rounds, 20);
+        assert_eq!(game.pick(0, 10, "Ann", 99, 0), Pick::TooLate);
+        assert_eq!(game.answers(), 0);
     }
 }
