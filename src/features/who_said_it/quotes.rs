@@ -1,53 +1,69 @@
-//! Finding quotes: messages from the channel the game is played in, from random moments in
-//! its history, cleaned up so they read well on their own.
-//!
-//! Only the channel the game is played in is read. Everyone who sees the game can already
-//! scroll up to those messages, so it never shows anything they couldn't see.
+//! Finding quotes: messages from random moments in the history of the channels
+//! `sources.rs` picked, cleaned up so they read well on their own.
 
 use std::collections::{HashMap, HashSet};
 
-use anyhow::Context as _;
 use chrono::{DateTime, Duration, Utc};
-use serenity::all::{ChannelId, GetMessages, GuildId, Message, MessageId, MessageType, UserId};
+use serenity::all::{GetMessages, GuildId, Message, MessageId, MessageType, UserId};
 use tracing::debug;
 
 use super::Settings;
 use super::game::{Person, Quote, Round};
+use super::sources::Source;
 use crate::core::BotCtx;
 
 /// How many moments in the channel's history are read, 100 messages each.
 const READS: usize = 6;
+/// The same, when quotes come from the whole server: more channels, more reads.
+const SERVER_READS: usize = 10;
 /// Discord's first second (2015), which IDs count from.
 const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 
-/// Reads the channel and returns the quotes found, in random order, and the people who
+/// Reads the sources and returns the quotes found, in random order, and the people who
 /// wrote them (with the name from their messages; [`use_nicknames`] swaps in
 /// their server ones later, only for the people a game ends up showing).
+///
+/// Each read picks one of `sources` at random. A source the bot can't read is skipped, so
+/// one locked channel doesn't stop a whole-server game.
 pub async fn load(
     ctx: &BotCtx,
-    channel: ChannelId,
+    sources: &[Source],
     settings: &Settings,
 ) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
     let now = Utc::now();
-    // From when the channel was made (or `lookback_days` ago) to an hour ago, so the
-    // conversation going on right now isn't in it.
-    let made = *channel.created_at();
-    let from = made.max(now - Duration::days(settings.lookback_days.max(1)));
+    // Nothing from the last hour, so the conversation going on right now isn't in it.
     let to = now - Duration::hours(1);
-    if to <= from {
-        anyhow::bail!("this channel is too new");
-    }
+    let oldest = now - Duration::days(settings.lookback_days.max(1));
+    let reads = if sources.len() > 1 {
+        SERVER_READS
+    } else {
+        READS
+    };
 
     let mut seen = HashSet::new();
     let mut quotes = Vec::new();
     let mut people: HashMap<u64, Person> = HashMap::new();
-    for _ in 0..READS {
+    let mut failed = None;
+    for _ in 0..reads {
+        let Some(source) = sources.get(fastrand::usize(..sources.len().max(1))) else {
+            break;
+        };
+        // From when the channel was made (or `lookback_days` ago) to an hour ago.
+        let from = (*source.channel.created_at()).max(oldest);
+        if to <= from {
+            continue;
+        }
         let span = (to - from).num_milliseconds().max(1);
         let at = from + Duration::milliseconds(fastrand::i64(0..span));
-        let messages = channel
-            .messages(&ctx.http, GetMessages::new().before(id_at(at)).limit(100))
-            .await
-            .context("reading the channel")?;
+        let read = GetMessages::new().before(id_at(at)).limit(100);
+        let messages = match source.channel.messages(&ctx.http, read).await {
+            Ok(messages) => messages,
+            Err(err) => {
+                debug!("couldn't read {}: {err}", source.channel);
+                failed = Some(err);
+                continue;
+            }
+        };
         for msg in messages {
             if !seen.insert(msg.id) {
                 continue;
@@ -66,9 +82,15 @@ pub async fn load(
                 author: msg.author.id.get(),
                 text,
                 posted: msg.timestamp.format("%B %Y").to_string(),
+                place: source.name.clone(),
                 link: msg.link(),
             });
         }
+    }
+    if quotes.is_empty()
+        && let Some(err) = failed
+    {
+        return Err(anyhow::Error::from(err).context("reading the channel"));
     }
     debug!("found {} quotes by {} people", quotes.len(), people.len());
     fastrand::shuffle(&mut quotes);

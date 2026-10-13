@@ -35,7 +35,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
-| Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote messages from its history | `/games whosaidit`, its buttons |
+| Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server | `/games whosaidit`, its buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -165,6 +165,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #57 | | Chime-ins: `chime_chance_per_user` gives some people their own chance, `[user, chance]` anywhere or `[user, chance, channel]` in one channel |
 | #58 | | Snails: `/snails reset` (admins) starts the leaderboard over and keeps the saved links and pictures; custom emoji, stickers, avatars and other Discord-owned pictures sent as links, and GIFs uploaded to or linked from Discord, no longer count as snails; only messages from the last 7 days count, so old messages reached by an edit, a retried picture or the catch-up no longer land on the board |
 | #59 | | Who said it?: `/games whosaidit`, the channel guesses who wrote old messages with buttons, scores at the end |
+| #60 | | Who said it?: `channel` and `whole_server` options; only channels everyone can read, and questions say which channel they're from |
 
 ## Not built yet
 

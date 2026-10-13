@@ -24,6 +24,9 @@ pub struct Quote {
     pub text: String,
     /// When it was posted, shown under the quote ("March 2025").
     pub posted: String,
+    /// The channel it was posted in, shown under the quote when it isn't the channel the
+    /// game is played in.
+    pub place: Option<String>,
     /// A link to the message, shown with the answer.
     pub link: String,
 }
@@ -259,6 +262,7 @@ mod tests {
             author,
             text: format!("something {author} said"),
             posted: "March 2025".into(),
+            place: None,
             link: "https://discord.com/channels/1/2/3".into(),
         }
     }

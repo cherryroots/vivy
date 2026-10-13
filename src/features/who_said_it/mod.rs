@@ -2,13 +2,15 @@
 //! channel's history; for each one, everyone races to press the button of who wrote it.
 //!
 //! - `game.rs`: the rules: rounds, picks, points (pure)
-//! - `quotes.rs`: reading the channel's history and cleaning messages into quotes
+//! - `sources.rs`: which channels quotes may come from
+//! - `quotes.rs`: reading their history and cleaning messages into quotes
 //! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
 //! - `play.rs`: `/games whosaidit`, the task that runs a game, and button presses
 
 mod game;
 mod play;
 mod quotes;
+mod sources;
 mod ui;
 
 use async_trait::async_trait;

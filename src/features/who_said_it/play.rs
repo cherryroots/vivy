@@ -12,11 +12,12 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateMessage, EditMessage,
+    CreateMessage, EditMessage, GuildChannel,
 };
 use tracing::{info, warn};
 
 use super::game::{Game, Pick, make_rounds};
+use super::sources::{self, From};
 use super::{Settings, quotes, ui};
 use crate::core::{BotCtx, Context, Result, user_error};
 
@@ -57,7 +58,7 @@ pub async fn games(_ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Guess who wrote old messages from this channel
+/// Guess who wrote old messages from this channel, another one, or the whole server
 #[poise::command(slash_command, guild_only, rename = "whosaidit")]
 pub async fn who_said_it(
     ctx: Context<'_>,
@@ -65,13 +66,39 @@ pub async fn who_said_it(
     #[min = 1]
     #[max = 20]
     questions: Option<usize>,
+    #[description = "Take quotes from this channel instead (everyone must be able to read it)"]
+    #[channel_types("Text", "News", "PublicThread", "NewsThread")]
+    channel: Option<GuildChannel>,
+    #[description = "Take quotes from every channel everyone can read"] whole_server: Option<bool>,
 ) -> Result<()> {
     let guild = ctx
         .guild_id()
         .ok_or_else(|| user_error("Who said it? only works in a server."))?;
-    let channel = ctx.channel_id();
+    let here = ctx.channel_id();
     let bot = ctx.data().clone();
     let settings: Settings = bot.config.feature("who_said_it")?;
+    let from = match (channel, whole_server.unwrap_or(false)) {
+        (Some(_), true) => {
+            return Err(user_error("Pick a channel or the whole server, not both."));
+        }
+        (Some(channel), false) => From::Channel(Box::new(channel)),
+        (None, true) => From::Server,
+        (None, false) => From::Here,
+    };
+    let what = match &from {
+        From::Here => "this channel's history".to_string(),
+        From::Channel(c) if c.id == here => "this channel's history".to_string(),
+        From::Channel(c) => format!("<#{}>", c.id),
+        From::Server => "the whole server".to_string(),
+    };
+    let sources = {
+        let cached = bot
+            .cache
+            .guild(guild)
+            .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
+        sources::pick(&bot, &cached, here, from)?
+    };
+    let channel = here;
     {
         let mut games = GAMES.lock().unwrap();
         if games.contains_key(&channel) {
@@ -82,10 +109,10 @@ pub async fn who_said_it(
     let leave = Leave(channel);
 
     let reply = ctx
-        .say("🗨️ **Who said it?** Digging through this channel's history…")
+        .say(format!("🗨️ **Who said it?** Digging through {what}…"))
         .await?;
     let count = questions.unwrap_or(settings.rounds).clamp(1, 20);
-    let rounds = match quotes::load(&bot, channel, &settings).await {
+    let rounds = match quotes::load(&bot, &sources, &settings).await {
         Ok((quotes, people)) => make_rounds(quotes, &people, count, |list| {
             fastrand::shuffle(list);
         }),
@@ -95,8 +122,10 @@ pub async fn who_said_it(
         }
     };
     if rounds.is_empty() {
-        let text = "🗨️ **Who said it?** There isn't enough chatter in this channel to play. \
-                    Try a busier one.";
+        let text = format!(
+            "🗨️ **Who said it?** There isn't enough chatter in {what} to play. Try a busier \
+             channel."
+        );
         reply
             .edit(ctx, CreateReply::default().content(text))
             .await?;
@@ -106,7 +135,7 @@ pub async fn who_said_it(
     quotes::use_nicknames(&bot, guild, &mut rounds).await;
 
     let text = format!(
-        "🗨️ **Who said it?** {} questions from this channel's history, {} seconds each. \
+        "🗨️ **Who said it?** {} questions from {what}, {} seconds each. \
          Press who you think wrote it. Faster right answers score more.",
         rounds.len(),
         settings.answer_seconds.max(5)
