@@ -160,7 +160,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #55 | | Chat: a mention of Vivy later in a message ("stop being mean to @Vivy") is no longer removed, so she knows the message is about her; mentioned people show by their server nickname |
 | #56 | | Chat: a still (one-frame) GIF reaches her as a picture instead of "ffmpeg found no frames"; a GIF ffmpeg can't read sends its first frame |
 | #57 | | Chime-ins: `chime_chance_per_user` gives some people their own chance, `[user, chance]` anywhere or `[user, chance, channel]` in one channel |
-| #58 | | Snails: `/snails reset` (admins) starts the leaderboard over and keeps the saved links and pictures; custom emoji, stickers, avatars and other Discord-owned pictures sent as links no longer count as snails; only messages from the last 7 days count, so old messages reached by an edit, a retried picture or the catch-up no longer land on the board |
+| #58 | | Snails: `/snails reset` (admins) starts the leaderboard over and keeps the saved links and pictures; custom emoji, stickers, avatars and other Discord-owned pictures sent as links, and GIFs uploaded to or linked from Discord, no longer count as snails; only messages from the last 7 days count, so old messages reached by an edit, a retried picture or the catch-up no longer land on the board |
 
 ## Not built yet
 

@@ -26,7 +26,8 @@ const PICTURE_SITES: &[&str] = &[
 /// link to another Discord message is a reference, not a repost.
 const IGNORED_SITES: &[&str] = &["gif", "discord"];
 
-/// The only files on Discord's CDN that count: things people uploaded. Everything else there
+/// The only files on Discord's CDN that count: things people uploaded, except GIFs
+/// ([`is_gif`]). Everything else there
 /// is part of Discord itself and gets reused all the time: custom emoji and stickers sent as
 /// links (how people without Nitro, or with a client mod, use another server's emoji),
 /// avatars, server icons, banners.
@@ -246,10 +247,19 @@ fn site_junk(site: Option<&str>, host: &str) -> &'static [&'static str] {
 /// and [`DISCORD_UPLOADS`].
 fn is_ignored_site(site: Option<&str>, segs: &[&str]) -> bool {
     match site {
-        Some("discord-cdn") => !segs.first().is_some_and(|s| DISCORD_UPLOADS.contains(s)),
+        Some("discord-cdn") => {
+            !segs.first().is_some_and(|s| DISCORD_UPLOADS.contains(s))
+                || segs.last().is_some_and(|file| is_gif(file))
+        }
         Some(site) => IGNORED_SITES.contains(&site),
         None => false,
     }
+}
+
+/// Whether a file name is a GIF. GIFs saved on Discord are reaction pictures, reused like the
+/// ones from the GIF picker, so they never count.
+pub fn is_gif(file: &str) -> bool {
+    file.to_ascii_lowercase().ends_with(".gif")
 }
 
 /// Whether a link never counts as a snail, like a custom emoji or a GIF from Discord's
@@ -594,7 +604,12 @@ mod tests {
             assert_eq!(link_key(link), None, "{link}");
             assert!(is_ignored(link), "{link}");
         }
-        // Uploads still count.
+        // GIFs on Discord are reaction pictures.
+        assert_eq!(
+            link_key("https://cdn.discordapp.com/attachments/1/2/gato.GIF?ex=a"),
+            None
+        );
+        // Other uploads still count.
         assert!(link_key("https://cdn.discordapp.com/attachments/1/2/cat.png").is_some());
         assert!(!is_ignored(
             "https://cdn.discordapp.com/attachments/1/2/cat.png"
