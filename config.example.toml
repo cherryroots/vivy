@@ -225,6 +225,25 @@ per_user_monthly_pictures = 20
 # Older history is only read when an admin runs `/snails backfill start`.
 enabled = true
 
+[features.who_said_it]
+# A game in a Discord Activity: messages from the channel's history, and everyone races to
+# pick who wrote them. Needs DISCORD_CLIENT_SECRET in .env and the setup in
+# docs/features/who-said-it.md.
+# Where the page is served. Your web server forwards the Activity's requests here.
+listen = "127.0.0.1:8787"
+# Questions per game, and seconds to answer each.
+rounds = 10
+answer_seconds = 20
+# How far back quotes come from.
+lookback_days = 365
+# The shortest and longest messages used, in characters.
+min_length = 20
+max_length = 300
+# People whose messages are never used.
+# exclude_users = [123456789012345678]
+# Post the final scores in the channel when a game ends.
+post_results = true
+
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.
 # status_channel = 123456789012345678

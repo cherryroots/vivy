@@ -250,12 +250,38 @@ fn set_category(command: &mut poise::Command<BotCtx, crate::core::Error>, featur
 
 /// Registers the slash commands globally, and removes per-server commands that voltgpt
 /// registered under the same application, so they don't show up twice.
+///
+/// Turning Activities on in the Developer Portal adds a "Launch" command that Discord runs
+/// itself (an entry point). Replacing the command list without it fails, so it's read
+/// first and sent back as it is.
 async fn register_commands(
     ctx: &serenity::Context,
     ready: &serenity::Ready,
     framework: &poise::Framework<BotCtx, crate::core::Error>,
 ) -> anyhow::Result<()> {
-    poise::builtins::register_globally(ctx, &framework.options().commands)
+    let mut commands = poise::builtins::create_application_commands(&framework.options().commands);
+    let existing = ctx
+        .http
+        .get_global_commands()
+        .await
+        .context("reading the slash commands")?;
+    for command in existing {
+        if command.kind != serenity::CommandType::PrimaryEntryPoint {
+            continue;
+        }
+        let mut entry = serenity::CreateCommand::new(command.name)
+            .kind(serenity::CommandType::PrimaryEntryPoint)
+            .description(command.description)
+            .integration_types(command.integration_types);
+        if let Some(contexts) = command.contexts {
+            entry = entry.contexts(contexts);
+        }
+        if let Some(handler) = command.handler {
+            entry = entry.handler(handler);
+        }
+        commands.push(entry);
+    }
+    serenity::Command::set_global_commands(&ctx.http, commands)
         .await
         .context("registering slash commands")?;
     for guild in &ready.guilds {

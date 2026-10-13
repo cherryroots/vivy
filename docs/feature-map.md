@@ -19,6 +19,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/drawing.md](features/drawing.md) | Drawing pictures with GPT Image 2.5 |
 | [features/snails.md](features/snails.md) | Repost detection: link keys, picture fingerprints, backfill |
 | [features/control-panel.md](features/control-panel.md) | The status picture and the log channel |
+| [features/who-said-it.md](features/who-said-it.md) | The Who said it? Activity: the game, where quotes come from, the setup |
 
 ## Features
 
@@ -34,6 +35,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
+| Who said it? | `who_said_it/` | A Discord Activity: everyone in a channel guesses who wrote messages from its history, served by Vivy's own web server | The Activity's Launch button (App Launcher) |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -49,6 +51,7 @@ Not features, but parts of the core everyone uses: the **log channel** (`src/cor
 | Drawing | none (only its chat tool) | none |
 | Snails | every message, edits, deletes | Snail picture retries, plus the backfill and the startup catch-up |
 | Control panel | none | the status refresh (every 60 s) and Status graphs (every 15 min) |
+| Who said it? | none (its own web server and WebSockets) | a task per running game |
 
 How these reach the feature is in [architecture.md](architecture.md#how-events-reach-features).
 
@@ -173,3 +176,4 @@ The port went in stages, one pull request each, all merged into `main`.
 | More faces | Mischievous, grossed out, lonely, celebrating |
 | Listeners for bot events | `ReminderFired` and `WheelRoundResolved` are published, but nothing listens yet |
 | Voice channels | Not asked for; voice is messages only |
+| Who said it? for everyone | Unverified Activities only open for the developer team and up to 50 app testers, in servers under 25 members. Playing it in a bigger server needs Discord to verify the app. |

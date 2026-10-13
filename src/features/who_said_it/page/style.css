@@ -1,0 +1,136 @@
+/* Discord's dark colours, with Vivy's teal for what you can press. */
+:root {
+  --bg: #1e1f22;
+  --card: #2b2d31;
+  --raised: #383a40;
+  --text: #f2f3f5;
+  --muted: #b5bac1;
+  --teal: #2bc4b4;
+  --teal-dark: #1c8f84;
+  --right: #23a55a;
+  --wrong: #da373c;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "gg sans", "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+}
+
+main {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 16px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+h1 { margin: 0; font-size: 2rem; }
+h1 span { color: var(--teal); }
+.muted { color: var(--muted); }
+.error { color: #f38b8e; }
+.center { margin: auto; text-align: center; display: flex; flex-direction: column; gap: 16px; align-items: center; }
+
+button {
+  font: inherit;
+  color: var(--text);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.primary {
+  background: var(--teal-dark);
+  padding: 12px 28px;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+.primary:hover { background: var(--teal); }
+
+/* Little round pictures of people. */
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex: none;
+  background: var(--raised);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+.avatar.small { width: 24px; height: 24px; font-size: 0.75rem; }
+
+.players { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.player {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  border-radius: 999px;
+  padding: 4px 12px 4px 4px;
+  font-size: 0.9rem;
+}
+.player.away { opacity: 0.4; }
+.player.answered { outline: 2px solid var(--teal); }
+
+.top { display: flex; justify-content: space-between; align-items: center; color: var(--muted); }
+
+.timer { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+.timer div { height: 100%; background: var(--teal); transition: width 0.25s linear; }
+
+.quote {
+  background: var(--card);
+  border-left: 4px solid var(--teal);
+  border-radius: 8px;
+  padding: 20px;
+  font-size: 1.35rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.quote small { display: block; margin-top: 10px; font-size: 0.85rem; color: var(--muted); }
+
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+@media (max-width: 480px) { .choices { grid-template-columns: 1fr; } }
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  padding: 12px;
+  text-align: left;
+  font-size: 1.05rem;
+  min-height: 64px;
+}
+.choice:hover:not(:disabled) { background: var(--raised); }
+.choice:disabled { cursor: default; }
+.choice .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.choice.mine { outline: 2px solid var(--teal); }
+.choice.right { background: var(--right); }
+.choice.wrong { background: var(--wrong); }
+.choice .pickers { display: flex; gap: 2px; }
+
+.reveal-line { text-align: center; font-size: 1.1rem; }
+.link { background: none; color: var(--teal); text-decoration: underline; padding: 0; }
+
+.board { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; width: min(420px, 100%); }
+.board li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.board .place { width: 2em; text-align: center; font-weight: 700; }
+.board .name { flex: 1; text-align: left; }
+.board .score { font-weight: 700; color: var(--teal); }
