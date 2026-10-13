@@ -4,7 +4,7 @@ A game in plain Discord messages. `/games whosaidit` digs up messages from the c
 
 ## Playing it
 
-`/games whosaidit` in any channel or thread starts a game there (`questions` picks how many, 1 to 20, default `rounds`; `channel` and `whole_server` pick where quotes come from, see below). Vivy posts one question at a time: the quote, when it was said, a live countdown, and four name buttons. Anyone can play by pressing one. Only your first press counts, and only you see the "Locked in" reply. When the time is up, the same message shows the answer: the author's button turns green, a link goes to the original message, and it lists who got it (with points) and who didn't. The next question follows 5 seconds later.
+`/games whosaidit` in any channel or thread starts a game there (`questions` picks how many, 1 to 20, default `rounds`; `channel` and `whole_server` pick where quotes come from, see below; `years`, 1 to 20, how far back they can go, default `lookback_days`). Vivy posts one question at a time: the quote, when it was said, a live countdown, and four name buttons. Anyone can play by pressing one. Only your first press counts, and only you see the "Locked in" reply. When the time is up, the same message shows the answer: the author's button turns green, a link goes to the original message, and it lists who got it (with points) and who didn't. The next question follows 5 seconds later.
 
 A right answer is worth 100 points plus up to 100 more for speed (all 100 at once, none at the buzzer). A channel has one game at a time. If nobody answers two questions in a row, the game stops there. Nothing is saved, so a restart ends the game.
 
