@@ -13,7 +13,7 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
 
-Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance` and `chime_cooldown_minutes`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
+Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
 
 ## Files
 
@@ -123,7 +123,7 @@ Turns are never deleted or rewritten, with one exception: the `Context` parts ar
 
 ### Chiming in
 
-`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.04). A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. Messages that mention her or reply to her are skipped, since they get a real answer.
+`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.04), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. Messages that mention her or reply to her are skipped, since they get a real answer.
 
 On a hit, `speak`:
 
