@@ -53,6 +53,10 @@ voltgpt's betting game for movie night. `/wheel status` shows the round as a pic
 
 Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails top` shows the server's top snailers this week and of all time. Admins can read older history with `/snails backfill start` and start the leaderboard over with `/snails reset`.
 
+### Who said it?
+
+`/games whosaidit` digs up old messages from the channel, and everyone races to press the button of who wrote each one. Faster right answers score more, and Vivy posts the scores at the end.
+
 ### Control panel
 
 A status picture in a channel of your choice, refreshed every minute: uptime, version, the AI provider and its spend, Vivy's mood, per-feature stats and graphs. Warnings, errors and start and stop notices go to a log channel.

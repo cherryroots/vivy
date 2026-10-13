@@ -91,6 +91,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(snails::Snails::default()),
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
+        Arc::new(who_said_it::WhoSaidIt),
         Arc::new(chat::Chat::default()),
     ]
 }
@@ -100,24 +101,24 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
 
 Which feature uses which hook:
 
-| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel |
-|---|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | | |
-| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `mention_prefixes` | `""` | `remind me`, ... | | | | | | |
-| `legacy_import` | | ✓ | ✓ | | | | | |
-| `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | |
-| `chat_context` | | | | ✓ | | | | |
-| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| `panels` | ✓ | | | ✓ | | | | |
-| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ |
-| `on_mention` | ✓ | ✓ | | | | | |
-| `on_message` | ✓ | | | | ✓ | | |
-| `on_reaction_add` | ✓ | | | | | | |
-| `on_message_edit` | | | | | ✓ | | |
-| `on_messages_deleted` | | | | | ✓ | | |
-| `on_component` | | ✓ | ✓ | | | | |
-| `on_modal` | | ✓ | ✓ | | | | |
+| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | who_said_it |
+|---|---|---|---|---|---|---|---|---|---|
+| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ |
+| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
+| `mention_prefixes` | `""` | `remind me`, ... | | | | | | | |
+| `legacy_import` | | ✓ | ✓ | | | | | | |
+| `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | |
+| `chat_context` | | | | ✓ | | | | | |
+| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| `panels` | ✓ | | | ✓ | | | | | |
+| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | |
+| `on_mention` | ✓ | ✓ | | | | | | |
+| `on_message` | ✓ | | | | ✓ | | | |
+| `on_reaction_add` | ✓ | | | | | | | |
+| `on_message_edit` | | | | | ✓ | | | |
+| `on_messages_deleted` | | | | | ✓ | | | |
+| `on_component` | | ✓ | ✓ | | | | | | ✓ |
+| `on_modal` | | ✓ | ✓ | | | | | |
 
 ## How events reach features
 
