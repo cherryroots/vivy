@@ -127,10 +127,10 @@ Turns are never deleted or rewritten, with one exception: the `Context` parts ar
 
 On a hit, `speak`:
 
-1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript.
+1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript, numbered from 1 (oldest) so she can name the one she answers.
 2. Builds one question: the transcript plus `INSTRUCTIONS` (pass, react, or one short line; or a short question when she doesn't know what people mean). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
 3. Runs it with `ai::complete` (the tool loop without Discord output, at most 4 rounds) and `job: "chime"`. The request carries every tool, like an answer, so it starts the same way and reads the system prompt and tools from the prompt cache; `Runner` turns down any tool outside `UNPROMPTED_TOOLS`.
-4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel.
+4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel. A line that starts with `REPLY <number>` is posted as a Discord reply to that message, without pinging its author; a number outside the transcript posts it as a plain message. Quotes around the whole line are taken off, but only when they wrap all of it (`unquote`), so a line that ends with a quote of its own keeps its closing quote.
 
 Nobody asked and the line is public, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). The `Runner` keeps `get_message` and `search_messages` to the current channel (`here_only`). Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
 

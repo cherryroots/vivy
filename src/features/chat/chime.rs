@@ -121,7 +121,11 @@ impl Default for Settings {
 enum Decision {
     Pass,
     React(String),
-    Say(String),
+    /// A line to post, maybe as a reply to one of the messages she read (its number).
+    Say {
+        line: String,
+        reply_to: Option<usize>,
+    },
 }
 
 #[derive(Default)]
@@ -191,7 +195,8 @@ Chime in only when you have something that fits: a joke, a reaction, a fact, an 
 When someone answers one of your questions later, save what you learned. \
 Reactions after a message show how people took it, your own lines included. \
 If you noticed something lasting about the server, its people or yourself, you can save it with the memory tool first. \
-Then answer with exactly one of: PASS; REACT followed by one emoji; or one short line the way people write on Discord, with no greeting.";
+Then answer with exactly one of: PASS; REACT followed by one emoji; or one short line the way people write on Discord, with no greeting. \
+When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply to it.";
 
 /// Reads the last messages of `asker.channel` (ending with `last`, when given), asks the
 /// model what to do with `instructions`, and does it: posts a line, reacts to `last`, or
@@ -206,7 +211,7 @@ pub async fn speak(
 ) -> Result<()> {
     let started_at = Utc::now().timestamp();
     let provider = ctx.ai.chat().context("chat has no model")?;
-    let transcript = read_along(ctx, asker.guild, asker.channel, last).await?;
+    let (transcript, messages) = read_along(ctx, asker.guild, asker.channel, last).await?;
     let question = format!("{transcript}\n{instructions}");
     let context = answer::context_for(ctx, asker, true).await;
     let mut parts = vec![Part::Text(question.clone())];
@@ -232,8 +237,8 @@ pub async fn speak(
     };
     let done = complete(provider.as_ref(), request, &runner, MAX_ROUNDS).await?;
 
-    let line = match (decide(&done.text), last) {
-        (Decision::Say(line), _) => line,
+    let (line, reply_to) = match (decide(&done.text), last) {
+        (Decision::Say { line, reply_to }, _) => (line, reply_to),
         (Decision::React(emoji), Some(msg)) => {
             let reaction = ReactionType::try_from(emoji.as_str())
                 .with_context(|| format!("{emoji:?} isn't an emoji"))?;
@@ -246,21 +251,27 @@ pub async fn speak(
             return Ok(());
         }
     };
+    // The message she answers, if she named one: numbers start at 1, oldest first.
+    let target = reply_to
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| messages.get(i));
     let pings = match mention {
         Some(user) => CreateAllowedMentions::new().users([user]),
         None => CreateAllowedMentions::new(),
     };
-    let sent = asker
-        .channel
-        .send_message(
-            &ctx.http,
-            CreateMessage::new()
-                .content(answer::discord_links(&line))
-                .allowed_mentions(pings),
-        )
-        .await?;
+    // A reply, but without pinging its author: Discord pings unless told not to.
+    let mut message = CreateMessage::new()
+        .content(answer::discord_links(&line))
+        .allowed_mentions(pings.replied_user(false));
+    if let Some(target) = target {
+        message = message.reference_message(target);
+    }
+    let sent = asker.channel.send_message(&ctx.http, message).await?;
     let ids = vec![sent.id.get()];
-    info!("spoke up on her own");
+    match target {
+        Some(target) => info!("spoke up on her own, replying to {}", target.id),
+        None => info!("spoke up on her own"),
+    }
     // Saved like a question and its answer, exactly as the model read it, so a reply to
     // her line continues the same conversation.
     let mut stored = vec![StoredPart::Text { text: question }];
@@ -307,13 +318,14 @@ pub async fn speak(
 }
 
 /// The last [`READ_MESSAGES`] messages of the channel, oldest first, ending with `last`
-/// when given (otherwise with the newest).
+/// when given (otherwise with the newest): the numbered transcript she reads, and the
+/// messages themselves, so `REPLY 3` can find the third one.
 async fn read_along(
     ctx: &BotCtx,
     guild: Option<GuildId>,
     channel: ChannelId,
     last: Option<&Message>,
-) -> Result<String> {
+) -> Result<(String, Vec<Message>)> {
     let mut messages = match last {
         Some(msg) => {
             let mut before = channel
@@ -344,18 +356,23 @@ async fn read_along(
         })
         .unwrap_or_default();
     let mut lines = Vec::new();
-    for m in &messages {
-        lines.push(format_message(ctx, m, Tz::UTC).await);
+    for (i, m) in messages.iter().enumerate() {
+        lines.push(format!(
+            "{}. {}",
+            i + 1,
+            format_message(ctx, m, Tz::UTC).await
+        ));
     }
-    Ok(format!(
+    let transcript = format!(
         "<recent_messages channel=\"#{name}\">\n{}\n</recent_messages>",
         lines.join("\n")
-    ))
+    );
+    Ok((transcript, messages))
 }
 
-/// Reads her answer: PASS, REACT 😂, or the line to post.
+/// Reads her answer: PASS, REACT 😂, or the line to post (maybe after REPLY 7).
 fn decide(text: &str) -> Decision {
-    let text = text.trim().trim_matches('"').trim();
+    let text = unquote(text);
     let word = text
         .trim_end_matches(|c: char| c.is_ascii_punctuation())
         .to_ascii_uppercase();
@@ -375,7 +392,41 @@ fn decide(text: &str) -> Decision {
             None => Decision::Pass,
         };
     }
-    Decision::Say(shorten_at_word(text, MAX_LINE))
+    let (reply_to, line) = reply_number(text);
+    let line = unquote(line);
+    if line.is_empty() {
+        return Decision::Pass;
+    }
+    Decision::Say {
+        line: shorten_at_word(line, MAX_LINE),
+        reply_to,
+    }
+}
+
+/// Takes off quotes around the whole answer, but only when they wrap all of it: a line
+/// that ends with a quote of its own (`the move is "stairs"`) keeps both quotes.
+fn unquote(text: &str) -> &str {
+    let text = text.trim();
+    match text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
+        Some(inner) if !inner.contains('"') => inner.trim(),
+        _ => text,
+    }
+}
+
+/// Splits `REPLY 7 the line` into the message number and the line. Without a number, the
+/// whole text is the line.
+fn reply_number(text: &str) -> (Option<usize>, &str) {
+    let Some(rest) = text.strip_prefix("REPLY") else {
+        return (None, text);
+    };
+    let rest = rest.trim_start_matches([':', ' ', '#']);
+    let digits = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    match rest[..digits].parse() {
+        Ok(number) => (Some(number), rest[digits..].trim_start_matches([':', ' '])),
+        Err(_) => (None, text),
+    }
 }
 
 /// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message (or the
@@ -456,21 +507,47 @@ mod tests {
         assert_eq!(decide(" pass. "), Decision::Pass);
         assert_eq!(decide(""), Decision::Pass);
         assert_eq!(decide("PASS - nothing to add"), Decision::Pass);
-        assert_eq!(
-            decide("PASSWORD reset day"),
-            Decision::Say("PASSWORD reset day".into())
-        );
+        assert_eq!(decide("PASSWORD reset day"), say("PASSWORD reset day"));
         assert_eq!(decide("REACT 😂"), Decision::React("😂".into()));
         assert_eq!(decide("REACT: 🍿"), Decision::React("🍿".into()));
         assert_eq!(decide("REACT"), Decision::Pass);
         assert_eq!(
             decide("\"that movie was mid tbh\""),
-            Decision::Say("that movie was mid tbh".into())
+            say("that movie was mid tbh")
         );
-        let Decision::Say(long) = decide(&"a".repeat(1000)) else {
+        // A quote at the end of the line is part of it.
+        assert_eq!(
+            decide("and the move is \"so what's your relationship with stairs\""),
+            say("and the move is \"so what's your relationship with stairs\"")
+        );
+        assert_eq!(
+            decide("\"stairs\" is the move, not \"elevators\""),
+            say("\"stairs\" is the move, not \"elevators\"")
+        );
+        let Decision::Say { line: long, .. } = decide(&"a".repeat(1000)) else {
             panic!("not a line");
         };
         assert!(long.chars().count() <= MAX_LINE);
+    }
+
+    fn say(line: &str) -> Decision {
+        Decision::Say {
+            line: line.into(),
+            reply_to: None,
+        }
+    }
+
+    #[test]
+    fn reads_which_message_she_answers() {
+        let reply = |n, line: &str| Decision::Say {
+            line: line.into(),
+            reply_to: Some(n),
+        };
+        assert_eq!(decide("REPLY 7 netflix has it"), reply(7, "netflix has it"));
+        assert_eq!(decide("REPLY 12: same"), reply(12, "same"));
+        assert_eq!(decide("REPLY #3 \"lol\""), reply(3, "lol"));
+        assert_eq!(decide("REPLY 3"), Decision::Pass);
+        assert_eq!(decide("REPLY all of you"), say("REPLY all of you"));
     }
 
     #[test]
