@@ -70,13 +70,20 @@ pub async fn who_said_it(
     #[channel_types("Text", "News", "PublicThread", "NewsThread")]
     channel: Option<GuildChannel>,
     #[description = "Take quotes from every channel everyone can read"] whole_server: Option<bool>,
+    #[description = "How many years back quotes can come from (default: lookback_days in the config, 1 year)"]
+    #[min = 1]
+    #[max = 20]
+    years: Option<i64>,
 ) -> Result<()> {
     let guild = ctx
         .guild_id()
         .ok_or_else(|| user_error("Who said it? only works in a server."))?;
     let here = ctx.channel_id();
     let bot = ctx.data().clone();
-    let settings: Settings = bot.config.feature("who_said_it")?;
+    let mut settings: Settings = bot.config.feature("who_said_it")?;
+    if let Some(years) = years {
+        settings.lookback_days = years * 365;
+    }
     let from = match (channel, whole_server.unwrap_or(false)) {
         (Some(_), true) => {
             return Err(user_error("Pick a channel or the whole server, not both."));
@@ -135,9 +142,14 @@ pub async fn who_said_it(
     quotes::use_nicknames(&bot, guild, &mut rounds).await;
 
     let text = format!(
-        "🗨️ **Who said it?** {} questions from {what}, {} seconds each. \
+        "🗨️ **Who said it?** {} questions from {what}{}, {} seconds each. \
          Press who you think wrote it. Faster right answers score more.",
         rounds.len(),
+        match years {
+            Some(1) => " (the last year)".to_string(),
+            Some(years) => format!(" (the last {years} years)"),
+            None => String::new(),
+        },
         settings.answer_seconds.max(5)
     );
     reply
