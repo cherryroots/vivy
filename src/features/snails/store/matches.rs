@@ -146,6 +146,12 @@ pub fn record_caught(
     Ok(())
 }
 
+/// Clears the server's counted snails, for a fresh leaderboard. The saved links and pictures
+/// stay, so later reposts of older posts still count. Returns how many were cleared.
+pub fn reset_caught(conn: &Connection, guild: u64) -> rusqlite::Result<usize> {
+    conn.execute("DELETE FROM snail_caught WHERE guild_id = ?1", [guild])
+}
+
 /// Whether a message was already counted as a snail.
 pub fn is_caught(conn: &Connection, message: u64) -> rusqlite::Result<bool> {
     conn.query_row(
@@ -261,5 +267,19 @@ mod tests {
         assert_eq!(caught_since(&conn, 0).unwrap(), 2);
         assert!(is_caught(&conn, 11).unwrap() && !is_caught(&conn, 12).unwrap());
         assert_eq!(caught_since(&conn, 2_000).unwrap(), 1);
+    }
+
+    #[test]
+    fn reset_clears_one_server() {
+        let mut conn = test_connection("snails", MIGRATIONS);
+        save_now(&mut conn, &indexed(5, &["x:1"], vec![]), 0);
+        record_caught(&conn, 1, 10, 100, 1_000).unwrap();
+        record_caught(&conn, 1, 11, 101, 1_000).unwrap();
+        record_caught(&conn, 2, 12, 100, 1_000).unwrap();
+        assert_eq!(reset_caught(&conn, 1).unwrap(), 2);
+        assert!(top_snailers(&conn, 1, 0, 10).unwrap().is_empty());
+        assert_eq!(top_snailers(&conn, 2, 0, 10).unwrap(), [(100, 1)]);
+        // The index stays.
+        assert!(is_indexed(&conn, 5).unwrap());
     }
 }

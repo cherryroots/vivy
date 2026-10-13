@@ -18,7 +18,7 @@
 //! - `store.rs`: the tables and queries
 //! - `index.rs`: downloading and saving one message
 //! - `check.rs`: the Check Snail command
-//! - `board.rs`: `/snails top`, the leaderboard
+//! - `board.rs`: `/snails top`, the leaderboard, and `/snails reset`
 //! - `backfill.rs`: `/snails backfill`, the history crawl and the startup catch-up
 //! - `retry.rs`: trying failed pictures again
 

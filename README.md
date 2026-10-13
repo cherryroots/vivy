@@ -51,7 +51,7 @@ voltgpt's betting game for movie night. `/wheel status` shows the round as a pic
 
 ### Snail detection
 
-Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails top` shows the server's top snailers this week and of all time. Admins can read older history with `/snails backfill start`.
+Links and pictures are remembered as they're posted. Right-click a message, then Apps, then **Check Snail** to see who posted it first. `/snails top` shows the server's top snailers this week and of all time. Admins can read older history with `/snails backfill start` and start the leaderboard over with `/snails reset`.
 
 ### Control panel
 

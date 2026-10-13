@@ -1,16 +1,19 @@
-//! `/snails`, with the subcommands `top` (here) and `backfill` (in `backfill.rs`).
+//! `/snails`, with the subcommands `top` and `reset` (here) and `backfill` (in `backfill.rs`).
 //!
 //! `/snails top`: the server's top snailers, this week and of all time. Counts the new messages
 //! that repeated an earlier post (`snail_caught`), not what the backfill found in old history.
+//! `/snails reset` (admins): clears those counts for a fresh start.
 
 use anyhow::Context as _;
 use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::CreateAllowedMentions;
+use tracing::info;
 
 use super::backfill::snail_backfill;
 use super::store;
-use crate::core::{Context, Result};
+use crate::core::{Context, Result, user_error};
+use crate::util::count;
 
 /// How many people each list shows.
 const TOP: usize = 10;
@@ -20,7 +23,7 @@ const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("top", "snail_backfill"),
+    subcommands("top", "reset", "snail_backfill"),
     subcommand_required
 )]
 pub async fn snails(_ctx: Context<'_>) -> Result<()> {
@@ -55,6 +58,31 @@ pub async fn top(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
+/// Start the leaderboard over (admins)
+#[poise::command(slash_command, guild_only, ephemeral)]
+pub async fn reset(ctx: Context<'_>) -> Result<()> {
+    if !ctx.data().is_admin(ctx.author().id) {
+        return Err(user_error("Only admins can use this command."));
+    }
+    let guild = ctx
+        .guild_id()
+        .context("guild_only command without a server")?
+        .get();
+    let cleared = ctx
+        .data()
+        .db
+        .call(move |conn| Ok(store::reset_caught(conn, guild)?))
+        .await?;
+    info!(guild, cleared, "snail leaderboard reset");
+    ctx.say(format!(
+        "Reset: cleared {}. Everyone starts from zero. \
+         Saved links and pictures stay, so reposts of older posts still count.",
+        count(cleared, "snail")
+    ))
+    .await?;
+    Ok(())
+}
+
 /// The leaderboard text from two lists of (user, snails).
 fn board(week: &[(u64, u64)], all_time: &[(u64, u64)]) -> String {
     if all_time.is_empty() {
@@ -66,7 +94,7 @@ fn board(week: &[(u64, u64)], all_time: &[(u64, u64)]) -> String {
     text.push_str(&list(all_time));
     text.push_str(
         "\n-# A snail is a link or picture the server had already seen. \
-         Counted since Vivy started watching.",
+         Counted since Vivy started watching, or since the last reset.",
     );
     text
 }
@@ -100,7 +128,7 @@ mod tests {
         let snails = snails();
         let names: Vec<&str> = snails.subcommands.iter().map(|c| c.name.as_ref()).collect();
         assert_eq!(snails.name, "snails");
-        assert_eq!(names, ["top", "backfill"]);
+        assert_eq!(names, ["top", "reset", "backfill"]);
     }
 
     #[test]
