@@ -177,5 +177,13 @@ Otherwise write one short, warm message to them the way a friend would on Discor
         follow_up.note
     );
     info!(follow_up = follow_up.id, "checking in");
-    chime::speak(ctx, &asker, None, &instructions, Some(asker.user)).await
+    chime::speak(
+        ctx,
+        &asker,
+        None,
+        &instructions,
+        Some(asker.user),
+        chime::Allowed::Anything,
+    )
+    .await
 }

@@ -13,7 +13,7 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
 
-Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
+Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance`, `chime_say_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
 
 ## Files
 
@@ -123,14 +123,14 @@ Turns are never deleted or rewritten, with one exception: the `Context` parts ar
 
 ### Chiming in
 
-`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.04), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. Messages that mention her or reply to her are skipped, since they get a real answer.
+`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.05), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. A second roll (`Settings::allowed`) decides what she may do besides reading: `chime_say_chance` (default 0.10) of the reads she may post a line (`Allowed::Anything`), `chime_react_chance` (default 0.40) she reacts to the last message (`Allowed::React`), and the rest she only reads (`Allowed::ReadOnly`), saving what's worth keeping to memory. Messages that mention her or reply to her are skipped, since they get a real answer.
 
 On a hit, `speak`:
 
 1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript.
-2. Builds one question: the transcript plus `INSTRUCTIONS` (pass, react, or one short line; or a short question when she doesn't know what people mean). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
+2. Builds one question: the transcript plus `READ_ALONG` (save what's lasting to memory) and what she may do this time (`allowed_instructions`: only read and answer `DONE`; react with one emoji; or one short line, a short question when she doesn't know what people mean, with a reaction or `PASS` if no line fits). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
 3. Runs it with `ai::complete` (the tool loop without Discord output, at most 4 rounds) and `job: "chime"`. The request carries every tool, like an answer, so it starts the same way and reads the system prompt and tools from the prompt cache; `Runner` turns down any tool outside `UNPROMPTED_TOOLS`.
-4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel.
+4. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel. `allowed` limits it: on a read-only roll nothing is posted, and on a reaction roll a line is dropped. Follow-ups pass `Allowed::Anything`.
 
 Nobody asked and the line is public, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). The `Runner` keeps `get_message` and `search_messages` to the current channel (`here_only`). Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
 
