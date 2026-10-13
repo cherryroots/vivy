@@ -32,7 +32,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
-| Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails backfill` |
+| Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
@@ -160,6 +160,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #55 | | Chat: a mention of Vivy later in a message ("stop being mean to @Vivy") is no longer removed, so she knows the message is about her; mentioned people show by their server nickname |
 | #56 | | Chat: a still (one-frame) GIF reaches her as a picture instead of "ffmpeg found no frames"; a GIF ffmpeg can't read sends its first frame |
 | #57 | | Chime-ins: `chime_chance_per_user` gives some people their own chance, `[user, chance]` anywhere or `[user, chance, channel]` in one channel |
+| #58 | | Snails: `/snails reset` (admins) starts the leaderboard over and keeps the saved links and pictures; custom emoji, stickers, avatars and other Discord-owned pictures sent as links no longer count as snails |
 
 ## Not built yet
 

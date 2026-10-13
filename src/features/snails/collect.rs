@@ -73,7 +73,8 @@ pub fn pictures(msg: &Message) -> Vec<Picture> {
     }
     for embed in &msg.embeds {
         let kind = embed.kind.as_deref().unwrap_or("");
-        if kind == "gifv" {
+        // A custom emoji or sticker sent as a link previews as a picture too.
+        if kind == "gifv" || embed.url.as_deref().is_some_and(links::is_ignored) {
             continue;
         }
         // A direct link to an image arrives as an "image" preview with only a thumbnail.
@@ -217,6 +218,8 @@ mod tests {
                  "thumbnail": {"url": "https://static.klipy.com/a.webp", "width": 200, "height": 200}},
                 {"type": "rich", "url": "https://www.reddit.com/r/a/comments/b/text_post",
                  "thumbnail": {"url": "https://styles.redditmedia.com/icon.png", "proxy_url": "https://media.discordapp.net/external/i/icon.png", "width": 256, "height": 256}},
+                {"type": "image", "url": "https://cdn.discordapp.com/emojis/123.webp?size=48",
+                 "thumbnail": {"url": "https://cdn.discordapp.com/emojis/123.webp?size=48", "proxy_url": "https://media.discordapp.net/emojis/123.webp?size=48", "width": 48, "height": 48}},
                 {"type": "image", "url": "https://example.com/meme.png",
                  "thumbnail": {"url": "https://example.com/meme.png", "proxy_url": "https://media.discordapp.net/external/m/meme.png", "width": 300, "height": 300}}
             ]

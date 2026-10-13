@@ -6,6 +6,7 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 
 - **Check Snail** (right-click a message, then Apps): a private reply that lists up to 10 earlier posts of the same link or picture, oldest first, each with the date, the author and a jump link, and whether it was the same link or the same picture. If a picture could not be downloaded, the reply says so and that it will be retried.
 - **`/snails top`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
+- **`/snails reset`** (admins only): starts the leaderboard over. Every count in the server goes back to zero (this week, all time, and the control panel's "Caught this week" for it). The saved links and pictures stay, so a repost of something posted before the reset still counts.
 - **`/snails backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
 The only setting is the usual gate in `[features.snails]` (`enabled`, plus the shared `guilds` / `channels` keys); `config.example.toml` explains them. Setup is in the README.
@@ -22,7 +23,7 @@ All in `src/features/snails/`. The first three are pure functions (no Discord, n
 | `store/` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection, all reached as `store::name`. `mod.rs` has the tables and saving a message; `matches.rs` finds older messages with the same links or pictures and counts snails; `failures.rs` is the retry list; `crawl.rs` is the backfill's bookkeeping. |
 | `index.rs` | Downloading, fingerprinting and saving one message (`sync_message`, `index_message`). |
 | `check.rs` | The Check Snail command, and the quiet snail count for new messages (`on_new_message`). |
-| `board.rs` | `/snails top`, the leaderboard (`store::top_snailers`). |
+| `board.rs` | `/snails top`, the leaderboard (`store::top_snailers`), and `/snails reset` (`store::reset_caught`). |
 | `backfill.rs` | `/snails backfill`, the history crawl, and the startup catch-up. |
 | `retry.rs` | The loop that tries failed pictures again. |
 | `mod.rs` | The `Snails` struct and its `Feature` methods, which tie the rest together. |
@@ -35,7 +36,7 @@ The same post can be shared through many URLs: `x.com/a/status/1`, `fxtwitter.co
 
 1. Only `http` and `https` links count. The host is lowercased and a leading `www.` or `m.` is dropped.
 2. `site_of_host` names the site the host belongs to. Embed fixers (sites that make better Discord previews, like `fxtwitter.com`, `vxtwitter.com`, `fixupx.com`, `fxbsky.app`, `ddinstagram.com`, `rxddit.com`, `phixiv.net` and more) count as the site they mirror. So do their one-letter subdomains from the `MIRRORS` list, like `d.fxtwitter.com`. Known sites: X/Twitter (also nitter and xcancel), Bluesky, Threads, Instagram, TikTok, YouTube, Reddit, Facebook, Pixiv, Tumblr, Twitch, Imgur, Streamable, Spotify, Pinterest, Discord, Discord's CDN, and GIF sites.
-3. Sites in `IGNORED_SITES` never get a key: GIFs from Discord's picker (`klipy.com`, `tenor.com`, `giphy.com`) are reused all the time, and a link to another Discord message is a reference, not a repost.
+3. Sites in `IGNORED_SITES` never get a key: GIFs from Discord's picker (`klipy.com`, `tenor.com`, `giphy.com`) are reused all the time, and a link to another Discord message is a reference, not a repost. On Discord's CDN only uploads count (`DISCORD_UPLOADS`: `attachments/` and `ephemeral-attachments/`). Custom emoji and stickers sent as links (`cdn.discordapp.com/emojis/<id>.webp`, which is how people without Nitro, or with a client mod, use another server's emoji), avatars, server icons and banners are Discord's own pictures and get reused all the time. `links::is_ignored` says the same for a whole link, so `collect.rs` doesn't hash these links' previews either.
 4. For a known site, `post_id` pulls out the id of the post, so the key looks like `x:1844012345678901234` or `youtube:dQw4w9WgXcQ`. Some ids keep a little more: Bluesky keeps the handle (`bsky:<handle>/<post>`) because its post ids are only unique per account, and Twitch, Imgur and Spotify say what kind of thing it is (`twitch:clip/<slug>`, `imgur:album/<id>`, `spotify:track/<id>`). Files on Discord's CDN key on their path, so the same file from `cdn.discordapp.com` and `media.discordapp.net` matches.
 5. Anything else (an unknown site, or a known site's link that isn't one post, like a profile) gets `host/path` plus its query parameters, sorted, minus tracking junk. `JUNK_PARAMS` (and anything starting with `utm_`) is dropped everywhere. `site_junk` drops more only on sites where it is known to be junk, like `s` and `t` on X or `si` and `t` on YouTube. Elsewhere a short name like `t` can matter (a forum's `?t=123` is a thread).
 
@@ -47,7 +48,7 @@ Short links hide the post id (`vm.tiktok.com`, `t.co`, `pin.it`, `reddit.com/r/<
 
 - Attachments that have a width and height: images, GIFs and videos. Files without a size (a text file) are skipped.
 - Link previews (Discord calls them embeds) of type `image`, which is what a direct link to a picture becomes, and previews from sites in `PICTURE_SITES` (X, Bluesky, Threads, Instagram, Reddit, Pixiv, Tumblr, Imgur, Pinterest). People often repost just the picture from a tweet, so those previews are worth hashing. On a picture site, a preview with no big image is a text post; its thumbnail is the author's avatar, so it is not used.
-- Skipped: `gifv` previews (GIFs from Discord's picker) and previews of videos, music and articles. Their link key is enough.
+- Skipped: previews of ignored links (custom emoji, stickers, GIF sites; see `links::is_ignored`), `gifv` previews (GIFs from Discord's picker) and previews of videos, music and articles. Their link key is enough.
 
 Each picture is fetched small. `small_url` asks Discord's media proxy (`media.discordapp.net`) for a WebP whose longest side is at most `FETCH_SIZE` (256 pixels), with the picture's own shape. For a video, the proxy returns its first frame, so videos need no ffmpeg here. If the proxy can't serve it, `index::load_picture` downloads the original file instead (up to 20 MB). All downloads go through `util/media.rs`, which refuses local and private addresses, also after the DNS lookup and at every redirect. Decoding refuses pictures over 8192 pixels a side.
 
@@ -128,7 +129,7 @@ On every start, `spawn_catch_up` reads what was posted while the bot was offline
 | Method | What it does here |
 |---|---|
 | `name` | `"snails"` |
-| `commands` | Check Snail (`check::check_snail`) and `/snails` (`board::snails`), whose subcommands are `top` (`board::top`) and `backfill` (`backfill::snail_backfill`). |
+| `commands` | Check Snail (`check::check_snail`) and `/snails` (`board::snails`), whose subcommands are `top` (`board::top`), `reset` (`board::reset`) and `backfill` (`backfill::snail_backfill`). |
 | `migrations` | `store::MIGRATIONS` |
 | `start` | Resumes crawls that were running (in servers the gate allows), starts the catch-up, and starts the retry loop. Never starts a new crawl. |
 | `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews, unless every link already has one or an edit was read first. |
@@ -152,7 +153,7 @@ All created by `store::MIGRATIONS`.
 
 **Migration 2**
 
-- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails top`.
+- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails top`. `/snails reset` deletes the server's rows.
 
 **Migration 3** (edits, deletes, failed downloads, catch-up)
 

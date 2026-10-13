@@ -26,6 +26,12 @@ const PICTURE_SITES: &[&str] = &[
 /// link to another Discord message is a reference, not a repost.
 const IGNORED_SITES: &[&str] = &["gif", "discord"];
 
+/// The only files on Discord's CDN that count: things people uploaded. Everything else there
+/// is part of Discord itself and gets reused all the time: custom emoji and stickers sent as
+/// links (how people without Nitro, or with a client mod, use another server's emoji),
+/// avatars, server icons, banners.
+const DISCORD_UPLOADS: &[&str] = &["attachments", "ephemeral-attachments"];
+
 /// Embed fixers that also answer on one-letter subdomains: d.fxtwitter.com (just the media),
 /// g.fxbsky.app (gallery), c.vxtwitter.com...
 const MIRRORS: &[&str] = &[
@@ -236,6 +242,25 @@ fn site_junk(site: Option<&str>, host: &str) -> &'static [&'static str] {
     }
 }
 
+/// Whether links of this site (with these path segments) never count. See [`IGNORED_SITES`]
+/// and [`DISCORD_UPLOADS`].
+fn is_ignored_site(site: Option<&str>, segs: &[&str]) -> bool {
+    match site {
+        Some("discord-cdn") => !segs.first().is_some_and(|s| DISCORD_UPLOADS.contains(s)),
+        Some(site) => IGNORED_SITES.contains(&site),
+        None => false,
+    }
+}
+
+/// Whether a link never counts as a snail, like a custom emoji or a GIF from Discord's
+/// picker. Its preview isn't hashed either.
+pub fn is_ignored(link: &str) -> bool {
+    let Ok(url) = Url::parse(link) else {
+        return false;
+    };
+    host(&url).is_some_and(|host| is_ignored_site(site_of_host(&host), &segments(&url)))
+}
+
 /// The key a link is stored under, or None when it isn't a web link or should never count
 /// as a snail (see [`IGNORED_SITES`]).
 pub fn link_key(link: &str) -> Option<String> {
@@ -246,7 +271,7 @@ pub fn link_key(link: &str) -> Option<String> {
     let host = host(&url)?;
     let segs = segments(&url);
     let site = site_of_host(&host);
-    if site.is_some_and(|s| IGNORED_SITES.contains(&s)) {
+    if is_ignored_site(site, &segs) {
         return None;
     }
     if let Some(site) = site
@@ -558,6 +583,23 @@ mod tests {
         assert_eq!(link_key("https://tenor.com/view/cat-12345"), None);
         assert_eq!(link_key("https://discord.com/channels/1/2/3"), None);
         assert_eq!(link_key("mailto:someone@example.com"), None);
+        // Discord's own pictures, like emoji sent as links: everyone reuses them.
+        for link in [
+            "https://cdn.discordapp.com/emojis/1234567890.webp?size=48&name=cat&quality=lossless",
+            "https://media.discordapp.net/stickers/1234567890.png?size=160",
+            "https://cdn.discordapp.com/avatars/1/abc.png",
+            "https://cdn.discordapp.com/icons/1/abc.png",
+            "https://cdn.discordapp.com/",
+        ] {
+            assert_eq!(link_key(link), None, "{link}");
+            assert!(is_ignored(link), "{link}");
+        }
+        // Uploads still count.
+        assert!(link_key("https://cdn.discordapp.com/attachments/1/2/cat.png").is_some());
+        assert!(!is_ignored(
+            "https://cdn.discordapp.com/attachments/1/2/cat.png"
+        ));
+        assert!(!is_ignored("https://example.com/cat.png"));
     }
 
     #[test]
