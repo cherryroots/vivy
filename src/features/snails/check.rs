@@ -18,6 +18,10 @@ use crate::util::count;
 const MAX_CANDIDATES: usize = 12;
 /// At most this many snails are listed.
 const MAX_LISTED: usize = 10;
+/// Only messages posted this recently are counted as snails. Edits, late pictures and the
+/// catch-up can reach much older messages (a picture from the backfill that loaded on retry,
+/// an old message Discord sends again with refreshed previews); reposting is about now.
+const COUNT_WITHIN_SECS: i64 = 7 * 24 * 60 * 60;
 
 /// Check whether this was posted here before
 #[poise::command(context_menu_command = "Check Snail", guild_only, ephemeral)]
@@ -102,7 +106,7 @@ pub async fn on_retried_picture(
 
 /// Counts `msg` as caught if any of `links` or `pictures` (what's new in it) was posted
 /// before. Only what's new is checked: the rest was checked when it arrived. A message is
-/// counted once.
+/// counted once, and only if it was posted in the last week (`COUNT_WITHIN_SECS`).
 async fn count_if_snail(
     ctx: &BotCtx,
     guild: GuildId,
@@ -111,6 +115,10 @@ async fn count_if_snail(
     pictures: &[LoadedPicture],
 ) -> Result<()> {
     if links.is_empty() && pictures.is_empty() {
+        return Ok(());
+    }
+    let at = msg.timestamp.unix_timestamp();
+    if !recent(at, Utc::now().timestamp()) {
         return Ok(());
     }
     let id = msg.id.get();
@@ -129,10 +137,14 @@ async fn count_if_snail(
         return Ok(());
     }
     let (g, author) = (guild.get(), msg.author.id.get());
-    let at = msg.timestamp.unix_timestamp();
     ctx.db
         .call(move |conn| Ok(store::record_caught(conn, g, id, author, at)?))
         .await
+}
+
+/// Whether a message posted at `at` is new enough to count as a snail at `now`.
+fn recent(at: i64, now: i64) -> bool {
+    now - at <= COUNT_WITHIN_SECS
 }
 
 /// Earlier posts of the same links or pictures, oldest first. Each one is checked before it
@@ -348,4 +360,19 @@ fn describe(guild: GuildId, snails: &[Snail], unchecked: usize) -> String {
         ));
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_recent_messages_count() {
+        let now = 1_800_000_000;
+        assert!(recent(now, now));
+        assert!(recent(now - 3 * 86_400, now));
+        assert!(!recent(now - 8 * 86_400, now));
+        // A message from 2023 that an edit or a retry brings back.
+        assert!(!recent(1_685_302_717, now));
+    }
 }
