@@ -126,14 +126,17 @@ show_job_costs = true
 [features.chat]
 # Answers @-mentions that no other feature claimed.
 enabled = true
-# Now and then Vivy reads the last 15 messages and chimes in with one line, a question,
-# an emoji reaction, or nothing. The chance per message (0 turns it off), and how long a
-# channel waits before she considers it again.
-chime_chance = 0.04
+# Now and then Vivy reads the last 15 messages to learn from them for her memory. The chance
+# per message (0 turns it off), and how long a channel waits before she reads it again.
+chime_chance = 0.05
 chime_cooldown_minutes = 30
+# Of those reads, the share where she also posts a line, and the share where she reacts to
+# the last message with an emoji. The rest she only reads.
+chime_say_chance = 0.10
+chime_react_chance = 0.40
 # Other chances for some people's messages (0 to 1, like chime_chance): [user ID, chance]
 # for anywhere, or [user ID, chance, channel ID] for one channel, which wins over anywhere.
-# 0 means she never chimes in on their messages there. The channel's cooldown still applies.
+# 0 means she never reads along on their messages there. The channel's cooldown still applies.
 # chime_chance_per_user = [
 #     [123456789012345678, 0.5],
 #     [123456789012345678, 0.0, 234567890123456789],

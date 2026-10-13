@@ -2,9 +2,11 @@
 //! adds one short line or a reaction, without anyone mentioning her.
 //!
 //! After each message there's a small chance (`chime_chance` in `[features.chat]`) that she
-//! looks at the last [`READ_MESSAGES`] messages and decides: a line, an emoji, or nothing.
-//! A channel then waits `chime_cooldown_minutes` before she considers it again. Her line is
-//! saved like an answer, so replying to it continues the conversation.
+//! reads the last [`READ_MESSAGES`] messages, mostly to learn from them for her memory. A
+//! second roll decides what else she does that time: `chime_say_chance` of the reads she
+//! posts a line, `chime_react_chance` she reacts to the last message, and the rest she only
+//! reads. A channel then waits `chime_cooldown_minutes` before she reads it again. Her line
+//! is saved like an answer, so replying to it continues the conversation.
 //!
 //! Nobody asked for these lines (nor for check-ins, which use [`speak`] too), and they're
 //! posted for the whole channel, so she can only use [`UNPROMPTED_TOOLS`]: tools that read
@@ -63,9 +65,13 @@ const UNPROMPTED_TOOLS: &[&str] = &[
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// The chance, from 0 to 1, that a message makes her consider chiming in. 0 turns it off.
+    /// The chance, from 0 to 1, that a message makes her read along. 0 turns it off.
     pub chime_chance: f64,
-    /// How long a channel waits after she considered it.
+    /// Of those reads, the share where she posts a line (0 to 1).
+    pub chime_say_chance: f64,
+    /// Of those reads, the share where she reacts to the last message (0 to 1).
+    pub chime_react_chance: f64,
+    /// How long a channel waits after she read along.
     pub chime_cooldown_minutes: u64,
     /// Other chances for some people's messages: `[user, chance]` anywhere, or
     /// `[user, chance, channel]` in one channel only. Used instead of `chime_chance`.
@@ -104,16 +110,40 @@ impl Settings {
         };
         in_channel.or_else(anywhere).unwrap_or(self.chime_chance)
     }
+
+    /// What she may do on a read, from a second roll `dice` between 0 and 1.
+    fn allowed(&self, dice: f64) -> Allowed {
+        if dice < self.chime_say_chance {
+            Allowed::Anything
+        } else if dice < self.chime_say_chance + self.chime_react_chance {
+            Allowed::React
+        } else {
+            Allowed::ReadOnly
+        }
+    }
 }
 
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
-            chime_chance: 0.04,
+            chime_chance: 0.05,
+            chime_say_chance: 0.10,
+            chime_react_chance: 0.40,
             chime_cooldown_minutes: 30,
             chime_chance_per_user: Vec::new(),
         }
     }
+}
+
+/// What she may do after reading along, decided by the dice before she reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Allowed {
+    /// Only read, and save to memory what's worth keeping.
+    ReadOnly,
+    /// React to the last message with one emoji.
+    React,
+    /// Post a line (or react, or pass).
+    Anything,
 }
 
 /// What she does after reading along.
@@ -145,7 +175,8 @@ impl Chime {
         })
     }
 
-    /// Rolls the dice for a message, and reads along if it hits.
+    /// Rolls the dice for a message, and reads along if it hits. A second roll decides
+    /// whether she may also post a line or react.
     pub async fn on_message(&self, ctx: &BotCtx, msg: &Message) -> Result<()> {
         let Some(guild) = msg.guild_id.filter(|_| ctx.ai.chat().is_some()) else {
             return Ok(());
@@ -167,7 +198,9 @@ impl Chime {
             message: msg.id,
             posted: Default::default(),
         };
-        speak(ctx, &asker, Some(msg), INSTRUCTIONS, None).await
+        let allowed = self.settings(ctx).allowed(fastrand::f64());
+        let instructions = format!("{READ_ALONG}{}", allowed_instructions(allowed));
+        speak(ctx, &asker, Some(msg), &instructions, None, allowed).await
     }
 
     /// Whether to read along now: the dice hit (with the author's own chance, if they have
@@ -188,19 +221,35 @@ impl Chime {
     }
 }
 
-/// What she's asked after reading along. In the question, not the system prompt, so the
-/// system prompt stays the same as for answers and shares their cache.
-const INSTRUCTIONS: &str = "You're reading along in this channel; nobody asked you anything. \
-Chime in only when you have something that fits: a joke, a reaction, a fact, an opinion, or a short question about what they're talking about when you don't know it and are curious (what a name or in-joke means, how something turned out). Most of the time, pass. \
-When someone answers one of your questions later, save what you learned. \
+/// What she's asked after reading along, before what she may do this time
+/// ([`allowed_instructions`]). In the question, not the system prompt, so the system prompt
+/// stays the same as for answers and shares their cache.
+const READ_ALONG: &str = "You're reading along in this channel; nobody asked you anything. \
 Reactions after a message show how people took it, your own lines included. \
-If you noticed something lasting about the server, its people or yourself, you can save it with the memory tool first. \
-Then answer with exactly one of: PASS; REACT followed by one emoji; or one short line the way people write on Discord, with no greeting. \
-When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply to it.";
+When someone answers one of your questions later, save what you learned. \
+If you noticed something lasting about the server, its people or yourself, save it with the memory tool. ";
+
+/// What she may do this time, after reading.
+fn allowed_instructions(allowed: Allowed) -> &'static str {
+    match allowed {
+        Allowed::ReadOnly => {
+            "This time you only read: nothing you write is posted. When you're done, answer DONE."
+        }
+        Allowed::React => {
+            "This time, react to the last message: answer REACT followed by one emoji that fits it."
+        }
+        Allowed::Anything => {
+            "This time, chime in with something that fits: a joke, a reaction, a fact, an opinion, or a short question about what they're talking about when you don't know it and are curious (what a name or in-joke means, how something turned out). \
+Answer with one short line the way people write on Discord, with no greeting. If no line fits, answer REACT followed by one emoji, or PASS. \
+When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply to it."
+        }
+    }
+}
 
 /// Reads the last messages of `asker.channel` (ending with `last`, when given), asks the
 /// model what to do with `instructions`, and does it: posts a line, reacts to `last`, or
-/// nothing. A posted line is saved like an answer, so a reply to it continues the
+/// nothing. `allowed` limits that: a line when she may only react is dropped, and when she
+/// may only read nothing is posted. A posted line is saved like an answer, so a reply to it continues the
 /// conversation. `mention` is the one person the line may ping.
 pub async fn speak(
     ctx: &BotCtx,
@@ -208,6 +257,7 @@ pub async fn speak(
     last: Option<&Message>,
     instructions: &str,
     mention: Option<UserId>,
+    allowed: Allowed,
 ) -> Result<()> {
     let started_at = Utc::now().timestamp();
     let provider = ctx.ai.chat().context("chat has no model")?;
@@ -237,8 +287,12 @@ pub async fn speak(
     };
     let done = complete(provider.as_ref(), request, &runner, MAX_ROUNDS).await?;
 
+    if allowed == Allowed::ReadOnly {
+        info!("read along without posting");
+        return Ok(());
+    }
     let (line, reply_to) = match (decide(&done.text), last) {
-        (Decision::Say { line, reply_to }, _) => (line, reply_to),
+        (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => (line, reply_to),
         (Decision::React(emoji), Some(msg)) => {
             let reaction = ReactionType::try_from(emoji.as_str())
                 .with_context(|| format!("{emoji:?} isn't an emoji"))?;
@@ -584,16 +638,29 @@ mod tests {
     #[test]
     fn settings_default_to_a_small_chance() {
         let settings: Settings = toml::from_str("enabled = true").unwrap();
-        assert_eq!(settings.chime_chance, 0.04);
+        assert_eq!(settings.chime_chance, 0.05);
+        assert_eq!(settings.chime_say_chance, 0.10);
+        assert_eq!(settings.chime_react_chance, 0.40);
         assert_eq!(settings.chime_cooldown_minutes, 30);
         let off: Settings = toml::from_str("chime_chance = 0.0").unwrap();
         assert_eq!(off.chime_chance, 0.0);
     }
 
     #[test]
+    fn second_roll_picks_line_reaction_or_reading() {
+        let settings = Settings::default();
+        assert_eq!(settings.allowed(0.0), Allowed::Anything);
+        assert_eq!(settings.allowed(0.09), Allowed::Anything);
+        assert_eq!(settings.allowed(0.10), Allowed::React);
+        assert_eq!(settings.allowed(0.49), Allowed::React);
+        assert_eq!(settings.allowed(0.50), Allowed::ReadOnly);
+        assert_eq!(settings.allowed(0.99), Allowed::ReadOnly);
+    }
+
+    #[test]
     fn some_people_get_their_own_chance() {
         let settings: Settings = toml::from_str(
-            "chime_chance = 0.04\n\
+            "chime_chance = 0.05\n\
              chime_chance_per_user = [[123, 0.5], [123, 0.0, 999], [456, 1]]",
         )
         .unwrap();
@@ -604,6 +671,6 @@ mod tests {
             settings.chance_for(UserId::new(456), ChannelId::new(7)),
             1.0
         );
-        assert_eq!(settings.chance_for(other, ChannelId::new(999)), 0.04);
+        assert_eq!(settings.chance_for(other, ChannelId::new(999)), 0.05);
     }
 }
