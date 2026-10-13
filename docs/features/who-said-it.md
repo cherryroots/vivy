@@ -4,15 +4,20 @@ A game in plain Discord messages. `/games whosaidit` digs up messages from the c
 
 ## Playing it
 
-`/games whosaidit` in any channel or thread starts a game there (`questions` picks how many, 1 to 20, default `rounds`). Vivy posts one question at a time: the quote, when it was said, a live countdown, and four name buttons. Anyone can play by pressing one. Only your first press counts, and only you see the "Locked in" reply. When the time is up, the same message shows the answer: the author's button turns green, a link goes to the original message, and it lists who got it (with points) and who didn't. The next question follows 5 seconds later.
+`/games whosaidit` in any channel or thread starts a game there (`questions` picks how many, 1 to 20, default `rounds`; `channel` and `whole_server` pick where quotes come from, see below). Vivy posts one question at a time: the quote, when it was said, a live countdown, and four name buttons. Anyone can play by pressing one. Only your first press counts, and only you see the "Locked in" reply. When the time is up, the same message shows the answer: the author's button turns green, a link goes to the original message, and it lists who got it (with points) and who didn't. The next question follows 5 seconds later.
 
 A right answer is worth 100 points plus up to 100 more for speed (all 100 at once, none at the buzzer). A channel has one game at a time. If nobody answers two questions in a row, the game stops there. Nothing is saved, so a restart ends the game.
 
 ## Where the quotes come from
 
-Only from the channel the game is played in. Everyone who sees the game can already scroll up to those messages, so it never shows anything they couldn't see.
+By default, from the channel the game is played in. Two options of `/games whosaidit` change that:
 
-Each game reads 6 random moments of the last `lookback_days` (100 messages each, nothing from the last hour), and keeps messages that make a good quote:
+- `channel`: another channel or thread instead.
+- `whole_server`: every text and announcement channel, plus the one the game is played in. Each question says which channel its quote is from ("Said in #general, March 2025").
+
+The game is seen by everyone in the channel it's played in, so it never shows them messages they couldn't read already. Its own channel is always fine. Any other channel must be readable by everyone in the server (the @everyone role can view it and read its history, after the channel's overwrite for @everyone) and not age-restricted, and the feature must be allowed there (`deny_channels` keeps a channel out). Picking a channel that doesn't qualify says why; the whole server simply leaves those out. A thread counts as its parent channel. `sources.rs` holds these rules.
+
+Each game reads 6 random moments (10 for the whole server, each in a random channel) of the last `lookback_days`, 100 messages each and nothing from the last hour. A channel the bot can't read is skipped. It keeps messages that make a good quote:
 
 - written by a person (not a bot, a webhook or a system message)
 - between `min_length` and `max_length` characters and at least 3 words
@@ -21,7 +26,7 @@ Each game reads 6 random moments of the last `lookback_days` (100 messages each,
 
 Mentions, channels, custom emoji and times are turned into what Discord shows (`@Cherry`, `#channel`, `:wave:`, "(a time)"). Nobody is the answer more than twice while someone else could be. The other choices are other people who wrote quotes, shown by their server nickname.
 
-The bot needs Read Message History in the channel.
+The bot needs Read Message History in the channels it reads.
 
 ## Settings
 
@@ -34,7 +39,8 @@ All under `src/features/who_said_it/`.
 | File | What it holds |
 |---|---|
 | `game.rs` | The rules, with the time each pick took passed in so the tests can play a whole game: picks (first press counts), closing a round and scoring it, standings, and `make_rounds`. Pure. |
-| `quotes.rs` | Reading the channel at random moments, `quote_text` (which messages make a quote), `clean` (Discord markup to text), and server nicknames for the people shown. |
+| `sources.rs` | Which channels quotes may come from: the game's own, or channels everyone can read (`everyone_can_read`, pure). |
+| `quotes.rs` | Reading the sources at random moments, `quote_text` (which messages make a quote), `clean` (Discord markup to text), and server nicknames for the people shown. |
 | `ui.rs` | The question, answer and score messages, and the button IDs (`who_said_it:pick:<game>:<round>:<person>`). Pure. |
 | `play.rs` | `/games` and its `whosaidit` subcommand, the task that runs a game (post, wait, show the answer, pause, next), and button presses. Running games are kept in `GAMES` by channel, so a press finds its game. |
 | `mod.rs` | The `WhoSaidIt` feature and its settings. |

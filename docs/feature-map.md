@@ -35,7 +35,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
-| Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote messages from its history | `/games whosaidit`, its buttons |
+| Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server | `/games whosaidit`, its buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 

@@ -3,7 +3,7 @@
 
 use serenity::all::{ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter};
 
-use super::game::{Outcome, Round};
+use super::game::{Outcome, Quote, Round};
 use crate::util::shorten;
 
 /// Vivy's teal, down the side of every message.
@@ -136,11 +136,17 @@ fn embed(index: usize, total: usize, round: &Round, description: String) -> Crea
     CreateEmbed::new()
         .title(format!("Who said it? {}/{total}", index + 1))
         .description(description)
-        .footer(CreateEmbedFooter::new(format!(
-            "Said in {}",
-            round.quote.posted
-        )))
+        .footer(CreateEmbedFooter::new(said(&round.quote)))
         .color(COLOR)
+}
+
+/// Where and when a quote was said: "Said in #general, March 2025", or "Said in March
+/// 2025" for the channel the game is played in.
+fn said(quote: &Quote) -> String {
+    match &quote.place {
+        Some(place) => format!("Said in #{place}, {}", quote.posted),
+        None => format!("Said in {}", quote.posted),
+    }
 }
 
 /// The quote as a Discord block quote, every line of it.
@@ -178,6 +184,20 @@ mod tests {
         assert_eq!(parse_button("pick:7:3"), None);
         assert_eq!(parse_button("pick:7:3:1:2"), None);
         assert_eq!(parse_button("other:7:3:1"), None);
+    }
+
+    #[test]
+    fn another_channel_is_named_under_the_quote() {
+        let mut quote = Quote {
+            author: 1,
+            text: "hi there everyone".into(),
+            posted: "March 2025".into(),
+            place: None,
+            link: String::new(),
+        };
+        assert_eq!(said(&quote), "Said in March 2025");
+        quote.place = Some("general".into());
+        assert_eq!(said(&quote), "Said in #general, March 2025");
     }
 
     #[test]
