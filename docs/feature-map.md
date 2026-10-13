@@ -167,6 +167,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #59 | | Who said it?: `/games whosaidit`, the channel guesses who wrote old messages with buttons, scores at the end |
 | #60 | | Who said it?: `channel` and `whole_server` options; only channels everyone can read, and questions say which channel they're from |
 | #61 | | Chime-ins: a line that ends with a quote keeps its closing quote (it was cut off, so lines looked unfinished); a line answering one of the messages she read is posted as a reply to it (no ping) |
+| #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
 
 ## Not built yet
 
