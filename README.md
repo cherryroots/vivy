@@ -39,7 +39,7 @@ With an ElevenLabs key, Vivy can answer with a Discord voice message in her own 
 
 ### Web search with TinyFish
 
-With a TinyFish key, Vivy gets a second web search, TinyFish's, that works with every chat provider. It's free up to 12,000 searches a day. `[features.tinyfish]` sets how many results she reads.
+With a TinyFish key, Vivy can also search the web and read whole pages with TinyFish, with every chat provider. It reaches sites the providers' own web tools often can't, like Reddit. It's free up to 12,000 searches and 1,000 pages a day. `[features.tinyfish]` sets how many results and how much of each page she reads.
 
 ### Drawing
 

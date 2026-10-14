@@ -19,7 +19,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/drawing.md](features/drawing.md) | Drawing pictures with GPT Image 2.5 |
 | [features/snails.md](features/snails.md) | Repost detection: link keys, picture fingerprints, backfill |
 | [features/control-panel.md](features/control-panel.md) | The status picture and the log channel |
-| [features/tinyfish.md](features/tinyfish.md) | Web search with TinyFish's Search API |
+| [features/tinyfish.md](features/tinyfish.md) | Web search and reading pages with TinyFish |
 | [features/who-said-it.md](features/who-said-it.md) | Who said it?: the game, where quotes come from, why it isn't an Activity |
 
 ## Features
@@ -36,7 +36,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
-| TinyFish | `tinyfish/` | Vivy searches the web with TinyFish, with any chat provider | The `tinyfish_search` chat tool |
+| TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
 | Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server | `/games whosaidit`, its buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
@@ -53,7 +53,7 @@ Not features, but parts of the core everyone uses: the **log channel** (`src/cor
 | Drawing | none (only its chat tool) | none |
 | Snails | every message, edits, deletes | Snail picture retries, plus the backfill and the startup catch-up |
 | Control panel | none | the status refresh (every 60 s) and Status graphs (every 15 min) |
-| TinyFish | none (only its chat tool) | none |
+| TinyFish | none (only its chat tools) | none |
 | Who said it? | its buttons | a task per running game |
 
 How these reach the feature is in [architecture.md](architecture.md#how-events-reach-features).
@@ -173,7 +173,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #62 | | Chime-ins: 5% of messages make her read along to learn for her memory; of those reads 10% she posts a line, 40% she reacts, the rest she only reads (`chime_say_chance`, `chime_react_chance`) |
 | #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
 | #64 | | Gemini provider (`provider = "gemini"`, Gemini 4 Argon through the Interactions API): Google Search, URL context and code execution; posted videos uploaded with the Files API and YouTube links watched as videos |
-| #65 | | TinyFish web search: chat's `tinyfish_search` tool (any provider, chime-ins too) when `TINYFISH_API_KEY` is in `.env`; `[features.tinyfish]` sets results per search, location and language |
+| #65 | | TinyFish: chat's `tinyfish_search` and `tinyfish_fetch` tools (any provider, chime-ins too) when `TINYFISH_API_KEY` is in `.env`, so she can search and read Reddit and other sites the built-in web tools can't reach; `[features.tinyfish]` sets results per search, location, language and how much of a page she reads |
 
 ## Not built yet
 

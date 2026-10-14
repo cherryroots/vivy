@@ -46,8 +46,8 @@ const MAX_LINE: usize = 400;
 /// someone decides it's safe here. Left out: anything that acts for a person (reminders,
 /// check-ins), and `list_channels`, which lists what one person can see, not everyone here.
 /// `get_message` and `search_messages` only reach this channel (see [`Runner`]). `memory`
-/// is in: what she saves is her own decision. `tinyfish_search` only reads the web, like
-/// the providers' own web search, which chime-ins have too.
+/// is in: what she saves is her own decision. `tinyfish_search` and `tinyfish_fetch` only
+/// read the web, like the providers' own web tools, which chime-ins have too.
 const UNPROMPTED_TOOLS: &[&str] = &[
     "get_current_time",
     "get_channel_info",
@@ -60,6 +60,7 @@ const UNPROMPTED_TOOLS: &[&str] = &[
     "list_server_emoji",
     "get_wheel_status",
     "tinyfish_search",
+    "tinyfish_fetch",
     "memory",
 ];
 
