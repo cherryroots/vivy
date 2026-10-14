@@ -416,6 +416,38 @@ async fn fetch(client: &reqwest::Client, url: &str, max_bytes: usize) -> anyhow:
     Ok(data)
 }
 
+/// Downloads a video as it is, for a model that watches videos itself.
+pub async fn download_video(url: &str) -> anyhow::Result<Vec<u8>> {
+    download(url, MAX_VIDEO_BYTES).await
+}
+
+/// The YouTube video `link` points at, as a plain watch link
+/// (`https://www.youtube.com/watch?v=<id>`): from `youtube.com/watch?v=`, `youtu.be/`,
+/// `/shorts/`, `/live/` and `/embed/` links. `None` for anything else.
+pub fn youtube_link(link: &str) -> Option<String> {
+    let url = Url::parse(link).ok()?;
+    let host = url.host_str()?.trim_start_matches("www.");
+    let mut path = url.path_segments()?;
+    let id = match host {
+        "youtu.be" => path.next()?.to_string(),
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" => match path.next()? {
+            "watch" => url
+                .query_pairs()
+                .find(|(key, _)| key == "v")
+                .map(|(_, value)| value.to_string())?,
+            "shorts" | "live" | "embed" => path.next()?.to_string(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    // Video IDs are 11 letters, digits, '-' and '_'.
+    let valid = id.len() == 11
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    valid.then(|| format!("https://www.youtube.com/watch?v={id}"))
+}
+
 /// An image ready to send to a model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelImage {
@@ -510,6 +542,31 @@ mod tests {
 
     fn embed(value: serde_json::Value) -> Embed {
         serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn finds_youtube_videos() {
+        let watch = Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string());
+        for link in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s",
+            "https://youtube.com/watch?feature=share&v=dQw4w9WgXcQ",
+            "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
+            "https://youtu.be/dQw4w9WgXcQ?si=abc",
+            "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "https://www.youtube.com/live/dQw4w9WgXcQ",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ",
+        ] {
+            assert_eq!(youtube_link(link), watch, "{link}");
+        }
+        for link in [
+            "https://www.youtube.com/@channel",
+            "https://www.youtube.com/playlist?list=PL123",
+            "https://www.youtube.com/watch?v=short",
+            "https://example.com/watch?v=dQw4w9WgXcQ",
+            "not a link",
+        ] {
+            assert_eq!(youtube_link(link), None, "{link}");
+        }
     }
 
     #[test]
