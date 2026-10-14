@@ -80,10 +80,12 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         tasks.spawn(warm.run(timers.clone(), shutdown.clone()));
     }
     // With an Admin API key, a provider's spend comes from its real bill (see ai/spend.rs).
+    // Google has no Admin API for the bill, so Gemini's spend is always the estimate.
     for spend in &ai.spends {
         let (var, billed) = match spend.provider() {
             "claude" => ("ANTHROPIC_ADMIN_KEY", config.ai.claude.billed_spend),
-            _ => ("OPENAI_ADMIN_KEY", config.ai.openai.billed_spend),
+            "openai" => ("OPENAI_ADMIN_KEY", config.ai.openai.billed_spend),
+            _ => continue,
         };
         let Some(admin_key) = env_key(var) else {
             continue;
@@ -279,12 +281,14 @@ fn ai_from_env(
     // Each provider's spend is tracked whether it's the main provider or the fallback.
     let claude_spend = ai::Spend::new(db.clone(), "claude", config.ai.claude.monthly_budget);
     let openai_spend = ai::Spend::new(db.clone(), "openai", config.ai.openai.monthly_budget);
+    let gemini_spend = ai::Spend::new(db.clone(), "gemini", config.ai.gemini.monthly_budget);
     let openai_key = env_key("OPENAI_TOKEN");
     let mut keep_warm = None;
     let mut make = |provider: ai::Provider| -> Option<Arc<dyn ai::ChatProvider>> {
         let name = match provider {
             ai::Provider::Claude => "ANTHROPIC_API_KEY",
             ai::Provider::Openai => "OPENAI_TOKEN",
+            ai::Provider::Gemini => "GEMINI_API_KEY",
         };
         let Some(key) = env_key(name) else {
             warn!("{name} is not set in .env, so {provider:?} can't chat");
@@ -307,6 +311,12 @@ fn ai_from_env(
                 std::env::var("OPENAI_BASE").ok().as_deref(),
                 config.ai.openai.clone(),
                 Some(openai_spend.clone()),
+            )),
+            ai::Provider::Gemini => Arc::new(ai::Gemini::new(
+                web.clone(),
+                key,
+                config.ai.gemini.clone(),
+                Some(gemini_spend.clone()),
             )),
         })
     };
@@ -333,6 +343,9 @@ fn ai_from_env(
     // OpenAI's key is used for pictures too, so its spend shows whenever the key is set.
     if chats_with(ai::Provider::Openai) || images.is_some() {
         spends.push(openai_spend);
+    }
+    if chats_with(ai::Provider::Gemini) {
+        spends.push(gemini_spend);
     }
     (ai::Ai::new(main, backup, spends, images), keep_warm)
 }

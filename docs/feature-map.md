@@ -10,7 +10,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
-| [ai.md](ai.md) | The AI providers (Claude, OpenAI), pictures, conversation history, fallback and spend |
+| [ai.md](ai.md) | The AI providers (Claude, OpenAI, Gemini), pictures, conversation history, fallback and spend |
 | [features/chat.md](features/chat.md) | Chat: answers, tools, chime-ins, follow-ups, server emoji |
 | [features/reminders.md](features/reminders.md) | Reminders: the time grammar, the scheduler, snooze |
 | [features/wheel.md](features/wheel.md) | The movie wheel: the money rules, seasons, the round picture |
@@ -78,7 +78,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 |---|---|
 | Discord library | `serenity` for events and the REST API, `poise` for slash commands |
 | Structure | One crate, plain modules. Features never import each other; they work together through chat tools, chat context, bot events and the status picture. Each declares everything it adds in its `Feature` impl. A Cargo workspace with a crate per feature would let the compiler enforce that, but isn't worth the build setup yet. |
-| AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
+| AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Gemini (Interactions API) can be picked as either, and watches videos and YouTube links itself. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
 | Prompt caching | The system prompt and tool list never change. Anything that changes (the time, memory's file list, Vivy's mood) comes from tools or goes after the newest question. |
 | Storage | One SQLite file in WAL mode, raw SQL through `rusqlite` on its own thread (`tokio-rusqlite`), per-feature migrations. No ORM, like voltgpt. |
 | Config | Secrets in `.env`, everything else in `config.toml`. Per-feature gating is config, not code (voltgpt hardcoded its main server and blocked channels). Mistakes warn, never stop the bot. |
@@ -169,13 +169,13 @@ The port went in stages, one pull request each, all merged into `main`.
 | #61 | | Chime-ins: a line that ends with a quote keeps its closing quote (it was cut off, so lines looked unfinished); a line answering one of the messages she read is posted as a reply to it (no ping) |
 | #62 | | Chime-ins: 5% of messages make her read along to learn for her memory; of those reads 10% she posts a line, 40% she reacts, the rest she only reads (`chime_say_chance`, `chime_react_chance`) |
 | #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
+| #64 | | Gemini provider (`provider = "gemini"`, Gemini 4 Argon through the Interactions API): Google Search, URL context and code execution; posted videos uploaded with the Files API and YouTube links watched as videos |
 
 ## Not built yet
 
 | Idea | Notes |
 |---|---|
 | Remove the `old.db` import | Once Cherry has confirmed the imports. What to delete is listed in [architecture.md](architecture.md#importing-from-voltgpt). |
-| Gemini provider | Another `ChatProvider`; [ai.md](ai.md) has the steps. |
 | Sentry | Error grouping through the `sentry` crate's `tracing` integration, on when `SENTRY_DSN` is set. GlitchTip is a self-hostable server for it. |
 | Wheel: `/wheel_spin` and balance history | A random winner with an animation, and each player's money over time |
 | More faces | Mischievous, grossed out, lonely, celebrating |

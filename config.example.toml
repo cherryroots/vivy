@@ -22,8 +22,8 @@ old_database = "old.db"
 log_level = "warn"
 
 [ai]
-# Which provider chats: "claude" or "openai" (left out: "openai"). Only that provider's key
-# in .env is used.
+# Which provider chats: "claude", "openai" or "gemini" (left out: "openai"). Only that
+# provider's key in .env is used.
 provider = "claude"
 # The provider chat moves to while the main one can't answer (leave out for none; its key
 # must be in .env too). Out of credit: the main one is tried again a day later. Down: an
@@ -115,6 +115,31 @@ show_cache_hits = true
 show_job_costs = true
 # Settings per job work like Claude's ([ai.openai.jobs.mood] and so on), with the same
 # built-in defaults, except that emoji use the main model.
+
+# Gemini settings. The key goes in .env (GEMINI_API_KEY). Used when `provider` or
+# `fallback` above is "gemini". Gemini watches videos people post (uploaded with its Files
+# API) and YouTube links itself, with their sound, instead of a few frames.
+[ai.gemini]
+model = "gemini-4-argon"
+# How much it thinks: "low", "medium" or "high".
+thinking_level = "medium"
+# Show short summaries of its thinking in the reply's status line while it works.
+thought_summaries = true
+# How a posted video is watched: "static" (every second at once, with the sound; best for
+# short clips) or "agentic" (the model looks through it for what it needs; cheaper on long
+# videos, slower on short ones). The same for YouTube links, which are often long.
+video_processing = "static"
+youtube_processing = "agentic"
+# Gemini's monthly cost in USD, for the status message and the warnings in the log channel
+# at 80% and 100% (estimated from list prices; Google has no bill API). 0 turns the warnings
+# off. Gemini 4 Argon's launch price ends on 2026-12-01 and it costs twice as much after.
+monthly_budget = 25.0
+# Show on the status message how much input came from the cache this month.
+show_cache_hits = true
+# Show on the status message what each job (chat, diary, ...) cost this month, estimated.
+show_job_costs = true
+# Settings per job work like Claude's ([ai.gemini.jobs.mood] and so on, with `effort` as
+# the thinking level), with the same built-in defaults, except that emoji use the main model.
 
 # Every feature has a section. These keys work in all of them:
 #   enabled = false                   turn the feature off
