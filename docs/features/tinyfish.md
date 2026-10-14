@@ -8,6 +8,8 @@ Both are free per key: 12,000 searches a day (30 a minute) and 1,000 fetched pag
 
 There are no commands. In chat, ask Vivy to look something up or read a link; the chat model decides when to use `tinyfish_search` and `tinyfish_fetch`. While they run, the status line under her answer says "🐟 Searching the web…" or "🐟 Reading the page…".
 
+Her system prompt (`src/features/chat/prompt.md`) tells her when to pick them over her built-in web tools: TinyFish for anything on Reddit, and `tinyfish_fetch` again when her own fetch can't read a page. Otherwise she chooses from the tool descriptions.
+
 The tools are only offered when `TINYFISH_API_KEY` is set in `.env` (make one at <https://agent.tinyfish.ai/api-keys>). Both are on the chime-in allow-list in `src/features/chat/chime.rs`, since they only read the web.
 
 Settings live under `[features.tinyfish]`: `max_results` (1 to 10, default 8), `location` and `language` for searches where she doesn't name them, and `max_page_characters` (default 15000) for how much of each page she reads. Like every feature, `enabled`, `guilds`, `deny_guilds` and the channel keys turn it off or limit it. `config.example.toml` explains each one.
