@@ -92,6 +92,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
         Arc::new(who_said_it::WhoSaidIt),
+        Arc::new(tinyfish::TinyFish),
         Arc::new(chat::Chat::default()),
     ]
 }
@@ -101,23 +102,23 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
 
 Which feature uses which hook:
 
-| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | who_said_it |
-|---|---|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ |
-| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
-| `mention_prefixes` | `""` | `remind me`, ... | | | | | | | |
-| `legacy_import` | | ✓ | ✓ | | | | | | |
-| `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | |
-| `chat_context` | | | | ✓ | | | | | |
-| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
-| `panels` | ✓ | | | ✓ | | | | | |
-| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | |
+| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | who_said_it | tinyfish |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
+| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| `mention_prefixes` | `""` | `remind me`, ... | | | | | | | | |
+| `legacy_import` | | ✓ | ✓ | | | | | | | |
+| `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | | ✓ |
+| `chat_context` | | | | ✓ | | | | | | |
+| `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | | |
+| `panels` | ✓ | | | ✓ | | | | | | |
+| `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | | |
 | `on_mention` | ✓ | ✓ | | | | | | |
 | `on_message` | ✓ | | | | ✓ | | | |
 | `on_reaction_add` | ✓ | | | | | | | |
 | `on_message_edit` | | | | | ✓ | | | |
 | `on_messages_deleted` | | | | | ✓ | | | |
-| `on_component` | | ✓ | ✓ | | | | | | ✓ |
+| `on_component` | | ✓ | ✓ | | | | | | ✓ | |
 | `on_modal` | | ✓ | ✓ | | | | | |
 
 ## How events reach features
@@ -212,7 +213,7 @@ Every loop reports to the status picture's Timers box through `ctx.timers` (`src
 
 Since features never import each other, the core gives them four ways to work together:
 
-- **Chat tools.** A feature lists functions in `tools()` and runs them in `run_tool`. Chat offers the model the tools of every feature allowed in that channel and sends each call back to the feature that owns it. A tool runs as the person who asked (`Asker`: user, server, channel, message), so it only sees what they can see and only changes their own things. A tool's error goes back to the model as the result, so it can fix its call. Example: reminders offers `create_reminder`; memory offers `memory` and `set_mood`; voice offers `send_voice_message`; drawing offers `draw_picture`.
+- **Chat tools.** A feature lists functions in `tools()` and runs them in `run_tool`. Chat offers the model the tools of every feature allowed in that channel and sends each call back to the feature that owns it. A tool runs as the person who asked (`Asker`: user, server, channel, message), so it only sees what they can see and only changes their own things. A tool's error goes back to the model as the result, so it can fix its call. Example: reminders offers `create_reminder`; memory offers `memory` and `set_mood`; voice offers `send_voice_message`; drawing offers `draw_picture`; tinyfish offers `tinyfish_search` and `tinyfish_fetch`.
 - **Chat context.** `chat_context` returns a few lines chat adds after the newest question, for that answer only. Memory uses it for the list of memory files and Vivy's mood. It goes after the question so the system prompt and earlier turns stay the same and the prompt cache keeps working.
 - **Bot events.** `ctx.publish(BotEvent::...)` sends an event to every feature's `on_bot_event` (`src/core/events.rs`, a `tokio::sync::broadcast` channel). Reminders publishes `ReminderFired` and the wheel `WheelRoundResolved`. No feature listens yet; they're there for the next one that needs them.
 - **The status picture.** `stats` and `panels` let each feature add its own numbers and text to the control panel without the control panel knowing about it. See [control-panel.md](features/control-panel.md).

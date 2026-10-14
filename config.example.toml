@@ -247,6 +247,21 @@ monthly_pictures = 100
 # (0 for no limit per person).
 per_user_monthly_pictures = 20
 
+[features.tinyfish]
+# Web search with TinyFish: chat's `tinyfish_search` and `tinyfish_fetch` tools, with every
+# provider, next to their own web tools. TinyFish reaches sites those often can't, like
+# Reddit. Needs TINYFISH_API_KEY in .env; without it she can't use them. Free up to 12,000
+# searches (30 a minute) and 1,000 pages (150 a minute) a day.
+enabled = true
+# How many results she reads per search, 1 to 10.
+max_results = 8
+# Where results come from and their language, when she doesn't say. Left out, TinyFish
+# uses "US" and "en", or pairs the one you set with its usual partner ("JP" -> "ja").
+# location = "US"
+# language = "en"
+# The most characters she reads of one page; the rest is cut off.
+max_page_characters = 15000
+
 [features.snails]
 # Repost detection. New messages' links and pictures are saved as they arrive; right-click a
 # message → Apps → Check Snail lists earlier posts of the same link or picture.
