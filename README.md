@@ -37,6 +37,10 @@ Vivy keeps notes between conversations in a folder per server (and a private one
 
 With an ElevenLabs key, Vivy can answer with a Discord voice message in her own voice. `monthly_characters` under `[features.voice]` caps the use.
 
+### Web search with TinyFish
+
+With a TinyFish key, Vivy gets a second web search, TinyFish's, that works with every chat provider. It's free up to 12,000 searches a day. `[features.tinyfish]` sets how many results she reads.
+
 ### Drawing
 
 With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either chat provider), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use (and `per_user_monthly_pictures` each person's share), and each picture's cost counts toward OpenAI's spend.
@@ -94,7 +98,7 @@ sudo chmod 600 /opt/vivy/.env
 
 Then fill in the two files:
 
-- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` and/or `GEMINI_API_KEY` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY` and the two admin keys.
+- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` and/or `GEMINI_API_KEY` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY`, `TINYFISH_API_KEY` and the two admin keys.
 - `config.toml` holds everything else: your user ID in `admins`, `main_server`, the log and status channel IDs, and per-feature settings.
 
 ### 4. Run with systemd

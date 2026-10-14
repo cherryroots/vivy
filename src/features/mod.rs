@@ -9,6 +9,7 @@ mod drawing;
 mod memory;
 mod reminders;
 mod snails;
+mod tinyfish;
 mod voice;
 mod wheel;
 mod who_said_it;
@@ -27,6 +28,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
         Arc::new(who_said_it::WhoSaidIt),
+        Arc::new(tinyfish::TinyFish),
         Arc::new(chat::Chat::default()),
     ]
 }
