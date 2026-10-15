@@ -166,7 +166,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The names of the channels everyone can read, in random order. The game keeps as many of
+/// The names of the channels everyone can read, other than this one, in random order. The game keeps as many of
 /// them as it has tributes, as the arena's places for the whole game.
 fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result<Vec<String>> {
     let cached = bot
@@ -175,12 +175,11 @@ fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result
         .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
     let picked = sources::pick(bot, &cached, here, From::Server)?;
     drop(cached);
+    // The channel the game is played in has no name here, so it's left out: it's where
+    // everyone watches from, not a place in the arena (often a test thread, too).
     let mut names: Vec<String> = picked
         .into_iter()
-        .filter_map(|source| match source.name {
-            Some(name) => Some(name),
-            None => bot.channel_name(guild, here),
-        })
+        .filter_map(|source| source.name)
         .collect();
     fastrand::shuffle(&mut names);
     Ok(names)
