@@ -377,7 +377,8 @@ async fn play(
                     }
                 }
                 (Some(looks), Some(picture)) if kind != Kind::Bloodbath => {
-                    let prompt = looks::prompt(&arena, looks.get().await, picture);
+                    let alive = game_before.alive();
+                    let prompt = looks::prompt(&arena, looks.get().await, picture, alive);
                     pictures::draw(&ctx, easel, &prompt, pictures::MAP).await
                 }
                 _ => None,
@@ -442,8 +443,9 @@ async fn play(
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
             let (ctx, arena) = (bot.clone(), places.clone());
+            let everyone = game.tributes.len();
             bot.tasks.spawn(async move {
-                let prompt = looks::prompt(&arena, looks.get().await, &prompt);
+                let prompt = looks::prompt(&arena, looks.get().await, &prompt, everyone);
                 let picture = pictures::draw(&ctx, easel, &prompt, pictures::MAP).await;
                 if picture.is_some() {
                     let caption = "🗺️ The arena as the Games begin".to_string();

@@ -40,7 +40,7 @@ const DIRECTIONS: [&str; 8] = [
 const SYSTEM: &str = "You design the look of a Hunger Games-style battle royale played by members of a Discord server, drawn as a top-down 2D map of the arena with the tributes as small pixel-art sprites, like a retro strategy game. \
 Each member's profile picture is shown with their tag (T1, T2...). For each tribute, describe their sprite, inspired by their profile picture: a person or character becomes a sprite of them; an animal or creature can stay one; a thing, logo or art becomes a sprite whose colors and costume clearly come from it. \
 Each sprite is one line of 10 to 25 words that reads at a tiny size: bold main colors, hair or headgear, outfit, and one signature item. Make every tribute easy to tell apart from the others by color. Nothing about real identity, health or body size, no names and no words or letters. For a tribute with no picture, invent a fitting sprite from their name. \
-The arena's zones are listed with keys (Z1, Z2...) and their names. For each zone, describe its terrain in 3 to 10 words, fitting its name when you can (a channel about games could be an arcade ruin, one about food an orchard), each zone clearly different. \
+The arena's zones are listed with keys (Z1, Z2...) and their names. For each zone, describe its terrain in 3 to 10 words, fitting its name when you can (a channel about games could be an arcade ruin, one about food an orchard), each zone clearly different. Terrain is scenery only: places and things, never people, characters, creatures, robots or crowds. \
 Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ..., \"Z1\": \"terrain\", ...}, with every tribute and every zone.";
 
 /// How the tributes and the zones look, in the game's and the arena's order: `None` for
@@ -232,10 +232,18 @@ fn label(place: &str) -> Option<String> {
     (!kept.is_empty()).then(|| kept.chars().take(24).collect())
 }
 
-/// What the image model gets for a round: the map, then her prompt with the sprites in.
-pub fn prompt(arena: &[String], looks: &Looks, picture: &str) -> String {
+/// What the image model gets for a round: the map, then her prompt with the sprites in,
+/// and how many people there are (`alive` when the round began): image models fill an
+/// empty place with crowds of their own otherwise.
+pub fn prompt(arena: &[String], looks: &Looks, picture: &str, alive: usize) -> String {
+    let people = match alive {
+        1 => "Exactly 1 player is on the map, the one described above.".to_string(),
+        n => format!(
+            "Exactly {n} players are on the map, each one described above, each drawn once."
+        ),
+    };
     format!(
-        "{}\n\nThis round: {}",
+        "{}\n\nThis round: {}\n\n{people} Nobody else is anywhere on the map: no crowds, townsfolk, guards, soldiers, enemies, monsters or robots. The zones are empty scenery.",
         map(arena, looks),
         fill(picture, looks)
     )
@@ -249,7 +257,7 @@ pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
         _ => "a player".to_string(),
     };
     let mut text = format!(
-        "A full picture of the winner of the battle: {} standing victorious alone in the middle, holding their signature item high, on a ruined battlefield at sunset.",
+        "A full picture of the winner of the battle: {} standing victorious in the middle, the only one standing, holding their signature item high, on a ruined battlefield at sunset.",
         look(winner)
     );
     if victims.is_empty() {
@@ -257,10 +265,15 @@ pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
     } else {
         let defeated: Vec<String> = victims.iter().map(|&i| look(i)).collect();
         text.push_str(&format!(
-            " Strewn about around them, knocked out, lie the players they defeated: {}.",
+            " Strewn about around them, knocked out, lie the {} they defeated, and nobody else: {}.",
+            match defeated.len() {
+                1 => "1 player".to_string(),
+                n => format!("{n} players"),
+            },
             defeated.join("; ")
         ));
     }
+    text.push_str(" No other people or creatures anywhere in the picture.");
     text
 }
 
@@ -316,9 +329,19 @@ mod tests {
             zones: Vec::new(),
         };
         let text = victor(&looks, 0, &[2, 1]);
-        assert!(text.contains("(a frog knight) standing victorious alone"));
-        assert!(text.ends_with("lie the players they defeated: (a cat); a player."));
+        assert!(text.contains("(a frog knight) standing victorious in the middle"));
+        assert!(
+            text.contains("lie the 2 players they defeated, and nobody else: (a cat); a player.")
+        );
         assert!(victor(&looks, 2, &[]).contains("Nobody lies around them"));
+    }
+
+    #[test]
+    fn says_how_many_are_on_the_map() {
+        let text = prompt(&["general".into()], &Looks::default(), "{T1} naps.", 3);
+        assert!(text.contains("This round: a player naps."));
+        assert!(text.contains("Exactly 3 players are on the map"));
+        assert!(text.contains("Nobody else is anywhere on the map"));
     }
 
     #[test]
