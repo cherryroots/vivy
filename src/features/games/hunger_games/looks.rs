@@ -39,7 +39,7 @@ const DIRECTIONS: [&str; 8] = [
 
 const SYSTEM: &str = "You design the look of a Hunger Games-style battle royale played by members of a Discord server, drawn as a top-down 2D map of the arena with the tributes as small pixel-art sprites, like a retro strategy game. \
 Each member's profile picture is shown with their tag (T1, T2...). For each tribute, describe their sprite, inspired by their profile picture: a person or character becomes a sprite of them; an animal or creature can stay one; a thing, logo or art becomes a sprite whose colors and costume clearly come from it. \
-Each sprite is one line of 10 to 25 words that reads at a tiny size: bold main colors, hair or headgear, outfit, and one signature item. Make every tribute easy to tell apart from the others by color. Nothing about real identity, health or body size, no names and no words or letters. For a tribute with no picture, invent a fitting sprite from their name. \
+Each sprite is one line of 10 to 25 words that reads at a tiny size: bold main colors, hair or headgear, outfit, and one signature weapon (a sword, spear, axe, bow, knives, a mace, a trident...). Make every tribute easy to tell apart from the others by color. Nothing about real identity, health or body size, no names and no words or letters. For a tribute with no picture, invent a fitting sprite from their name. \
 The arena's zones are listed with keys (Z1, Z2...) and their names. For each zone, describe its terrain in 3 to 10 words, fitting its name when you can (a channel about games could be an arcade ruin, one about food an orchard), each zone clearly different. Terrain is scenery only: places and things, never people, characters, creatures, robots or crowds. \
 Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ..., \"Z1\": \"terrain\", ...}, with every tribute and every zone.";
 
@@ -281,7 +281,7 @@ pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
         _ => "a player".to_string(),
     };
     let mut text = format!(
-        "A full-body picture of the winner of the battle, large and filling most of the frame: {} standing victorious, the only one standing, holding their signature item high, on a ruined battlefield at sunset.",
+        "A full-body picture of the winner of the battle, large and filling most of the frame: {} standing victorious, the only one standing, holding their weapon high, on a ruined battlefield at sunset.",
         look(winner)
     );
     if victims.is_empty() {
