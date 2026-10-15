@@ -30,7 +30,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
-- `picture`: only when the round asks for one: what to draw, as a prompt for an image model, in English. Describe the whole scene: the place, the action, the mood and the light, with the tributes as cartoon characters described by what they're doing (no names, no tags, and no words or letters in the picture). Otherwise null.
+- `picture`: only when the round asks for one: what to draw, as a prompt for an image model, in English. Describe the whole scene: the place, the action, the mood and the light. Write each tribute in it as their tag, like {T3}, and say only what they're doing: the bot puts in how each one looks, the same in every picture. No names, and no words or letters in the picture. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
@@ -129,7 +129,7 @@ pub fn brief(
         text.push(' ');
         text.push_str(match kind {
             Kind::Bloodbath => "Also write a `picture`: the arena as the Games begin, the tributes around the Cornucopia.",
-            Kind::Finale => "Also write a `picture`: the winner's triumph. The winner's profile picture is sent along with your prompt, so draw the victor as the person or character in that picture.",
+            Kind::Finale => "Also write a `picture`: the winner's triumph.",
             _ => "Also write a `picture`: the most dramatic moment of this round.",
         });
     }
@@ -214,7 +214,8 @@ pub async fn write(
     anyhow::bail!("Vivy's round didn't pass the rules {TRIES} times")
 }
 
-struct NoTools;
+/// For a call with no tools: any call is answered with an error.
+pub(super) struct NoTools;
 
 #[async_trait]
 impl ToolRunner for NoTools {

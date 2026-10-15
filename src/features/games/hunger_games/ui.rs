@@ -238,23 +238,25 @@ pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
 }
 
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
-/// tribute who fell, with their last words when they have some, all behind spoilers so
-/// people still reading the rounds don't find out early.
-pub fn cannons(title: &str, fallen: &[(String, Option<LastWords>)]) -> String {
+/// tribute who fell (name, kills, last words), with their kills and their last words when
+/// they have some, all behind spoilers so people still reading the rounds don't find out
+/// early.
+pub fn cannons(title: &str, fallen: &[(String, u32, Option<LastWords>)]) -> String {
     let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
     } else {
         let lines: Vec<String> = fallen
             .iter()
-            .map(|(name, words)| match words {
+            .map(|(name, count, words)| match words {
                 Some(words) => format!(
-                    "💥 ||**{}**: “{}” [↗](<{}>)||",
+                    "💥 ||**{}**{}: “{}” [↗](<{}>)||",
                     escape(name),
+                    kills(*count),
                     words.text,
                     words.link
                 ),
-                None => format!("💥 ||**{}**||", escape(name)),
+                None => format!("💥 ||**{}**{}||", escape(name), kills(*count)),
             })
             .collect();
         text.push_str(&format!(
@@ -284,14 +286,22 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
         } else {
             format!("{}.", i + 1)
         };
-        let kills = match t.kills {
-            0 => String::new(),
-            1 => ", 1 kill".to_string(),
-            n => format!(", {n} kills"),
-        };
-        text.push_str(&format!("{place} ||{}{kills}||\n", escape(&t.name)));
+        text.push_str(&format!(
+            "{place} ||{}{}||\n",
+            escape(&t.name),
+            kills(t.kills)
+        ));
     }
     split_message(&text, DISCORD_LIMIT)
+}
+
+/// ", 2 kills" after a name, or nothing for none.
+fn kills(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        1 => ", 1 kill".to_string(),
+        n => format!(", {n} kills"),
+    }
 }
 
 #[cfg(test)]
@@ -335,11 +345,11 @@ mod tests {
         };
         let text = cannons(
             "The fallen of day 1",
-            &[("Ash".into(), Some(words)), ("Moss".into(), None)],
+            &[("Ash".into(), 0, Some(words)), ("Moss".into(), 2, None)],
         );
         assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
         assert!(text.contains("💥 ||**Ash**: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
-        assert!(text.contains("💥 ||**Moss**||"));
+        assert!(text.contains("💥 ||**Moss**, 2 kills||"));
     }
 
     #[test]

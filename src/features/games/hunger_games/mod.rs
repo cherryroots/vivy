@@ -10,12 +10,12 @@
 //! - `notes.rs`: Vivy's memory notes about the tributes, through the `memory` tool
 //! - `voice.rs`: the Gamemaker's lines as voice messages, through the voice feature's tool
 //! - `pictures.rs`: pictures she draws during the game, through the drawing feature's tool
-//! - `fallen.rs`: the picture of the fallen on each cannon message, drawn by the bot itself
+//! - `looks.rs`: how each tribute looks in her pictures, described once from their profile picture
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
 
-mod fallen;
 mod game;
 mod last_words;
+mod looks;
 mod notes;
 mod pictures;
 mod play;

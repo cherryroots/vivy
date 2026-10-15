@@ -13,8 +13,8 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
-    EditMessage, GuildId, Message, MessageId, UserId,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+    GuildId, Message, MessageId, UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -24,7 +24,7 @@ use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Picture};
 use super::{Settings, ui, writer};
-use super::{fallen, notes, voice};
+use super::{looks, notes, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
@@ -280,6 +280,17 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
+    // How each tribute looks in her pictures, worked out while she writes the Bloodbath.
+    // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
+    let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
+    let looks = drawing.then(|| {
+        bot.tasks.spawn(looks::describe(
+            bot.clone(),
+            provider.clone(),
+            guild,
+            tributes.clone(),
+        ))
+    });
     let notes = if extras.memories {
         notes::about(bot, guild, channel, lobby_message.id, &ids).await
     } else {
@@ -301,7 +312,7 @@ async fn run(
             provider,
             arena,
             notes: Arc::new(notes),
-            pictures: extras.pictures,
+            looks,
         },
         words,
         auto,
@@ -315,13 +326,15 @@ async fn play(
     stage: Stage,
     running: &Running,
     mut game: Game,
-    writing: Writing,
+    mut writing: Writing,
     words: JoinHandle<HashMap<u64, LastWords>>,
     auto: Duration,
 ) {
     let channel = stage.channel;
     // Her Gamemaker line, out loud too.
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
+    let mut looks = writing.looks.take().map(Later::Working);
+    let drawn = looks.is_some();
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
@@ -331,12 +344,11 @@ async fn play(
             kind,
             arena,
             notes,
-            writing.pictures,
+            drawn,
             channel.get(),
         ))
     };
-    let draws = writing.pictures;
-    let mut words = Words::Reading(words);
+    let mut words = Later::Working(words);
     let intro = format!(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Bloodbath…",
         game.tributes.len()
@@ -396,16 +408,16 @@ async fn play(
             }
         }
         // Her picture of the round, drawn in the background while people read.
-        if draws && let Some(prompt) = game.rounds[index].picture.clone() {
+        if let Some(looks) = looks.as_mut()
+            && let Some(prompt) = game.rounds[index].picture.clone()
+        {
             let picture = Picture {
-                prompt,
+                prompt: looks::fill(&prompt, looks.get().await),
                 caption: if over {
                     "🎨 The victor".to_string()
                 } else {
                     format!("🎨 {}", writer::title(kind))
                 },
-                // The victor is drawn from their profile picture.
-                of: game.winner().filter(|_| over).map(|t| t.id),
                 spoiler: over,
             };
             pictures::draw(
@@ -421,7 +433,7 @@ async fn play(
             // The fallen since the last cannons, the loser of the final showdown among them.
             if cannons_from < game.rounds.len() {
                 let title = "The last of the fallen";
-                post_cannons(bot, &stage, &game, cannons_from, title, &mut words).await;
+                post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
             }
             for part in ui::victor(&game, victory.as_deref()) {
                 if let Err(err) = channel.send_message(&bot.http, text(part)).await {
@@ -437,7 +449,7 @@ async fn play(
         }
         if let Kind::Night(day) = kind {
             let title = format!("The fallen of day {day}");
-            post_cannons(bot, &stage, &game, cannons_from, &title, &mut words).await;
+            post_cannons(bot, channel, &game, cannons_from, &title, &mut words).await;
             cannons_from = game.rounds.len();
         }
 
@@ -481,56 +493,50 @@ struct Writing {
     arena: Vec<String>,
     /// Her notes about each tribute, in the game's order.
     notes: Arc<Vec<Option<String>>>,
-    /// Whether she writes picture prompts, and they're drawn.
-    pictures: bool,
+    /// How each tribute looks, being described, when pictures are on: then she writes
+    /// picture prompts, and they're drawn.
+    looks: Option<JoinHandle<Vec<Option<String>>>>,
 }
 
-/// The last words: still being read, or read.
-enum Words {
-    Reading(JoinHandle<HashMap<u64, LastWords>>),
-    Read(HashMap<u64, LastWords>),
+/// Something a background task is still working out, like the last words, then what it
+/// found.
+enum Later<T> {
+    Working(JoinHandle<T>),
+    Done(T),
 }
 
-impl Words {
-    /// The last words, waiting for the reading to finish the first time.
-    async fn get(&mut self) -> &HashMap<u64, LastWords> {
-        if let Words::Reading(task) = self {
-            let read = task.await.unwrap_or_default();
-            *self = Words::Read(read);
+impl<T: Default> Later<T> {
+    /// What the task found, waiting for it the first time. A task that failed found nothing.
+    async fn get(&mut self) -> &T {
+        if let Later::Working(task) = self {
+            let found = task.await.unwrap_or_default();
+            *self = Later::Done(found);
         }
         match self {
-            Words::Read(read) => read,
-            Words::Reading(_) => unreachable!("just read"),
+            Later::Done(found) => found,
+            Later::Working(_) => unreachable!("just finished"),
         }
     }
 }
 
-/// Posts the cannons for everyone who fell in the rounds from `from` on, with their last
-/// words and the picture of them in the night sky.
+/// Posts the cannons for everyone who fell in the rounds from `from` on, with their kills
+/// and last words.
 async fn post_cannons(
     bot: &BotCtx,
-    stage: &Stage,
+    channel: ChannelId,
     game: &Game,
     from: usize,
     title: &str,
-    words: &mut Words,
+    words: &mut Later<HashMap<u64, LastWords>>,
 ) {
-    let tributes = game.fallen_since(from);
-    let faces = tributes
-        .iter()
-        .map(|t| (t.id, t.name.clone(), t.kills))
-        .collect();
-    let picture = fallen::picture(bot, stage.guild, title, faces).await;
     let words = words.get().await;
-    let fallen: Vec<(String, Option<LastWords>)> = tributes
+    let fallen: Vec<(String, u32, Option<LastWords>)> = game
+        .fallen_since(from)
         .iter()
-        .map(|t| (t.name.clone(), words.get(&t.id).cloned()))
+        .map(|t| (t.name.clone(), t.kills, words.get(&t.id).cloned()))
         .collect();
-    let mut message = text(ui::cannons(title, &fallen));
-    if let Some(png) = picture {
-        message = message.add_file(CreateAttachment::bytes(png, fallen::FILE));
-    }
-    if let Err(err) = stage.channel.send_message(&bot.http, message).await {
+    let message = text(ui::cannons(title, &fallen));
+    if let Err(err) = channel.send_message(&bot.http, message).await {
         warn!("couldn't post the Hunger Games cannons: {err}");
     }
 }

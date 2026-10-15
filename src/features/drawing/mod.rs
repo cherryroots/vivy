@@ -18,8 +18,8 @@
 //! Other features draw through the same tool (`run_tool`), so the monthly limits count
 //! their pictures too. They can pass arguments the chat model isn't told about:
 //! `reply: false` posts the picture on its own, `caption` puts a line of text with it,
-//! `spoiler: true` hides it behind a spoiler, and `from_avatars` (user IDs) sends those
-//! members' profile pictures along to draw from. The Hunger Games use them.
+//! `spoiler: true` hides it behind a spoiler, and `job: "game_art"` counts its cost on a
+//! line of its own in OpenAI's spend. The Hunger Games use them.
 
 mod store;
 
@@ -28,9 +28,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::all::{
-    CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message, UserId,
-};
+use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message};
 use tracing::{info, warn};
 
 use crate::ai::{PictureRequest, ToolDef};
@@ -43,8 +41,6 @@ const TOOL: &str = "draw_picture";
 const MAX_PICTURES: usize = 4;
 /// How many messages before and after one of Vivy's answers are checked for its pictures.
 const NEIGHBOURS: u8 = 4;
-/// The size of profile pictures sent along with `from_avatars`.
-const AVATAR_SIZE: u32 = 512;
 
 /// `[features.drawing]` settings.
 #[derive(Debug, Deserialize)]
@@ -265,20 +261,6 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             }
         }
 
-        if let Some(ids) = args.get("from_avatars").and_then(Value::as_array) {
-            for id in ids.iter().take(MAX_PICTURES) {
-                let id = id
-                    .as_u64()
-                    .or_else(|| id.as_str().and_then(|s| s.parse().ok()))
-                    .filter(|id| *id > 0);
-                let Some(id) = id else { continue };
-                match avatar(ctx, asker, UserId::new(id)).await {
-                    Ok(picture) => pictures.push(picture),
-                    Err(err) => warn!("couldn't load a profile picture to draw from: {err:#}"),
-                }
-            }
-        }
-
         let shape = args.get("shape").and_then(Value::as_str);
         let model = match pictures.is_empty() {
             true => &settings.model,
@@ -292,6 +274,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             quality: &settings.quality,
             format: &settings.format,
             moderation: &settings.moderation,
+            job: job(args),
         };
         let picture = images.draw(&request).await?;
 
@@ -357,21 +340,12 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
     }
 }
 
-/// A member's profile picture as a PNG to draw from: their picture for this server if they
-/// set one, otherwise their main one.
-async fn avatar(ctx: &BotCtx, asker: &Asker, user: UserId) -> anyhow::Result<ModelImage> {
-    let url = match asker.guild {
-        Some(guild) => {
-            let member = guild.member(&ctx.http, user).await?;
-            member.avatar_url().unwrap_or_else(|| member.user.face())
-        }
-        None => user.to_user(&ctx.http).await?.face(),
-    };
-    let data = media::download(&media::png_link(&url, AVATAR_SIZE), 8 * 1024 * 1024).await?;
-    Ok(ModelImage {
-        mime: "image/png",
-        data,
-    })
+/// The spend job a picture is counted under: "drawing", unless a game asked for its own.
+fn job(args: &Value) -> &'static str {
+    match args.get("job").and_then(Value::as_str) {
+        Some("game_art") => "game_art",
+        _ => "drawing",
+    }
 }
 
 #[cfg(test)]
@@ -391,6 +365,13 @@ mod tests {
         let mut msg = Message::default();
         msg.attachments = attachments;
         msg
+    }
+
+    #[test]
+    fn games_count_their_pictures_apart() {
+        assert_eq!(job(&json!({"job": "game_art"})), "game_art");
+        assert_eq!(job(&json!({"job": "chat"})), "drawing");
+        assert_eq!(job(&json!({})), "drawing");
     }
 
     #[test]

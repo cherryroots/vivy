@@ -1,12 +1,14 @@
 //! Pictures during the Games, when the host turns them on in the Reaping: the arena as the
-//! Games open, the most dramatic moment of each day, and the victor's triumph, drawn from
-//! their profile picture. Vivy writes each picture's prompt with the round (`picture` in
-//! her JSON); [`STYLE`] keeps the pictures of a game looking alike.
+//! Games open, the most dramatic moment of each day, and the victor's triumph. Vivy writes
+//! each picture's prompt with the round (`picture` in her JSON), with the tributes as tags
+//! that `looks.rs` fills with how each one looks; [`STYLE`] keeps the pictures of a game
+//! looking alike.
 //!
 //! Like `voice.rs`, this doesn't import the drawing feature: it finds whichever feature
 //! offers the `draw_picture` chat tool and runs it with arguments the chat model isn't told
-//! about (no reply, a caption, a spoiler, a profile picture to draw from). The host is the
-//! asker, so the pictures count toward the host's monthly pictures and the server's.
+//! about (no reply, a caption, a spoiler, and `game_art` as the job, so their cost has its
+//! own line in OpenAI's spend). The host is the asker, so the pictures count toward the
+//! host's monthly pictures and the server's.
 //! Drawing takes about 15 to 20 seconds, so it runs in the background: the game never
 //! waits for a picture, and one that fails is simply missing.
 
@@ -19,18 +21,26 @@ use crate::core::{Asker, BotCtx};
 /// The drawing feature's tool.
 const TOOL: &str = "draw_picture";
 /// Added to every prompt, so a game's pictures share one style.
-const STYLE: &str = "Style: a bright, colorful cartoon illustration, like a storybook about a playful battle royale, wide shot. No blood or gore, and no words or letters anywhere in the picture.";
+const STYLE: &str = "Style: a realistic, cinematic film still from a big-budget survival movie: real people, real textures, natural light, shallow depth of field, wide shot. Not a cartoon, anime or illustration. No blood or gore, and no words or letters anywhere in the picture.";
 
 /// One picture to draw.
 pub struct Picture {
-    /// Her prompt.
+    /// Her prompt, with the tributes' looks filled in.
     pub prompt: String,
     /// The line above it, like "🎨 Day 2".
     pub caption: String,
-    /// Someone whose profile picture is sent along to draw them from (the victor).
-    pub of: Option<u64>,
     /// Behind a spoiler, for a picture that gives away who won.
     pub spoiler: bool,
+}
+
+/// Whether pictures can be drawn in `channel`: drawing is on there, and its tool is
+/// offered (it needs an OpenAI key).
+pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
+    ctx.allows("drawing", Some(guild), channel)
+        && ctx
+            .features
+            .iter()
+            .any(|f| f.tools().iter().any(|t| t.name == TOOL))
 }
 
 /// Draws `picture` and posts it in `channel`, in the background.
@@ -61,16 +71,14 @@ pub fn draw(
             message,
             posted: Default::default(),
         };
-        let mut args = json!({
+        let args = json!({
             "prompt": format!("{}\n\n{STYLE}", picture.prompt),
             "shape": "landscape",
             "reply": false,
             "caption": picture.caption,
             "spoiler": picture.spoiler,
+            "job": "game_art",
         });
-        if let Some(of) = picture.of {
-            args["from_avatars"] = json!([of.to_string()]);
-        }
         match drawing.run_tool(&ctx, &asker, TOOL, &args).await {
             Ok(_) => info!(caption = picture.caption, "drew a Hunger Games picture"),
             Err(err) => debug!("couldn't draw a Hunger Games picture: {err:#}"),
