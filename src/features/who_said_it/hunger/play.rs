@@ -44,6 +44,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
+    /// Whether Vivy gets her memory notes about the tributes (the host's toggle).
+    memories: bool,
 }
 
 impl Lobby {
@@ -87,6 +89,7 @@ impl Running {
             &picked,
             self.max,
             self.closes_at,
+            lobby.memories,
         );
         CreateInteractionResponseMessage::new()
             .embed(embed)
@@ -133,6 +136,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
+            memories: true,
         }),
         wake: Notify::new(),
         waiting_on: Mutex::new(None),
@@ -148,7 +152,15 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     }
     let leave = Leave(channel);
 
-    let (embed, components) = ui::lobby(running.id, running.host.get(), &[], &[], max, closes_at);
+    let (embed, components) = ui::lobby(
+        running.id,
+        running.host.get(),
+        &[],
+        &[],
+        max,
+        closes_at,
+        true,
+    );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
         .await?;
@@ -237,8 +249,11 @@ async fn run(
             }
         }
     }
-    let tributes = running.lobby.lock().unwrap().tributes(running.max);
-    info!(tributes = tributes.len(), "Hunger Games started");
+    let (tributes, memories) = {
+        let lobby = running.lobby.lock().unwrap();
+        (lobby.tributes(running.max), lobby.memories)
+    };
+    info!(tributes = tributes.len(), memories, "Hunger Games started");
     let Setup {
         guild,
         channel,
@@ -258,7 +273,11 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    let notes = notes::about(bot, guild, channel, lobby_message.id, &ids).await;
+    let notes = if memories {
+        notes::about(bot, guild, channel, lobby_message.id, &ids).await
+    } else {
+        vec![None; ids.len()]
+    };
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
     let game = Game::new(tributes);
     play(
@@ -566,6 +585,18 @@ pub async fn on_component(
             if let Some(refusal) = refusal {
                 return tell(bot, interaction, refusal).await;
             }
+        }
+        ui::Action::Memories => {
+            if !in_charge {
+                return tell(
+                    bot,
+                    interaction,
+                    "Only the host turns Vivy's memories on or off.",
+                )
+                .await;
+            }
+            let mut lobby = running.lobby.lock().unwrap();
+            lobby.memories = !lobby.memories;
         }
         ui::Action::Start | ui::Action::Cancel => {
             if !in_charge {

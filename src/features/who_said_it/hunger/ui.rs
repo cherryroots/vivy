@@ -22,6 +22,8 @@ pub enum Action {
     Volunteer,
     Start,
     Cancel,
+    /// The host turns Vivy's memory notes about the tributes on or off.
+    Memories,
     /// On to the round after `n` (the round's index).
     Next(usize),
 }
@@ -34,6 +36,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Volunteer => "volunteer".to_string(),
         Action::Start => "start".to_string(),
         Action::Cancel => "cancel".to_string(),
+        Action::Memories => "memories".to_string(),
         Action::Next(round) => format!("next:{round}"),
     };
     format!("who_said_it:hunger:{game}:{action}")
@@ -49,13 +52,15 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "volunteer" => Action::Volunteer,
         "start" => Action::Start,
         "cancel" => Action::Cancel,
+        "memories" => Action::Memories,
         _ => Action::Next(what.strip_prefix("next:")?.parse().ok()?),
     };
     Some((game, action))
 }
 
 /// The Reaping: who's in so far, the host's menu and the buttons. `closes_at` is a Unix
-/// time for Discord's countdown.
+/// time for Discord's countdown. `memories` is whether Vivy may use her memory notes about
+/// the tributes.
 pub fn lobby(
     game: u32,
     host: u64,
@@ -63,6 +68,7 @@ pub fn lobby(
     picked: &[u64],
     max: usize,
     closes_at: i64,
+    memories: bool,
 ) -> (CreateEmbed, Vec<CreateActionRow>) {
     let mut lines = vec![
         format!(
@@ -80,6 +86,12 @@ pub fn lobby(
         lines.push(format!("{}. {}", i + 1, escape(name)));
     }
     lines.push(String::new());
+    lines.push(if memories {
+        "🧠 Memories **on**: Vivy may work in fun things she remembers about the tributes."
+            .to_string()
+    } else {
+        "🧠 Memories **off**: Vivy knows the tributes only by name.".to_string()
+    });
     lines.push(format!("The Reaping closes <t:{closes_at}:R>."));
     let menu = CreateSelectMenu::new(
         custom_id(game, Action::Pick),
@@ -98,6 +110,14 @@ pub fn lobby(
         CreateButton::new(custom_id(game, Action::Start))
             .label("Start")
             .style(ButtonStyle::Success),
+        CreateButton::new(custom_id(game, Action::Memories))
+            .label(if memories {
+                "Memories: on"
+            } else {
+                "Memories: off"
+            })
+            .emoji('🧠')
+            .style(ButtonStyle::Secondary),
         CreateButton::new(custom_id(game, Action::Cancel))
             .label("Cancel")
             .style(ButtonStyle::Danger),
@@ -245,6 +265,7 @@ mod tests {
             Action::Volunteer,
             Action::Start,
             Action::Cancel,
+            Action::Memories,
             Action::Next(4),
         ] {
             let id = custom_id(9, action);

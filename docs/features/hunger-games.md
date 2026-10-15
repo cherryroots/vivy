@@ -10,7 +10,7 @@ Stages 1 and 2 of the plan are built: the text game, last words, and her memory 
 
 1. `/games hungergames` opens **the Reaping** in the channel. Whoever ran it is the host.
 2. The host picks tributes from the user menu. Anyone can press **Volunteer** to enter (and again to back out). Bots can't enter. 2 to 24 tributes (`max_tributes`).
-3. The host presses **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
+3. The host can press **🧠 Memories** to turn Vivy's memory notes about the tributes off (they're on by default; see [Memory notes](#memory-notes)), then **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
 4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown.
 5. After each night, **the fallen of the day** lists who died since the last list, each with their **last words** (a real message they once sent, with a link to it) when one was found, all behind spoilers so people still reading don't find out early. When the game ends, **the last of the fallen** covers the rest, the final showdown's loser among them.
 6. The host presses **Next** to move on, or the next round starts by itself after `auto_advance_seconds` (30). Bot admins can press the host's buttons too.
@@ -71,7 +71,7 @@ When the Games start, a task looks for each tribute's last words, 4 tributes at 
 
 ### Memory notes
 
-Before the Bloodbath, `notes::about` reads Vivy's notes about each tribute: the files in `/memories/users/<user id>/` of the server's folder, at most 6 files and 800 characters per tribute. It doesn't import the memory feature: it finds the feature that offers the `memory` chat tool and runs `view` with it as Vivy, so the memory feature's gate and rules still apply (memory off in that server or channel means no notes).
+Before the Bloodbath (unless the host turned **Memories** off in the Reaping), `notes::about` reads Vivy's notes about each tribute: the files in `/memories/users/<user id>/` of the server's folder, at most 6 files and 800 characters per tribute. It doesn't import the memory feature: it finds the feature that offers the `memory` chat tool and runs `view` with it as Vivy, so the memory feature's gate and rules still apply (memory off in that server or channel means no notes).
 
 Each round's brief lists the notes of the living tributes, with the instruction to use a detail only where it makes a moment funnier or more personal, a few per round at most, never anything private, sensitive, hurtful or embarrassing (health, relationships, family, where they live, work or money troubles, anything told in confidence), and to leave them out when nothing fits (Cherry's call: fun things when there are some, nothing forced).
 
