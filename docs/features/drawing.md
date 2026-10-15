@@ -45,7 +45,7 @@ A refusal by OpenAI's safety system (a 400) goes back to her as the tool's resul
 
 - **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `use_pictures` (true to draw from the pictures in the asker's message and the one it replies to).
 
-Other features run the same tool, so the limits count their pictures too, and can pass arguments the chat model isn't told about: `post: false` hands the picture back in the tool's reply (`run_tool_with_pictures`, as an image) instead of posting it, so the feature can post it with its own message (it's still counted, under a made-up message ID from the time it was drawn), and `job: "game_art"` counts the picture's cost under `game_art` instead of `drawing`. The [Hunger Games](hunger-games.md#pictures) use them.
+Other features run the same tool, so the limits count their pictures too, and can pass arguments the chat model isn't told about: `post: false` hands the picture back in the tool's reply (`run_tool_with_pictures`, as an image) instead of posting it, so the feature can post it with its own message (it's still counted, under a made-up message ID from the time it was drawn), and `job: "game_art"` counts the picture's cost under `game_art` instead of `drawing` and uses the less strict safety filter (`moderation` "low") whatever the setting, since games with deaths in them are chosen by their host. The [Hunger Games](hunger-games.md#pictures) use them.
 
 ## Feature hooks it uses
 

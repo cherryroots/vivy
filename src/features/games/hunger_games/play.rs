@@ -6,6 +6,7 @@
 //! and a channel never has two at once. Nothing is saved: a restart ends the game.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -342,6 +343,8 @@ async fn play(
         message: stage.lobby,
         host: running.host,
     };
+    // Whether the channel was told why a picture is missing: once a game is enough.
+    let told = Arc::new(AtomicBool::new(false));
     // Writes a round and, with pictures on, draws its map right after, so the two are
     // posted together. The Bloodbath's map is drawn once it's posted instead: nobody waits
     // on a next round then, and people are already reading.
@@ -368,7 +371,9 @@ async fn play(
             let looks = looks.get().await;
             // The final showdown is zoomed in on its zone; other rounds show the whole map.
             let map = async {
-                let picture = round.picture.as_deref()?;
+                let Some(picture) = round.picture.as_deref() else {
+                    return Ok(None);
+                };
                 let (prompt, style) = match kind {
                     Kind::Finale => (looks::showdown(&arena, looks, picture), pictures::SHOWDOWN),
                     _ => (
@@ -376,21 +381,32 @@ async fn play(
                         pictures::MAP,
                     ),
                 };
-                pictures::draw(&ctx, easel, &prompt, style).await
+                pictures::draw(&ctx, easel, &prompt, style).await.map(Some)
             };
             // After the final showdown, the victor up close, with everyone they killed.
             let victor = async {
-                if kind != Kind::Finale {
-                    return None;
-                }
                 let mut after = game_before.clone();
                 after.apply(round.clone());
-                let winner = after.winner_index()?;
+                let winner = match after.winner_index() {
+                    Some(winner) if kind == Kind::Finale => winner,
+                    _ => return Ok(None),
+                };
                 let prompt = looks::victor(looks, winner, &after.victims(winner));
-                pictures::draw(&ctx, easel, &prompt, pictures::VICTORY).await
+                pictures::draw(&ctx, easel, &prompt, pictures::VICTORY)
+                    .await
+                    .map(Some)
             };
             let (map, victor) = tokio::join!(map, victor);
-            anyhow::Ok((round, Pictures { map, victor }))
+            let missing = map.as_ref().err().or(victor.as_ref().err()).copied();
+            let (map, victor) = (map.ok().flatten(), victor.ok().flatten());
+            anyhow::Ok((
+                round,
+                Pictures {
+                    map,
+                    victor,
+                    missing,
+                },
+            ))
         })
     };
     let mut words = Later::Working(words);
@@ -449,18 +465,23 @@ async fn play(
             };
             post(bot, channel, part, picture).await;
         }
+        if let Some(reason) = drawn.missing {
+            no_picture(bot, channel, &told, reason).await;
+        }
         if kind == Kind::Bloodbath
             && let Some(looks) = looks.clone()
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
-            let (ctx, arena) = (bot.clone(), places.clone());
+            let (ctx, arena, told) = (bot.clone(), places.clone(), told.clone());
             let everyone = game.tributes.len();
             bot.tasks.spawn(async move {
                 let prompt = looks::prompt(&arena, looks.get().await, &prompt, everyone);
-                let picture = pictures::draw(&ctx, easel, &prompt, pictures::MAP).await;
-                if picture.is_some() {
-                    let caption = "🗺️ The arena as the Games begin".to_string();
-                    post(&ctx, easel.channel, caption, picture).await;
+                match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
+                    Ok(picture) => {
+                        let caption = "🗺️ The arena as the Games begin".to_string();
+                        post(&ctx, easel.channel, caption, Some(picture)).await;
+                    }
+                    Err(reason) => no_picture(&ctx, easel.channel, &told, reason).await,
                 }
             });
         }
@@ -517,6 +538,17 @@ struct Pictures {
     map: Option<ModelImage>,
     /// After the final showdown, the victor, posted with the victor message.
     victor: Option<ModelImage>,
+    /// Why a picture couldn't be drawn, when one couldn't.
+    missing: Option<&'static str>,
+}
+
+/// Tells the channel why a picture is missing, the first time one is in a game.
+async fn no_picture(bot: &BotCtx, channel: ChannelId, told: &AtomicBool, reason: &str) {
+    if told.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let line = format!("-# 🗺️ No picture this time: {reason}.");
+    post(bot, channel, line, None).await;
 }
 
 /// Posts one message of the game, with a picture when there is one. If Discord won't take

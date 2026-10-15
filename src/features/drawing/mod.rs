@@ -287,7 +287,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             size: size_for(shape),
             quality: &settings.quality,
             format: &settings.format,
-            moderation: &settings.moderation,
+            moderation: moderation(&settings, args),
             job: job(args),
         };
         let picture = images.draw(&request).await?;
@@ -376,6 +376,15 @@ fn job(args: &Value) -> &'static str {
     }
 }
 
+/// OpenAI's safety filter for a picture: the setting, except that games ask for the less
+/// strict one, since their host chose a game with deaths in it.
+fn moderation<'a>(settings: &'a Settings, args: &Value) -> &'a str {
+    match job(args) {
+        "game_art" => "low",
+        _ => &settings.moderation,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -400,6 +409,13 @@ mod tests {
         assert_eq!(job(&json!({"job": "game_art"})), "game_art");
         assert_eq!(job(&json!({"job": "chat"})), "drawing");
         assert_eq!(job(&json!({})), "drawing");
+    }
+
+    #[test]
+    fn games_use_the_less_strict_filter() {
+        let settings = Settings::default();
+        assert_eq!(moderation(&settings, &json!({"job": "game_art"})), "low");
+        assert_eq!(moderation(&settings, &json!({})), "auto");
     }
 
     #[test]

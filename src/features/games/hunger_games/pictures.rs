@@ -10,11 +10,13 @@
 //! about: `post: false`, so the picture comes back to be posted with its round, and
 //! `game_art` as the job, so their cost has its own line in OpenAI's spend. The host is
 //! the asker, so the pictures count toward the host's monthly pictures and the server's.
-//! A picture that fails is simply missing.
+//! Games ask for OpenAI's less strict safety filter, since the host chose a game with
+//! deaths in it. A picture that fails is missing, and [`draw`] says why, so the game can
+//! tell the channel once.
 
 use serde_json::json;
 use serenity::all::{ChannelId, GuildId, MessageId, UserId};
-use tracing::{debug, info};
+use tracing::{info, warn};
 
 use crate::core::{Asker, BotCtx};
 use crate::util::media::ModelImage;
@@ -49,15 +51,20 @@ pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
 }
 
 /// Draws `prompt` (with the looks in) in `style` ([`MAP`], [`SHOWDOWN`] or [`VICTORY`]), without posting
-/// it. `None` when it couldn't be drawn. Takes 15 to 20 seconds or so.
-pub async fn draw(ctx: &BotCtx, easel: Easel, prompt: &str, style: &str) -> Option<ModelImage> {
-    if !can_draw(ctx, easel.guild, easel.channel) {
-        return None;
-    }
+/// it. When it can't be drawn, why, in a few words for the channel. Takes 15 to 20 seconds
+/// or so.
+pub async fn draw(
+    ctx: &BotCtx,
+    easel: Easel,
+    prompt: &str,
+    style: &str,
+) -> Result<ModelImage, &'static str> {
     let drawing = ctx
         .features
         .iter()
-        .find(|f| f.tools().iter().any(|t| t.name == TOOL))?;
+        .find(|f| f.tools().iter().any(|t| t.name == TOOL))
+        .filter(|_| can_draw(ctx, easel.guild, easel.channel))
+        .ok_or("drawing is off here now")?;
     let asker = Asker {
         user: easel.host,
         guild: Some(easel.guild),
@@ -77,12 +84,23 @@ pub async fn draw(ctx: &BotCtx, easel: Easel, prompt: &str, style: &str) -> Opti
     {
         Ok(reply) => {
             info!("drew a Hunger Games picture");
-            reply.images.into_iter().next()
+            reply.images.into_iter().next().ok_or("the drawing failed")
         }
         Err(err) => {
-            debug!("couldn't draw a Hunger Games picture: {err:#}");
-            None
+            warn!("couldn't draw a Hunger Games picture: {err:#}");
+            Err(why(&format!("{err:#}")))
         }
+    }
+}
+
+/// Why a picture wasn't drawn, from the drawing tool's error, in a few words for people.
+fn why(error: &str) -> &'static str {
+    if error.contains("pictures are used up") || error.contains("pictures for this month") {
+        "this month's pictures are used up"
+    } else if error.contains("won't draw that") {
+        "OpenAI's safety filter turned it down"
+    } else {
+        "the drawing failed"
     }
 }
 
@@ -90,4 +108,26 @@ pub async fn draw(ctx: &BotCtx, easel: Easel, prompt: &str, style: &str) -> Opti
 pub fn file_name(picture: &ModelImage) -> String {
     let extension = picture.mime.strip_prefix("image/").unwrap_or("png");
     format!("arena.{extension}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn says_why_a_picture_is_missing() {
+        assert_eq!(
+            why("the month's pictures are used up (100 of 100, all servers together)"),
+            "this month's pictures are used up"
+        );
+        assert_eq!(
+            why("the asker has had their 20 pictures for this month (20 drawn)"),
+            "this month's pictures are used up"
+        );
+        assert_eq!(
+            why("OpenAI won't draw that: Your request was rejected by the safety system."),
+            "OpenAI's safety filter turned it down"
+        );
+        assert_eq!(why("OpenAI answered 500: oops"), "the drawing failed");
+    }
 }
