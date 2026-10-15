@@ -130,20 +130,79 @@ pub fn close_to(checked: &[Fingerprint], stored: &[ScannedPicture]) -> Vec<Candi
     found
 }
 
+/// A new message that turned out to be a snail.
+#[derive(Debug, Clone)]
+pub struct Catch {
+    pub guild: u64,
+    pub message: u64,
+    pub channel: u64,
+    pub author: u64,
+    /// When it was posted, in unix seconds.
+    pub at: i64,
+    /// The earlier post it repeated.
+    pub original: Posted,
+}
+
 /// Notes that a new message was a snail.
-pub fn record_caught(
-    conn: &Connection,
-    guild: u64,
-    message: u64,
-    author: u64,
-    at: i64,
-) -> rusqlite::Result<()> {
+pub fn record_caught(conn: &Connection, catch: &Catch) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO snail_caught (message_id, guild_id, author_id, caught_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![message, guild, author, at],
+        "INSERT OR IGNORE INTO snail_caught
+            (message_id, guild_id, author_id, caught_at, channel_id, original_id,
+             original_channel_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            catch.message,
+            catch.guild,
+            catch.author,
+            catch.at,
+            catch.channel,
+            catch.original.message,
+            catch.original.channel
+        ],
     )?;
     Ok(())
+}
+
+/// A counted snail, for `/snails recent`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecentCatch {
+    pub message: u64,
+    /// None for snails counted before channels were saved, if the message is gone too.
+    pub channel: Option<u64>,
+    pub author: u64,
+    pub at: i64,
+    /// The earlier post it repeated: (channel, message). None for snails counted before
+    /// this was saved.
+    pub original: Option<(u64, u64)>,
+}
+
+/// The server's most recent snails, newest first, at most `limit`. Older rows have no
+/// channel saved, so it is looked up in the saved messages instead.
+pub fn recent_caught(
+    conn: &Connection,
+    guild: u64,
+    limit: usize,
+) -> rusqlite::Result<Vec<RecentCatch>> {
+    let mut stmt = conn.prepare(
+        "SELECT c.message_id, COALESCE(c.channel_id, m.channel_id), c.author_id, c.caught_at,
+                c.original_channel_id, c.original_id
+         FROM snail_caught c
+         LEFT JOIN snail_messages m ON m.message_id = c.message_id
+         WHERE c.guild_id = ?1
+         ORDER BY c.caught_at DESC, c.message_id DESC LIMIT ?2",
+    )?;
+    stmt.query_map(params![guild, limit as i64], |row| {
+        let original_channel: Option<u64> = row.get(4)?;
+        let original_message: Option<u64> = row.get(5)?;
+        Ok(RecentCatch {
+            message: row.get(0)?,
+            channel: row.get(1)?,
+            author: row.get(2)?,
+            at: row.get(3)?,
+            original: original_channel.zip(original_message),
+        })
+    })?
+    .collect()
 }
 
 /// Clears the server's counted snails, for a fresh leaderboard. The saved links and pictures
@@ -205,7 +264,7 @@ mod tests {
             (4, 1, 8, 2000),
             (5, 2, 9, 2000),
         ] {
-            record_caught(&conn, guild, message, author, at).unwrap();
+            record_caught(&conn, &catch(guild, message, author, at)).unwrap();
         }
         assert_eq!(top_snailers(&conn, 1, 0, 10).unwrap(), [(7, 3), (8, 1)]);
         assert_eq!(top_snailers(&conn, 1, 500, 10).unwrap(), [(7, 2), (8, 1)]);
@@ -260,10 +319,10 @@ mod tests {
     #[test]
     fn counts_caught_snails() {
         let conn = test_connection("snails", MIGRATIONS);
-        record_caught(&conn, 1, 10, 100, 1_000).unwrap();
-        record_caught(&conn, 1, 11, 100, 5_000).unwrap();
+        record_caught(&conn, &catch(1, 10, 100, 1_000)).unwrap();
+        record_caught(&conn, &catch(1, 11, 100, 5_000)).unwrap();
         // The same message counts once.
-        record_caught(&conn, 1, 11, 100, 5_000).unwrap();
+        record_caught(&conn, &catch(1, 11, 100, 5_000)).unwrap();
         assert_eq!(caught_since(&conn, 0).unwrap(), 2);
         assert!(is_caught(&conn, 11).unwrap() && !is_caught(&conn, 12).unwrap());
         assert_eq!(caught_since(&conn, 2_000).unwrap(), 1);
@@ -273,13 +332,46 @@ mod tests {
     fn reset_clears_one_server() {
         let mut conn = test_connection("snails", MIGRATIONS);
         save_now(&mut conn, &indexed(5, &["x:1"], vec![]), 0);
-        record_caught(&conn, 1, 10, 100, 1_000).unwrap();
-        record_caught(&conn, 1, 11, 101, 1_000).unwrap();
-        record_caught(&conn, 2, 12, 100, 1_000).unwrap();
+        record_caught(&conn, &catch(1, 10, 100, 1_000)).unwrap();
+        record_caught(&conn, &catch(1, 11, 101, 1_000)).unwrap();
+        record_caught(&conn, &catch(2, 12, 100, 1_000)).unwrap();
         assert_eq!(reset_caught(&conn, 1).unwrap(), 2);
         assert!(top_snailers(&conn, 1, 0, 10).unwrap().is_empty());
         assert_eq!(top_snailers(&conn, 2, 0, 10).unwrap(), [(100, 1)]);
         // The index stays.
         assert!(is_indexed(&conn, 5).unwrap());
+    }
+
+    #[test]
+    fn recent_snails_newest_first() {
+        let mut conn = test_connection("snails", MIGRATIONS);
+        record_caught(&conn, &catch(1, 10, 100, 1_000)).unwrap();
+        record_caught(&conn, &catch(1, 11, 101, 3_000)).unwrap();
+        record_caught(&conn, &catch(2, 12, 100, 2_000)).unwrap();
+        // A snail counted before channels were saved: its channel comes from the saved
+        // message, and there's no original.
+        save_now(&mut conn, &indexed(5, &["x:1"], vec![]), 0);
+        conn.execute(
+            "INSERT INTO snail_caught (message_id, guild_id, author_id, caught_at)
+             VALUES (5, 1, 105, 2000)",
+            [],
+        )
+        .unwrap();
+
+        let recent = recent_caught(&conn, 1, 10).unwrap();
+        let order: Vec<u64> = recent.iter().map(|c| c.message).collect();
+        assert_eq!(order, [11, 5, 10]);
+        assert_eq!(
+            recent[0],
+            RecentCatch {
+                message: 11,
+                channel: Some(20),
+                author: 101,
+                at: 3_000,
+                original: Some((10, 1)),
+            }
+        );
+        assert_eq!((recent[1].channel, recent[1].original), (Some(10), None));
+        assert_eq!(recent_caught(&conn, 1, 1).unwrap().len(), 1);
     }
 }

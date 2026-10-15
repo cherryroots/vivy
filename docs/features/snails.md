@@ -6,6 +6,7 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 
 - **Check Snail** (right-click a message, then Apps): a private reply that lists up to 10 earlier posts of the same link or picture, oldest first, each with the date, the author and a jump link, and whether it was the same link or the same picture. If a picture could not be downloaded, the reply says so and that it will be retried.
 - **`/snails top`**: the server's top 10 snailers this week and of all time, from the snails counted as they were posted (not what the backfill found in older history). Names show as mentions that ping nobody.
+- **`/snails recent`**: the server's last 10 snails, newest first, in an embed (ten lines of links are too long for a plain message): when, who, a jump link to the message and its channel, and a link to the first post it repeated. Names show as mentions that ping nobody. Snails counted before this command existed have no first-post link, and show "message deleted" if their message is gone.
 - **`/snails reset`** (admins only): starts the leaderboard over. Every count in the server goes back to zero (this week, all time, and the control panel's "Caught this week" for it). The saved links and pictures stay, so a repost of something posted before the reset still counts.
 - **`/snails backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
@@ -23,7 +24,7 @@ All in `src/features/snails/`. The first three are pure functions (no Discord, n
 | `store/` | The migrations and every SQL query. Synchronous functions that take a `rusqlite` connection, all reached as `store::name`. `mod.rs` has the tables and saving a message; `matches.rs` finds older messages with the same links or pictures and counts snails; `failures.rs` is the retry list; `crawl.rs` is the backfill's bookkeeping. |
 | `index.rs` | Downloading, fingerprinting and saving one message (`sync_message`, `index_message`). |
 | `check.rs` | The Check Snail command, and the quiet snail count for new messages (`on_new_message`). |
-| `board.rs` | `/snails top`, the leaderboard (`store::top_snailers`), and `/snails reset` (`store::reset_caught`). |
+| `board.rs` | `/snails top`, the leaderboard (`store::top_snailers`), `/snails recent` (`store::recent_caught`), and `/snails reset` (`store::reset_caught`). |
 | `backfill.rs` | `/snails backfill`, the history crawl, and the startup catch-up. |
 | `retry.rs` | The loop that tries failed pictures again. |
 | `mod.rs` | The `Snails` struct and its `Feature` methods, which tie the rest together. |
@@ -98,7 +99,7 @@ Every earlier message is read from Discord before it is listed (`still_there`). 
 
 `index::sync_message` does the saving. It makes the stored rows match the message as it is now. A picture whose `source` is already saved keeps its fingerprint and is not downloaded again. A picture that is already waiting on the retry list is left to the retry loop. `store::save` replaces the message's rows in one transaction (a group of writes that all happen or none do). `sync_message` returns only the new links and pictures, so running it twice on the same message is harmless.
 
-`check::count_if_snail` runs `earlier_posts` with `first_only` (it stops at the first hit) and writes the message to `snail_caught`. A message is counted at most once, however often it changes, and only if it was posted in the last 7 days (`COUNT_WITHIN_SECS`). Edits, retried pictures and the catch-up can reach much older messages: a picture from the backfill that only loaded on a retry, or an old message Discord sends again as an edit when it refreshes the previews of expired CDN links. Before this rule, those were counted as new snails with their old dates, which is how messages from 2023 ended up on the all-time board.
+`check::count_if_snail` runs `earlier_posts` with `first_only` (it stops at the first hit) and writes the message to `snail_caught`, with its channel and the earlier post it repeated (the oldest one found). A message is counted at most once, however often it changes, and only if it was posted in the last 7 days (`COUNT_WITHIN_SECS`). Edits, retried pictures and the catch-up can reach much older messages: a picture from the backfill that only loaded on a retry, or an old message Discord sends again as an edit when it refreshes the previews of expired CDN links. Before this rule, those were counted as new snails with their old dates, which is how messages from 2023 ended up on the all-time board.
 
 ### Failed downloads (`retry.rs`)
 
@@ -153,7 +154,7 @@ All created by `store::MIGRATIONS`.
 
 **Migration 2**
 
-- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Feeds "Caught this week" and `/snails top`. `/snails reset` deletes the server's rows.
+- `snail_caught`: new messages that turned out to be snails: message, server, author, `caught_at` (unix seconds). Since migration 6 also `channel_id` and the repeated post (`original_id`, `original_channel_id`); older rows have NULL there. Feeds "Caught this week", `/snails top` and `/snails recent`. `/snails reset` deletes the server's rows.
 
 **Migration 3** (edits, deletes, failed downloads, catch-up)
 
@@ -167,6 +168,8 @@ All created by `store::MIGRATIONS`.
 - `snail_dropped`: server, host, and how many pictures from that host were dropped after their last try.
 
 **Migration 5** adds the index `snail_caught_guild` on `(guild_id, caught_at)` for `/snails top`.
+
+**Migration 6** adds `channel_id`, `original_id` and `original_channel_id` to `snail_caught` for `/snails recent`. For older rows, `store::recent_caught` takes the channel from `snail_messages` when the message is still saved.
 
 ## Background loops
 

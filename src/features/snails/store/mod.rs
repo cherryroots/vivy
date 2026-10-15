@@ -106,6 +106,11 @@ pub const MIGRATIONS: &[&str] = &[
     );",
     // 5: `/snails top`, the leaderboard, counts a server's snails since a time.
     "CREATE INDEX snail_caught_guild ON snail_caught (guild_id, caught_at);",
+    // 6: `/snails recent` links each snail and the earlier post it repeated. Snails counted
+    // before this have NULL here.
+    "ALTER TABLE snail_caught ADD COLUMN channel_id INTEGER;
+    ALTER TABLE snail_caught ADD COLUMN original_id INTEGER;
+    ALTER TABLE snail_caught ADD COLUMN original_channel_id INTEGER;",
 ];
 
 /// A fingerprinted picture of a message.
@@ -354,6 +359,22 @@ pub(super) mod testing {
                 .collect(),
             failed: Vec::new(),
             waiting: Vec::new(),
+        }
+    }
+
+    /// A snail in channel 20 that repeated message 1 in channel 10.
+    pub fn catch(guild: u64, message: u64, author: u64, at: i64) -> Catch {
+        Catch {
+            guild,
+            message,
+            channel: 20,
+            author,
+            at,
+            original: Posted {
+                message: 1,
+                channel: 10,
+                author: 101,
+            },
         }
     }
 
