@@ -55,7 +55,7 @@ In what she writes, tributes are tags: `T1` is the first tribute. The text says 
 
 ### One round
 
-`writer::brief` tells her 6 places for this round, picked at random each round from the channels everyone can read (the same rule as who said it?, at most 40 of them), so the same channel doesn't keep coming up. It also tells her each tribute's tag, name, and kills or death, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
+`writer::brief` tells her one place per living tribute for this round, picked at random each round from the channels everyone can read (the same rule as who said it?, at most 40 of them), so the same channel doesn't keep coming up. It also tells her each tribute's tag, name, and kills or death, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
 
 ```json
 {"gamemaker": "…or null", "events": [{"text": "{T1} …", "tributes": ["T1", "T2"], "deaths": [{"tribute": "T2", "by": "T1"}]}], "victory": "…or null"}

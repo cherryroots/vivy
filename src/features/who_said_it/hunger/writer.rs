@@ -125,15 +125,12 @@ pub fn parse(answer: &str) -> Result<Written, String> {
         .map_err(|err| format!("The JSON doesn't match the format: {err}."))
 }
 
-/// How many channels she gets as places each round.
-const PLACES: usize = 6;
-
-/// A few of the arena's places for one round, picked at random, so the same channel doesn't
-/// come up every time.
-fn places(arena: &[String]) -> Vec<String> {
+/// The arena's places for one round, picked at random so the same channel doesn't come up
+/// every time: as many as there are tributes alive (or every place, when there are fewer).
+fn places(arena: &[String], alive: usize) -> Vec<String> {
     let mut places = arena.to_vec();
     fastrand::shuffle(&mut places);
-    places.truncate(PLACES);
+    places.truncate(alive);
     places
 }
 
@@ -148,7 +145,11 @@ pub async fn write(
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &places(&arena)))],
+        parts: vec![Part::Text(brief(
+            &game,
+            kind,
+            &places(&arena, game.alive()),
+        ))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
