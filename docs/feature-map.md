@@ -21,6 +21,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/control-panel.md](features/control-panel.md) | The status picture and the log channel |
 | [features/tinyfish.md](features/tinyfish.md) | Web search and reading pages with TinyFish |
 | [features/who-said-it.md](features/who-said-it.md) | Who said it?: the game, where quotes come from, why it isn't an Activity |
+| [features/hunger-games.md](features/hunger-games.md) | The Hunger Games: the Reaping, rounds Vivy writes, the rules that check them |
 
 ## Features
 
@@ -37,7 +38,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
-| Who said it? | `who_said_it/` | A game: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server | `/games whosaidit`, its buttons |
+| Who said it? | `who_said_it/` | Games: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; and the Hunger Games, a battle royale between members that Vivy writes as the Gamemaker (`hunger/`) | `/games whosaidit`, `/games hungergames`, their buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -174,6 +175,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
 | #64 | | Gemini provider (`provider = "gemini"`, Gemini 4 Argon through the Interactions API): Google Search, URL context and code execution; posted videos uploaded with the Files API and YouTube links watched as videos |
 | #65 | | TinyFish: chat's `tinyfish_search` and `tinyfish_fetch` tools (any provider, chime-ins too) when `TINYFISH_API_KEY` is in `.env`, so she can search and read Reddit and other sites the built-in web tools can't reach; `[features.tinyfish]` sets results per search, location, language and how much of a page she reads; her prompt sends Reddit and pages her own fetch can't read to TinyFish |
+| #67 | | Hunger Games (stage 1): `/games hungergames` opens the Reaping (host picks tributes, others volunteer), then Vivy writes every round as the Gamemaker, checked by the rules (everyone in one event, pacing, a final two), with cannons after each night and a victor with placings; the arena is the server's public channels |
 | #66 | | Snails: `/snails recent` lists the server's last 10 snails with jump links to each message and the first post it repeated (new columns on `snail_caught`) |
 
 ## Not built yet

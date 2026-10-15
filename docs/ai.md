@@ -61,7 +61,7 @@ pub struct ChatRequest {
     pub input: Input,
     pub tools: Vec<ToolDef>,  // the bot's own tools, always in the same order
     pub cache_key: String,    // requests with the same key share a cache ("discord:<channel>")
-    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary"; picks the job's settings
+    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games"; picks the job's settings
 }
 ```
 
@@ -124,7 +124,7 @@ Some Rust terms here:
 The tool loop lives outside the trait, so every provider gets the same tools. There are two copies of it:
 
 - `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows what each tool is doing in the status line (`Feature::tool_status`), and stops on ❌. At most 8 rounds.
-- `ai::complete` in `complete.rs`, for work nobody watches: chime-ins and follow-ups (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), and memory's reflection, mood and diary jobs. The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> String`) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
+- `ai::complete` in `complete.rs`, for work nobody watches: chime-ins and follow-ups (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), memory's reflection, mood and diary jobs, and Hunger Games rounds (`who_said_it/hunger/writer.rs`). The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> String`) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
 
 Both work the same way: send the request, read events until `Done`, and if `Done` lists tool calls, run them, then build the next input with `ai::next_input` and send again.
 
@@ -145,8 +145,9 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `emoji` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | Describing a picture in one line. |
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
+| `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
 
-On Claude, a request whose job has no bot tools (emoji, mood) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
+On Claude, a request whose job has no bot tools (emoji, mood, hunger_games) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
 
 ### Keeping the chat cache warm
 

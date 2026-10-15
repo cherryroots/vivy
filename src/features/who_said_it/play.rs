@@ -51,7 +51,7 @@ impl Drop for Leave {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("who_said_it"),
+    subcommands("who_said_it", "super::hunger::hunger_games"),
     subcommand_required
 )]
 pub async fn games(_ctx: Context<'_>) -> Result<()> {
