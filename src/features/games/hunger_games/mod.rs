@@ -10,7 +10,7 @@
 //! - `notes.rs`: Vivy's memory notes about the tributes, through the `memory` tool
 //! - `voice.rs`: the Gamemaker's lines as voice messages, through the voice feature's tool
 //! - `pictures.rs`: pictures she draws during the game, through the drawing feature's tool
-//! - `looks.rs`: how each tribute looks in her pictures, described once from their profile picture
+//! - `looks.rs`: how the arena map and the tributes' sprites look, described once per game
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
 
 mod game;

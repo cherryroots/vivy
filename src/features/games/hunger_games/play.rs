@@ -280,7 +280,8 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    // How each tribute looks in her pictures, worked out while she writes the Bloodbath.
+    // How the tributes and the arena look in her pictures, worked out while she writes the
+    // Bloodbath.
     // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
     let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
     let looks = drawing.then(|| {
@@ -289,6 +290,7 @@ async fn run(
             provider.clone(),
             guild,
             tributes.clone(),
+            arena.clone(),
         ))
     });
     let notes = if extras.memories {
@@ -335,6 +337,7 @@ async fn play(
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
     let mut looks = writing.looks.take().map(Later::Working);
     let drawn = looks.is_some();
+    let places = writing.arena.clone();
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
@@ -412,7 +415,11 @@ async fn play(
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
             let picture = Picture {
-                prompt: looks::fill(&prompt, looks.get().await),
+                prompt: {
+                    let looks = looks.get().await;
+                    let map = looks::map(&places, looks);
+                    format!("{map}\n\nThis round: {}", looks::fill(&prompt, looks))
+                },
                 caption: if over {
                     "🎨 The victor".to_string()
                 } else {
@@ -495,7 +502,7 @@ struct Writing {
     notes: Arc<Vec<Option<String>>>,
     /// How each tribute looks, being described, when pictures are on: then she writes
     /// picture prompts, and they're drawn.
-    looks: Option<JoinHandle<Vec<Option<String>>>>,
+    looks: Option<JoinHandle<looks::Looks>>,
 }
 
 /// Something a background task is still working out, like the last words, then what it

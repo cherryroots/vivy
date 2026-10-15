@@ -105,7 +105,7 @@ pub fn lobby(
         "🧠 Memories **off**: Vivy knows the tributes only by name.".to_string()
     });
     lines.push(if extras.pictures {
-        "🎨 Pictures **on**: Vivy draws the arena, each day and the victor.".to_string()
+        "🎨 Pictures **on**: Vivy draws a map of the arena after every round.".to_string()
     } else {
         "🎨 Pictures **off**: the Games are told in words only.".to_string()
     });

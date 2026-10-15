@@ -30,12 +30,12 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
-- `picture`: only when the round asks for one: what to draw, as a prompt for an image model, in English. Describe the whole scene: the place, the action, the mood and the light. Write each tribute in it as their tag, like {T3}, and say only what they're doing: the bot puts in how each one looks, the same in every picture. No names, and no words or letters in the picture. Otherwise null.
+- `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Cornucopia) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round as a small gravestone where they fell. Write each tribute as their tag; the bot adds the map, the zones and how each tribute looks, so don't describe those, and use no names. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
 /// is: what she's told. `notes` are in the same order as the tributes. With `pictures`,
-/// the rounds that are drawn ask for a `picture` too.
+/// every round asks for a `picture` too.
 pub fn brief(
     game: &Game,
     kind: Kind,
@@ -125,12 +125,14 @@ pub fn brief(
     text.push_str(&format!(
         "\nThis round: {what} {alive} tributes are alive. {deaths}"
     ));
-    if pictures && kind.pictured() {
+    if pictures {
         text.push(' ');
         text.push_str(match kind {
-            Kind::Bloodbath => "Also write a `picture`: the arena as the Games begin, the tributes around the Cornucopia.",
-            Kind::Finale => "Also write a `picture`: the winner's triumph.",
-            _ => "Also write a `picture`: the most dramatic moment of this round.",
+            Kind::Bloodbath => "Also write a `picture`: the tributes rushing the Cornucopia as the Games begin, and where each event happens.",
+            Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
+            Kind::Feast(_) => "Also write a `picture`: the Feast's table at the Cornucopia and each event where it happens.",
+            Kind::Finale => "Also write a `picture`: the final showdown, and the winner standing victorious.",
+            Kind::Day(_) => "Also write a `picture`: each event where it happens.",
         });
     }
     text
@@ -330,7 +332,7 @@ mod tests {
         );
         assert!(!text.contains("`picture`"));
         let drawn = brief(&game, Kind::Finale, &[], &notes, true);
-        assert!(drawn.contains("Also write a `picture`: the winner's triumph."));
+        assert!(drawn.contains("Also write a `picture`: the final showdown"));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));

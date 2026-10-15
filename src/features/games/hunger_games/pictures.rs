@@ -1,8 +1,8 @@
-//! Pictures during the Games, when the host turns them on in the Reaping: the arena as the
-//! Games open, the most dramatic moment of each day, and the victor's triumph. Vivy writes
-//! each picture's prompt with the round (`picture` in her JSON), with the tributes as tags
-//! that `looks.rs` fills with how each one looks; [`STYLE`] keeps the pictures of a game
-//! looking alike.
+//! Pictures during the Games, when the host turns them on in the Reaping: a map of the
+//! arena after every round, with each event where it happened, and the final showdown with
+//! the victor. Vivy writes what happens on the map with the round (`picture` in her JSON);
+//! `looks.rs` adds the arena's layout and how each tribute looks, and [`STYLE`] keeps the
+//! pictures of a game looking alike.
 //!
 //! Like `voice.rs`, this doesn't import the drawing feature: it finds whichever feature
 //! offers the `draw_picture` chat tool and runs it with arguments the chat model isn't told
@@ -21,11 +21,11 @@ use crate::core::{Asker, BotCtx};
 /// The drawing feature's tool.
 const TOOL: &str = "draw_picture";
 /// Added to every prompt, so a game's pictures share one style.
-const STYLE: &str = "Style: a realistic, cinematic film still from a big-budget survival movie: real people, real textures, natural light, shallow depth of field, wide shot. Not a cartoon, anime or illustration. No blood or gore, and no words or letters anywhere in the picture.";
+const STYLE: &str = "Style: a clean top-down 2D map of the whole arena, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the tributes as small, colorful pixel-art sprites in the zones where they are, fights shown as sprites clashing with simple action marks. Easy to read at a glance. No blood or gore, and no words or letters except the zone labels, written exactly as given.";
 
 /// One picture to draw.
 pub struct Picture {
-    /// Her prompt, with the tributes' looks filled in.
+    /// The map and her prompt, with the tributes' looks filled in.
     pub prompt: String,
     /// The line above it, like "🎨 Day 2".
     pub caption: String,
