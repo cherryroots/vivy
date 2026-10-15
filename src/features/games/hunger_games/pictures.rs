@@ -1,36 +1,39 @@
 //! Pictures during the Games, when the host turns them on in the Reaping: a map of the
-//! arena after every round, with each event where it happened, and the final showdown with
-//! the victor. Vivy writes what happens on the map with the round (`picture` in her JSON);
-//! `looks.rs` adds the arena's layout and how each tribute looks, and [`STYLE`] keeps the
-//! pictures of a game looking alike.
+//! arena after every round, with each event where it happened. Vivy writes what happens on
+//! the map with the round (`picture` in her JSON); `looks.rs` adds the arena's layout and
+//! how each tribute looks, and [`MAP`] keeps the maps of a game looking alike. The victor's
+//! picture is made by the bot instead: the winner up close, with everyone they killed
+//! knocked out around them ([`VICTORY`]).
 //!
 //! Like `voice.rs`, this doesn't import the drawing feature: it finds whichever feature
 //! offers the `draw_picture` chat tool and runs it with arguments the chat model isn't told
-//! about (no reply, a caption, a spoiler, and `game_art` as the job, so their cost has its
-//! own line in OpenAI's spend). The host is the asker, so the pictures count toward the
-//! host's monthly pictures and the server's.
-//! Drawing takes about 15 to 20 seconds, so it runs in the background: the game never
-//! waits for a picture, and one that fails is simply missing.
+//! about: `post: false`, so the picture comes back to be posted with its round, and
+//! `game_art` as the job, so their cost has its own line in OpenAI's spend. The host is
+//! the asker, so the pictures count toward the host's monthly pictures and the server's.
+//! A picture that fails is simply missing.
 
 use serde_json::json;
 use serenity::all::{ChannelId, GuildId, MessageId, UserId};
 use tracing::{debug, info};
 
 use crate::core::{Asker, BotCtx};
+use crate::util::media::ModelImage;
 
 /// The drawing feature's tool.
 const TOOL: &str = "draw_picture";
-/// Added to every prompt, so a game's pictures share one style.
-const STYLE: &str = "Style: a clean top-down 2D map of the whole arena, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the tributes as small, colorful pixel-art sprites in the zones where they are, fights shown as sprites clashing with simple action marks. Easy to read at a glance. No blood or gore, and no words or letters except the zone labels, written exactly as given.";
+/// Added to each round's map, so a game's maps share one style.
+pub const MAP: &str = "Style: a clean top-down 2D map of the whole battlefield, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the players as colorful pixel-art sprites in the zones where they are, drawn a bit bigger than usual for a map so each one's colors and item are easy to make out, fights shown as sprites clashing with simple action marks. Easy to read at a glance. No blood or gore, and no words or letters except the zone labels, written exactly as given.";
+/// Added to the victor's picture: the same pixel art, up close.
+pub const VICTORY: &str = "Style: a detailed retro 16-bit pixel-art scene, like the victory screen of a classic game, with the characters drawn large and clear. Defeated players are knocked out, with little dizzy stars, never hurt. No blood or gore, and no words or letters anywhere in the picture.";
 
-/// One picture to draw.
-pub struct Picture {
-    /// The map and her prompt, with the tributes' looks filled in.
-    pub prompt: String,
-    /// The line above it, like "🎨 Day 2".
-    pub caption: String,
-    /// Behind a spoiler, for a picture that gives away who won.
-    pub spoiler: bool,
+/// Where a game's pictures are drawn: its server and channel, the Reaping message, and the
+/// host, who asks for them.
+#[derive(Clone, Copy)]
+pub struct Easel {
+    pub guild: GuildId,
+    pub channel: ChannelId,
+    pub message: MessageId,
+    pub host: UserId,
 }
 
 /// Whether pictures can be drawn in `channel`: drawing is on there, and its tool is
@@ -43,45 +46,46 @@ pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
             .any(|f| f.tools().iter().any(|t| t.name == TOOL))
 }
 
-/// Draws `picture` and posts it in `channel`, in the background.
-pub fn draw(
-    ctx: &BotCtx,
-    guild: GuildId,
-    channel: ChannelId,
-    message: MessageId,
-    host: UserId,
-    picture: Picture,
-) {
-    let ctx = ctx.clone();
-    ctx.tasks.clone().spawn(async move {
-        if !ctx.allows("drawing", Some(guild), channel) {
-            return;
-        }
-        let Some(drawing) = ctx
-            .features
-            .iter()
-            .find(|f| f.tools().iter().any(|t| t.name == TOOL))
-        else {
-            return;
-        };
-        let asker = Asker {
-            user: host,
-            guild: Some(guild),
-            channel,
-            message,
-            posted: Default::default(),
-        };
-        let args = json!({
-            "prompt": format!("{}\n\n{STYLE}", picture.prompt),
-            "shape": "landscape",
-            "reply": false,
-            "caption": picture.caption,
-            "spoiler": picture.spoiler,
-            "job": "game_art",
-        });
-        match drawing.run_tool(&ctx, &asker, TOOL, &args).await {
-            Ok(_) => info!(caption = picture.caption, "drew a Hunger Games picture"),
-            Err(err) => debug!("couldn't draw a Hunger Games picture: {err:#}"),
-        }
+/// Draws `prompt` (with the looks in) in `style` ([`MAP`] or [`VICTORY`]), without posting
+/// it. `None` when it couldn't be drawn. Takes 15 to 20 seconds or so.
+pub async fn draw(ctx: &BotCtx, easel: Easel, prompt: &str, style: &str) -> Option<ModelImage> {
+    if !can_draw(ctx, easel.guild, easel.channel) {
+        return None;
+    }
+    let drawing = ctx
+        .features
+        .iter()
+        .find(|f| f.tools().iter().any(|t| t.name == TOOL))?;
+    let asker = Asker {
+        user: easel.host,
+        guild: Some(easel.guild),
+        channel: easel.channel,
+        message: easel.message,
+        posted: Default::default(),
+    };
+    let args = json!({
+        "prompt": format!("{prompt}\n\n{style}"),
+        "shape": "landscape",
+        "post": false,
+        "job": "game_art",
     });
+    match drawing
+        .run_tool_with_pictures(ctx, &asker, TOOL, &args)
+        .await
+    {
+        Ok(reply) => {
+            info!("drew a Hunger Games picture");
+            reply.images.into_iter().next()
+        }
+        Err(err) => {
+            debug!("couldn't draw a Hunger Games picture: {err:#}");
+            None
+        }
+    }
+}
+
+/// A file name for a picture: `arena.png`, or the picture's own kind.
+pub fn file_name(picture: &ModelImage) -> String {
+    let extension = picture.mime.strip_prefix("image/").unwrap_or("png");
+    format!("arena.{extension}")
 }

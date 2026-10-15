@@ -13,8 +13,8 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    GuildId, Message, MessageId, UserId,
+    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
+    EditMessage, GuildId, Message, MessageId, UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -22,12 +22,13 @@ use tracing::{info, warn};
 
 use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
-use super::pictures::{self, Picture};
+use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
 use super::{looks, notes, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
+use crate::util::media::ModelImage;
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
 const MOST_TRIBUTES: usize = 24;
@@ -72,10 +73,8 @@ struct Running {
     /// When the Reaping closes, as a Unix time.
     closes_at: i64,
     lobby: Mutex<Lobby>,
-    /// Wakes the game's task: Start or Cancel in the Reaping, Next during the game.
+    /// Wakes the game's task: Start or Cancel in the Reaping.
     wake: Notify,
-    /// The round whose Next button moves the game on, while it waits for one.
-    waiting_on: Mutex<Option<usize>>,
 }
 
 impl Running {
@@ -141,7 +140,6 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             extras: ui::Extras::default(),
         }),
         wake: Notify::new(),
-        waiting_on: Mutex::new(None),
     });
     {
         let mut games = GAMES.lock().unwrap();
@@ -322,7 +320,8 @@ async fn run(
     .await;
 }
 
-/// Posts each round as Vivy writes it, the fallen after each night, and the victor.
+/// Posts each round as Vivy writes it, with its map when pictures are on, the fallen after
+/// each night, and the victor. The next round starts by itself after `auto`.
 async fn play(
     bot: &BotCtx,
     stage: Stage,
@@ -335,21 +334,56 @@ async fn play(
     let channel = stage.channel;
     // Her Gamemaker line, out loud too.
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
-    let mut looks = writing.looks.take().map(Later::Working);
-    let drawn = looks.is_some();
+    let looks = writing.looks.take().map(looks::Shared::new);
     let places = writing.arena.clone();
+    let easel = Easel {
+        guild: stage.guild,
+        channel,
+        message: stage.lobby,
+        host: running.host,
+    };
+    // Writes a round and, with pictures on, draws its map right after, so the two are
+    // posted together. The Bloodbath's map is drawn once it's posted instead: nobody waits
+    // on a next round then, and people are already reading.
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
+        let game_before = game.clone();
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
-        bot.tasks.spawn(writer::write(
-            provider,
-            game,
-            kind,
-            arena,
-            notes,
-            drawn,
-            channel.get(),
-        ))
+        let (ctx, looks) = (bot.clone(), looks.clone());
+        bot.tasks.spawn(async move {
+            let drawn = looks.is_some();
+            let round = writer::write(
+                provider,
+                game,
+                kind,
+                arena.clone(),
+                notes,
+                drawn,
+                channel.get(),
+            )
+            .await?;
+            let picture = match (&looks, &round.picture) {
+                // The victor up close, with everyone they killed.
+                (Some(looks), _) if kind == Kind::Finale => {
+                    let mut after = game_before.clone();
+                    after.apply(round.clone());
+                    match after.winner_index() {
+                        Some(winner) => {
+                            let looks = looks.get().await;
+                            let prompt = looks::victor(looks, winner, &after.victims(winner));
+                            pictures::draw(&ctx, easel, &prompt, pictures::VICTORY).await
+                        }
+                        None => None,
+                    }
+                }
+                (Some(looks), Some(picture)) if kind != Kind::Bloodbath => {
+                    let prompt = looks::prompt(&arena, looks.get().await, picture);
+                    pictures::draw(&ctx, easel, &prompt, pictures::MAP).await
+                }
+                _ => None,
+            };
+            anyhow::Ok((round, picture))
+        })
     };
     let mut words = Later::Working(words);
     let intro = format!(
@@ -374,8 +408,8 @@ async fn play(
                 written = &mut writing => written,
             }
         };
-        let round = match written {
-            Ok(Ok(round)) => round,
+        let (round, mut picture) = match written {
+            Ok(Ok(written)) => written,
             Ok(Err(err)) => {
                 warn!("couldn't write a Hunger Games round: {err:#}");
                 called_off(bot, channel).await;
@@ -396,45 +430,26 @@ async fn play(
         game.apply(round);
         let over = game.winner().is_some();
 
-        // The Next button goes on the round's last part.
+        // The map goes with the round's last part.
         let parts = ui::round(&game, &game.rounds[index]);
         let count = parts.len();
-        let mut posted = None;
         for (i, part) in parts.into_iter().enumerate() {
-            let mut message = text(part);
-            if !over && i + 1 == count {
-                message = message.components(ui::next_button(running.id, index));
-            }
-            match channel.send_message(&bot.http, message).await {
-                Ok(sent) => posted = Some(sent),
-                Err(err) => warn!("couldn't post a Hunger Games round: {err}"),
-            }
+            let picture = if i + 1 == count { picture.take() } else { None };
+            post(bot, channel, part, picture).await;
         }
-        // Her picture of the round, drawn in the background while people read.
-        if let Some(looks) = looks.as_mut()
+        if kind == Kind::Bloodbath
+            && let Some(looks) = looks.clone()
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
-            let picture = Picture {
-                prompt: {
-                    let looks = looks.get().await;
-                    let map = looks::map(&places, looks);
-                    format!("{map}\n\nThis round: {}", looks::fill(&prompt, looks))
-                },
-                caption: if over {
-                    "🎨 The victor".to_string()
-                } else {
-                    format!("🎨 {}", writer::title(kind))
-                },
-                spoiler: over,
-            };
-            pictures::draw(
-                bot,
-                stage.guild,
-                channel,
-                stage.lobby,
-                running.host,
-                picture,
-            );
+            let (ctx, arena) = (bot.clone(), places.clone());
+            bot.tasks.spawn(async move {
+                let prompt = looks::prompt(&arena, looks.get().await, &prompt);
+                let picture = pictures::draw(&ctx, easel, &prompt, pictures::MAP).await;
+                if picture.is_some() {
+                    let caption = "🗺️ The arena as the Games begin".to_string();
+                    post(&ctx, easel.channel, caption, picture).await;
+                }
+            });
         }
         if over {
             // The fallen since the last cannons, the loser of the final showdown among them.
@@ -460,11 +475,10 @@ async fn play(
             cannons_from = game.rounds.len();
         }
 
-        // She writes the next round while people read this one.
+        // She writes (and draws) the next round while people read this one.
         if let Some(next) = game.next_kind() {
             pending = Some(write(&game, next));
         }
-        *running.waiting_on.lock().unwrap() = Some(index);
         tokio::select! {
             () = bot.shutdown.cancelled() => {
                 if let Some(writing) = pending.take() {
@@ -472,16 +486,26 @@ async fn play(
                 }
                 return;
             }
-            () = running.wake.notified() => {}
             () = tokio::time::sleep(auto) => {}
         }
-        *running.waiting_on.lock().unwrap() = None;
-        if let Some(posted) = posted.as_mut() {
-            let edit = EditMessage::new().components(Vec::new());
-            if let Err(err) = posted.edit(&bot.http, edit).await {
-                warn!("couldn't take the Next button off a Hunger Games round: {err}");
-            }
+    }
+}
+
+/// Posts one message of the game, with a picture when there is one. If Discord won't take
+/// the picture, the text goes on its own.
+async fn post(bot: &BotCtx, channel: ChannelId, content: String, picture: Option<ModelImage>) {
+    let mut message = text(content.clone());
+    if let Some(picture) = picture {
+        let name = pictures::file_name(&picture);
+        message = message.add_file(CreateAttachment::bytes(picture.data, name));
+        match channel.send_message(&bot.http, message).await {
+            Ok(_) => return,
+            Err(err) => warn!("couldn't post a Hunger Games message with its map: {err}"),
         }
+        message = text(content);
+    }
+    if let Err(err) = channel.send_message(&bot.http, message).await {
+        warn!("couldn't post a Hunger Games message: {err}");
     }
 }
 
@@ -563,7 +587,7 @@ async fn called_off(bot: &BotCtx, channel: ChannelId) {
     }
 }
 
-/// A press in the Reaping or on a round's Next button.
+/// A press in the Reaping.
 pub async fn on_component(
     bot: &BotCtx,
     interaction: &ComponentInteraction,
@@ -583,28 +607,6 @@ pub async fn on_component(
     };
     let user = interaction.user.id;
     let in_charge = user == running.host || bot.is_admin(user);
-
-    if let ui::Action::Next(round) = action {
-        if !in_charge {
-            return tell(
-                bot,
-                interaction,
-                "Only the host moves the Games on. The next round starts by itself soon.",
-            )
-            .await;
-        }
-        {
-            let mut waiting = running.waiting_on.lock().unwrap();
-            if *waiting == Some(round) {
-                *waiting = None;
-                running.wake.notify_one();
-            }
-        }
-        interaction
-            .create_response(&bot.http, CreateInteractionResponse::Acknowledge)
-            .await?;
-        return Ok(());
-    }
 
     if running.lobby.lock().unwrap().state != State::Open {
         return tell(bot, interaction, "The Reaping is over.").await;
@@ -727,7 +729,6 @@ pub async fn on_component(
                 .await?;
             return Ok(());
         }
-        ui::Action::Next(_) => unreachable!("handled above"),
     }
     interaction
         .create_response(

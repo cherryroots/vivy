@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use serenity::all::{GuildId, UserId};
+use tokio::sync::OnceCell;
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use super::game::{self, Game};
@@ -47,6 +49,36 @@ Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ..., \"Z1\
 pub struct Looks {
     pub tributes: Vec<Option<String>>,
     pub zones: Vec<Option<String>>,
+}
+
+/// The looks while they're being described, shared by the rounds' drawings: the first to
+/// need them waits for them, the rest find them ready.
+#[derive(Clone)]
+pub struct Shared {
+    task: Arc<std::sync::Mutex<Option<JoinHandle<Looks>>>>,
+    looks: Arc<OnceCell<Looks>>,
+}
+
+impl Shared {
+    pub fn new(task: JoinHandle<Looks>) -> Shared {
+        Shared {
+            task: Arc::new(std::sync::Mutex::new(Some(task))),
+            looks: Arc::default(),
+        }
+    }
+
+    /// The looks, waiting for them the first time. A call that failed described nothing.
+    pub async fn get(&self) -> &Looks {
+        self.looks
+            .get_or_init(|| async {
+                let task = self.task.lock().unwrap().take();
+                match task {
+                    Some(task) => task.await.unwrap_or_default(),
+                    None => Looks::default(),
+                }
+            })
+            .await
+    }
 }
 
 /// Describes how the tributes and the arena's zones look.
@@ -166,7 +198,7 @@ pub fn parse(answer: &str, tributes: usize, zones: usize) -> Looks {
 /// each place as a zone around it, labelled with its name, with its terrain.
 pub fn map(arena: &[String], looks: &Looks) -> String {
     let mut text =
-        "The arena, laid out the same in every picture: the golden Cornucopia in the center"
+        "The map, laid out the same in every picture: in the center, the supply camp, a big golden tent piled with crates and backpacks"
             .to_string();
     for (i, place) in arena.iter().enumerate() {
         let direction = DIRECTIONS[i % DIRECTIONS.len()];
@@ -200,12 +232,44 @@ fn label(place: &str) -> Option<String> {
     (!kept.is_empty()).then(|| kept.chars().take(24).collect())
 }
 
+/// What the image model gets for a round: the map, then her prompt with the sprites in.
+pub fn prompt(arena: &[String], looks: &Looks, picture: &str) -> String {
+    format!(
+        "{}\n\nThis round: {}",
+        map(arena, looks),
+        fill(picture, looks)
+    )
+}
+
+/// The victor's picture: the winner alone, up close, with everyone they killed knocked
+/// out around them.
+pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
+    let look = |i: usize| match looks.tributes.get(i) {
+        Some(Some(look)) => format!("({look})"),
+        _ => "a player".to_string(),
+    };
+    let mut text = format!(
+        "A full picture of the winner of the battle: {} standing victorious alone in the middle, holding their signature item high, on a ruined battlefield at sunset.",
+        look(winner)
+    );
+    if victims.is_empty() {
+        text.push_str(" Nobody lies around them: they won without defeating anyone, so only scattered gear lies about.");
+    } else {
+        let defeated: Vec<String> = victims.iter().map(|&i| look(i)).collect();
+        text.push_str(&format!(
+            " Strewn about around them, knocked out, lie the players they defeated: {}.",
+            defeated.join("; ")
+        ));
+    }
+    text
+}
+
 /// Her picture prompt with each `{T3}`-style tag replaced by that tribute's sprite, or "a
-/// tribute" for someone without one.
+/// player" for someone without one (plain words: the image model doesn't know the Games).
 pub fn fill(prompt: &str, looks: &Looks) -> String {
     game::fill(prompt, |i| match looks.tributes.get(i) {
         Some(Some(look)) => format!("({look})"),
-        _ => "a tribute".to_string(),
+        _ => "a player".to_string(),
     })
 }
 
@@ -241,8 +305,20 @@ mod tests {
             .chain((0..8).map(|i| format!("room-{i}")))
             .collect();
         let map = map(&arena, &looks);
-        assert!(map.starts_with("The arena, laid out the same in every picture: the golden Cornucopia in the center; to the north, a zone labelled \"gaming\": an arcade ruin; to the east, a zone; "));
+        assert!(map.starts_with("The map, laid out the same in every picture: in the center, the supply camp, a big golden tent piled with crates and backpacks; to the north, a zone labelled \"gaming\": an arcade ruin; to the east, a zone; "));
         assert!(map.contains("further out to the east, a zone labelled \"room-7\"."));
+    }
+
+    #[test]
+    fn draws_the_victor_with_their_victims() {
+        let looks = Looks {
+            tributes: vec![Some("a frog knight".into()), None, Some("a cat".into())],
+            zones: Vec::new(),
+        };
+        let text = victor(&looks, 0, &[2, 1]);
+        assert!(text.contains("(a frog knight) standing victorious alone"));
+        assert!(text.ends_with("lie the players they defeated: (a cat); a player."));
+        assert!(victor(&looks, 2, &[]).contains("Nobody lies around them"));
     }
 
     #[test]
@@ -253,7 +329,7 @@ mod tests {
         };
         assert_eq!(
             fill("{T1} chases {T2} up a tree", &looks),
-            "(a frog knight) chases a tribute up a tree"
+            "(a frog knight) chases a player up a tree"
         );
     }
 }

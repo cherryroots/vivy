@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(settings.who_said_it.rounds, 10);
         assert_eq!(settings.who_said_it.lookback_days, 365);
         assert_eq!(settings.hunger_games.max_tributes, 24);
-        assert_eq!(settings.hunger_games.auto_advance_seconds, 30);
+        assert_eq!(settings.hunger_games.auto_advance_seconds, 45);
         assert_eq!(settings.hunger_games.lobby_minutes, 10);
     }
 }

@@ -26,8 +26,6 @@ pub enum Action {
     Memories,
     /// The host turns the pictures she draws during the game on or off.
     Pictures,
-    /// On to the round after `n` (the round's index).
-    Next(usize),
 }
 
 /// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
@@ -40,7 +38,6 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Cancel => "cancel".to_string(),
         Action::Memories => "memories".to_string(),
         Action::Pictures => "pictures".to_string(),
-        Action::Next(round) => format!("next:{round}"),
     };
     format!("games:hunger:{game}:{action}")
 }
@@ -57,7 +54,7 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "cancel" => Action::Cancel,
         "memories" => Action::Memories,
         "pictures" => Action::Pictures,
-        _ => Action::Next(what.strip_prefix("next:")?.parse().ok()?),
+        _ => return None,
     };
     Some((game, action))
 }
@@ -227,16 +224,6 @@ pub fn unspoken(line: &str) -> String {
     shown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The button to move on to the next round.
-pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
-    vec![CreateActionRow::Buttons(vec![
-        CreateButton::new(custom_id(game, Action::Next(round)))
-            .label("Next")
-            .emoji('⏭')
-            .style(ButtonStyle::Primary),
-    ])]
-}
-
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
 /// tribute who fell (name, kills, last words), with their kills and their last words when
 /// they have some, all behind spoilers so people still reading the rounds don't find out
@@ -318,14 +305,13 @@ mod tests {
             Action::Cancel,
             Action::Memories,
             Action::Pictures,
-            Action::Next(4),
         ] {
             let id = custom_id(9, action);
             let rest = id.strip_prefix("games:").unwrap();
             assert_eq!(parse_id(rest), Some((9, action)));
         }
         assert_eq!(parse_id("pick:1:2:3"), None);
-        assert_eq!(parse_id("hunger:9:next:x"), None);
+        assert_eq!(parse_id("hunger:9:next:4"), None);
         assert_eq!(parse_id("hunger:9:dance"), None);
     }
 

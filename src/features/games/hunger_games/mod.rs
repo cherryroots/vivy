@@ -35,7 +35,7 @@ pub struct Settings {
     pub max_tributes: usize,
     /// How long the Reaping stays open for the host to press Start.
     pub lobby_minutes: u64,
-    /// Seconds before the next round starts by itself, when the host doesn't press Next.
+    /// Seconds people get to read a round before the next one is posted.
     pub auto_advance_seconds: u64,
 }
 
@@ -44,7 +44,7 @@ impl Default for Settings {
         Settings {
             max_tributes: 24,
             lobby_minutes: 10,
-            auto_advance_seconds: 30,
+            auto_advance_seconds: 45,
         }
     }
 }

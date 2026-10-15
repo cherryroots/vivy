@@ -146,6 +146,23 @@ impl Game {
         alive.next().is_none().then_some(first)
     }
 
+    /// The winner's index, once one is left.
+    pub fn winner_index(&self) -> Option<usize> {
+        let winner = self.winner()?;
+        self.tributes.iter().position(|t| t.id == winner.id)
+    }
+
+    /// Everyone `killer` killed (indexes), in the order they died.
+    pub fn victims(&self, killer: usize) -> Vec<usize> {
+        self.rounds
+            .iter()
+            .flat_map(|r| &r.events)
+            .flat_map(|e| &e.deaths)
+            .filter(|d| d.by == Some(killer))
+            .map(|d| d.victim)
+            .collect()
+    }
+
     /// The round to play next, or `None` when the game is over.
     pub fn next_kind(&self) -> Option<Kind> {
         let alive = self.alive();
@@ -540,6 +557,9 @@ mod tests {
         assert_eq!(g.tributes[0].kills, 1);
         assert_eq!(g.tributes[1].died_in, Some(0));
         assert_eq!(g.fallen_since(0)[0].name, "P2");
+        assert_eq!(g.victims(0), vec![1]);
+        assert_eq!(g.victims(2), Vec::<usize>::new());
+        assert_eq!(g.winner_index(), None);
     }
 
     #[test]

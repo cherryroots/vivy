@@ -15,11 +15,11 @@
 //! It needs `OPENAI_TOKEN` in .env, whichever provider chats. Without it the tool isn't
 //! offered.
 //!
-//! Other features draw through the same tool (`run_tool`), so the monthly limits count
-//! their pictures too. They can pass arguments the chat model isn't told about:
-//! `reply: false` posts the picture on its own, `caption` puts a line of text with it,
-//! `spoiler: true` hides it behind a spoiler, and `job: "game_art"` counts its cost on a
-//! line of its own in OpenAI's spend. The Hunger Games use them.
+//! Other features draw through the same tool (`run_tool_with_pictures`), so the monthly
+//! limits count their pictures too. They can pass arguments the chat model isn't told
+//! about: `post: false` hands the picture back (in the reply's `images`) instead of posting
+//! it, and `job: "game_art"` counts its cost on a line of its own in OpenAI's spend. The
+//! Hunger Games use them, to post each round's map with the round.
 
 mod store;
 
@@ -31,9 +31,10 @@ use serde_json::{Value, json};
 use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message};
 use tracing::{info, warn};
 
-use crate::ai::{PictureRequest, ToolDef};
+use crate::ai::{PictureRequest, ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
 use crate::util::media::{self, MediaKind, ModelImage};
+use crate::util::search::snowflake_at;
 use crate::util::{env_key, month_start};
 
 const TOOL: &str = "draw_picture";
@@ -210,9 +211,22 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
         &self,
         ctx: &BotCtx,
         asker: &Asker,
-        _name: &str,
+        name: &str,
         args: &Value,
     ) -> Result<String> {
+        Ok(self
+            .run_tool_with_pictures(ctx, asker, name, args)
+            .await?
+            .text)
+    }
+
+    async fn run_tool_with_pictures(
+        &self,
+        ctx: &BotCtx,
+        asker: &Asker,
+        _name: &str,
+        args: &Value,
+    ) -> Result<ToolReply> {
         let images = ctx
             .ai
             .images
@@ -277,35 +291,49 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             job: job(args),
         };
         let picture = images.draw(&request).await?;
-
-        // Discord hides a file whose name starts with SPOILER_ behind a spoiler.
-        let spoiler = args.get("spoiler").and_then(Value::as_bool) == Some(true);
-        let name = format!(
-            "{}drawing.{}",
-            if spoiler { "SPOILER_" } else { "" },
-            picture.format
-        );
-        let mut message = CreateMessage::new()
-            .add_file(CreateAttachment::bytes(picture.data, name))
-            .allowed_mentions(CreateAllowedMentions::new().replied_user(true));
-        if args.get("reply").and_then(Value::as_bool) != Some(false) {
-            message = message.reference_message((asker.channel, asker.message));
-        }
-        if let Some(caption) = args.get("caption").and_then(Value::as_str) {
-            message = message.content(caption);
-        }
-        let message = asker
-            .channel
-            .send_message(&ctx.http, message)
-            .await
-            .context("posting the picture")?;
         info!(channel = %asker.channel, model, usd = picture.usd, "drew a picture");
-        asker
-            .posted
-            .add(message.id, format!("[Picture you drew] {prompt}"));
+
+        // Another feature posts the picture itself, with its own message.
+        let handed_back = args.get("post").and_then(Value::as_bool) == Some(false);
+        let (message_id, reply) = if handed_back {
+            let mime = match picture.format.as_str() {
+                "jpeg" => "image/jpeg",
+                "webp" => "image/webp",
+                _ => "image/png",
+            };
+            let reply = ToolReply {
+                text: "The picture is drawn and handed back, not posted.".to_string(),
+                images: vec![ModelImage {
+                    mime,
+                    data: picture.data,
+                }],
+            };
+            // Not posted, so there's no message ID: a made-up one from the time, unique
+            // enough to count it.
+            let id = snowflake_at(Utc::now()) + fastrand::u64(..1 << 22);
+            (id, reply)
+        } else {
+            let name = format!("drawing.{}", picture.format);
+            let message = CreateMessage::new()
+                .add_file(CreateAttachment::bytes(picture.data, name))
+                .reference_message((asker.channel, asker.message))
+                .allowed_mentions(CreateAllowedMentions::new().replied_user(true));
+            let message = asker
+                .channel
+                .send_message(&ctx.http, message)
+                .await
+                .context("posting the picture")?;
+            asker
+                .posted
+                .add(message.id, format!("[Picture you drew] {prompt}"));
+            (
+                message.id.get(),
+                ToolReply::from("The picture is posted as a reply to the asker. It is your answer: write at most a short line with it, and don't describe it.".to_string()),
+            )
+        };
 
         let drawn = store::Drawn {
-            message_id: message.id.get(),
+            message_id,
             guild_id: asker.guild.map(|g| g.get()),
             channel_id: asker.channel.get(),
             user_id: asker.user.get(),
@@ -316,7 +344,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
         ctx.db
             .call(move |conn| Ok(store::record(conn, &drawn)?))
             .await?;
-        Ok("The picture is posted as a reply to the asker. It is your answer: write at most a short line with it, and don't describe it.".to_string())
+        Ok(reply)
     }
 
     async fn stats(&self, ctx: &BotCtx) -> Result<Vec<Stat>> {
