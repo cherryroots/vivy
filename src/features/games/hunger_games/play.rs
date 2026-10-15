@@ -44,7 +44,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
-    /// Whether Vivy gets her memory notes about the tributes (the host's toggle).
+    /// Whether Vivy gets her memory notes about the tributes (the host's toggle, off at
+    /// first).
     memories: bool,
 }
 
@@ -137,7 +138,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
-            memories: true,
+            memories: false,
         }),
         wake: Notify::new(),
         waiting_on: Mutex::new(None),
@@ -160,7 +161,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         &[],
         max,
         closes_at,
-        true,
+        false,
     );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
