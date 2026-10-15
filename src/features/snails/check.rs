@@ -9,7 +9,7 @@ use tracing::debug;
 
 use super::fingerprint::{self, Fingerprint};
 use super::index::{self, LoadedPicture};
-use super::store::{self, Candidate, Failure, Indexed, Posted};
+use super::store::{self, Candidate, Catch, Failure, Indexed, Posted};
 use super::{backfill, collect};
 use crate::core::{BotCtx, Context, Result};
 use crate::util::count;
@@ -129,16 +129,20 @@ async fn count_if_snail(
     {
         return Ok(());
     }
-    if earlier_posts(ctx, guild, msg, links, pictures, 1)
-        .await?
-        .0
-        .is_empty()
-    {
+    let (earlier, _) = earlier_posts(ctx, guild, msg, links, pictures, 1).await?;
+    let Some(original) = earlier.into_iter().next() else {
         return Ok(());
-    }
-    let (g, author) = (guild.get(), msg.author.id.get());
+    };
+    let catch = Catch {
+        guild: guild.get(),
+        message: id,
+        channel: msg.channel_id.get(),
+        author: msg.author.id.get(),
+        at,
+        original: original.posted,
+    };
     ctx.db
-        .call(move |conn| Ok(store::record_caught(conn, g, id, author, at)?))
+        .call(move |conn| Ok(store::record_caught(conn, &catch)?))
         .await
 }
 

@@ -174,6 +174,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
 | #64 | | Gemini provider (`provider = "gemini"`, Gemini 4 Argon through the Interactions API): Google Search, URL context and code execution; posted videos uploaded with the Files API and YouTube links watched as videos |
 | #65 | | TinyFish: chat's `tinyfish_search` and `tinyfish_fetch` tools (any provider, chime-ins too) when `TINYFISH_API_KEY` is in `.env`, so she can search and read Reddit and other sites the built-in web tools can't reach; `[features.tinyfish]` sets results per search, location, language and how much of a page she reads; her prompt sends Reddit and pages her own fetch can't read to TinyFish |
+| #66 | | Snails: `/snails recent` lists the server's last 10 snails with jump links to each message and the first post it repeated (new columns on `snail_caught`) |
 
 ## Not built yet
 
