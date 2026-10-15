@@ -221,6 +221,30 @@ pub fn map(arena: &[String], looks: &Looks) -> String {
     text
 }
 
+/// The final showdown's picture: zoomed in on the one zone where the last two fight, so
+/// they're drawn big. The image model gets every zone's look, to draw the right one.
+pub fn showdown(arena: &[String], looks: &Looks, picture: &str) -> String {
+    let mut zones = vec![
+        "the supply camp in the center: a big golden tent piled with crates and backpacks"
+            .to_string(),
+    ];
+    for (i, place) in arena.iter().enumerate() {
+        let zone = match label(place) {
+            Some(label) => format!("the zone labelled \"{label}\""),
+            None => continue,
+        };
+        zones.push(match looks.zones.get(i) {
+            Some(Some(terrain)) => format!("{zone}: {terrain}"),
+            _ => zone,
+        });
+    }
+    format!(
+        "A close, zoomed-in view of just one zone of the battlefield map, where the last two players fight. Draw only the zone this happens in, as it looks here: {}.\n\nThe fight: {}\n\nExactly 2 players are in the picture, each described above, each drawn once. Nobody else is anywhere: no crowds, guards, monsters or robots.",
+        zones.join("; "),
+        fill(picture, looks)
+    )
+}
+
 /// A place's name as a label on the map: letters, digits, spaces, `-` and `_` only, since
 /// an image model draws plain text best. `None` when nothing is left.
 fn label(place: &str) -> Option<String> {
@@ -257,7 +281,7 @@ pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
         _ => "a player".to_string(),
     };
     let mut text = format!(
-        "A full picture of the winner of the battle: {} standing victorious in the middle, the only one standing, holding their signature item high, on a ruined battlefield at sunset.",
+        "A full-body picture of the winner of the battle, large and filling most of the frame: {} standing victorious, the only one standing, holding their signature item high, on a ruined battlefield at sunset.",
         look(winner)
     );
     if victims.is_empty() {
@@ -329,7 +353,7 @@ mod tests {
             zones: Vec::new(),
         };
         let text = victor(&looks, 0, &[2, 1]);
-        assert!(text.contains("(a frog knight) standing victorious in the middle"));
+        assert!(text.contains("(a frog knight) standing victorious, the only one standing"));
         assert!(
             text.contains("lie the 2 players they defeated, and nobody else: (a cat); a player.")
         );
@@ -342,6 +366,22 @@ mod tests {
         assert!(text.contains("This round: a player naps."));
         assert!(text.contains("Exactly 3 players are on the map"));
         assert!(text.contains("Nobody else is anywhere on the map"));
+    }
+
+    #[test]
+    fn zooms_in_on_the_showdown() {
+        let looks = Looks {
+            tributes: vec![Some("a frog knight".into()), None],
+            zones: vec![Some("an arcade ruin".into()), None],
+        };
+        let text = showdown(
+            &["gaming".into(), "💬".into()],
+            &looks,
+            "In gaming, {T1} duels {T2}.",
+        );
+        assert!(text.contains("as it looks here: the supply camp in the center: a big golden tent piled with crates and backpacks; the zone labelled \"gaming\": an arcade ruin."));
+        assert!(text.contains("The fight: In gaming, (a frog knight) duels a player."));
+        assert!(text.contains("Exactly 2 players"));
     }
 
     #[test]

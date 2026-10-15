@@ -23,8 +23,10 @@ use crate::util::media::ModelImage;
 const TOOL: &str = "draw_picture";
 /// Added to each round's map, so a game's maps share one style.
 pub const MAP: &str = "Style: a clean top-down 2D map of the whole battlefield, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the players as colorful pixel-art sprites in the zones where they are, drawn a bit bigger than usual for a map so each one's colors and item are easy to make out, fights shown as sprites clashing with simple action marks. Easy to read at a glance. No blood or gore, and no words or letters except the zone labels, written exactly as given.";
-/// Added to the victor's picture: the same pixel art, up close.
-pub const VICTORY: &str = "Style: a detailed retro 16-bit pixel-art scene, like the victory screen of a classic game, with the characters drawn large and clear. Defeated players are knocked out, with little dizzy stars, never hurt. No blood or gore, and no words or letters anywhere in the picture.";
+/// Added to the final showdown: the map's pixel art, zoomed in on one zone.
+pub const SHOWDOWN: &str = "Style: the same retro 16-bit pixel art as a top-down strategy game map, zoomed in close on one zone so the two players are large, detailed sprites mid-fight, with simple action marks and the zone's label in a corner. No blood or gore, and no words or letters except that label, written exactly as given.";
+/// Added to the victor's picture: the same pixel art, a full-size figure.
+pub const VICTORY: &str = "Style: a detailed retro 16-bit pixel-art scene, like the victory screen of a classic game, with the winner as a large full-body figure and everything drawn clear. Defeated players are knocked out, with little dizzy stars, never hurt. No blood or gore, and no words or letters anywhere in the picture.";
 
 /// Where a game's pictures are drawn: its server and channel, the Reaping message, and the
 /// host, who asks for them.
@@ -46,7 +48,7 @@ pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
             .any(|f| f.tools().iter().any(|t| t.name == TOOL))
 }
 
-/// Draws `prompt` (with the looks in) in `style` ([`MAP`] or [`VICTORY`]), without posting
+/// Draws `prompt` (with the looks in) in `style` ([`MAP`], [`SHOWDOWN`] or [`VICTORY`]), without posting
 /// it. `None` when it couldn't be drawn. Takes 15 to 20 seconds or so.
 pub async fn draw(ctx: &BotCtx, easel: Easel, prompt: &str, style: &str) -> Option<ModelImage> {
     if !can_draw(ctx, easel.guild, easel.channel) {

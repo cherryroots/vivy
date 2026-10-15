@@ -125,23 +125,15 @@ pub fn brief(
     text.push_str(&format!(
         "\nThis round: {what} {alive} tributes are alive. {deaths}"
     ));
-    // The victor's picture is made by the bot, from who won and who they killed.
-    let picture = match kind {
-        Kind::Bloodbath => Some(
-            "Also write a `picture`: everyone racing to the supply camp as the game begins, and where each event happens.",
-        ),
-        Kind::Night(_) => Some(
-            "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
-        ),
-        Kind::Feast(_) => Some(
-            "Also write a `picture`: a long table of food and gear at the supply camp, and each event where it happens.",
-        ),
-        Kind::Day(_) => Some("Also write a `picture`: each event where it happens."),
-        Kind::Finale => None,
-    };
-    if pictures && let Some(picture) = picture {
+    if pictures {
         text.push(' ');
-        text.push_str(picture);
+        text.push_str(match kind {
+            Kind::Bloodbath => "Also write a `picture`: everyone racing to the supply camp as the game begins, and where each event happens.",
+            Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
+            Kind::Feast(_) => "Also write a `picture`: a long table of food and gear at the supply camp, and each event where it happens.",
+            Kind::Day(_) => "Also write a `picture`: each event where it happens.",
+            Kind::Finale => "Also write a `picture`: the final showdown between the last two, where it happens. The winner gets a picture of their own after it.",
+        });
     }
     text
 }
@@ -341,7 +333,9 @@ mod tests {
         assert!(!text.contains("`picture`"));
         let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
         assert!(drawn.contains("Also write a `picture`: each event where it happens."));
-        assert!(!brief(&game, Kind::Finale, &[], &notes, true).contains("`picture`"));
+        assert!(
+            brief(&game, Kind::Finale, &[], &notes, true).contains("`picture`: the final showdown")
+        );
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));

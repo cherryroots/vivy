@@ -362,28 +362,35 @@ async fn play(
                 channel.get(),
             )
             .await?;
-            let picture = match (&looks, &round.picture) {
-                // The victor up close, with everyone they killed.
-                (Some(looks), _) if kind == Kind::Finale => {
-                    let mut after = game_before.clone();
-                    after.apply(round.clone());
-                    match after.winner_index() {
-                        Some(winner) => {
-                            let looks = looks.get().await;
-                            let prompt = looks::victor(looks, winner, &after.victims(winner));
-                            pictures::draw(&ctx, easel, &prompt, pictures::VICTORY).await
-                        }
-                        None => None,
-                    }
-                }
-                (Some(looks), Some(picture)) if kind != Kind::Bloodbath => {
-                    let alive = game_before.alive();
-                    let prompt = looks::prompt(&arena, looks.get().await, picture, alive);
-                    pictures::draw(&ctx, easel, &prompt, pictures::MAP).await
-                }
-                _ => None,
+            let Some(looks) = looks.filter(|_| kind != Kind::Bloodbath) else {
+                return anyhow::Ok((round, Pictures::default()));
             };
-            anyhow::Ok((round, picture))
+            let looks = looks.get().await;
+            // The final showdown is zoomed in on its zone; other rounds show the whole map.
+            let map = async {
+                let picture = round.picture.as_deref()?;
+                let (prompt, style) = match kind {
+                    Kind::Finale => (looks::showdown(&arena, looks, picture), pictures::SHOWDOWN),
+                    _ => (
+                        looks::prompt(&arena, looks, picture, game_before.alive()),
+                        pictures::MAP,
+                    ),
+                };
+                pictures::draw(&ctx, easel, &prompt, style).await
+            };
+            // After the final showdown, the victor up close, with everyone they killed.
+            let victor = async {
+                if kind != Kind::Finale {
+                    return None;
+                }
+                let mut after = game_before.clone();
+                after.apply(round.clone());
+                let winner = after.winner_index()?;
+                let prompt = looks::victor(looks, winner, &after.victims(winner));
+                pictures::draw(&ctx, easel, &prompt, pictures::VICTORY).await
+            };
+            let (map, victor) = tokio::join!(map, victor);
+            anyhow::Ok((round, Pictures { map, victor }))
         })
     };
     let mut words = Later::Working(words);
@@ -409,7 +416,7 @@ async fn play(
                 written = &mut writing => written,
             }
         };
-        let (round, mut picture) = match written {
+        let (round, mut drawn) = match written {
             Ok(Ok(written)) => written,
             Ok(Err(err)) => {
                 warn!("couldn't write a Hunger Games round: {err:#}");
@@ -435,7 +442,11 @@ async fn play(
         let parts = ui::round(&game, &game.rounds[index]);
         let count = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
-            let picture = if i + 1 == count { picture.take() } else { None };
+            let picture = if i + 1 == count {
+                drawn.map.take()
+            } else {
+                None
+            };
             post(bot, channel, part, picture).await;
         }
         if kind == Kind::Bloodbath
@@ -459,10 +470,16 @@ async fn play(
                 let title = "The last of the fallen";
                 post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
             }
-            for part in ui::victor(&game, victory.as_deref()) {
-                if let Err(err) = channel.send_message(&bot.http, text(part)).await {
-                    warn!("couldn't post the Hunger Games victor: {err}");
-                }
+            // The victor's picture goes with the message's last part.
+            let parts = ui::victor(&game, victory.as_deref());
+            let count = parts.len();
+            for (i, part) in parts.into_iter().enumerate() {
+                let picture = if i + 1 == count {
+                    drawn.victor.take()
+                } else {
+                    None
+                };
+                post(bot, channel, part, picture).await;
             }
             if let Some(line) = victory {
                 speak(line).await;
@@ -491,6 +508,15 @@ async fn play(
             () = tokio::time::sleep(auto) => {}
         }
     }
+}
+
+/// The pictures that go with a round, when pictures are on.
+#[derive(Default)]
+struct Pictures {
+    /// The map, posted with the round.
+    map: Option<ModelImage>,
+    /// After the final showdown, the victor, posted with the victor message.
+    victor: Option<ModelImage>,
 }
 
 /// Posts one message of the game, with a picture when there is one. If Discord won't take
