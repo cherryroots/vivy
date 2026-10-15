@@ -31,8 +31,9 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.";
 
-/// The arena, the tributes, the story so far, and what this round is: what she's told.
-pub fn brief(game: &Game, kind: Kind, arena: &[String]) -> String {
+/// The arena, the tributes, her notes about them, the story so far, and what this round
+/// is: what she's told. `notes` are in the same order as the tributes.
+pub fn brief(game: &Game, kind: Kind, arena: &[String], notes: &[Option<String>]) -> String {
     let alive = game.alive();
     let (min, max) = game.deaths_range(kind);
     let mut text = String::new();
@@ -52,6 +53,28 @@ pub fn brief(game: &Game, kind: Kind, arena: &[String]) -> String {
             None => format!("alive, {} kills", t.kills),
         };
         text.push_str(&format!("- {}: {} ({state})\n", Game::tag(i), t.name));
+    }
+    let known: Vec<String> = game
+        .tributes
+        .iter()
+        .zip(notes)
+        .enumerate()
+        .filter(|(_, (t, _))| t.alive())
+        .filter_map(|(i, (t, note))| {
+            let note = note.as_deref()?;
+            Some(format!(
+                "<notes tribute=\"{}\" name=\"{}\">\n{note}\n</notes>",
+                Game::tag(i),
+                t.name
+            ))
+        })
+        .collect();
+    if !known.is_empty() {
+        text.push_str(
+            "\nWhat your memory notes say about some of the living tributes. Bring a detail in only where it makes a moment funnier or more personal (a hobby, a favourite game, a running joke), a few per round at most. Never use anything private, sensitive or that could hurt or embarrass them (health, relationships, family, where they live, work or money troubles, anything told in confidence). When nothing fits, leave the notes out:\n",
+        );
+        text.push_str(&known.join("\n"));
+        text.push('\n');
     }
     if !game.rounds.is_empty() {
         text.push_str("\nThe story so far:\n");
@@ -132,11 +155,12 @@ pub async fn write(
     game: Game,
     kind: Kind,
     arena: Vec<String>,
+    notes: Arc<Vec<Option<String>>>,
     channel: u64,
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena))],
+        parts: vec![Part::Text(brief(&game, kind, &arena, &notes))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
@@ -230,9 +254,16 @@ mod tests {
             asked: Mutex::new(Vec::new()),
         });
         let game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
-        let round = write(provider.clone(), game, Kind::Finale, Vec::new(), 5)
-            .await
-            .unwrap();
+        let round = write(
+            provider.clone(),
+            game,
+            Kind::Finale,
+            Vec::new(),
+            Arc::new(Vec::new()),
+            5,
+        )
+        .await
+        .unwrap();
         assert_eq!(round.victory.as_deref(), Some("Well done, Moss."));
         let asked = provider.asked.lock().unwrap();
         assert_eq!(asked.len(), 2);
@@ -264,7 +295,19 @@ mod tests {
             }],
             victory: None,
         });
-        let text = brief(&game, Kind::Finale, &["general".into(), "memes".into()]);
+        let notes = vec![
+            Some("Plays chess".into()),
+            Some("dead, unused".into()),
+            None,
+        ];
+        let text = brief(
+            &game,
+            Kind::Finale,
+            &["general".into(), "memes".into()],
+            &notes,
+        );
+        assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
+        assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));
         assert!(text.contains("- T1: Moss (alive, 1 kill)"));
         assert!(text.contains("- T2: Cherry (dead)"));

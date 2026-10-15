@@ -30,15 +30,26 @@ pub async fn load(
     sources: &[Source],
     settings: &Settings,
 ) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
-    let now = Utc::now();
-    // Nothing from the last hour, so the conversation going on right now isn't in it.
-    let to = now - Duration::hours(1);
-    let oldest = now - Duration::days(settings.lookback_days.max(1));
     let reads = if sources.len() > 1 {
         SERVER_READS
     } else {
         READS
     };
+    load_reads(ctx, sources, settings, reads).await
+}
+
+/// Like [`load`], with the number of reads (100 messages each) given. The Hunger Games'
+/// last words read more, since every tribute should get some.
+pub async fn load_reads(
+    ctx: &BotCtx,
+    sources: &[Source],
+    settings: &Settings,
+    reads: usize,
+) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
+    let now = Utc::now();
+    // Nothing from the last hour, so the conversation going on right now isn't in it.
+    let to = now - Duration::hours(1);
+    let oldest = now - Duration::days(settings.lookback_days.max(1));
 
     let mut seen = HashSet::new();
     let mut quotes = Vec::new();

@@ -8,6 +8,7 @@ use serenity::all::{
 };
 
 use super::game::{Game, Kind, Round, fill};
+use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::who_said_it::ui::{COLOR, escape};
 use crate::util::shorten_at_word;
@@ -175,23 +176,32 @@ pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
     ])]
 }
 
-/// The cannons at the end of a day: one for each tribute who fell, their names behind
-/// spoilers so people still reading the rounds don't find out early.
-pub fn cannons(day: u32, fallen: &[String]) -> String {
-    let mut text = format!("### 💥 The fallen of day {day}\n");
+/// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
+/// tribute who fell, with their last words when they have some, all behind spoilers so
+/// people still reading the rounds don't find out early.
+pub fn cannons(title: &str, fallen: &[(String, Option<LastWords>)]) -> String {
+    let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
     } else {
-        let names: Vec<String> = fallen
+        let lines: Vec<String> = fallen
             .iter()
-            .map(|n| format!("💥 ||{}||", escape(n)))
+            .map(|(name, words)| match words {
+                Some(words) => format!(
+                    "💥 ||**{}**: “{}” [↗](<{}>)||",
+                    escape(name),
+                    words.text,
+                    words.link
+                ),
+                None => format!("💥 ||**{}**||", escape(name)),
+            })
             .collect();
         text.push_str(&format!(
             "{} cannon{} sound{} across the arena.\n\n{}",
             fallen.len(),
             if fallen.len() == 1 { "" } else { "s" },
             if fallen.len() == 1 { "s" } else { "" },
-            names.join("\n")
+            lines.join("\n")
         ));
     }
     text
@@ -256,7 +266,17 @@ mod tests {
         assert!(text.contains("> 🎙️ ||*Well done, Moss | hi*||"));
         assert!(text.contains("👑 ||Moss, 1 kill||"));
         assert!(text.contains("2. ||Ash||"));
-        assert!(cannons(1, &["Ash".into()]).contains("💥 ||Ash||"));
+        let words = LastWords {
+            text: "brb".into(),
+            link: "https://discord.com/channels/1/2/3".into(),
+        };
+        let text = cannons(
+            "The fallen of day 1",
+            &[("Ash".into(), Some(words)), ("Moss".into(), None)],
+        );
+        assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
+        assert!(text.contains("💥 ||**Ash**: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
+        assert!(text.contains("💥 ||**Moss**||"));
     }
 
     #[test]
