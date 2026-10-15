@@ -61,6 +61,10 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 `/games whosaidit` digs up old messages from the channel (or another one, or the whole server), and everyone races to press the button of who wrote each one. Faster right answers score more, and Vivy posts the scores at the end.
 
+### Hunger Games
+
+`/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round of a battle royale set in the server's own channels (the Bloodbath, days and nights, the Feast, the final showdown) until one tribute wins. The host presses Next, or the next round starts by itself.
+
 ### Control panel
 
 A status picture in a channel of your choice, refreshed every minute: uptime, version, the AI provider and its spend, Vivy's mood, per-feature stats and graphs. Warnings, errors and start and stop notices go to a log channel.

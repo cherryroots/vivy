@@ -7,7 +7,7 @@ use super::game::{Outcome, Quote, Round};
 use crate::util::shorten;
 
 /// Vivy's teal, down the side of every message.
-const COLOR: u32 = 0x2bc4b4;
+pub(super) const COLOR: u32 = 0x2bc4b4;
 
 /// A button's ID: `who_said_it:pick:<game>:<round>:<person>`. `game` tells a running game
 /// from an older one in the same channel.
@@ -158,7 +158,7 @@ fn quote_block(text: &str) -> String {
 }
 
 /// A name with Discord's formatting characters escaped, so `_moss_` doesn't turn italic.
-fn escape(name: &str) -> String {
+pub(super) fn escape(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if matches!(

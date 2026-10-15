@@ -6,8 +6,12 @@
 //! - `quotes.rs`: reading their history and cleaning messages into quotes
 //! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
 //! - `play.rs`: `/games whosaidit`, the task that runs a game, and button presses
+//!
+//! `hunger/` is the other game under `/games`: `/games hungergames`, a battle royale Vivy
+//! writes. It lives here because Discord needs one `/games` command to hold both.
 
 mod game;
+mod hunger;
 mod play;
 mod quotes;
 mod sources;
@@ -35,6 +39,8 @@ pub struct Settings {
     /// People whose messages are never used. They aren't offered as choices either, since
     /// the choices come from the people who wrote the quotes.
     pub exclude_users: Vec<u64>,
+    /// `/games hungergames`: `[features.who_said_it.hunger_games]`.
+    pub hunger_games: hunger::Settings,
 }
 
 impl Default for Settings {
@@ -46,6 +52,7 @@ impl Default for Settings {
             min_length: 20,
             max_length: 300,
             exclude_users: Vec::new(),
+            hunger_games: hunger::Settings::default(),
         }
     }
 }
@@ -68,6 +75,9 @@ impl Feature for WhoSaidIt {
         interaction: &ComponentInteraction,
         action: &str,
     ) -> Result<()> {
+        if action.starts_with("hunger:") {
+            return hunger::on_component(ctx, interaction, action).await;
+        }
         play::on_component(ctx, interaction, action).await
     }
 }

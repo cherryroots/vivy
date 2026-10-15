@@ -49,4 +49,4 @@ All under `src/features/who_said_it/`.
 
 It started as an Activity (a game window inside Discord), but Discord only lets unverified Activities be played by the app's developer team and up to 50 invited testers, in servers with fewer than 25 members ([Discord's article](https://support-dev.discord.com/hc/en-us/articles/26576097154199)). Messages and buttons work for everyone, with no web server.
 
-`/games` is declared by this feature, since Discord needs one command to hold the subcommands. A second game would add its subcommand next to `whosaidit`, or the two would share a games feature.
+`/games` is declared by this feature, since Discord needs one command to hold the subcommands. The second game, [the Hunger Games](hunger-games.md), lives in `hunger/` inside this feature and adds `/games hungergames` next to `whosaidit`.

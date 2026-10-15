@@ -281,6 +281,15 @@ max_length = 300
 # People whose messages are never used.
 # exclude_users = [123456789012345678]
 
+[features.who_said_it.hunger_games]
+# /games hungergames: a battle royale between members that Vivy writes, round by round.
+# The most tributes in one game (at most 24).
+max_tributes = 24
+# How long the Reaping stays open for the host to press Start.
+lobby_minutes = 10
+# Seconds before the next round starts by itself, when the host doesn't press Next (at least 5).
+auto_advance_seconds = 30
+
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.
 # status_channel = 123456789012345678
