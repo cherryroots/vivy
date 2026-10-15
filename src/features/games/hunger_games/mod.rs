@@ -8,6 +8,7 @@
 //! - `ui.rs`: the Reaping, round, cannon and victor messages, and the button IDs (pure)
 //! - `last_words.rs`: a real message from each tribute, shown when they fall
 //! - `notes.rs`: Vivy's memory notes about the tributes, through the `memory` tool
+//! - `voice.rs`: the Gamemaker's lines as voice messages, through the voice feature's tool
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
 
 mod game;
@@ -15,6 +16,7 @@ mod last_words;
 mod notes;
 mod play;
 mod ui;
+mod voice;
 mod writer;
 
 use serde::Deserialize;

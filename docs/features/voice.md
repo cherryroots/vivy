@@ -8,7 +8,7 @@ There are no commands. In chat, ask Vivy to say something out loud; the chat mod
 
 The tool is only offered when `ELEVENLABS_API_KEY` is set in `.env`, and only in normal chat answers (not in chime-ins, whose tool list is an allow-list in `src/features/chat/chime.rs` that leaves it out). Sending also needs `ffmpeg` installed and the Send Voice Messages permission in the channel.
 
-Settings live under `[features.voice]`: `voice_id`, `model`, `stability`, `similarity`, `language`, `monthly_characters` and `max_characters`. `config.example.toml` explains each one. Setup is in the README.
+Settings live under `[features.voice]`: `voice_id`, `voices`, `model`, `stability`, `similarity`, `language`, `monthly_characters` and `max_characters`. `config.example.toml` explains each one. Setup is in the README.
 
 ## Files
 
@@ -26,6 +26,10 @@ All under `src/features/voice/`.
 ### The script
 
 The tool takes one argument, `script`: the spoken words, with ElevenLabs v4 audio tags in square brackets before the words they're for, like `[whispers]`, `[laughs]`, `[sleepy, slow]`. The tool description tells her: a tag lasts until the next one, several go in one bracket with commas, opposite ones (`[whispers, shouting]`) shouldn't be mixed, write spoken words only (no markdown, links, emoji or lists), keep it to one to four sentences, and let her current mood show in how she sounds. Only the script is sent to ElevenLabs, nothing else from the conversation.
+
+### Other voices, for other features
+
+`[features.voice.voices]` names other ElevenLabs voices. The default has `gamemaker` (`DucUc05HgR5M3wbY6WkG`), the voice the [Hunger Games](hunger-games.md) Gamemaker speaks with; an empty ID turns a voice off. Other features send voice messages through the same tool, by finding the feature that offers `send_voice_message` and calling `run_tool` (they don't import this feature), so the gate, the length limit and the monthly limit apply to them too. They pass two arguments the chat model isn't told about: `voice`, a name from `voices` (instead of `voice_id`), and `reply: false`, which posts the voice message on its own instead of as a reply.
 
 ### Steps in `run_tool`
 

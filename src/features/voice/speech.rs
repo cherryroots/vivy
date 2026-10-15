@@ -15,11 +15,13 @@ const FORMAT: &str = "opus_48000_128";
 /// How long one request may take. A short voice message takes a few seconds.
 const TIMEOUT: Duration = Duration::from_secs(90);
 
-/// Speaks `text` (audio tags included) in the voice from `settings`. Returns the audio.
+/// Speaks `text` (audio tags included) in the voice `voice_id`, with the model and voice
+/// settings from `settings`. Returns the audio.
 pub async fn speak(
     web: &reqwest::Client,
     key: &str,
     settings: &Settings,
+    voice_id: &str,
     text: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let mut body = json!({
@@ -34,7 +36,7 @@ pub async fn speak(
         body["language_code"] = language.clone().into();
     }
     let response = web
-        .post(format!("{API}/{}", settings.voice_id))
+        .post(format!("{API}/{voice_id}"))
         .query(&[("output_format", FORMAT)])
         .header("xi-api-key", key)
         // The client has no overall timeout, and a stuck request would hold up the answer.

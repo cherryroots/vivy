@@ -178,6 +178,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #66 | | Snails: `/snails recent` lists the server's last 10 snails with jump links to each message and the first post it repeated (new columns on `snail_caught`) |
 | #67 | | Hunger Games (stage 1): `/games hungergames` opens the Reaping (host picks tributes, others volunteer), then Vivy writes every round as the Gamemaker, checked by the rules (everyone in one event, pacing, a final two), with cannons after each night and a victor with placings; the arena is the server's public channels |
 | #68 | | Hunger Games (stage 2): the fallen get last words (a real message of theirs, found with Discord's message search in the public channels, behind spoilers), the final showdown's loser too; each round she gets her memory notes about the living tributes, through the `memory` tool, to use only where they're fun (the host can turn them off with a Memories button in the Reaping). Message search moved to `util::search` with every API filter, and `search_messages` offers them all |
+| #69 | | Hunger Games (stage 3): her Gamemaker lines (opening, Feast, final showdown, victor) also become voice messages in the Gamemaker's own voice (`[features.voice.voices]`, `gamemaker`), through the voice tool so the monthly limit counts them; audio tags steer them and aren't shown. Both games move into a games feature (`games/who_said_it/`, `games/hunger_games/`) with settings at `[features.games]` |
 
 ## Not built yet
 

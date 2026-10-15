@@ -29,7 +29,8 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
-- `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.";
+- `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
+- `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
 /// is: what she's told. `notes` are in the same order as the tributes.

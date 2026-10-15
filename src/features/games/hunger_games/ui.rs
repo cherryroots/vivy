@@ -167,7 +167,7 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
     };
     let mut blocks = vec![format!("## {emoji} {}", title(round.kind))];
     if let Some(line) = &round.gamemaker {
-        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(line, 600)));
+        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(&unspoken(line), 600)));
     }
     for event in &round.events {
         let skull = if event.deaths.is_empty() {
@@ -184,6 +184,22 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
         format!("-# {left} tributes left")
     });
     split_message(&blocks.join("\n\n"), DISCORD_LIMIT)
+}
+
+/// A Gamemaker line as it's shown: without the audio tags (`[booming]`) that steer how
+/// it's spoken.
+pub fn unspoken(line: &str) -> String {
+    let mut shown = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        let Some(end) = rest[start..].find(']') else {
+            break;
+        };
+        shown.push_str(&rest[..start]);
+        rest = &rest[start + end + 1..];
+    }
+    shown.push_str(rest);
+    shown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The button to move on to the next round.
@@ -234,7 +250,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
     if let Some(line) = victory {
         // A `||` of her own would end the spoiler early.
-        let line = shorten_at_word(line, 600).replace("||", "|");
+        let line = shorten_at_word(&unspoken(line), 600).replace("||", "|");
         text.push_str(&format!("> 🎙️ ||*{line}*||\n\n"));
     }
     for (i, t) in placings.iter().enumerate() {
@@ -328,5 +344,14 @@ mod tests {
         assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
         assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 **P1** walks"));
         assert!(parts.last().unwrap().ends_with("-# 23 tributes left"));
+    }
+
+    #[test]
+    fn audio_tags_arent_shown() {
+        assert_eq!(
+            unspoken("[booming] Welcome, tributes! [dramatic pause] Begin."),
+            "Welcome, tributes! Begin."
+        );
+        assert_eq!(unspoken("No tags [at all"), "No tags [at all");
     }
 }

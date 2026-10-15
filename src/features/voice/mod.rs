@@ -10,10 +10,17 @@
 //! - `store.rs`: what was sent, for the monthly character limit
 //!
 //! The key goes in .env as `ELEVENLABS_API_KEY`. Without it the tool isn't offered.
+//!
+//! Other features can send voice messages through the same tool (`run_tool`), so they count
+//! toward the monthly limit too. They can pass two arguments the chat model isn't told
+//! about: `voice`, the name of another voice from `[features.voice.voices]` (the Hunger
+//! Games' Gamemaker speaks with `gamemaker`), and `reply: false` to post it on its own.
 
 mod audio;
 mod speech;
 mod store;
+
+use std::collections::HashMap;
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -30,7 +37,9 @@ use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
 use crate::util::{env_key, month_start};
 
 const KEY_VAR: &str = "ELEVENLABS_API_KEY";
-const TOOL: &str = "send_voice_message";
+pub const TOOL: &str = "send_voice_message";
+/// The Hunger Games' Gamemaker voice, made by Cherry with ElevenLabs Voice Design.
+const GAMEMAKER_VOICE: &str = "DucUc05HgR5M3wbY6WkG";
 /// Discord's flag for a voice message.
 const IS_VOICE_MESSAGE: u64 = 1 << 13;
 
@@ -40,6 +49,9 @@ const IS_VOICE_MESSAGE: u64 = 1 << 13;
 pub struct Settings {
     /// The ElevenLabs voice she speaks with.
     pub voice_id: String,
+    /// Other voices by name, for other features (`gamemaker` for the Hunger Games). An
+    /// empty ID turns that voice off.
+    pub voices: HashMap<String, String>,
     /// "eleven_v4", or "eleven_v4_turbo" for faster and half the price.
     pub model: String,
     /// 0 to 1: lower is more expressive and varied, higher is steadier.
@@ -58,6 +70,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             voice_id: String::new(),
+            voices: HashMap::from([("gamemaker".to_string(), GAMEMAKER_VOICE.to_string())]),
             model: "eleven_v4".to_string(),
             stability: 0.5,
             similarity: 0.75,
@@ -117,11 +130,17 @@ The voice message is your whole answer, so usually write no text with it.",
     ) -> Result<String> {
         let key = key().ok_or_else(|| user_error("voice messages aren't set up"))?;
         let settings: Settings = ctx.config.feature("voice")?;
-        if settings.voice_id.trim().is_empty() {
+        let voice_id = match args.get("voice").and_then(Value::as_str) {
+            Some(name) => settings.voices.get(name).map_or("", |id| id.trim()),
+            None => settings.voice_id.trim(),
+        };
+        if voice_id.is_empty() {
             return Err(user_error(
-                "voice messages aren't set up (no voice_id in config.toml)",
+                "voice messages aren't set up (no voice ID in config.toml)",
             ));
         }
+        let voice_id = voice_id.to_string();
+        let reply = args.get("reply").and_then(Value::as_bool).unwrap_or(true);
         let script = args
             .get("script")
             .and_then(Value::as_str)
@@ -148,9 +167,9 @@ The voice message is your whole answer, so usually write no text with it.",
             )));
         }
 
-        let audio = speech::speak(&ctx.web, &key, &settings, &script).await?;
+        let audio = speech::speak(&ctx.web, &key, &settings, &voice_id, &script).await?;
         let clip = audio::prepare(&audio).await?;
-        let payload = json!({
+        let mut payload = json!({
             "flags": IS_VOICE_MESSAGE,
             "attachments": [{
                 "id": 0,
@@ -158,13 +177,15 @@ The voice message is your whole answer, so usually write no text with it.",
                 "duration_secs": clip.seconds,
                 "waveform": BASE64_STANDARD.encode(&clip.waveform),
             }],
-            "message_reference": {
+            "allowed_mentions": {"parse": [], "replied_user": true},
+        });
+        if reply {
+            payload["message_reference"] = json!({
                 "message_id": asker.message.get(),
                 "channel_id": asker.channel.get(),
                 "fail_if_not_exists": false,
-            },
-            "allowed_mentions": {"parse": [], "replied_user": true},
-        });
+            });
+        }
         let file = CreateAttachment::bytes(clip.ogg, "voice-message.ogg");
         let message = ctx
             .http
@@ -224,5 +245,6 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.model, "eleven_v4");
         assert!(settings.voice_id.is_empty());
+        assert_eq!(settings.voices["gamemaker"], GAMEMAKER_VOICE);
     }
 }

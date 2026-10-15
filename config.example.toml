@@ -210,6 +210,9 @@ enabled = true
 # The ElevenLabs voice she speaks with (from Voice Design or the voice library). Required
 # for voice messages: without it she can't send them.
 # voice_id = "DIIk31SqVXDOEFbJGJl9"
+# Other voices by name, for other features. The Hunger Games' Gamemaker speaks with
+# `gamemaker` (this is the default); an empty ID turns a voice off.
+# voices = { gamemaker = "DucUc05HgR5M3wbY6WkG" }
 # "eleven_v4", or "eleven_v4_turbo" for faster and half the price.
 model = "eleven_v4"
 # 0 to 1: lower is more expressive and varied, higher is steadier.

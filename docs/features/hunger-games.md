@@ -4,17 +4,17 @@ A battle royale between server members, played in plain Discord messages. The ho
 
 It's one of the games in the games feature (`src/features/games/`), next to [who said it?](who-said-it.md): Discord needs one `/games` command to hold both games, so they share that feature and its gate, `[features.games]`. It borrows who said it?'s quote reader and channel rules for last words and the arena.
 
-Stages 1 and 2 of the plan are built: the text game, last words, and her memory notes about the tributes. Still to come: Gamemaker voice messages in their own voice, pictures she draws during the game, and a leaderboard.
+Stages 1 to 3 of the plan are built: the text game, last words, her memory notes about the tributes, and the Gamemaker's voice. Still to come: pictures she draws during the game, and a leaderboard.
 
 ## Playing
 
 1. `/games hungergames` opens **the Reaping** in the channel. Whoever ran it is the host.
 2. The host picks tributes from the user menu. Anyone can press **Volunteer** to enter (and again to back out). Bots can't enter. 2 to 24 tributes (`max_tributes`).
 3. The host can press **🧠 Memories** to turn Vivy's memory notes about the tributes off (they're on by default; see [Memory notes](#memory-notes)), then **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
-4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown.
+4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown, and is also spoken as a voice message in the Gamemaker's voice just before that round (see [Gamemaker voice](#gamemaker-voice)).
 5. After each night, **the fallen of the day** lists who died since the last list, each with their **last words** (a real message they once sent, with a link to it) when one was found, all behind spoilers so people still reading don't find out early. When the game ends, **the last of the fallen** covers the rest, the final showdown's loser among them.
 6. The host presses **Next** to move on, or the next round starts by itself after `auto_advance_seconds` (30). Bot admins can press the host's buttons too.
-7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills, all behind spoilers (the heading only says there is a victor).
+7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills, all behind spoilers (the heading only says there is a victor). Her line to the winner follows as a voice message.
 
 A channel has one Hunger Games at a time, and a restart ends the game (nothing is saved).
 
@@ -34,6 +34,7 @@ All under `src/features/games/hunger_games/`.
 | `writer.rs` | What she's told each round (`brief`), reading her JSON (`parse`), and `write`, which asks her and sends a round that fails `check` back with the problem. |
 | `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`games:hunger:<game>:<action>`). Pure. |
 | `last_words.rs` | Last words: searches each tribute's messages in the public channels with Discord's message search (`util::search`), with random reads of history (`quotes::read_once`) for anyone the search finds nothing for (`choose`, `pick` and `tidy`, pure). |
+| `voice.rs` | The Gamemaker's lines as voice messages, through the voice feature's `send_voice_message` tool (see below). |
 | `notes.rs` | Her memory notes about each tribute, read through the `memory` chat tool (see below). `files_in` and `file_text` read the tool's answers (pure). |
 | `play.rs` | `/games hungergames`, the task that runs the Reaping and then the game, and the presses. Running games are kept in `GAMES` by channel. |
 | `mod.rs` | The settings. |
@@ -74,6 +75,12 @@ When the Games start, a task looks for each tribute's last words, 4 tributes at 
 Before the Bloodbath (unless the host turned **Memories** off in the Reaping), `notes::about` reads Vivy's notes about each tribute: the files in `/memories/users/<user id>/` of the server's folder, at most 6 files and 800 characters per tribute. It doesn't import the memory feature: it finds the feature that offers the `memory` chat tool and runs `view` with it as Vivy, so the memory feature's gate and rules still apply (memory off in that server or channel means no notes).
 
 Each round's brief lists the notes of the living tributes, with the instruction to use a detail only where it makes a moment funnier or more personal, a few per round at most, never anything private, sensitive, hurtful or embarrassing (health, relationships, family, where they live, work or money troubles, anything told in confidence), and to leave them out when nothing fits (Cherry's call: fun things when there are some, nothing forced).
+
+### Gamemaker voice
+
+Her four or so Gamemaker lines a game (opening the Games, the Feast, the final showdown, and her words to the victor) are spoken in a voice of their own: `gamemaker` in `[features.voice.voices]`, `DucUc05HgR5M3wbY6WkG` by default, a voice Cherry made with ElevenLabs Voice Design. `voice::speak` doesn't import the voice feature: it finds the feature that offers `send_voice_message` and runs it as Vivy with `voice: "gamemaker"` and `reply: false`, so the voice message stands on its own in the channel and counts toward the voice feature's monthly limit. Her mood isn't in it.
+
+The writer's format tells her the lines are spoken and lets her steer them with audio tags (`[booming]`, `[dramatic pause]`), each line under 300 characters. The round and victor texts show the line without the tags (`ui::unspoken`). Without an ElevenLabs key, with voice off in the channel, with the `gamemaker` voice empty, or when the month's characters are used up, the lines are text only; the round waits for the voice message (a few seconds, with the typing indicator) before it's posted.
 
 ### Pace
 
