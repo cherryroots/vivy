@@ -175,8 +175,9 @@ The port went in stages, one pull request each, all merged into `main`.
 | #63 | | Who said it?: `years` option (1 to 20) for how far back quotes can come from; empty uses `lookback_days` (1 year) |
 | #64 | | Gemini provider (`provider = "gemini"`, Gemini 4 Argon through the Interactions API): Google Search, URL context and code execution; posted videos uploaded with the Files API and YouTube links watched as videos |
 | #65 | | TinyFish: chat's `tinyfish_search` and `tinyfish_fetch` tools (any provider, chime-ins too) when `TINYFISH_API_KEY` is in `.env`, so she can search and read Reddit and other sites the built-in web tools can't reach; `[features.tinyfish]` sets results per search, location, language and how much of a page she reads; her prompt sends Reddit and pages her own fetch can't read to TinyFish |
-| #67 | | Hunger Games (stage 1): `/games hungergames` opens the Reaping (host picks tributes, others volunteer), then Vivy writes every round as the Gamemaker, checked by the rules (everyone in one event, pacing, a final two), with cannons after each night and a victor with placings; the arena is the server's public channels |
 | #66 | | Snails: `/snails recent` lists the server's last 10 snails with jump links to each message and the first post it repeated (new columns on `snail_caught`) |
+| #67 | | Hunger Games (stage 1): `/games hungergames` opens the Reaping (host picks tributes, others volunteer), then Vivy writes every round as the Gamemaker, checked by the rules (everyone in one event, pacing, a final two), with cannons after each night and a victor with placings; the arena is the server's public channels |
+| #68 | | Hunger Games (stage 2): the fallen get last words (a real message of theirs, found with Discord's message search in the public channels, behind spoilers), the final showdown's loser too; each round she gets her memory notes about the living tributes, through the `memory` tool, to use only where they're fun (the host can turn them off with a Memories button in the Reaping). Message search moved to `util::search` with every API filter, and `search_messages` offers them all |
 
 ## Not built yet
 

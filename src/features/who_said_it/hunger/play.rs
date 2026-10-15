@@ -14,16 +14,19 @@ use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    Message, UserId,
+    GuildId, Message, UserId,
 };
 use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use super::game::{Game, Kind};
+use super::last_words::{self, LastWords};
+use super::notes;
 use super::{Settings, ui, writer};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
-use crate::features::who_said_it::sources::{self, From};
+use crate::features::who_said_it::sources::{self, From, Source};
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
 const MOST_TRIBUTES: usize = 24;
@@ -41,6 +44,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
+    /// Whether Vivy gets her memory notes about the tributes (the host's toggle).
+    memories: bool,
 }
 
 impl Lobby {
@@ -84,6 +89,7 @@ impl Running {
             &picked,
             self.max,
             self.closes_at,
+            lobby.memories,
         );
         CreateInteractionResponseMessage::new()
             .embed(embed)
@@ -110,12 +116,14 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
     let bot = ctx.data().clone();
-    let settings: crate::features::who_said_it::Settings = bot.config.feature("who_said_it")?;
-    let settings = settings.hunger_games;
+    // The who-said-it settings are for the quote reader (last words); ours are inside them.
+    let mut quote_settings: crate::features::who_said_it::Settings =
+        bot.config.feature("who_said_it")?;
+    let settings = std::mem::take(&mut quote_settings.hunger_games);
     let provider = bot.ai.chat().ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
     })?;
-    let arena = arena(&bot, guild, channel)?;
+    let (sources, arena) = arena(&bot, guild, channel)?;
 
     let max = settings.max_tributes.clamp(2, MOST_TRIBUTES);
     let closes_at = Utc::now().timestamp() + settings.lobby_minutes.max(1) as i64 * 60;
@@ -128,6 +136,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
+            memories: true,
         }),
         wake: Notify::new(),
         waiting_on: Mutex::new(None),
@@ -143,7 +152,15 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     }
     let leave = Leave(channel);
 
-    let (embed, components) = ui::lobby(running.id, running.host.get(), &[], &[], max, closes_at);
+    let (embed, components) = ui::lobby(
+        running.id,
+        running.host.get(),
+        &[],
+        &[],
+        max,
+        closes_at,
+        true,
+    );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
         .await?;
@@ -151,48 +168,55 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     info!(max, "Hunger Games Reaping opened");
 
     bot.tasks.clone().spawn(async move {
-        run(
-            &bot,
+        let setup = Setup {
+            guild,
             channel,
-            &running,
-            lobby_message,
             provider,
             arena,
-            &settings,
-        )
-        .await;
+            sources,
+            quote_settings,
+        };
+        run(&bot, setup, &running, lobby_message, &settings).await;
         drop(leave);
     });
     Ok(())
 }
 
-/// The names of the channels everyone can read, other than this one, in random order. The game keeps as many of
-/// them as it has tributes, as the arena's places for the whole game.
-fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result<Vec<String>> {
+/// What a game needs besides its players.
+struct Setup {
+    guild: GuildId,
+    channel: ChannelId,
+    provider: Arc<dyn ChatProvider>,
+    /// The arena's possible places (see [`arena`]).
+    arena: Vec<String>,
+    /// Where last words are read from.
+    sources: Vec<Source>,
+    quote_settings: crate::features::who_said_it::Settings,
+}
+
+/// The channels everyone can read (for last words), and their names other than this
+/// channel's, in random order: the game keeps as many of those as it has tributes, as the
+/// arena's places for the whole game.
+fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, Vec<String>)> {
     let cached = bot
         .cache
         .guild(guild)
         .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
-    let picked = sources::pick(bot, &cached, here, From::Server)?;
+    let sources = sources::pick(bot, &cached, here, From::Server)?;
     drop(cached);
     // The channel the game is played in has no name here, so it's left out: it's where
     // everyone watches from, not a place in the arena (often a test thread, too).
-    let mut names: Vec<String> = picked
-        .into_iter()
-        .filter_map(|source| source.name)
-        .collect();
+    let mut names: Vec<String> = sources.iter().filter_map(|s| s.name.clone()).collect();
     fastrand::shuffle(&mut names);
-    Ok(names)
+    Ok((sources, names))
 }
 
 /// The Reaping, then the Games.
 async fn run(
     bot: &BotCtx,
-    channel: ChannelId,
+    setup: Setup,
     running: &Running,
     mut lobby_message: Message,
-    provider: Arc<dyn ChatProvider>,
-    arena: Vec<String>,
     settings: &Settings,
 ) {
     let closes_in = Duration::from_secs(settings.lobby_minutes.max(1) * 60);
@@ -225,19 +249,48 @@ async fn run(
             }
         }
     }
-    let tributes = running.lobby.lock().unwrap().tributes(running.max);
-    info!(tributes = tributes.len(), "Hunger Games started");
+    let (tributes, memories) = {
+        let lobby = running.lobby.lock().unwrap();
+        (lobby.tributes(running.max), lobby.memories)
+    };
+    info!(tributes = tributes.len(), memories, "Hunger Games started");
+    let Setup {
+        guild,
+        channel,
+        provider,
+        mut arena,
+        sources,
+        quote_settings,
+    } = setup;
     // One place per tribute, the same ones all game.
-    let mut arena = arena;
     arena.truncate(tributes.len());
+    let ids: Vec<u64> = tributes.iter().map(|(id, _)| *id).collect();
+    // Last words take a while to read, and aren't needed until the first cannons.
+    let words = bot.tasks.spawn(last_words::load(
+        bot.clone(),
+        guild,
+        sources,
+        quote_settings,
+        ids.clone(),
+    ));
+    let notes = if memories {
+        notes::about(bot, guild, channel, lobby_message.id, &ids).await
+    } else {
+        vec![None; ids.len()]
+    };
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
+    let game = Game::new(tributes);
     play(
         bot,
         channel,
         running,
-        Game::new(tributes),
-        provider,
-        arena,
+        game,
+        Writing {
+            provider,
+            arena,
+            notes: Arc::new(notes),
+        },
+        words,
         auto,
     )
     .await;
@@ -249,15 +302,23 @@ async fn play(
     channel: ChannelId,
     running: &Running,
     mut game: Game,
-    provider: Arc<dyn ChatProvider>,
-    arena: Vec<String>,
+    writing: Writing,
+    words: JoinHandle<HashMap<u64, LastWords>>,
     auto: Duration,
 ) {
     let write = |game: &Game, kind: Kind| {
-        let (provider, game, arena) = (provider.clone(), game.clone(), arena.clone());
-        bot.tasks
-            .spawn(writer::write(provider, game, kind, arena, channel.get()))
+        let (provider, game) = (writing.provider.clone(), game.clone());
+        let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
+        bot.tasks.spawn(writer::write(
+            provider,
+            game,
+            kind,
+            arena,
+            notes,
+            channel.get(),
+        ))
     };
+    let mut words = Words::Reading(words);
     let intro = format!(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Bloodbath…",
         game.tributes.len()
@@ -313,6 +374,11 @@ async fn play(
             }
         }
         if over {
+            // The fallen since the last cannons, the loser of the final showdown among them.
+            if cannons_from < game.rounds.len() {
+                let title = "The last of the fallen";
+                post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
+            }
             for part in ui::victor(&game, victory.as_deref()) {
                 if let Err(err) = channel.send_message(&bot.http, text(part)).await {
                     warn!("couldn't post the Hunger Games victor: {err}");
@@ -323,16 +389,9 @@ async fn play(
             return;
         }
         if let Kind::Night(day) = kind {
-            let fallen: Vec<String> = game
-                .fallen_since(cannons_from)
-                .iter()
-                .map(|t| t.name.clone())
-                .collect();
+            let title = format!("The fallen of day {day}");
+            post_cannons(bot, channel, &game, cannons_from, &title, &mut words).await;
             cannons_from = game.rounds.len();
-            let message = text(ui::cannons(day, &fallen));
-            if let Err(err) = channel.send_message(&bot.http, message).await {
-                warn!("couldn't post the Hunger Games cannons: {err}");
-            }
         }
 
         // She writes the next round while people read this one.
@@ -357,6 +416,57 @@ async fn play(
                 warn!("couldn't take the Next button off a Hunger Games round: {err}");
             }
         }
+    }
+}
+
+/// What Vivy gets for writing each round, besides the game.
+struct Writing {
+    provider: Arc<dyn ChatProvider>,
+    /// The arena's places.
+    arena: Vec<String>,
+    /// Her notes about each tribute, in the game's order.
+    notes: Arc<Vec<Option<String>>>,
+}
+
+/// The last words: still being read, or read.
+enum Words {
+    Reading(JoinHandle<HashMap<u64, LastWords>>),
+    Read(HashMap<u64, LastWords>),
+}
+
+impl Words {
+    /// The last words, waiting for the reading to finish the first time.
+    async fn get(&mut self) -> &HashMap<u64, LastWords> {
+        if let Words::Reading(task) = self {
+            let read = task.await.unwrap_or_default();
+            *self = Words::Read(read);
+        }
+        match self {
+            Words::Read(read) => read,
+            Words::Reading(_) => unreachable!("just read"),
+        }
+    }
+}
+
+/// Posts the cannons for everyone who fell in the rounds from `from` on, with their last
+/// words.
+async fn post_cannons(
+    bot: &BotCtx,
+    channel: ChannelId,
+    game: &Game,
+    from: usize,
+    title: &str,
+    words: &mut Words,
+) {
+    let words = words.get().await;
+    let fallen: Vec<(String, Option<LastWords>)> = game
+        .fallen_since(from)
+        .iter()
+        .map(|t| (t.name.clone(), words.get(&t.id).cloned()))
+        .collect();
+    let message = text(ui::cannons(title, &fallen));
+    if let Err(err) = channel.send_message(&bot.http, message).await {
+        warn!("couldn't post the Hunger Games cannons: {err}");
     }
 }
 
@@ -475,6 +585,18 @@ pub async fn on_component(
             if let Some(refusal) = refusal {
                 return tell(bot, interaction, refusal).await;
             }
+        }
+        ui::Action::Memories => {
+            if !in_charge {
+                return tell(
+                    bot,
+                    interaction,
+                    "Only the host turns Vivy's memories on or off.",
+                )
+                .await;
+            }
+            let mut lobby = running.lobby.lock().unwrap();
+            lobby.memories = !lobby.memories;
         }
         ui::Action::Start | ui::Action::Cancel => {
             if !in_charge {
