@@ -38,7 +38,7 @@ pub fn brief(game: &Game, kind: Kind, arena: &[String]) -> String {
     let mut text = String::new();
     if !arena.is_empty() {
         text.push_str(
-            "Places in the arena this round (some of the server's channels, picked at random each round; spread the tributes around, and don't keep sending people to the same place): ",
+            "The arena's places for this game (some of the server's channels, picked at random; spread the tributes around, and don't keep sending people to the same place): ",
         );
         let names: Vec<String> = arena.iter().map(|n| format!("#{n}")).collect();
         text.push_str(&names.join(", "));
@@ -125,15 +125,6 @@ pub fn parse(answer: &str) -> Result<Written, String> {
         .map_err(|err| format!("The JSON doesn't match the format: {err}."))
 }
 
-/// The arena's places for one round, picked at random so the same channel doesn't come up
-/// every time: as many as there are tributes alive (or every place, when there are fewer).
-fn places(arena: &[String], alive: usize) -> Vec<String> {
-    let mut places = arena.to_vec();
-    fastrand::shuffle(&mut places);
-    places.truncate(alive);
-    places
-}
-
 /// Has her write the round of `kind`, checked. Fails when every try was wrong or the
 /// model couldn't be reached.
 pub async fn write(
@@ -145,11 +136,7 @@ pub async fn write(
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(
-            &game,
-            kind,
-            &places(&arena, game.alive()),
-        ))],
+        parts: vec![Part::Text(brief(&game, kind, &arena))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {

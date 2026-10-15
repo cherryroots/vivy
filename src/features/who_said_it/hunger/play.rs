@@ -166,8 +166,8 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The arena's places: the names of the channels everyone can read (40 at most, picked at
-/// random). `writer` picks a few of them for each round.
+/// The names of the channels everyone can read, in random order. The game keeps as many of
+/// them as it has tributes, as the arena's places for the whole game.
 fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result<Vec<String>> {
     let cached = bot
         .cache
@@ -183,7 +183,6 @@ fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result
         })
         .collect();
     fastrand::shuffle(&mut names);
-    names.truncate(40);
     Ok(names)
 }
 
@@ -229,6 +228,9 @@ async fn run(
     }
     let tributes = running.lobby.lock().unwrap().tributes(running.max);
     info!(tributes = tributes.len(), "Hunger Games started");
+    // One place per tribute, the same ones all game.
+    let mut arena = arena;
+    arena.truncate(tributes.len());
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
     play(
         bot,
