@@ -175,13 +175,17 @@ pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
     ])]
 }
 
-/// The cannons at the end of a day: one for each tribute who fell.
+/// The cannons at the end of a day: one for each tribute who fell, their names behind
+/// spoilers so people still reading the rounds don't find out early.
 pub fn cannons(day: u32, fallen: &[String]) -> String {
     let mut text = format!("### 💥 The fallen of day {day}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
     } else {
-        let names: Vec<String> = fallen.iter().map(|n| format!("💥 {}", escape(n))).collect();
+        let names: Vec<String> = fallen
+            .iter()
+            .map(|n| format!("💥 ||{}||", escape(n)))
+            .collect();
         text.push_str(&format!(
             "{} cannon{} sound{} across the arena.\n\n{}",
             fallen.len(),
@@ -193,13 +197,15 @@ pub fn cannons(day: u32, fallen: &[String]) -> String {
     text
 }
 
-/// The end: the winner, her line to them, and everyone's placing.
+/// The end: the winner, her line to them, and everyone's placing, all behind spoilers so
+/// people still reading the last rounds don't find out who won.
 pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let placings = game.placings();
-    let name = placings.first().map_or("Nobody", |t| t.name.as_str());
-    let mut text = format!("# 👑 {} wins the Hunger Games!\n", escape(name));
+    let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
     if let Some(line) = victory {
-        text.push_str(&format!("> 🎙️ *{}*\n\n", shorten_at_word(line, 600)));
+        // A `||` of her own would end the spoiler early.
+        let line = shorten_at_word(line, 600).replace("||", "|");
+        text.push_str(&format!("> 🎙️ ||*{line}*||\n\n"));
     }
     for (i, t) in placings.iter().enumerate() {
         let place = if i == 0 {
@@ -212,7 +218,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
             1 => ", 1 kill".to_string(),
             n => format!(", {n} kills"),
         };
-        text.push_str(&format!("{place} {}{kills}\n", escape(&t.name)));
+        text.push_str(&format!("{place} ||{}{kills}||\n", escape(&t.name)));
     }
     split_message(&text, DISCORD_LIMIT)
 }
@@ -238,6 +244,19 @@ mod tests {
         assert_eq!(parse_id("pick:1:2:3"), None);
         assert_eq!(parse_id("hunger:9:next:x"), None);
         assert_eq!(parse_id("hunger:9:dance"), None);
+    }
+
+    #[test]
+    fn the_fallen_and_the_victor_are_spoilers() {
+        let mut game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        game.tributes[1].died_in = Some(0);
+        game.tributes[0].kills = 1;
+        let text = victor(&game, Some("Well done, Moss || hi")).join("");
+        assert!(!text.lines().next().unwrap().contains("Moss"));
+        assert!(text.contains("> 🎙️ ||*Well done, Moss | hi*||"));
+        assert!(text.contains("👑 ||Moss, 1 kill||"));
+        assert!(text.contains("2. ||Ash||"));
+        assert!(cannons(1, &["Ash".into()]).contains("💥 ||Ash||"));
     }
 
     #[test]

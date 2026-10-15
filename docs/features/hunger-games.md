@@ -12,9 +12,9 @@ This is stage 1 of the plan: the text game. Still to come: last words (a real me
 2. The host picks tributes from the user menu. Anyone can press **Volunteer** to enter (and again to back out). Bots can't enter. 2 to 24 tributes (`max_tributes`).
 3. The host presses **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
 4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown.
-5. After each night, **the fallen of the day** lists who died since the last list.
+5. After each night, **the fallen of the day** lists who died since the last list, each name behind a spoiler so people still reading don't find out early.
 6. The host presses **Next** to move on, or the next round starts by itself after `auto_advance_seconds` (30). Bot admins can press the host's buttons too.
-7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills.
+7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills, all behind spoilers (the heading only says there is a victor).
 
 A channel has one Hunger Games at a time, and a restart ends the game (nothing is saved).
 
