@@ -165,23 +165,36 @@ impl Game {
         })
     }
 
-    /// How many should die in a round of `kind`, at least and at most. Around a quarter
-    /// to a third of the living each round, so 24 tributes take about 8 rounds. Until the
-    /// Finale at least two stay alive, so there's always a final two.
-    pub fn deaths_range(kind: Kind, alive: usize) -> (usize, usize) {
+    /// How many should die in the next round, of `kind`, at least and at most. At most
+    /// about a fifth of the living in the Bloodbath, a quarter at the Feast, and an eighth
+    /// to a sixth on days and nights, so 24 tributes take around 15 rounds and 5 take
+    /// around 6. A day or night may pass with nobody dying, but never two in a row. Until
+    /// the Finale at least two stay alive, so there's always a final two.
+    pub fn deaths_range(&self, kind: Kind) -> (usize, usize) {
+        let alive = self.alive();
         if kind == Kind::Finale || alive <= 2 {
             return (1, 1);
         }
         let share = match kind {
-            Kind::Bloodbath | Kind::Day(_) => 0.25,
-            Kind::Night(_) => 0.3,
-            Kind::Feast(_) => 0.35,
+            Kind::Bloodbath => 0.2,
+            Kind::Day(_) => 0.12,
+            Kind::Night(_) => 0.15,
+            Kind::Feast(_) => 0.25,
             Kind::Finale => unreachable!(),
         };
-        let target = ((alive as f64 * share).ceil() as usize).max(1);
         let most = alive - 2;
-        let min = target.saturating_sub(1).max(1).min(most);
-        let max = (target + 1).min(most);
+        let max = ((alive as f64 * share).ceil() as usize).clamp(1, most);
+        let last_was_quiet = self
+            .rounds
+            .last()
+            .is_none_or(|r| r.events.iter().all(|e| e.deaths.is_empty()));
+        let may_be_quiet = matches!(kind, Kind::Day(_) | Kind::Night(_)) && !last_was_quiet;
+        let floor = max / 2;
+        let min = if floor == 0 && may_be_quiet {
+            0
+        } else {
+            floor.max(1)
+        };
         (min, max)
     }
 
@@ -295,7 +308,7 @@ impl Game {
                 Game::tag(missing)
             ));
         }
-        let (min, max) = Game::deaths_range(kind, self.alive());
+        let (min, max) = self.deaths_range(kind);
         if dead < min || dead > max {
             let wanted = if min == max {
                 format!("exactly {min}")
@@ -449,22 +462,47 @@ mod tests {
         assert_eq!(g.winner().map(|t| t.id), Some(1));
     }
 
+    /// A round in which `deaths` tributes died, for the pacing tests.
+    fn round_with(kind: Kind, deaths: usize) -> Round {
+        Round {
+            kind,
+            gamemaker: None,
+            events: (0..deaths)
+                .map(|victim| Event {
+                    text: String::new(),
+                    deaths: vec![Death { victim, by: None }],
+                })
+                .collect(),
+            victory: None,
+        }
+    }
+
     #[test]
     fn pacing_keeps_a_final_two() {
-        assert_eq!(Game::deaths_range(Kind::Bloodbath, 24), (5, 7));
-        assert_eq!(Game::deaths_range(Kind::Night(1), 3), (1, 1));
-        assert_eq!(Game::deaths_range(Kind::Day(1), 4), (1, 2));
-        assert_eq!(Game::deaths_range(Kind::Finale, 2), (1, 1));
+        let mut g = game(24);
+        assert_eq!(g.deaths_range(Kind::Bloodbath), (2, 5));
+        assert_eq!(g.deaths_range(Kind::Feast(2)), (3, 6));
+        g.rounds.push(round_with(Kind::Bloodbath, 0));
+        // The first day can't be quiet after a quiet Bloodbath.
+        assert_eq!(g.deaths_range(Kind::Day(1)), (1, 3));
+        let mut g = game(3);
+        assert_eq!(g.deaths_range(Kind::Bloodbath), (1, 1));
+        g.rounds.push(round_with(Kind::Bloodbath, 1));
+        assert_eq!(g.deaths_range(Kind::Day(1)), (0, 1));
+        assert_eq!(g.deaths_range(Kind::Feast(2)), (1, 1));
+        assert_eq!(game(2).deaths_range(Kind::Finale), (1, 1));
         for alive in 3..=24 {
+            let mut g = game(alive as u64);
+            g.rounds.push(round_with(Kind::Bloodbath, 1));
             for kind in [
                 Kind::Bloodbath,
                 Kind::Day(1),
                 Kind::Night(1),
                 Kind::Feast(2),
             ] {
-                let (min, max) = Game::deaths_range(kind, alive);
+                let (min, max) = g.deaths_range(kind);
                 assert!(
-                    min >= 1 && min <= max && max <= alive - 2,
+                    min <= max && max >= 1 && max <= alive - 2,
                     "{kind:?} {alive}"
                 );
             }

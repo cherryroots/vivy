@@ -20,7 +20,7 @@ const TRIES: usize = 3;
 
 const SYSTEM: &str = "You are Vivy, a Discord bot, and right now you're the Gamemaker of a Hunger Games-style battle royale played in your Discord server. The tributes are real members of the server, and everyone is watching the arena in the channel, so it's a show: dramatic, funny, a little dark, and full of personality. You decide everything that happens in the arena. \
 Each round you get the tributes, the arena, the story so far and what kind of round it is, and you write what happens to every living tribute this round. \
-Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, alliances, betrayals, traps, accidents, silly moments, near misses, someone just trying to survive. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back. The arena's areas are the server's channels; use them as places when it's fun. \
+Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, alliances, betrayals, traps, accidents, silly moments, near misses, someone just trying to survive. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back. The places in the arena are the server's channels; use them when it's fun. \
 Keep it playful: cartoon violence, no gore, nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write in English.";
 
@@ -34,10 +34,12 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 /// The arena, the tributes, the story so far, and what this round is: what she's told.
 pub fn brief(game: &Game, kind: Kind, arena: &[String]) -> String {
     let alive = game.alive();
-    let (min, max) = Game::deaths_range(kind, alive);
+    let (min, max) = game.deaths_range(kind);
     let mut text = String::new();
     if !arena.is_empty() {
-        text.push_str("The arena's areas (the server's channels): ");
+        text.push_str(
+            "Places in the arena this round (some of the server's channels, picked at random each round; spread the tributes around, and don't keep sending people to the same place): ",
+        );
         let names: Vec<String> = arena.iter().map(|n| format!("#{n}")).collect();
         text.push_str(&names.join(", "));
         text.push_str("\n\n");
@@ -80,6 +82,11 @@ pub fn brief(game: &Game, kind: Kind, arena: &[String]) -> String {
     };
     let deaths = if min == max {
         format!("Exactly {min} tribute{} must die this round.", plural(min))
+    } else if min == 0 {
+        format!(
+            "At most {max} tribute{} may die this round, and it's fine if nobody does.",
+            plural(max)
+        )
     } else {
         format!("Between {min} and {max} tributes must die this round.")
     };
@@ -118,6 +125,18 @@ pub fn parse(answer: &str) -> Result<Written, String> {
         .map_err(|err| format!("The JSON doesn't match the format: {err}."))
 }
 
+/// How many channels she gets as places each round.
+const PLACES: usize = 6;
+
+/// A few of the arena's places for one round, picked at random, so the same channel doesn't
+/// come up every time.
+fn places(arena: &[String]) -> Vec<String> {
+    let mut places = arena.to_vec();
+    fastrand::shuffle(&mut places);
+    places.truncate(PLACES);
+    places
+}
+
 /// Has her write the round of `kind`, checked. Fails when every try was wrong or the
 /// model couldn't be reached.
 pub async fn write(
@@ -129,7 +148,7 @@ pub async fn write(
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena))],
+        parts: vec![Part::Text(brief(&game, kind, &places(&arena)))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {

@@ -166,7 +166,8 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The arena's areas: the names of the channels everyone can read, this one first.
+/// The arena's places: the names of the channels everyone can read (40 at most, picked at
+/// random). `writer` picks a few of them for each round.
 fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result<Vec<String>> {
     let cached = bot
         .cache
@@ -181,6 +182,7 @@ fn arena(bot: &BotCtx, guild: serenity::all::GuildId, here: ChannelId) -> Result
             None => bot.channel_name(guild, here),
         })
         .collect();
+    fastrand::shuffle(&mut names);
     names.truncate(40);
     Ok(names)
 }

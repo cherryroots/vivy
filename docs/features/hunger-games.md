@@ -45,7 +45,7 @@ Vivy writes everything: which events happen, who meets whom, who dies and who ki
 - every living tribute is in exactly one event, and nobody dead or unknown is;
 - each event names its tributes in the text, and only them;
 - a death is of someone in that event, and a killer is another tribute in it (or nobody, for an accident or the arena);
-- about a quarter to a third of the living die each round (`deaths_range`), and until the final showdown at least two stay alive, so there's always a final two. 24 tributes take about 8 rounds.
+- the pace (`deaths_range`): at most about a fifth of the living die in the Bloodbath, a quarter at the Feast, and an eighth to a sixth on days and nights, with at least half of that. A day or night may pass with nobody dying when the most is 1, but never two in a row. Until the final showdown at least two stay alive, so there's always a final two. In a simulation, 8 tributes took about 7 or 8 rounds, 12 about 10, and 24 about 16.
 
 Her mood isn't in the prompt, so it never changes what happens. The prompt asks for cartoon violence with no gore, nothing sexual or hateful, no jokes about anyone's real body, health, identity or private life, and no favourites.
 
@@ -55,7 +55,7 @@ In what she writes, tributes are tags: `T1` is the first tribute. The text says 
 
 ### One round
 
-`writer::brief` tells her the arena (up to 40 channel names that everyone can read, the same rule as who said it?), each tribute's tag, name, and kills or death, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
+`writer::brief` tells her 6 places for this round, picked at random each round from the channels everyone can read (the same rule as who said it?, at most 40 of them), so the same channel doesn't keep coming up. It also tells her each tribute's tag, name, and kills or death, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
 
 ```json
 {"gamemaker": "…or null", "events": [{"text": "{T1} …", "tributes": ["T1", "T2"], "deaths": [{"tribute": "T2", "by": "T1"}]}], "victory": "…or null"}
