@@ -11,7 +11,7 @@ This is stage 1 of the plan: the text game. Still to come: last words (a real me
 1. `/games hungergames` opens **the Reaping** in the channel. Whoever ran it is the host.
 2. The host picks tributes from the user menu. Anyone can press **Volunteer** to enter (and again to back out). Bots can't enter. 2 to 24 tributes (`max_tributes`).
 3. The host presses **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
-4. The rounds follow, one message each: **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is a line, 💀 when someone dies in it. Her Gamemaker line opens the Games, the Feast and the final showdown.
+4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown.
 5. After each night, **the fallen of the day** lists who died since the last list.
 6. The host presses **Next** to move on, or the next round starts by itself after `auto_advance_seconds` (30). Bot admins can press the host's buttons too.
 7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills.
@@ -32,7 +32,7 @@ All under `src/features/who_said_it/hunger/`.
 |---|---|
 | `game.rs` | The rules: which round comes next, how many should die (`deaths_range`), checking a round she wrote (`check`), applying it (deaths and kills), the fallen and the placings. Pure. |
 | `writer.rs` | What she's told each round (`brief`), reading her JSON (`parse`), and `write`, which asks her and sends a round that fails `check` back with the problem. |
-| `ui.rs` | The Reaping, round, cannon and victor messages, and the IDs of the buttons and the menu (`who_said_it:hunger:<game>:<action>`). Pure. |
+| `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`who_said_it:hunger:<game>:<action>`). Pure. |
 | `play.rs` | `/games hungergames`, the task that runs the Reaping and then the game, and the presses. Running games are kept in `GAMES` by channel. |
 | `mod.rs` | The settings. |
 

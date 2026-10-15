@@ -12,8 +12,9 @@ use std::time::Duration;
 use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
-    ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditMessage, Message, UserId,
+    ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
+    Message, UserId,
 };
 use tokio::sync::Notify;
 use tracing::{info, warn};
@@ -294,24 +295,25 @@ async fn play(
         game.apply(round);
         let over = game.winner().is_some();
 
-        let mut message = CreateMessage::new().embed(ui::round(&game, &game.rounds[index]));
-        if !over {
-            message = message.components(ui::next_button(running.id, index));
-        }
-        let mut posted = match channel.send_message(&bot.http, message).await {
-            Ok(posted) => Some(posted),
-            Err(err) => {
-                warn!("couldn't post a Hunger Games round: {err}");
-                None
+        // The Next button goes on the round's last part.
+        let parts = ui::round(&game, &game.rounds[index]);
+        let count = parts.len();
+        let mut posted = None;
+        for (i, part) in parts.into_iter().enumerate() {
+            let mut message = text(part);
+            if !over && i + 1 == count {
+                message = message.components(ui::next_button(running.id, index));
             }
-        };
+            match channel.send_message(&bot.http, message).await {
+                Ok(sent) => posted = Some(sent),
+                Err(err) => warn!("couldn't post a Hunger Games round: {err}"),
+            }
+        }
         if over {
-            let embed = ui::victor(&game, victory.as_deref());
-            if let Err(err) = channel
-                .send_message(&bot.http, CreateMessage::new().embed(embed))
-                .await
-            {
-                warn!("couldn't post the Hunger Games victor: {err}");
+            for part in ui::victor(&game, victory.as_deref()) {
+                if let Err(err) = channel.send_message(&bot.http, text(part)).await {
+                    warn!("couldn't post the Hunger Games victor: {err}");
+                }
             }
             let winner = game.winner().map(|t| t.id);
             info!(winner, rounds = game.rounds.len(), "Hunger Games ended");
@@ -324,11 +326,8 @@ async fn play(
                 .map(|t| t.name.clone())
                 .collect();
             cannons_from = game.rounds.len();
-            let embed = ui::cannons(day, &fallen);
-            if let Err(err) = channel
-                .send_message(&bot.http, CreateMessage::new().embed(embed))
-                .await
-            {
+            let message = text(ui::cannons(day, &fallen));
+            if let Err(err) = channel.send_message(&bot.http, message).await {
                 warn!("couldn't post the Hunger Games cannons: {err}");
             }
         }
@@ -356,6 +355,14 @@ async fn play(
             }
         }
     }
+}
+
+/// A game message: plain text that pings nobody, even when a name or her text has an
+/// @everyone or a mention in it.
+fn text(content: String) -> CreateMessage {
+    CreateMessage::new()
+        .content(content)
+        .allowed_mentions(CreateAllowedMentions::new())
 }
 
 async fn called_off(bot: &BotCtx, channel: ChannelId) {

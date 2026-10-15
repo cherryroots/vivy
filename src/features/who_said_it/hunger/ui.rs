@@ -3,7 +3,7 @@
 //! to Discord.
 
 use serenity::all::{
-    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter, CreateSelectMenu,
+    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu,
     CreateSelectMenuKind, UserId,
 };
 
@@ -11,9 +11,7 @@ use super::game::{Game, Kind, Round, fill};
 use super::writer::title;
 use crate::features::who_said_it::ui::{COLOR, escape};
 use crate::util::shorten_at_word;
-
-/// The longest a round's text may be. Discord allows 4096 in an embed.
-const MAX_ROUND: usize = 3900;
+use crate::util::split::{DISCORD_LIMIT, split_message};
 
 /// What a button or menu does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +128,9 @@ pub fn lobby_closed(tributes: &[(u64, String)], why: &str) -> CreateEmbed {
 }
 
 /// A round as played: her Gamemaker line, the events with names filled in, and who's left.
-pub fn round(game: &Game, round: &Round) -> CreateEmbed {
+/// Plain message text rather than an embed, because embeds use Discord's smaller font, with a
+/// blank line between events so each stands on its own. Long rounds come in several parts.
+pub fn round(game: &Game, round: &Round) -> Vec<String> {
     let emoji = match round.kind {
         Kind::Bloodbath => "🩸",
         Kind::Day(_) => "☀️",
@@ -144,39 +144,25 @@ pub fn round(game: &Game, round: &Round) -> CreateEmbed {
             |t| format!("**{}**", escape(&t.name)),
         )
     };
-    let mut events: Vec<String> = round
-        .events
-        .iter()
-        .map(|e| {
-            let skull = if e.deaths.is_empty() {
-                "▫️"
-            } else {
-                "💀"
-            };
-            format!("{skull} {}", fill(&e.text, name))
-        })
-        .collect();
-    let mut head = String::new();
+    let mut blocks = vec![format!("## {emoji} {}", title(round.kind))];
     if let Some(line) = &round.gamemaker {
-        head = format!("🎙️ *{}*\n\n", shorten_at_word(line, 600));
+        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(line, 600)));
     }
-    // Very wordy rounds are cut to fit, each event getting an equal share.
-    let total: usize =
-        head.chars().count() + events.iter().map(|e| e.chars().count() + 1).sum::<usize>();
-    if total > MAX_ROUND {
-        let each = (MAX_ROUND - head.chars().count()) / events.len().max(1) - 1;
-        events = events.iter().map(|e| shorten_at_word(e, each)).collect();
+    for event in &round.events {
+        let skull = if event.deaths.is_empty() {
+            "▫️"
+        } else {
+            "💀"
+        };
+        blocks.push(format!("{skull} {}", fill(&event.text, name)));
     }
     let left = game.alive();
-    CreateEmbed::new()
-        .title(format!("{emoji} {}", title(round.kind)))
-        .description(format!("{head}{}", events.join("\n")))
-        .footer(CreateEmbedFooter::new(if left == 1 {
-            "1 tribute left".to_string()
-        } else {
-            format!("{left} tributes left")
-        }))
-        .color(COLOR)
+    blocks.push(if left == 1 {
+        "-# 1 tribute left".to_string()
+    } else {
+        format!("-# {left} tributes left")
+    });
+    split_message(&blocks.join("\n\n"), DISCORD_LIMIT)
 }
 
 /// The button to move on to the next round.
@@ -190,32 +176,30 @@ pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
 }
 
 /// The cannons at the end of a day: one for each tribute who fell.
-pub fn cannons(day: u32, fallen: &[String]) -> CreateEmbed {
-    let text = if fallen.is_empty() {
-        "No cannons today. Everyone made it through.".to_string()
+pub fn cannons(day: u32, fallen: &[String]) -> String {
+    let mut text = format!("### 💥 The fallen of day {day}\n");
+    if fallen.is_empty() {
+        text.push_str("No cannons today. Everyone made it through.");
     } else {
         let names: Vec<String> = fallen.iter().map(|n| format!("💥 {}", escape(n))).collect();
-        format!(
+        text.push_str(&format!(
             "{} cannon{} sound{} across the arena.\n\n{}",
             fallen.len(),
             if fallen.len() == 1 { "" } else { "s" },
             if fallen.len() == 1 { "s" } else { "" },
             names.join("\n")
-        )
-    };
-    CreateEmbed::new()
-        .title(format!("The fallen of day {day}"))
-        .description(text)
-        .color(COLOR)
+        ));
+    }
+    text
 }
 
 /// The end: the winner, her line to them, and everyone's placing.
-pub fn victor(game: &Game, victory: Option<&str>) -> CreateEmbed {
+pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let placings = game.placings();
-    let mut lines = Vec::new();
+    let name = placings.first().map_or("Nobody", |t| t.name.as_str());
+    let mut text = format!("# 👑 {} wins the Hunger Games!\n", escape(name));
     if let Some(line) = victory {
-        lines.push(format!("🎙️ *{}*", shorten_at_word(line, 600)));
-        lines.push(String::new());
+        text.push_str(&format!("> 🎙️ *{}*\n\n", shorten_at_word(line, 600)));
     }
     for (i, t) in placings.iter().enumerate() {
         let place = if i == 0 {
@@ -228,13 +212,9 @@ pub fn victor(game: &Game, victory: Option<&str>) -> CreateEmbed {
             1 => ", 1 kill".to_string(),
             n => format!(", {n} kills"),
         };
-        lines.push(format!("{place} {}{kills}", escape(&t.name)));
+        text.push_str(&format!("{place} {}{kills}\n", escape(&t.name)));
     }
-    let name = placings.first().map_or("Nobody", |t| t.name.as_str());
-    CreateEmbed::new()
-        .title(format!("👑 {} wins the Hunger Games!", name))
-        .description(lines.join("\n"))
-        .color(COLOR)
+    split_message(&text, DISCORD_LIMIT)
 }
 
 #[cfg(test)]
@@ -261,11 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn long_rounds_are_cut_to_fit() {
+    fn long_rounds_come_in_parts() {
         let mut game = Game::new((1..=24).map(|id| (id, format!("P{id}"))).collect());
         let events = (0..24)
             .map(|i| Event {
-                text: format!("{{T{}}} {}", i + 1, "walks a long way ".repeat(23)),
+                text: format!("{{T{}}} {}", i + 1, "walks a long way ".repeat(10)),
                 deaths: if i == 0 {
                     vec![Death {
                         victim: 0,
@@ -283,10 +263,10 @@ mod tests {
             victory: None,
         };
         game.apply(played.clone());
-        let embed = serde_json::to_value(round(&game, &played)).unwrap();
-        let text = embed["description"].as_str().unwrap();
-        assert!(text.chars().count() <= 4096);
-        assert!(text.starts_with("🎙️ *Hello*\n\n💀 **P1** walks"));
-        assert_eq!(embed["footer"]["text"], "23 tributes left");
+        let parts = round(&game, &played);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
+        assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 **P1** walks"));
+        assert!(parts.last().unwrap().ends_with("-# 23 tributes left"));
     }
 }
