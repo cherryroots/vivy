@@ -6,13 +6,13 @@
 mod chat;
 mod control_panel;
 mod drawing;
+mod games;
 mod memory;
 mod reminders;
 mod snails;
 mod tinyfish;
 mod voice;
 mod wheel;
-mod who_said_it;
 
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(snails::Snails::default()),
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
-        Arc::new(who_said_it::WhoSaidIt),
+        Arc::new(games::Games),
         Arc::new(tinyfish::TinyFish),
         Arc::new(chat::Chat::default()),
     ]

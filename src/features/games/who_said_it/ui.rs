@@ -7,15 +7,16 @@ use super::game::{Outcome, Quote, Round};
 use crate::util::shorten;
 
 /// Vivy's teal, down the side of every message.
-pub(super) const COLOR: u32 = 0x2bc4b4;
+pub(in crate::features::games) const COLOR: u32 = 0x2bc4b4;
 
-/// A button's ID: `who_said_it:pick:<game>:<round>:<person>`. `game` tells a running game
+/// A button's ID: `games:who_said_it:pick:<game>:<round>:<person>`. `game` tells a running game
 /// from an older one in the same channel.
 pub fn button_id(game: u32, round: usize, person: u64) -> String {
-    format!("who_said_it:pick:{game}:{round}:{person}")
+    format!("games:who_said_it:pick:{game}:{round}:{person}")
 }
 
-/// Reads what [`button_id`] made, without the `who_said_it:` the dispatcher took off.
+/// Reads what [`button_id`] made, without the `games:who_said_it:` the dispatcher and the
+/// games feature took off.
 pub fn parse_button(action: &str) -> Option<(u32, usize, u64)> {
     let mut parts = action.strip_prefix("pick:")?.split(':');
     let game = parts.next()?.parse().ok()?;
@@ -158,7 +159,7 @@ fn quote_block(text: &str) -> String {
 }
 
 /// A name with Discord's formatting characters escaped, so `_moss_` doesn't turn italic.
-pub(super) fn escape(name: &str) -> String {
+pub(in crate::features::games) fn escape(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars() {
         if matches!(
@@ -179,7 +180,7 @@ mod tests {
     #[test]
     fn button_ids_read_back() {
         let id = button_id(7, 3, 123456789012345678);
-        let action = id.strip_prefix("who_said_it:").unwrap();
+        let action = id.strip_prefix("games:who_said_it:").unwrap();
         assert_eq!(parse_button(action), Some((7, 3, 123456789012345678)));
         assert_eq!(parse_button("pick:7:3"), None);
         assert_eq!(parse_button("pick:7:3:1:2"), None);

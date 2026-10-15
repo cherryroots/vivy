@@ -10,7 +10,7 @@ use serenity::all::{
 use super::game::{Game, Kind, Round, fill};
 use super::last_words::LastWords;
 use super::writer::title;
-use crate::features::who_said_it::ui::{COLOR, escape};
+use crate::features::games::who_said_it::ui::{COLOR, escape};
 use crate::util::shorten_at_word;
 use crate::util::split::{DISCORD_LIMIT, split_message};
 
@@ -28,7 +28,7 @@ pub enum Action {
     Next(usize),
 }
 
-/// A button's or menu's ID: `who_said_it:hunger:<game>:<action>`. `game` tells a game from
+/// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
 /// an older one in the same channel.
 pub fn custom_id(game: u32, action: Action) -> String {
     let action = match action {
@@ -39,10 +39,10 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Memories => "memories".to_string(),
         Action::Next(round) => format!("next:{round}"),
     };
-    format!("who_said_it:hunger:{game}:{action}")
+    format!("games:hunger:{game}:{action}")
 }
 
-/// Reads what [`custom_id`] made, without the `who_said_it:` the dispatcher took off.
+/// Reads what [`custom_id`] made, without the `games:` the dispatcher took off.
 pub fn parse_id(action: &str) -> Option<(u32, Action)> {
     let rest = action.strip_prefix("hunger:")?;
     let (game, what) = rest.split_once(':')?;
@@ -167,7 +167,7 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
     };
     let mut blocks = vec![format!("## {emoji} {}", title(round.kind))];
     if let Some(line) = &round.gamemaker {
-        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(line, 600)));
+        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(&unspoken(line), 600)));
     }
     for event in &round.events {
         let skull = if event.deaths.is_empty() {
@@ -184,6 +184,22 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
         format!("-# {left} tributes left")
     });
     split_message(&blocks.join("\n\n"), DISCORD_LIMIT)
+}
+
+/// A Gamemaker line as it's shown: without the audio tags (`[booming]`) that steer how
+/// it's spoken.
+pub fn unspoken(line: &str) -> String {
+    let mut shown = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('[') {
+        let Some(end) = rest[start..].find(']') else {
+            break;
+        };
+        shown.push_str(&rest[..start]);
+        rest = &rest[start + end + 1..];
+    }
+    shown.push_str(rest);
+    shown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The button to move on to the next round.
@@ -234,7 +250,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
     if let Some(line) = victory {
         // A `||` of her own would end the spoiler early.
-        let line = shorten_at_word(line, 600).replace("||", "|");
+        let line = shorten_at_word(&unspoken(line), 600).replace("||", "|");
         text.push_str(&format!("> 🎙️ ||*{line}*||\n\n"));
     }
     for (i, t) in placings.iter().enumerate() {
@@ -256,7 +272,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::who_said_it::hunger::game::{Death, Event};
+    use crate::features::games::hunger_games::game::{Death, Event};
 
     #[test]
     fn ids_read_back() {
@@ -269,7 +285,7 @@ mod tests {
             Action::Next(4),
         ] {
             let id = custom_id(9, action);
-            let rest = id.strip_prefix("who_said_it:").unwrap();
+            let rest = id.strip_prefix("games:").unwrap();
             assert_eq!(parse_id(rest), Some((9, action)));
         }
         assert_eq!(parse_id("pick:1:2:3"), None);
@@ -328,5 +344,14 @@ mod tests {
         assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
         assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 **P1** walks"));
         assert!(parts.last().unwrap().ends_with("-# 23 tributes left"));
+    }
+
+    #[test]
+    fn audio_tags_arent_shown() {
+        assert_eq!(
+            unspoken("[booming] Welcome, tributes! [dramatic pause] Begin."),
+            "Welcome, tributes! Begin."
+        );
+        assert_eq!(unspoken("No tags [at all"), "No tags [at all");
     }
 }

@@ -210,6 +210,9 @@ enabled = true
 # The ElevenLabs voice she speaks with (from Voice Design or the voice library). Required
 # for voice messages: without it she can't send them.
 # voice_id = "DIIk31SqVXDOEFbJGJl9"
+# Other voices by name, for other features. The Hunger Games' Gamemaker speaks with
+# `gamemaker` (this is the default); an empty ID turns a voice off.
+# voices = { gamemaker = "DucUc05HgR5M3wbY6WkG" }
 # "eleven_v4", or "eleven_v4_turbo" for faster and half the price.
 model = "eleven_v4"
 # 0 to 1: lower is more expressive and varied, higher is steadier.
@@ -268,7 +271,11 @@ max_page_characters = 15000
 # Older history is only read when an admin runs `/snails backfill start`.
 enabled = true
 
-[features.who_said_it]
+[features.games]
+# /games: the games below share this section's gate (enabled, guilds, channels...).
+enabled = true
+
+[features.games.who_said_it]
 # /games whosaidit: messages from the channel's history, and everyone races to press who wrote them.
 # Questions per game (when /games whosaidit doesn't say), and seconds to answer each (at least 5).
 rounds = 10
@@ -281,7 +288,7 @@ max_length = 300
 # People whose messages are never used.
 # exclude_users = [123456789012345678]
 
-[features.who_said_it.hunger_games]
+[features.games.hunger_games]
 # /games hungergames: a battle royale between members that Vivy writes, round by round.
 # The most tributes in one game (at most 24).
 max_tributes = 24

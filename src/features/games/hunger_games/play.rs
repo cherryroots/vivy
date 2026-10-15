@@ -14,7 +14,7 @@ use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    GuildId, Message, UserId,
+    GuildId, Message, MessageId, UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -22,11 +22,11 @@ use tracing::{info, warn};
 
 use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
-use super::notes;
 use super::{Settings, ui, writer};
+use super::{notes, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
-use crate::features::who_said_it::sources::{self, From, Source};
+use crate::features::games::who_said_it::sources::{self, From, Source};
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
 const MOST_TRIBUTES: usize = 24;
@@ -44,7 +44,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
-    /// Whether Vivy gets her memory notes about the tributes (the host's toggle).
+    /// Whether Vivy gets her memory notes about the tributes (the host's toggle, off at
+    /// first).
     memories: bool,
 }
 
@@ -116,10 +117,11 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
     let bot = ctx.data().clone();
-    // The who-said-it settings are for the quote reader (last words); ours are inside them.
-    let mut quote_settings: crate::features::who_said_it::Settings =
-        bot.config.feature("who_said_it")?;
-    let settings = std::mem::take(&mut quote_settings.hunger_games);
+    // The who-said-it settings are for the quote reader (last words).
+    let crate::features::games::Settings {
+        who_said_it: quote_settings,
+        hunger_games: settings,
+    } = bot.config.feature("games")?;
     let provider = bot.ai.chat().ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
     })?;
@@ -136,7 +138,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
-            memories: true,
+            memories: false,
         }),
         wake: Notify::new(),
         waiting_on: Mutex::new(None),
@@ -159,7 +161,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         &[],
         max,
         closes_at,
-        true,
+        false,
     );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
@@ -191,7 +193,7 @@ struct Setup {
     arena: Vec<String>,
     /// Where last words are read from.
     sources: Vec<Source>,
-    quote_settings: crate::features::who_said_it::Settings,
+    quote_settings: crate::features::games::who_said_it::Settings,
 }
 
 /// The channels everyone can read (for last words), and their names other than this
@@ -280,9 +282,14 @@ async fn run(
     };
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
     let game = Game::new(tributes);
+    let stage = Stage {
+        guild,
+        channel,
+        lobby: lobby_message.id,
+    };
     play(
         bot,
-        channel,
+        stage,
         running,
         game,
         Writing {
@@ -299,13 +306,16 @@ async fn run(
 /// Posts each round as Vivy writes it, the fallen after each night, and the victor.
 async fn play(
     bot: &BotCtx,
-    channel: ChannelId,
+    stage: Stage,
     running: &Running,
     mut game: Game,
     writing: Writing,
     words: JoinHandle<HashMap<u64, LastWords>>,
     auto: Duration,
 ) {
+    let channel = stage.channel;
+    // Her Gamemaker line, out loud too.
+    let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
@@ -356,6 +366,10 @@ async fn play(
         };
         let index = game.rounds.len();
         let victory = round.victory.clone();
+        if let Some(line) = round.gamemaker.clone() {
+            let _typing = channel.start_typing(&bot.http);
+            speak(line).await;
+        }
         game.apply(round);
         let over = game.winner().is_some();
 
@@ -383,6 +397,9 @@ async fn play(
                 if let Err(err) = channel.send_message(&bot.http, text(part)).await {
                     warn!("couldn't post the Hunger Games victor: {err}");
                 }
+            }
+            if let Some(line) = victory {
+                speak(line).await;
             }
             let winner = game.winner().map(|t| t.id);
             info!(winner, rounds = game.rounds.len(), "Hunger Games ended");
@@ -417,6 +434,14 @@ async fn play(
             }
         }
     }
+}
+
+/// Where the game is played.
+struct Stage {
+    guild: GuildId,
+    channel: ChannelId,
+    /// The Reaping message.
+    lobby: MessageId,
 }
 
 /// What Vivy gets for writing each round, besides the game.
