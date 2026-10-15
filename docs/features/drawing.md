@@ -45,6 +45,8 @@ A refusal by OpenAI's safety system (a 400) goes back to her as the tool's resul
 
 - **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `use_pictures` (true to draw from the pictures in the asker's message and the one it replies to).
 
+Other features run the same tool, so the limits count their pictures too, and can pass arguments the chat model isn't told about: `reply: false` posts the picture on its own instead of as a reply, `caption` puts a line of text with it, `spoiler: true` names the file `SPOILER_drawing.png` so Discord hides it, and `from_avatars` (user IDs, at most 4) sends those members' profile pictures (512 px, their server one when set) along to draw from, with `edit_model`. The [Hunger Games](hunger-games.md#pictures) use them.
+
 ## Feature hooks it uses
 
 - `name`: "drawing".

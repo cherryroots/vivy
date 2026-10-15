@@ -9,7 +9,7 @@
 use super::tools::{find_member, parse_user_id};
 use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, user_error};
-use crate::util::media::{ModelImage, download};
+use crate::util::media::{ModelImage, download, png_link};
 use serde_json::{Value, json};
 
 pub const TOOL: &str = "look_at_profile_picture";
@@ -76,7 +76,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<ToolReply>
         }
     };
 
-    let data = download(&png_link(&url), MAX_BYTES).await?;
+    let data = download(&png_link(&url, SIZE), MAX_BYTES).await?;
     let whose = if user_id == ctx.bot_id {
         None
     } else {
@@ -99,15 +99,6 @@ fn is_herself(query: &str) -> bool {
     )
 }
 
-/// Discord's picture links end in `.webp` (or `.gif` when animated). Asking for `.png`
-/// gives a still picture every model reads; an animated one gives its first frame.
-fn png_link(url: &str) -> String {
-    let base = url.split('?').next().unwrap_or(url);
-    let (folder, file) = base.rsplit_once('/').unwrap_or(("", base));
-    let stem = file.split('.').next().unwrap_or(file);
-    format!("{folder}/{stem}.png?size={SIZE}")
-}
-
 /// The tool's text. `whose` is the person's name, or `None` for her own picture.
 fn describe(whose: Option<&str>, for_server: bool) -> String {
     let which = if for_server {
@@ -124,22 +115,6 @@ fn describe(whose: Option<&str>, for_server: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn asks_discord_for_a_png() {
-        assert_eq!(
-            png_link("https://cdn.discordapp.com/avatars/1/abc.webp?size=1024"),
-            "https://cdn.discordapp.com/avatars/1/abc.png?size=512"
-        );
-        assert_eq!(
-            png_link("https://cdn.discordapp.com/guilds/2/users/1/avatars/a_abc.gif?size=1024"),
-            "https://cdn.discordapp.com/guilds/2/users/1/avatars/a_abc.png?size=512"
-        );
-        assert_eq!(
-            png_link("https://cdn.discordapp.com/embed/avatars/3.png"),
-            "https://cdn.discordapp.com/embed/avatars/3.png?size=512"
-        );
-    }
 
     #[test]
     fn knows_when_she_means_herself() {

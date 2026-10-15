@@ -463,6 +463,15 @@ impl ModelImage {
     }
 }
 
+/// A Discord profile picture link (`.webp`, or `.gif` when animated) as a still PNG of
+/// `size` pixels, which every model reads; an animated one gives its first frame.
+pub fn png_link(url: &str, size: u32) -> String {
+    let base = url.split('?').next().unwrap_or(url);
+    let (folder, file) = base.rsplit_once('/').unwrap_or(("", base));
+    let stem = file.split('.').next().unwrap_or(file);
+    format!("{folder}/{stem}.png?size={size}")
+}
+
 /// Downloads `media` and returns the images a model should see: the image itself, or frame
 /// grids for a GIF or video.
 pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
@@ -529,6 +538,28 @@ async fn first_frame_png(data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_pictures_become_pngs() {
+        assert_eq!(
+            png_link(
+                "https://cdn.discordapp.com/avatars/1/abc.webp?size=1024",
+                512
+            ),
+            "https://cdn.discordapp.com/avatars/1/abc.png?size=512"
+        );
+        assert_eq!(
+            png_link(
+                "https://cdn.discordapp.com/guilds/2/users/1/avatars/a_abc.gif?size=1024",
+                512
+            ),
+            "https://cdn.discordapp.com/guilds/2/users/1/avatars/a_abc.png?size=512"
+        );
+        assert_eq!(
+            png_link("https://cdn.discordapp.com/embed/avatars/3.png", 256),
+            "https://cdn.discordapp.com/embed/avatars/3.png?size=256"
+        );
+    }
     use serde_json::json;
     use serenity::all::{Attachment, Embed};
 

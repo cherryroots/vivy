@@ -47,6 +47,12 @@ impl Kind {
     pub fn announced(self) -> bool {
         matches!(self, Kind::Bloodbath | Kind::Feast(_) | Kind::Finale)
     }
+
+    /// Whether she draws a picture of this round, when pictures are on: the arena as the
+    /// Games open, each day's most dramatic moment, and the victor. Nights aren't drawn.
+    pub fn pictured(self) -> bool {
+        !matches!(self, Kind::Night(_))
+    }
 }
 
 /// Someone dying in an event: who (index into the tributes), and who killed them, if
@@ -74,6 +80,8 @@ pub struct Round {
     pub events: Vec<Event>,
     /// In the Finale, what she says to the winner.
     pub victory: Option<String>,
+    /// What to draw for this round (see [`Kind::pictured`]), when she was asked to.
+    pub picture: Option<String>,
 }
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
@@ -84,6 +92,8 @@ pub struct Written {
     pub events: Vec<WrittenEvent>,
     #[serde(default)]
     pub victory: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -324,6 +334,7 @@ impl Game {
             gamemaker: clean(written.gamemaker).filter(|_| kind.announced()),
             events,
             victory: clean(written.victory).filter(|_| kind == Kind::Finale),
+            picture: clean(written.picture).filter(|_| kind.pictured()),
         })
     }
 
@@ -428,6 +439,7 @@ mod tests {
             gamemaker: Some("Welcome!".into()),
             events,
             victory: None,
+            picture: Some("A forest".into()),
         }
     }
 
@@ -440,6 +452,7 @@ mod tests {
             gamemaker: None,
             events: Vec::new(),
             victory: None,
+            picture: None,
         };
         g.apply(empty(Kind::Bloodbath));
         assert_eq!(g.next_kind(), Some(Kind::Day(1)));
@@ -474,6 +487,7 @@ mod tests {
                 })
                 .collect(),
             victory: None,
+            picture: None,
         }
     }
 
@@ -526,11 +540,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(round.gamemaker.as_deref(), Some("Welcome!"));
+        assert_eq!(round.picture.as_deref(), Some("A forest"));
         g.apply(round);
         assert_eq!(g.alive(), 3);
         assert_eq!(g.tributes[0].kills, 1);
         assert_eq!(g.tributes[1].died_in, Some(0));
         assert_eq!(g.fallen_since(0)[0].name, "P2");
+    }
+
+    #[test]
+    fn nights_arent_drawn() {
+        let g = game(3);
+        let night = g
+            .check(
+                Kind::Night(1),
+                written(vec![event(
+                    "{T1} and {T2} sleep while {T3} falls off a cliff.",
+                    &["T1", "T2", "T3"],
+                    &[("T3", None)],
+                )]),
+            )
+            .unwrap();
+        assert_eq!(night.picture, None);
+        assert!(Kind::Day(1).pictured() && Kind::Finale.pictured());
     }
 
     #[test]

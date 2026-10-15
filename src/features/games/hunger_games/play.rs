@@ -13,8 +13,8 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    GuildId, Message, MessageId, UserId,
+    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
+    EditMessage, GuildId, Message, MessageId, UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -22,8 +22,9 @@ use tracing::{info, warn};
 
 use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
+use super::pictures::{self, Picture};
 use super::{Settings, ui, writer};
-use super::{notes, voice};
+use super::{fallen, notes, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
@@ -44,9 +45,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
-    /// Whether Vivy gets her memory notes about the tributes (the host's toggle, off at
-    /// first).
-    memories: bool,
+    /// Memories and pictures: the host's toggles, off at first.
+    extras: ui::Extras,
 }
 
 impl Lobby {
@@ -90,7 +90,7 @@ impl Running {
             &picked,
             self.max,
             self.closes_at,
-            lobby.memories,
+            lobby.extras,
         );
         CreateInteractionResponseMessage::new()
             .embed(embed)
@@ -138,7 +138,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
-            memories: false,
+            extras: ui::Extras::default(),
         }),
         wake: Notify::new(),
         waiting_on: Mutex::new(None),
@@ -161,7 +161,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         &[],
         max,
         closes_at,
-        false,
+        ui::Extras::default(),
     );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
@@ -251,11 +251,16 @@ async fn run(
             }
         }
     }
-    let (tributes, memories) = {
+    let (tributes, extras) = {
         let lobby = running.lobby.lock().unwrap();
-        (lobby.tributes(running.max), lobby.memories)
+        (lobby.tributes(running.max), lobby.extras)
     };
-    info!(tributes = tributes.len(), memories, "Hunger Games started");
+    info!(
+        tributes = tributes.len(),
+        memories = extras.memories,
+        pictures = extras.pictures,
+        "Hunger Games started"
+    );
     let Setup {
         guild,
         channel,
@@ -275,7 +280,7 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    let notes = if memories {
+    let notes = if extras.memories {
         notes::about(bot, guild, channel, lobby_message.id, &ids).await
     } else {
         vec![None; ids.len()]
@@ -296,6 +301,7 @@ async fn run(
             provider,
             arena,
             notes: Arc::new(notes),
+            pictures: extras.pictures,
         },
         words,
         auto,
@@ -325,9 +331,11 @@ async fn play(
             kind,
             arena,
             notes,
+            writing.pictures,
             channel.get(),
         ))
     };
+    let draws = writing.pictures;
     let mut words = Words::Reading(words);
     let intro = format!(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Bloodbath…",
@@ -387,11 +395,33 @@ async fn play(
                 Err(err) => warn!("couldn't post a Hunger Games round: {err}"),
             }
         }
+        // Her picture of the round, drawn in the background while people read.
+        if draws && let Some(prompt) = game.rounds[index].picture.clone() {
+            let picture = Picture {
+                prompt,
+                caption: if over {
+                    "🎨 The victor".to_string()
+                } else {
+                    format!("🎨 {}", writer::title(kind))
+                },
+                // The victor is drawn from their profile picture.
+                of: game.winner().filter(|_| over).map(|t| t.id),
+                spoiler: over,
+            };
+            pictures::draw(
+                bot,
+                stage.guild,
+                channel,
+                stage.lobby,
+                running.host,
+                picture,
+            );
+        }
         if over {
             // The fallen since the last cannons, the loser of the final showdown among them.
             if cannons_from < game.rounds.len() {
                 let title = "The last of the fallen";
-                post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
+                post_cannons(bot, &stage, &game, cannons_from, title, &mut words).await;
             }
             for part in ui::victor(&game, victory.as_deref()) {
                 if let Err(err) = channel.send_message(&bot.http, text(part)).await {
@@ -407,7 +437,7 @@ async fn play(
         }
         if let Kind::Night(day) = kind {
             let title = format!("The fallen of day {day}");
-            post_cannons(bot, channel, &game, cannons_from, &title, &mut words).await;
+            post_cannons(bot, &stage, &game, cannons_from, &title, &mut words).await;
             cannons_from = game.rounds.len();
         }
 
@@ -451,6 +481,8 @@ struct Writing {
     arena: Vec<String>,
     /// Her notes about each tribute, in the game's order.
     notes: Arc<Vec<Option<String>>>,
+    /// Whether she writes picture prompts, and they're drawn.
+    pictures: bool,
 }
 
 /// The last words: still being read, or read.
@@ -474,23 +506,31 @@ impl Words {
 }
 
 /// Posts the cannons for everyone who fell in the rounds from `from` on, with their last
-/// words.
+/// words and the picture of them in the night sky.
 async fn post_cannons(
     bot: &BotCtx,
-    channel: ChannelId,
+    stage: &Stage,
     game: &Game,
     from: usize,
     title: &str,
     words: &mut Words,
 ) {
+    let tributes = game.fallen_since(from);
+    let faces = tributes
+        .iter()
+        .map(|t| (t.id, t.name.clone(), t.kills))
+        .collect();
+    let picture = fallen::picture(bot, stage.guild, title, faces).await;
     let words = words.get().await;
-    let fallen: Vec<(String, Option<LastWords>)> = game
-        .fallen_since(from)
+    let fallen: Vec<(String, Option<LastWords>)> = tributes
         .iter()
         .map(|t| (t.name.clone(), words.get(&t.id).cloned()))
         .collect();
-    let message = text(ui::cannons(title, &fallen));
-    if let Err(err) = channel.send_message(&bot.http, message).await {
+    let mut message = text(ui::cannons(title, &fallen));
+    if let Some(png) = picture {
+        message = message.add_file(CreateAttachment::bytes(png, fallen::FILE));
+    }
+    if let Err(err) = stage.channel.send_message(&bot.http, message).await {
         warn!("couldn't post the Hunger Games cannons: {err}");
     }
 }
@@ -621,7 +661,19 @@ pub async fn on_component(
                 .await;
             }
             let mut lobby = running.lobby.lock().unwrap();
-            lobby.memories = !lobby.memories;
+            lobby.extras.memories = !lobby.extras.memories;
+        }
+        ui::Action::Pictures => {
+            if !in_charge {
+                return tell(
+                    bot,
+                    interaction,
+                    "Only the host turns Vivy's pictures on or off.",
+                )
+                .await;
+            }
+            let mut lobby = running.lobby.lock().unwrap();
+            lobby.extras.pictures = !lobby.extras.pictures;
         }
         ui::Action::Start | ui::Action::Cancel => {
             if !in_charge {

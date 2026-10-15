@@ -14,6 +14,12 @@
 //!
 //! It needs `OPENAI_TOKEN` in .env, whichever provider chats. Without it the tool isn't
 //! offered.
+//!
+//! Other features draw through the same tool (`run_tool`), so the monthly limits count
+//! their pictures too. They can pass arguments the chat model isn't told about:
+//! `reply: false` posts the picture on its own, `caption` puts a line of text with it,
+//! `spoiler: true` hides it behind a spoiler, and `from_avatars` (user IDs) sends those
+//! members' profile pictures along to draw from. The Hunger Games use them.
 
 mod store;
 
@@ -22,7 +28,9 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message};
+use serenity::all::{
+    CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message, UserId,
+};
 use tracing::{info, warn};
 
 use crate::ai::{PictureRequest, ToolDef};
@@ -35,6 +43,8 @@ const TOOL: &str = "draw_picture";
 const MAX_PICTURES: usize = 4;
 /// How many messages before and after one of Vivy's answers are checked for its pictures.
 const NEIGHBOURS: u8 = 4;
+/// The size of profile pictures sent along with `from_avatars`.
+const AVATAR_SIZE: u32 = 512;
 
 /// `[features.drawing]` settings.
 #[derive(Debug, Deserialize)]
@@ -255,6 +265,20 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             }
         }
 
+        if let Some(ids) = args.get("from_avatars").and_then(Value::as_array) {
+            for id in ids.iter().take(MAX_PICTURES) {
+                let id = id
+                    .as_u64()
+                    .or_else(|| id.as_str().and_then(|s| s.parse().ok()))
+                    .filter(|id| *id > 0);
+                let Some(id) = id else { continue };
+                match avatar(ctx, asker, UserId::new(id)).await {
+                    Ok(picture) => pictures.push(picture),
+                    Err(err) => warn!("couldn't load a profile picture to draw from: {err:#}"),
+                }
+            }
+        }
+
         let shape = args.get("shape").and_then(Value::as_str);
         let model = match pictures.is_empty() {
             true => &settings.model,
@@ -271,11 +295,22 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
         };
         let picture = images.draw(&request).await?;
 
-        let name = format!("drawing.{}", picture.format);
-        let message = CreateMessage::new()
+        // Discord hides a file whose name starts with SPOILER_ behind a spoiler.
+        let spoiler = args.get("spoiler").and_then(Value::as_bool) == Some(true);
+        let name = format!(
+            "{}drawing.{}",
+            if spoiler { "SPOILER_" } else { "" },
+            picture.format
+        );
+        let mut message = CreateMessage::new()
             .add_file(CreateAttachment::bytes(picture.data, name))
-            .reference_message((asker.channel, asker.message))
             .allowed_mentions(CreateAllowedMentions::new().replied_user(true));
+        if args.get("reply").and_then(Value::as_bool) != Some(false) {
+            message = message.reference_message((asker.channel, asker.message));
+        }
+        if let Some(caption) = args.get("caption").and_then(Value::as_str) {
+            message = message.content(caption);
+        }
         let message = asker
             .channel
             .send_message(&ctx.http, message)
@@ -320,6 +355,23 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             Stat::new("Cost", format!("${usd:.2}")),
         ])
     }
+}
+
+/// A member's profile picture as a PNG to draw from: their picture for this server if they
+/// set one, otherwise their main one.
+async fn avatar(ctx: &BotCtx, asker: &Asker, user: UserId) -> anyhow::Result<ModelImage> {
+    let url = match asker.guild {
+        Some(guild) => {
+            let member = guild.member(&ctx.http, user).await?;
+            member.avatar_url().unwrap_or_else(|| member.user.face())
+        }
+        None => user.to_user(&ctx.http).await?.face(),
+    };
+    let data = media::download(&media::png_link(&url, AVATAR_SIZE), 8 * 1024 * 1024).await?;
+    Ok(ModelImage {
+        mime: "image/png",
+        data,
+    })
 }
 
 #[cfg(test)]

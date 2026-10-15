@@ -25,16 +25,24 @@ Keep it playful: cartoon violence, no gore, nothing sexual, nothing hateful, and
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}]}], \"victory\": string or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}]}], \"victory\": string or null, \"picture\": string or null}
 - Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
+- `picture`: only when the round asks for one: what to draw, as a prompt for an image model, in English. Describe the whole scene: the place, the action, the mood and the light, with the tributes as cartoon characters described by what they're doing (no names, no tags, and no words or letters in the picture). Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
-/// is: what she's told. `notes` are in the same order as the tributes.
-pub fn brief(game: &Game, kind: Kind, arena: &[String], notes: &[Option<String>]) -> String {
+/// is: what she's told. `notes` are in the same order as the tributes. With `pictures`,
+/// the rounds that are drawn ask for a `picture` too.
+pub fn brief(
+    game: &Game,
+    kind: Kind,
+    arena: &[String],
+    notes: &[Option<String>],
+    pictures: bool,
+) -> String {
     let alive = game.alive();
     let (min, max) = game.deaths_range(kind);
     let mut text = String::new();
@@ -117,6 +125,14 @@ pub fn brief(game: &Game, kind: Kind, arena: &[String], notes: &[Option<String>]
     text.push_str(&format!(
         "\nThis round: {what} {alive} tributes are alive. {deaths}"
     ));
+    if pictures && kind.pictured() {
+        text.push(' ');
+        text.push_str(match kind {
+            Kind::Bloodbath => "Also write a `picture`: the arena as the Games begin, the tributes around the Cornucopia.",
+            Kind::Finale => "Also write a `picture`: the winner's triumph. The winner's profile picture is sent along with your prompt, so draw the victor as the person or character in that picture.",
+            _ => "Also write a `picture`: the most dramatic moment of this round.",
+        });
+    }
     text
 }
 
@@ -157,11 +173,12 @@ pub async fn write(
     kind: Kind,
     arena: Vec<String>,
     notes: Arc<Vec<Option<String>>>,
+    pictures: bool,
     channel: u64,
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena, &notes))],
+        parts: vec![Part::Text(brief(&game, kind, &arena, &notes, pictures))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
@@ -261,6 +278,7 @@ mod tests {
             Kind::Finale,
             Vec::new(),
             Arc::new(Vec::new()),
+            false,
             5,
         )
         .await
@@ -295,6 +313,7 @@ mod tests {
                 deaths: Vec::new(),
             }],
             victory: None,
+            picture: None,
         });
         let notes = vec![
             Some("Plays chess".into()),
@@ -306,7 +325,11 @@ mod tests {
             Kind::Finale,
             &["general".into(), "memes".into()],
             &notes,
+            false,
         );
+        assert!(!text.contains("`picture`"));
+        let drawn = brief(&game, Kind::Finale, &[], &notes, true);
+        assert!(drawn.contains("Also write a `picture`: the winner's triumph."));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));

@@ -24,6 +24,8 @@ pub enum Action {
     Cancel,
     /// The host turns Vivy's memory notes about the tributes on or off.
     Memories,
+    /// The host turns the pictures she draws during the game on or off.
+    Pictures,
     /// On to the round after `n` (the round's index).
     Next(usize),
 }
@@ -37,6 +39,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Start => "start".to_string(),
         Action::Cancel => "cancel".to_string(),
         Action::Memories => "memories".to_string(),
+        Action::Pictures => "pictures".to_string(),
         Action::Next(round) => format!("next:{round}"),
     };
     format!("games:hunger:{game}:{action}")
@@ -53,14 +56,23 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "start" => Action::Start,
         "cancel" => Action::Cancel,
         "memories" => Action::Memories,
+        "pictures" => Action::Pictures,
         _ => Action::Next(what.strip_prefix("next:")?.parse().ok()?),
     };
     Some((game, action))
 }
 
+/// What the host turned on in the Reaping. Both start off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Extras {
+    /// Vivy may use her memory notes about the tributes.
+    pub memories: bool,
+    /// She draws pictures during the game.
+    pub pictures: bool,
+}
+
 /// The Reaping: who's in so far, the host's menu and the buttons. `closes_at` is a Unix
-/// time for Discord's countdown. `memories` is whether Vivy may use her memory notes about
-/// the tributes.
+/// time for Discord's countdown.
 pub fn lobby(
     game: u32,
     host: u64,
@@ -68,7 +80,7 @@ pub fn lobby(
     picked: &[u64],
     max: usize,
     closes_at: i64,
-    memories: bool,
+    extras: Extras,
 ) -> (CreateEmbed, Vec<CreateActionRow>) {
     let mut lines = vec![
         format!(
@@ -86,11 +98,16 @@ pub fn lobby(
         lines.push(format!("{}. {}", i + 1, escape(name)));
     }
     lines.push(String::new());
-    lines.push(if memories {
+    lines.push(if extras.memories {
         "🧠 Memories **on**: Vivy may work in fun things she remembers about the tributes."
             .to_string()
     } else {
         "🧠 Memories **off**: Vivy knows the tributes only by name.".to_string()
+    });
+    lines.push(if extras.pictures {
+        "🎨 Pictures **on**: Vivy draws the arena, each day and the victor.".to_string()
+    } else {
+        "🎨 Pictures **off**: the Games are told in words only.".to_string()
     });
     lines.push(format!("The Reaping closes <t:{closes_at}:R>."));
     let menu = CreateSelectMenu::new(
@@ -111,12 +128,20 @@ pub fn lobby(
             .label("Start")
             .style(ButtonStyle::Success),
         CreateButton::new(custom_id(game, Action::Memories))
-            .label(if memories {
+            .label(if extras.memories {
                 "Memories: on"
             } else {
                 "Memories: off"
             })
             .emoji('🧠')
+            .style(ButtonStyle::Secondary),
+        CreateButton::new(custom_id(game, Action::Pictures))
+            .label(if extras.pictures {
+                "Pictures: on"
+            } else {
+                "Pictures: off"
+            })
+            .emoji('🎨')
             .style(ButtonStyle::Secondary),
         CreateButton::new(custom_id(game, Action::Cancel))
             .label("Cancel")
@@ -282,6 +307,7 @@ mod tests {
             Action::Start,
             Action::Cancel,
             Action::Memories,
+            Action::Pictures,
             Action::Next(4),
         ] {
             let id = custom_id(9, action);
@@ -337,6 +363,7 @@ mod tests {
             gamemaker: Some("Hello".into()),
             events,
             victory: None,
+            picture: None,
         };
         game.apply(played.clone());
         let parts = round(&game, &played);
