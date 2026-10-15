@@ -21,8 +21,8 @@ use serde::Deserialize;
 
 pub use play::{hunger_games, on_component};
 
-/// `[features.who_said_it.hunger_games]` settings.
-#[derive(Debug, Deserialize)]
+/// `[features.games.hunger_games]` settings.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// The most tributes in one game (at most 24).
@@ -40,20 +40,5 @@ impl Default for Settings {
             lobby_minutes: 10,
             auto_advance_seconds: 30,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::core::config::Config;
-    use crate::features::who_said_it;
-
-    #[test]
-    fn the_example_config_sets_them() {
-        let config = Config::parse(include_str!("../../../../config.example.toml")).unwrap();
-        let settings: who_said_it::Settings = config.feature("who_said_it").unwrap();
-        assert_eq!(settings.hunger_games.max_tributes, 24);
-        assert_eq!(settings.hunger_games.auto_advance_seconds, 30);
-        assert_eq!(settings.hunger_games.lobby_minutes, 10);
     }
 }

@@ -26,7 +26,7 @@ use super::notes;
 use super::{Settings, ui, writer};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
-use crate::features::who_said_it::sources::{self, From, Source};
+use crate::features::games::who_said_it::sources::{self, From, Source};
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
 const MOST_TRIBUTES: usize = 24;
@@ -116,10 +116,11 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
     let bot = ctx.data().clone();
-    // The who-said-it settings are for the quote reader (last words); ours are inside them.
-    let mut quote_settings: crate::features::who_said_it::Settings =
-        bot.config.feature("who_said_it")?;
-    let settings = std::mem::take(&mut quote_settings.hunger_games);
+    // The who-said-it settings are for the quote reader (last words).
+    let crate::features::games::Settings {
+        who_said_it: quote_settings,
+        hunger_games: settings,
+    } = bot.config.feature("games")?;
     let provider = bot.ai.chat().ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
     })?;
@@ -191,7 +192,7 @@ struct Setup {
     arena: Vec<String>,
     /// Where last words are read from.
     sources: Vec<Source>,
-    quote_settings: crate::features::who_said_it::Settings,
+    quote_settings: crate::features::games::who_said_it::Settings,
 }
 
 /// The channels everyone can read (for last words), and their names other than this

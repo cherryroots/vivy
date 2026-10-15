@@ -2,7 +2,7 @@
 
 A battle royale between server members, played in plain Discord messages. The host picks the tributes (others can volunteer), and Vivy, as the Gamemaker, writes every round of what happens in the arena until one tribute is left. The arena's areas are the server's own channels.
 
-It lives inside the [who said it?](who-said-it.md) feature, because Discord needs one `/games` command to hold both games. Its gate is that feature's gate.
+It's one of the games in the games feature (`src/features/games/`), next to [who said it?](who-said-it.md): Discord needs one `/games` command to hold both games, so they share that feature and its gate, `[features.games]`. It borrows who said it?'s quote reader and channel rules for last words and the arena.
 
 Stages 1 and 2 of the plan are built: the text game, last words, and her memory notes about the tributes. Still to come: Gamemaker voice messages in their own voice, pictures she draws during the game, and a leaderboard.
 
@@ -20,19 +20,19 @@ A channel has one Hunger Games at a time, and a restart ends the game (nothing i
 
 ## Settings
 
-Under `[features.who_said_it.hunger_games]` in config.toml: `max_tributes` (24, at most 24), `lobby_minutes` (10), `auto_advance_seconds` (30, at least 5).
+Under `[features.games.hunger_games]` in config.toml: `max_tributes` (24, at most 24), `lobby_minutes` (10), `auto_advance_seconds` (30, at least 5).
 
 Each round is one model call with the job `hunger_games`: the chat provider's model at low effort, with no web or code (see [ai.md](../ai.md#jobs)). `[ai.claude.jobs.hunger_games]` changes that.
 
 ## Files
 
-All under `src/features/who_said_it/hunger/`.
+All under `src/features/games/hunger_games/`.
 
 | File | What it holds |
 |---|---|
 | `game.rs` | The rules: which round comes next, how many should die (`deaths_range`), checking a round she wrote (`check`), applying it (deaths and kills), the fallen and the placings. Pure. |
 | `writer.rs` | What she's told each round (`brief`), reading her JSON (`parse`), and `write`, which asks her and sends a round that fails `check` back with the problem. |
-| `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`who_said_it:hunger:<game>:<action>`). Pure. |
+| `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`games:hunger:<game>:<action>`). Pure. |
 | `last_words.rs` | Last words: searches each tribute's messages in the public channels with Discord's message search (`util::search`), with random reads of history (`quotes::read_once`) for anyone the search finds nothing for (`choose`, `pick` and `tidy`, pure). |
 | `notes.rs` | Her memory notes about each tribute, read through the `memory` chat tool (see below). `files_in` and `file_text` read the tool's answers (pure). |
 | `play.rs` | `/games hungergames`, the task that runs the Reaping and then the game, and the presses. Running games are kept in `GAMES` by channel. |
@@ -81,7 +81,7 @@ While people read a round, the next one is already being written (a task started
 
 ## Feature hooks it uses
 
-Through the who-said-it feature: the `hungergames` subcommand of `/games`, and `on_component` for IDs starting with `hunger:`.
+Through the games feature (`games/mod.rs`): the `hungergames` subcommand of `/games`, and `on_component` for IDs starting with `games:hunger:`.
 
 ## Tables
 

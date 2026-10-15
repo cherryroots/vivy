@@ -30,23 +30,25 @@ The bot needs Read Message History in the channels it reads.
 
 ## Settings
 
-Under `[features.who_said_it]`, each explained in `config.example.toml`: `rounds` (10), `answer_seconds` (20, at least 5), `lookback_days` (365), `min_length` (20), `max_length` (300), `exclude_users`. The gate keys work too: `channels = [...]` limits where it can be played.
+Under `[features.games.who_said_it]`, each explained in `config.example.toml`: `rounds` (10), `answer_seconds` (20, at least 5), `lookback_days` (365), `min_length` (20), `max_length` (300), `exclude_users`. The gate keys go in `[features.games]` and apply to every game: `channels = [...]` there limits where they can be played.
 
 ## Files
 
-All under `src/features/who_said_it/`.
+All under `src/features/games/who_said_it/`.
 
 | File | What it holds |
 |---|---|
 | `game.rs` | The rules, with the time each pick took passed in so the tests can play a whole game: picks (first press counts), closing a round and scoring it, standings, and `make_rounds`. Pure. |
 | `sources.rs` | Which channels quotes may come from: the game's own, or channels everyone can read (`everyone_can_read`, pure). |
 | `quotes.rs` | Reading the sources at random moments, `quote_text` (which messages make a quote), `clean` (Discord markup to text), and server nicknames for the people shown. |
-| `ui.rs` | The question, answer and score messages, and the button IDs (`who_said_it:pick:<game>:<round>:<person>`). Pure. |
-| `play.rs` | `/games` and its `whosaidit` subcommand, the task that runs a game (post, wait, show the answer, pause, next), and button presses. Running games are kept in `GAMES` by channel, so a press finds its game. |
-| `mod.rs` | The `WhoSaidIt` feature and its settings. |
+| `ui.rs` | The question, answer and score messages, and the button IDs (`games:who_said_it:pick:<game>:<round>:<person>`). Pure. |
+| `play.rs` | The `whosaidit` subcommand, the task that runs a game (post, wait, show the answer, pause, next), and button presses. Running games are kept in `GAMES` by channel, so a press finds its game. |
+| `mod.rs` | Its settings. |
 
 ## Why not a Discord Activity
 
 It started as an Activity (a game window inside Discord), but Discord only lets unverified Activities be played by the app's developer team and up to 50 invited testers, in servers with fewer than 25 members ([Discord's article](https://support-dev.discord.com/hc/en-us/articles/26576097154199)). Messages and buttons work for everyone, with no web server.
 
-`/games` is declared by this feature, since Discord needs one command to hold the subcommands. The second game, [the Hunger Games](hunger-games.md), lives in `hunger/` inside this feature and adds `/games hungergames` next to `whosaidit`.
+## The games feature
+
+`/games` is declared by the games feature (`src/features/games/mod.rs`), since Discord needs one command to hold the subcommands. Who said it? lives in `games/who_said_it/`, next to the second game, [the Hunger Games](hunger-games.md) in `games/hunger_games/`. The feature hands each button press to its game by the ID's second part (`games:who_said_it:...`, `games:hunger:...`). The Hunger Games use this game's `quotes.rs` and `sources.rs` for last words and the arena.

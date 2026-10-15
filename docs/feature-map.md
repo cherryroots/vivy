@@ -38,7 +38,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
-| Who said it? | `who_said_it/` | Games: everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; and the Hunger Games, a battle royale between members that Vivy writes as the Gamemaker (`hunger/`) | `/games whosaidit`, `/games hungergames`, their buttons |
+| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; and the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker | `/games whosaidit`, `/games hungergames`, their buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 

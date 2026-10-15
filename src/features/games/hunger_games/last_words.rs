@@ -16,9 +16,9 @@ use serenity::futures::future::join_all;
 use tracing::{debug, info, warn};
 
 use crate::core::BotCtx;
-use crate::features::who_said_it::game::{Person, Quote};
-use crate::features::who_said_it::sources::Source;
-use crate::features::who_said_it::{Settings, quotes};
+use crate::features::games::who_said_it::game::{Person, Quote};
+use crate::features::games::who_said_it::sources::Source;
+use crate::features::games::who_said_it::{Settings, quotes};
 use crate::util::search::{self, MAX_CHANNELS, MAX_LIMIT, MAX_OFFSET, Search};
 
 /// How many random pages are searched per tribute, after the first search. Each is one

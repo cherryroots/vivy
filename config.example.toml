@@ -268,7 +268,11 @@ max_page_characters = 15000
 # Older history is only read when an admin runs `/snails backfill start`.
 enabled = true
 
-[features.who_said_it]
+[features.games]
+# /games: the games below share this section's gate (enabled, guilds, channels...).
+enabled = true
+
+[features.games.who_said_it]
 # /games whosaidit: messages from the channel's history, and everyone races to press who wrote them.
 # Questions per game (when /games whosaidit doesn't say), and seconds to answer each (at least 5).
 rounds = 10
@@ -281,7 +285,7 @@ max_length = 300
 # People whose messages are never used.
 # exclude_users = [123456789012345678]
 
-[features.who_said_it.hunger_games]
+[features.games.hunger_games]
 # /games hungergames: a battle royale between members that Vivy writes, round by round.
 # The most tributes in one game (at most 24).
 max_tributes = 24

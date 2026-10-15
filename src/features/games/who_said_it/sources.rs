@@ -44,9 +44,9 @@ pub fn pick(
         From::Here => Ok(vec![this]),
         From::Channel(channel) if channel.id == here => Ok(vec![this]),
         From::Channel(channel) => {
-            if !bot.allows("who_said_it", Some(guild.id), channel.id) {
+            if !bot.allows("games", Some(guild.id), channel.id) {
                 return Err(user_error(format!(
-                    "Who said it? is turned off in <#{}>.",
+                    "Games are turned off in <#{}>.",
                     channel.id
                 )));
             }
@@ -69,7 +69,7 @@ pub fn pick(
                 if channel.id == here
                     || !readable
                     || !public(guild, channel)
-                    || !bot.allows("who_said_it", Some(guild.id), channel.id)
+                    || !bot.allows("games", Some(guild.id), channel.id)
                 {
                     continue;
                 }

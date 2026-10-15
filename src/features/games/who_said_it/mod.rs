@@ -7,24 +7,20 @@
 //! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
 //! - `play.rs`: `/games whosaidit`, the task that runs a game, and button presses
 //!
-//! `hunger/` is the other game under `/games`: `/games hungergames`, a battle royale Vivy
-//! writes. It lives here because Discord needs one `/games` command to hold both.
+//! The Hunger Games use `game`, `quotes`, `sources` and `ui` too (last words and the arena).
 
-mod game;
-mod hunger;
+pub(super) mod game;
 mod play;
-mod quotes;
-mod sources;
-mod ui;
+pub(super) mod quotes;
+pub(super) mod sources;
+pub(super) mod ui;
 
-use async_trait::async_trait;
 use serde::Deserialize;
-use serenity::all::ComponentInteraction;
 
-use crate::core::{BotCtx, Command, Feature, Result};
+pub use play::{on_component, who_said_it};
 
-/// `[features.who_said_it]` settings.
-#[derive(Debug, Deserialize)]
+/// `[features.games.who_said_it]` settings.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Questions per game, when `/games whosaidit` doesn't say.
@@ -39,8 +35,6 @@ pub struct Settings {
     /// People whose messages are never used. They aren't offered as choices either, since
     /// the choices come from the people who wrote the quotes.
     pub exclude_users: Vec<u64>,
-    /// `/games hungergames`: `[features.who_said_it.hunger_games]`.
-    pub hunger_games: hunger::Settings,
 }
 
 impl Default for Settings {
@@ -52,32 +46,6 @@ impl Default for Settings {
             min_length: 20,
             max_length: 300,
             exclude_users: Vec::new(),
-            hunger_games: hunger::Settings::default(),
         }
-    }
-}
-
-pub struct WhoSaidIt;
-
-#[async_trait]
-impl Feature for WhoSaidIt {
-    fn name(&self) -> &'static str {
-        "who_said_it"
-    }
-
-    fn commands(&self) -> Vec<Command> {
-        vec![play::games()]
-    }
-
-    async fn on_component(
-        &self,
-        ctx: &BotCtx,
-        interaction: &ComponentInteraction,
-        action: &str,
-    ) -> Result<()> {
-        if action.starts_with("hunger:") {
-            return hunger::on_component(ctx, interaction, action).await;
-        }
-        play::on_component(ctx, interaction, action).await
     }
 }

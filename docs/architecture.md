@@ -91,7 +91,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(snails::Snails::default()),
         Arc::new(voice::Voice),
         Arc::new(drawing::Drawing),
-        Arc::new(who_said_it::WhoSaidIt),
+        Arc::new(games::Games),
         Arc::new(tinyfish::TinyFish),
         Arc::new(chat::Chat::default()),
     ]
@@ -102,7 +102,7 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
 
 Which feature uses which hook:
 
-| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | who_said_it | tinyfish |
+| Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | games | tinyfish |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
 | `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |

@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 use super::game::{Game, Pick, make_rounds};
 use super::sources::{self, From};
-use super::{Settings, quotes, ui};
+use super::{quotes, ui};
 use crate::core::{BotCtx, Context, Result, user_error};
 
 /// The pause between an answer and the next question, to read who got it.
@@ -47,17 +47,6 @@ impl Drop for Leave {
     }
 }
 
-/// Games to play in the channel
-#[poise::command(
-    slash_command,
-    guild_only,
-    subcommands("who_said_it", "super::hunger::hunger_games"),
-    subcommand_required
-)]
-pub async fn games(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
-}
-
 /// Guess who wrote old messages from this channel, another one, or the whole server
 #[poise::command(slash_command, guild_only, rename = "whosaidit")]
 pub async fn who_said_it(
@@ -80,7 +69,10 @@ pub async fn who_said_it(
         .ok_or_else(|| user_error("Who said it? only works in a server."))?;
     let here = ctx.channel_id();
     let bot = ctx.data().clone();
-    let mut settings: Settings = bot.config.feature("who_said_it")?;
+    let mut settings = bot
+        .config
+        .feature::<crate::features::games::Settings>("games")?
+        .who_said_it;
     if let Some(years) = years {
         settings.lookback_days = years * 365;
     }

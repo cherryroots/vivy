@@ -10,7 +10,7 @@ use serenity::all::{
 use super::game::{Game, Kind, Round, fill};
 use super::last_words::LastWords;
 use super::writer::title;
-use crate::features::who_said_it::ui::{COLOR, escape};
+use crate::features::games::who_said_it::ui::{COLOR, escape};
 use crate::util::shorten_at_word;
 use crate::util::split::{DISCORD_LIMIT, split_message};
 
@@ -28,7 +28,7 @@ pub enum Action {
     Next(usize),
 }
 
-/// A button's or menu's ID: `who_said_it:hunger:<game>:<action>`. `game` tells a game from
+/// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
 /// an older one in the same channel.
 pub fn custom_id(game: u32, action: Action) -> String {
     let action = match action {
@@ -39,10 +39,10 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Memories => "memories".to_string(),
         Action::Next(round) => format!("next:{round}"),
     };
-    format!("who_said_it:hunger:{game}:{action}")
+    format!("games:hunger:{game}:{action}")
 }
 
-/// Reads what [`custom_id`] made, without the `who_said_it:` the dispatcher took off.
+/// Reads what [`custom_id`] made, without the `games:` the dispatcher took off.
 pub fn parse_id(action: &str) -> Option<(u32, Action)> {
     let rest = action.strip_prefix("hunger:")?;
     let (game, what) = rest.split_once(':')?;
@@ -256,7 +256,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::who_said_it::hunger::game::{Death, Event};
+    use crate::features::games::hunger_games::game::{Death, Event};
 
     #[test]
     fn ids_read_back() {
@@ -269,7 +269,7 @@ mod tests {
             Action::Next(4),
         ] {
             let id = custom_id(9, action);
-            let rest = id.strip_prefix("who_said_it:").unwrap();
+            let rest = id.strip_prefix("games:").unwrap();
             assert_eq!(parse_id(rest), Some((9, action)));
         }
         assert_eq!(parse_id("pick:1:2:3"), None);
