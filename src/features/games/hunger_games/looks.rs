@@ -273,8 +273,8 @@ pub fn prompt(arena: &[String], looks: &Looks, picture: &str, alive: usize) -> S
     )
 }
 
-/// The victor's picture: the winner alone, up close, with everyone they killed knocked
-/// out around them.
+/// The victor's picture: the winner alone, up close, with everyone they killed lying
+/// dead around them.
 pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
     let look = |i: usize| match looks.tributes.get(i) {
         Some(Some(look)) => format!("({look})"),
@@ -289,7 +289,7 @@ pub fn victor(looks: &Looks, winner: usize, victims: &[usize]) -> String {
     } else {
         let defeated: Vec<String> = victims.iter().map(|&i| look(i)).collect();
         text.push_str(&format!(
-            " Strewn about around them, knocked out, lie the {} they defeated, and nobody else: {}.",
+            " Around them lie the bodies of the {} they killed, dead where they fell, with some blood, and nobody else: {}.",
             match defeated.len() {
                 1 => "1 player".to_string(),
                 n => format!("{n} players"),
@@ -355,7 +355,7 @@ mod tests {
         let text = victor(&looks, 0, &[2, 1]);
         assert!(text.contains("(a frog knight) standing victorious, the only one standing"));
         assert!(
-            text.contains("lie the 2 players they defeated, and nobody else: (a cat); a player.")
+            text.contains("lie the bodies of the 2 players they killed, dead where they fell, with some blood, and nobody else: (a cat); a player.")
         );
         assert!(victor(&looks, 2, &[]).contains("Nobody lies around them"));
     }
