@@ -33,7 +33,7 @@ All under `src/features/who_said_it/hunger/`.
 | `game.rs` | The rules: which round comes next, how many should die (`deaths_range`), checking a round she wrote (`check`), applying it (deaths and kills), the fallen and the placings. Pure. |
 | `writer.rs` | What she's told each round (`brief`), reading her JSON (`parse`), and `write`, which asks her and sends a round that fails `check` back with the problem. |
 | `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`who_said_it:hunger:<game>:<action>`). Pure. |
-| `last_words.rs` | Last words: reads the public channels' history with the who-said-it quote reader (`quotes::load_reads`, 20 reads of 100 messages, twice a whole-server game) and picks one short quote per tribute (`pick`, pure). |
+| `last_words.rs` | Last words: reads the public channels' history with the who-said-it quote reader (`quotes::read_once`, 100 messages a read, 4 at once) until every tribute has a short quote, up to 5 reads per tribute (`pick`, pure). |
 | `notes.rs` | Her memory notes about each tribute, read through the `memory` chat tool (see below). `files_in` and `file_text` read the tool's answers (pure). |
 | `play.rs` | `/games hungergames`, the task that runs the Reaping and then the game, and the presses. Running games are kept in `GAMES` by channel. |
 | `mod.rs` | The settings. |
@@ -67,7 +67,7 @@ In what she writes, tributes are tags: `T1` is the first tribute. The text says 
 
 ### Last words
 
-When the Games start, a task reads the history of every channel everyone can read (the arena's channels and the one the game is played in), 20 random moments of 100 messages, with the same rules as who said it? (`lookback_days`, `min_length`, `max_length`, `exclude_users`, no links, no bots). Each tribute gets the first of their quotes up to 200 characters, on one line. The first cannons wait for the task if it isn't done. Someone with nothing in what was read falls without last words.
+When the Games start, a task reads the history of every channel everyone can read (the arena's channels and the one the game is played in) at random moments, 100 messages a read, with the same rules as who said it? (`lookback_days`, `min_length`, `max_length`, `exclude_users`, no links, no bots). It reads 4 at a time and keeps going until every tribute has a quote up to 200 characters, up to 5 reads per tribute (120 for 24 tributes). A read is one Discord call and no AI, so this is free and takes seconds. Each tribute gets a random one of the quotes found for them, on one line. The first cannons wait for the task if it isn't done. Someone with nothing in what was read falls without last words. Reads stop early if a whole batch fails (the channels can't be read).
 
 ### Memory notes
 

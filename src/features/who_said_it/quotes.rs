@@ -35,67 +35,24 @@ pub async fn load(
     } else {
         READS
     };
-    load_reads(ctx, sources, settings, reads).await
-}
-
-/// Like [`load`], with the number of reads (100 messages each) given. The Hunger Games'
-/// last words read more, since every tribute should get some.
-pub async fn load_reads(
-    ctx: &BotCtx,
-    sources: &[Source],
-    settings: &Settings,
-    reads: usize,
-) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
-    let now = Utc::now();
-    // Nothing from the last hour, so the conversation going on right now isn't in it.
-    let to = now - Duration::hours(1);
-    let oldest = now - Duration::days(settings.lookback_days.max(1));
-
     let mut seen = HashSet::new();
     let mut quotes = Vec::new();
     let mut people: HashMap<u64, Person> = HashMap::new();
     let mut failed = None;
     for _ in 0..reads {
-        let Some(source) = sources.get(fastrand::usize(..sources.len().max(1))) else {
-            break;
-        };
-        // From when the channel was made (or `lookback_days` ago) to an hour ago.
-        let from = (*source.channel.created_at()).max(oldest);
-        if to <= from {
-            continue;
-        }
-        let span = (to - from).num_milliseconds().max(1);
-        let at = from + Duration::milliseconds(fastrand::i64(0..span));
-        let read = GetMessages::new().before(id_at(at)).limit(100);
-        let messages = match source.channel.messages(&ctx.http, read).await {
-            Ok(messages) => messages,
+        let found = match read_once(ctx, sources, settings).await {
+            Ok(found) => found,
             Err(err) => {
-                debug!("couldn't read {}: {err}", source.channel);
                 failed = Some(err);
                 continue;
             }
         };
-        for msg in messages {
-            if !seen.insert(msg.id) {
+        for (quote, person) in found {
+            if !seen.insert(quote.link.clone()) {
                 continue;
             }
-            if settings.exclude_users.contains(&msg.author.id.get()) {
-                continue;
-            }
-            let Some(text) = quote_text(&msg, settings) else {
-                continue;
-            };
-            people.entry(msg.author.id.get()).or_insert_with(|| Person {
-                id: msg.author.id.get(),
-                name: msg.author.display_name().to_string(),
-            });
-            quotes.push(Quote {
-                author: msg.author.id.get(),
-                text,
-                posted: msg.timestamp.format("%B %Y").to_string(),
-                place: source.name.clone(),
-                link: msg.link(),
-            });
+            people.entry(person.id).or_insert(person);
+            quotes.push(quote);
         }
     }
     if quotes.is_empty()
@@ -106,6 +63,58 @@ pub async fn load_reads(
     debug!("found {} quotes by {} people", quotes.len(), people.len());
     fastrand::shuffle(&mut quotes);
     Ok((quotes, people.into_values().collect()))
+}
+
+/// One read: the 100 messages before a random moment in one of `sources` (picked at
+/// random), from when the channel was made (or `lookback_days` ago) to an hour ago. Gives
+/// the ones that make quotes, oldest last, each with who wrote it. Nothing when the source
+/// is too new to read.
+pub async fn read_once(
+    ctx: &BotCtx,
+    sources: &[Source],
+    settings: &Settings,
+) -> serenity::Result<Vec<(Quote, Person)>> {
+    let Some(source) = sources.get(fastrand::usize(..sources.len().max(1))) else {
+        return Ok(Vec::new());
+    };
+    let now = Utc::now();
+    // Nothing from the last hour, so the conversation going on right now isn't in it.
+    let to = now - Duration::hours(1);
+    let oldest = now - Duration::days(settings.lookback_days.max(1));
+    let from = (*source.channel.created_at()).max(oldest);
+    if to <= from {
+        return Ok(Vec::new());
+    }
+    let span = (to - from).num_milliseconds().max(1);
+    let at = from + Duration::milliseconds(fastrand::i64(0..span));
+    let read = GetMessages::new().before(id_at(at)).limit(100);
+    let messages = source
+        .channel
+        .messages(&ctx.http, read)
+        .await
+        .inspect_err(|err| debug!("couldn't read {}: {err}", source.channel))?;
+    let mut found = Vec::new();
+    for msg in messages {
+        if settings.exclude_users.contains(&msg.author.id.get()) {
+            continue;
+        }
+        let Some(text) = quote_text(&msg, settings) else {
+            continue;
+        };
+        let person = Person {
+            id: msg.author.id.get(),
+            name: msg.author.display_name().to_string(),
+        };
+        let quote = Quote {
+            author: person.id,
+            text,
+            posted: msg.timestamp.format("%B %Y").to_string(),
+            place: source.name.clone(),
+            link: msg.link(),
+        };
+        found.push((quote, person));
+    }
+    Ok(found)
 }
 
 /// Swaps in server nicknames for everyone the rounds show. Someone who left the
