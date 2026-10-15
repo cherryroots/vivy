@@ -6,6 +6,7 @@
 //! and a channel never has two at once. Nothing is saved: a restart ends the game.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -13,8 +14,8 @@ use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
     ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EditMessage,
-    GuildId, Message, MessageId, UserId,
+    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
+    EditMessage, GuildId, Message, MessageId, UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -22,11 +23,13 @@ use tracing::{info, warn};
 
 use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
+use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
-use super::{notes, voice};
+use super::{looks, notes, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
+use crate::util::media::ModelImage;
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
 const MOST_TRIBUTES: usize = 24;
@@ -44,9 +47,8 @@ struct Lobby {
     picked: Vec<(u64, String)>,
     volunteers: Vec<(u64, String)>,
     state: State,
-    /// Whether Vivy gets her memory notes about the tributes (the host's toggle, off at
-    /// first).
-    memories: bool,
+    /// Memories and pictures: the host's toggles, off at first.
+    extras: ui::Extras,
 }
 
 impl Lobby {
@@ -72,10 +74,8 @@ struct Running {
     /// When the Reaping closes, as a Unix time.
     closes_at: i64,
     lobby: Mutex<Lobby>,
-    /// Wakes the game's task: Start or Cancel in the Reaping, Next during the game.
+    /// Wakes the game's task: Start or Cancel in the Reaping.
     wake: Notify,
-    /// The round whose Next button moves the game on, while it waits for one.
-    waiting_on: Mutex<Option<usize>>,
 }
 
 impl Running {
@@ -90,7 +90,7 @@ impl Running {
             &picked,
             self.max,
             self.closes_at,
-            lobby.memories,
+            lobby.extras,
         );
         CreateInteractionResponseMessage::new()
             .embed(embed)
@@ -138,10 +138,9 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             picked: Vec::new(),
             volunteers: Vec::new(),
             state: State::Open,
-            memories: false,
+            extras: ui::Extras::default(),
         }),
         wake: Notify::new(),
-        waiting_on: Mutex::new(None),
     });
     {
         let mut games = GAMES.lock().unwrap();
@@ -161,7 +160,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         &[],
         max,
         closes_at,
-        false,
+        ui::Extras::default(),
     );
     let reply = ctx
         .send(CreateReply::default().embed(embed).components(components))
@@ -251,11 +250,16 @@ async fn run(
             }
         }
     }
-    let (tributes, memories) = {
+    let (tributes, extras) = {
         let lobby = running.lobby.lock().unwrap();
-        (lobby.tributes(running.max), lobby.memories)
+        (lobby.tributes(running.max), lobby.extras)
     };
-    info!(tributes = tributes.len(), memories, "Hunger Games started");
+    info!(
+        tributes = tributes.len(),
+        memories = extras.memories,
+        pictures = extras.pictures,
+        "Hunger Games started"
+    );
     let Setup {
         guild,
         channel,
@@ -275,7 +279,20 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    let notes = if memories {
+    // How the tributes and the arena look in her pictures, worked out while she writes the
+    // Bloodbath.
+    // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
+    let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
+    let looks = drawing.then(|| {
+        bot.tasks.spawn(looks::describe(
+            bot.clone(),
+            provider.clone(),
+            guild,
+            tributes.clone(),
+            arena.clone(),
+        ))
+    });
+    let notes = if extras.memories {
         notes::about(bot, guild, channel, lobby_message.id, &ids).await
     } else {
         vec![None; ids.len()]
@@ -296,6 +313,7 @@ async fn run(
             provider,
             arena,
             notes: Arc::new(notes),
+            looks,
         },
         words,
         auto,
@@ -303,32 +321,95 @@ async fn run(
     .await;
 }
 
-/// Posts each round as Vivy writes it, the fallen after each night, and the victor.
+/// Posts each round as Vivy writes it, with its map when pictures are on, the fallen after
+/// each night, and the victor. The next round starts by itself after `auto`.
 async fn play(
     bot: &BotCtx,
     stage: Stage,
     running: &Running,
     mut game: Game,
-    writing: Writing,
+    mut writing: Writing,
     words: JoinHandle<HashMap<u64, LastWords>>,
     auto: Duration,
 ) {
     let channel = stage.channel;
     // Her Gamemaker line, out loud too.
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
+    let looks = writing.looks.take().map(looks::Shared::new);
+    let places = writing.arena.clone();
+    let easel = Easel {
+        guild: stage.guild,
+        channel,
+        message: stage.lobby,
+        host: running.host,
+    };
+    // Whether the channel was told why a picture is missing: once a game is enough.
+    let told = Arc::new(AtomicBool::new(false));
+    // Writes a round and, with pictures on, draws its map right after, so the two are
+    // posted together. The Bloodbath's map is drawn once it's posted instead: nobody waits
+    // on a next round then, and people are already reading.
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
+        let game_before = game.clone();
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
-        bot.tasks.spawn(writer::write(
-            provider,
-            game,
-            kind,
-            arena,
-            notes,
-            channel.get(),
-        ))
+        let (ctx, looks) = (bot.clone(), looks.clone());
+        bot.tasks.spawn(async move {
+            let drawn = looks.is_some();
+            let round = writer::write(
+                provider,
+                game,
+                kind,
+                arena.clone(),
+                notes,
+                drawn,
+                channel.get(),
+            )
+            .await?;
+            let Some(looks) = looks.filter(|_| kind != Kind::Bloodbath) else {
+                return anyhow::Ok((round, Pictures::default()));
+            };
+            let looks = looks.get().await;
+            // The final showdown is zoomed in on its zone; other rounds show the whole map.
+            let map = async {
+                let Some(picture) = round.picture.as_deref() else {
+                    return Ok(None);
+                };
+                let (prompt, style) = match kind {
+                    Kind::Finale => (looks::showdown(&arena, looks, picture), pictures::SHOWDOWN),
+                    _ => (
+                        looks::prompt(&arena, looks, picture, game_before.alive()),
+                        pictures::MAP,
+                    ),
+                };
+                pictures::draw(&ctx, easel, &prompt, style).await.map(Some)
+            };
+            // After the final showdown, the victor up close, with everyone they killed.
+            let victor = async {
+                let mut after = game_before.clone();
+                after.apply(round.clone());
+                let winner = match after.winner_index() {
+                    Some(winner) if kind == Kind::Finale => winner,
+                    _ => return Ok(None),
+                };
+                let prompt = looks::victor(looks, winner, &after.victims(winner));
+                pictures::draw(&ctx, easel, &prompt, pictures::VICTORY)
+                    .await
+                    .map(Some)
+            };
+            let (map, victor) = tokio::join!(map, victor);
+            let missing = map.as_ref().err().or(victor.as_ref().err()).copied();
+            let (map, victor) = (map.ok().flatten(), victor.ok().flatten());
+            anyhow::Ok((
+                round,
+                Pictures {
+                    map,
+                    victor,
+                    missing,
+                },
+            ))
+        })
     };
-    let mut words = Words::Reading(words);
+    let mut words = Later::Working(words);
     let intro = format!(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Bloodbath…",
         game.tributes.len()
@@ -351,8 +432,8 @@ async fn play(
                 written = &mut writing => written,
             }
         };
-        let round = match written {
-            Ok(Ok(round)) => round,
+        let (round, mut drawn) = match written {
+            Ok(Ok(written)) => written,
             Ok(Err(err)) => {
                 warn!("couldn't write a Hunger Games round: {err:#}");
                 called_off(bot, channel).await;
@@ -373,19 +454,36 @@ async fn play(
         game.apply(round);
         let over = game.winner().is_some();
 
-        // The Next button goes on the round's last part.
+        // The map goes with the round's last part.
         let parts = ui::round(&game, &game.rounds[index]);
         let count = parts.len();
-        let mut posted = None;
         for (i, part) in parts.into_iter().enumerate() {
-            let mut message = text(part);
-            if !over && i + 1 == count {
-                message = message.components(ui::next_button(running.id, index));
-            }
-            match channel.send_message(&bot.http, message).await {
-                Ok(sent) => posted = Some(sent),
-                Err(err) => warn!("couldn't post a Hunger Games round: {err}"),
-            }
+            let picture = if i + 1 == count {
+                drawn.map.take()
+            } else {
+                None
+            };
+            post(bot, channel, part, picture).await;
+        }
+        if let Some(reason) = drawn.missing {
+            no_picture(bot, channel, &told, reason).await;
+        }
+        if kind == Kind::Bloodbath
+            && let Some(looks) = looks.clone()
+            && let Some(prompt) = game.rounds[index].picture.clone()
+        {
+            let (ctx, arena, told) = (bot.clone(), places.clone(), told.clone());
+            let everyone = game.tributes.len();
+            bot.tasks.spawn(async move {
+                let prompt = looks::prompt(&arena, looks.get().await, &prompt, everyone);
+                match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
+                    Ok(picture) => {
+                        let caption = "🗺️ The arena as the Games begin".to_string();
+                        post(&ctx, easel.channel, caption, Some(picture)).await;
+                    }
+                    Err(reason) => no_picture(&ctx, easel.channel, &told, reason).await,
+                }
+            });
         }
         if over {
             // The fallen since the last cannons, the loser of the final showdown among them.
@@ -393,10 +491,16 @@ async fn play(
                 let title = "The last of the fallen";
                 post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
             }
-            for part in ui::victor(&game, victory.as_deref()) {
-                if let Err(err) = channel.send_message(&bot.http, text(part)).await {
-                    warn!("couldn't post the Hunger Games victor: {err}");
-                }
+            // The victor's picture goes with the message's last part.
+            let parts = ui::victor(&game, victory.as_deref());
+            let count = parts.len();
+            for (i, part) in parts.into_iter().enumerate() {
+                let picture = if i + 1 == count {
+                    drawn.victor.take()
+                } else {
+                    None
+                };
+                post(bot, channel, part, picture).await;
             }
             if let Some(line) = victory {
                 speak(line).await;
@@ -411,11 +515,10 @@ async fn play(
             cannons_from = game.rounds.len();
         }
 
-        // She writes the next round while people read this one.
+        // She writes (and draws) the next round while people read this one.
         if let Some(next) = game.next_kind() {
             pending = Some(write(&game, next));
         }
-        *running.waiting_on.lock().unwrap() = Some(index);
         tokio::select! {
             () = bot.shutdown.cancelled() => {
                 if let Some(writing) = pending.take() {
@@ -423,16 +526,46 @@ async fn play(
                 }
                 return;
             }
-            () = running.wake.notified() => {}
             () = tokio::time::sleep(auto) => {}
         }
-        *running.waiting_on.lock().unwrap() = None;
-        if let Some(posted) = posted.as_mut() {
-            let edit = EditMessage::new().components(Vec::new());
-            if let Err(err) = posted.edit(&bot.http, edit).await {
-                warn!("couldn't take the Next button off a Hunger Games round: {err}");
-            }
+    }
+}
+
+/// The pictures that go with a round, when pictures are on.
+#[derive(Default)]
+struct Pictures {
+    /// The map, posted with the round.
+    map: Option<ModelImage>,
+    /// After the final showdown, the victor, posted with the victor message.
+    victor: Option<ModelImage>,
+    /// Why a picture couldn't be drawn, when one couldn't.
+    missing: Option<&'static str>,
+}
+
+/// Tells the channel why a picture is missing, the first time one is in a game.
+async fn no_picture(bot: &BotCtx, channel: ChannelId, told: &AtomicBool, reason: &str) {
+    if told.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let line = format!("-# 🗺️ No picture this time: {reason}.");
+    post(bot, channel, line, None).await;
+}
+
+/// Posts one message of the game, with a picture when there is one. If Discord won't take
+/// the picture, the text goes on its own.
+async fn post(bot: &BotCtx, channel: ChannelId, content: String, picture: Option<ModelImage>) {
+    let mut message = text(content.clone());
+    if let Some(picture) = picture {
+        let name = pictures::file_name(&picture);
+        message = message.add_file(CreateAttachment::bytes(picture.data, name));
+        match channel.send_message(&bot.http, message).await {
+            Ok(_) => return,
+            Err(err) => warn!("couldn't post a Hunger Games message with its map: {err}"),
         }
+        message = text(content);
+    }
+    if let Err(err) = channel.send_message(&bot.http, message).await {
+        warn!("couldn't post a Hunger Games message: {err}");
     }
 }
 
@@ -451,43 +584,47 @@ struct Writing {
     arena: Vec<String>,
     /// Her notes about each tribute, in the game's order.
     notes: Arc<Vec<Option<String>>>,
+    /// How each tribute looks, being described, when pictures are on: then she writes
+    /// picture prompts, and they're drawn.
+    looks: Option<JoinHandle<looks::Looks>>,
 }
 
-/// The last words: still being read, or read.
-enum Words {
-    Reading(JoinHandle<HashMap<u64, LastWords>>),
-    Read(HashMap<u64, LastWords>),
+/// Something a background task is still working out, like the last words, then what it
+/// found.
+enum Later<T> {
+    Working(JoinHandle<T>),
+    Done(T),
 }
 
-impl Words {
-    /// The last words, waiting for the reading to finish the first time.
-    async fn get(&mut self) -> &HashMap<u64, LastWords> {
-        if let Words::Reading(task) = self {
-            let read = task.await.unwrap_or_default();
-            *self = Words::Read(read);
+impl<T: Default> Later<T> {
+    /// What the task found, waiting for it the first time. A task that failed found nothing.
+    async fn get(&mut self) -> &T {
+        if let Later::Working(task) = self {
+            let found = task.await.unwrap_or_default();
+            *self = Later::Done(found);
         }
         match self {
-            Words::Read(read) => read,
-            Words::Reading(_) => unreachable!("just read"),
+            Later::Done(found) => found,
+            Later::Working(_) => unreachable!("just finished"),
         }
     }
 }
 
-/// Posts the cannons for everyone who fell in the rounds from `from` on, with their last
-/// words.
+/// Posts the cannons for everyone who fell in the rounds from `from` on, with their kills
+/// and last words.
 async fn post_cannons(
     bot: &BotCtx,
     channel: ChannelId,
     game: &Game,
     from: usize,
     title: &str,
-    words: &mut Words,
+    words: &mut Later<HashMap<u64, LastWords>>,
 ) {
     let words = words.get().await;
-    let fallen: Vec<(String, Option<LastWords>)> = game
+    let fallen: Vec<(String, u32, Option<LastWords>)> = game
         .fallen_since(from)
         .iter()
-        .map(|t| (t.name.clone(), words.get(&t.id).cloned()))
+        .map(|t| (t.name.clone(), t.kills, words.get(&t.id).cloned()))
         .collect();
     let message = text(ui::cannons(title, &fallen));
     if let Err(err) = channel.send_message(&bot.http, message).await {
@@ -510,7 +647,7 @@ async fn called_off(bot: &BotCtx, channel: ChannelId) {
     }
 }
 
-/// A press in the Reaping or on a round's Next button.
+/// A press in the Reaping.
 pub async fn on_component(
     bot: &BotCtx,
     interaction: &ComponentInteraction,
@@ -530,28 +667,6 @@ pub async fn on_component(
     };
     let user = interaction.user.id;
     let in_charge = user == running.host || bot.is_admin(user);
-
-    if let ui::Action::Next(round) = action {
-        if !in_charge {
-            return tell(
-                bot,
-                interaction,
-                "Only the host moves the Games on. The next round starts by itself soon.",
-            )
-            .await;
-        }
-        {
-            let mut waiting = running.waiting_on.lock().unwrap();
-            if *waiting == Some(round) {
-                *waiting = None;
-                running.wake.notify_one();
-            }
-        }
-        interaction
-            .create_response(&bot.http, CreateInteractionResponse::Acknowledge)
-            .await?;
-        return Ok(());
-    }
 
     if running.lobby.lock().unwrap().state != State::Open {
         return tell(bot, interaction, "The Reaping is over.").await;
@@ -621,7 +736,19 @@ pub async fn on_component(
                 .await;
             }
             let mut lobby = running.lobby.lock().unwrap();
-            lobby.memories = !lobby.memories;
+            lobby.extras.memories = !lobby.extras.memories;
+        }
+        ui::Action::Pictures => {
+            if !in_charge {
+                return tell(
+                    bot,
+                    interaction,
+                    "Only the host turns Vivy's pictures on or off.",
+                )
+                .await;
+            }
+            let mut lobby = running.lobby.lock().unwrap();
+            lobby.extras.pictures = !lobby.extras.pictures;
         }
         ui::Action::Start | ui::Action::Cancel => {
             if !in_charge {
@@ -662,7 +789,6 @@ pub async fn on_component(
                 .await?;
             return Ok(());
         }
-        ui::Action::Next(_) => unreachable!("handled above"),
     }
     interaction
         .create_response(

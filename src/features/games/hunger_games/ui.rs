@@ -24,8 +24,8 @@ pub enum Action {
     Cancel,
     /// The host turns Vivy's memory notes about the tributes on or off.
     Memories,
-    /// On to the round after `n` (the round's index).
-    Next(usize),
+    /// The host turns the pictures she draws during the game on or off.
+    Pictures,
 }
 
 /// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
@@ -37,7 +37,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Start => "start".to_string(),
         Action::Cancel => "cancel".to_string(),
         Action::Memories => "memories".to_string(),
-        Action::Next(round) => format!("next:{round}"),
+        Action::Pictures => "pictures".to_string(),
     };
     format!("games:hunger:{game}:{action}")
 }
@@ -53,14 +53,23 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "start" => Action::Start,
         "cancel" => Action::Cancel,
         "memories" => Action::Memories,
-        _ => Action::Next(what.strip_prefix("next:")?.parse().ok()?),
+        "pictures" => Action::Pictures,
+        _ => return None,
     };
     Some((game, action))
 }
 
+/// What the host turned on in the Reaping. Both start off.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Extras {
+    /// Vivy may use her memory notes about the tributes.
+    pub memories: bool,
+    /// She draws pictures during the game.
+    pub pictures: bool,
+}
+
 /// The Reaping: who's in so far, the host's menu and the buttons. `closes_at` is a Unix
-/// time for Discord's countdown. `memories` is whether Vivy may use her memory notes about
-/// the tributes.
+/// time for Discord's countdown.
 pub fn lobby(
     game: u32,
     host: u64,
@@ -68,7 +77,7 @@ pub fn lobby(
     picked: &[u64],
     max: usize,
     closes_at: i64,
-    memories: bool,
+    extras: Extras,
 ) -> (CreateEmbed, Vec<CreateActionRow>) {
     let mut lines = vec![
         format!(
@@ -86,11 +95,16 @@ pub fn lobby(
         lines.push(format!("{}. {}", i + 1, escape(name)));
     }
     lines.push(String::new());
-    lines.push(if memories {
+    lines.push(if extras.memories {
         "🧠 Memories **on**: Vivy may work in fun things she remembers about the tributes."
             .to_string()
     } else {
         "🧠 Memories **off**: Vivy knows the tributes only by name.".to_string()
+    });
+    lines.push(if extras.pictures {
+        "🎨 Pictures **on**: Vivy draws a map of the arena after every round.".to_string()
+    } else {
+        "🎨 Pictures **off**: the Games are told in words only.".to_string()
     });
     lines.push(format!("The Reaping closes <t:{closes_at}:R>."));
     let menu = CreateSelectMenu::new(
@@ -111,12 +125,20 @@ pub fn lobby(
             .label("Start")
             .style(ButtonStyle::Success),
         CreateButton::new(custom_id(game, Action::Memories))
-            .label(if memories {
+            .label(if extras.memories {
                 "Memories: on"
             } else {
                 "Memories: off"
             })
             .emoji('🧠')
+            .style(ButtonStyle::Secondary),
+        CreateButton::new(custom_id(game, Action::Pictures))
+            .label(if extras.pictures {
+                "Pictures: on"
+            } else {
+                "Pictures: off"
+            })
+            .emoji('🎨')
             .style(ButtonStyle::Secondary),
         CreateButton::new(custom_id(game, Action::Cancel))
             .label("Cancel")
@@ -202,34 +224,26 @@ pub fn unspoken(line: &str) -> String {
     shown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// The button to move on to the next round.
-pub fn next_button(game: u32, round: usize) -> Vec<CreateActionRow> {
-    vec![CreateActionRow::Buttons(vec![
-        CreateButton::new(custom_id(game, Action::Next(round)))
-            .label("Next")
-            .emoji('⏭')
-            .style(ButtonStyle::Primary),
-    ])]
-}
-
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
-/// tribute who fell, with their last words when they have some, all behind spoilers so
-/// people still reading the rounds don't find out early.
-pub fn cannons(title: &str, fallen: &[(String, Option<LastWords>)]) -> String {
+/// tribute who fell (name, kills, last words), with their kills and their last words when
+/// they have some, all behind spoilers so people still reading the rounds don't find out
+/// early.
+pub fn cannons(title: &str, fallen: &[(String, u32, Option<LastWords>)]) -> String {
     let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
     } else {
         let lines: Vec<String> = fallen
             .iter()
-            .map(|(name, words)| match words {
+            .map(|(name, count, words)| match words {
                 Some(words) => format!(
-                    "💥 ||**{}**: “{}” [↗](<{}>)||",
+                    "💥 ||**{}**{}: “{}” [↗](<{}>)||",
                     escape(name),
+                    kills(*count),
                     words.text,
                     words.link
                 ),
-                None => format!("💥 ||**{}**||", escape(name)),
+                None => format!("💥 ||**{}**{}||", escape(name), kills(*count)),
             })
             .collect();
         text.push_str(&format!(
@@ -259,14 +273,22 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
         } else {
             format!("{}.", i + 1)
         };
-        let kills = match t.kills {
-            0 => String::new(),
-            1 => ", 1 kill".to_string(),
-            n => format!(", {n} kills"),
-        };
-        text.push_str(&format!("{place} ||{}{kills}||\n", escape(&t.name)));
+        text.push_str(&format!(
+            "{place} ||{}{}||\n",
+            escape(&t.name),
+            kills(t.kills)
+        ));
     }
     split_message(&text, DISCORD_LIMIT)
+}
+
+/// ", 2 kills" after a name, or nothing for none.
+fn kills(count: u32) -> String {
+    match count {
+        0 => String::new(),
+        1 => ", 1 kill".to_string(),
+        n => format!(", {n} kills"),
+    }
 }
 
 #[cfg(test)]
@@ -282,14 +304,14 @@ mod tests {
             Action::Start,
             Action::Cancel,
             Action::Memories,
-            Action::Next(4),
+            Action::Pictures,
         ] {
             let id = custom_id(9, action);
             let rest = id.strip_prefix("games:").unwrap();
             assert_eq!(parse_id(rest), Some((9, action)));
         }
         assert_eq!(parse_id("pick:1:2:3"), None);
-        assert_eq!(parse_id("hunger:9:next:x"), None);
+        assert_eq!(parse_id("hunger:9:next:4"), None);
         assert_eq!(parse_id("hunger:9:dance"), None);
     }
 
@@ -309,11 +331,11 @@ mod tests {
         };
         let text = cannons(
             "The fallen of day 1",
-            &[("Ash".into(), Some(words)), ("Moss".into(), None)],
+            &[("Ash".into(), 0, Some(words)), ("Moss".into(), 2, None)],
         );
         assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
         assert!(text.contains("💥 ||**Ash**: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
-        assert!(text.contains("💥 ||**Moss**||"));
+        assert!(text.contains("💥 ||**Moss**, 2 kills||"));
     }
 
     #[test]
@@ -337,6 +359,7 @@ mod tests {
             gamemaker: Some("Hello".into()),
             events,
             victory: None,
+            picture: None,
         };
         game.apply(played.clone());
         let parts = round(&game, &played);

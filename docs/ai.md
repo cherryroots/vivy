@@ -225,7 +225,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 
 - No pictures: `POST https://api.openai.com/v1/images/generations` (JSON).
 - With pictures: `POST /v1/images/edits`, also JSON, with up to 16 pictures as `{"image_url": "data:..."}` in `images`.
-- The answer holds the picture in `data[0].b64_json` and the tokens in `usage`, which `price::image_cost` prices; the cost goes to OpenAI's `Spend` as the job `"drawing"`.
+- The answer holds the picture in `data[0].b64_json` and the tokens in `usage`, which `price::image_cost` prices; the cost goes to OpenAI's `Spend` as the request's `job`: `"drawing"`, or `"game_art"` for pictures the games ask for, so they get their own line.
 - 429, 500, 502 and 503 are retried twice, after 5 and 15 seconds (or a longer `Retry-After`, up to 60 seconds), and no connection is retried once, like chat (`fallback::send`). A 400 (the safety system refused, or a bad size) becomes a `user_error`, so the model reads why and the log channel isn't bothered.
 
 GPT Image 2.5 comes as `gpt-image-2.5-flare` (fast, everyday pictures) and `gpt-image-2.5-sunburst` (the most capable, best at precise edits). Both cost the same per token: text in $5, pictures in $8, pictures out $30 per million (checked 2026-10-11). Quality goes `low`, `medium`, `high`, `xhigh`, `max`.

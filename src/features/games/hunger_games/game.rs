@@ -74,6 +74,8 @@ pub struct Round {
     pub events: Vec<Event>,
     /// In the Finale, what she says to the winner.
     pub victory: Option<String>,
+    /// What to draw on the arena map for this round, when she was asked to.
+    pub picture: Option<String>,
 }
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
@@ -84,6 +86,8 @@ pub struct Written {
     pub events: Vec<WrittenEvent>,
     #[serde(default)]
     pub victory: Option<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +144,23 @@ impl Game {
         let mut alive = self.tributes.iter().filter(|t| t.alive());
         let first = alive.next()?;
         alive.next().is_none().then_some(first)
+    }
+
+    /// The winner's index, once one is left.
+    pub fn winner_index(&self) -> Option<usize> {
+        let winner = self.winner()?;
+        self.tributes.iter().position(|t| t.id == winner.id)
+    }
+
+    /// Everyone `killer` killed (indexes), in the order they died.
+    pub fn victims(&self, killer: usize) -> Vec<usize> {
+        self.rounds
+            .iter()
+            .flat_map(|r| &r.events)
+            .flat_map(|e| &e.deaths)
+            .filter(|d| d.by == Some(killer))
+            .map(|d| d.victim)
+            .collect()
     }
 
     /// The round to play next, or `None` when the game is over.
@@ -324,6 +345,7 @@ impl Game {
             gamemaker: clean(written.gamemaker).filter(|_| kind.announced()),
             events,
             victory: clean(written.victory).filter(|_| kind == Kind::Finale),
+            picture: clean(written.picture),
         })
     }
 
@@ -428,6 +450,7 @@ mod tests {
             gamemaker: Some("Welcome!".into()),
             events,
             victory: None,
+            picture: Some("A forest".into()),
         }
     }
 
@@ -440,6 +463,7 @@ mod tests {
             gamemaker: None,
             events: Vec::new(),
             victory: None,
+            picture: None,
         };
         g.apply(empty(Kind::Bloodbath));
         assert_eq!(g.next_kind(), Some(Kind::Day(1)));
@@ -474,6 +498,7 @@ mod tests {
                 })
                 .collect(),
             victory: None,
+            picture: None,
         }
     }
 
@@ -526,11 +551,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(round.gamemaker.as_deref(), Some("Welcome!"));
+        assert_eq!(round.picture.as_deref(), Some("A forest"));
         g.apply(round);
         assert_eq!(g.alive(), 3);
         assert_eq!(g.tributes[0].kills, 1);
         assert_eq!(g.tributes[1].died_in, Some(0));
         assert_eq!(g.fallen_since(0)[0].name, "P2");
+        assert_eq!(g.victims(0), vec![1]);
+        assert_eq!(g.victims(2), Vec::<usize>::new());
+        assert_eq!(g.winner_index(), None);
     }
 
     #[test]

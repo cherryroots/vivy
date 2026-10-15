@@ -9,11 +9,15 @@
 //! - `last_words.rs`: a real message from each tribute, shown when they fall
 //! - `notes.rs`: Vivy's memory notes about the tributes, through the `memory` tool
 //! - `voice.rs`: the Gamemaker's lines as voice messages, through the voice feature's tool
+//! - `pictures.rs`: pictures she draws during the game, through the drawing feature's tool
+//! - `looks.rs`: how the arena map and the tributes' sprites look, described once per game
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
 
 mod game;
 mod last_words;
+mod looks;
 mod notes;
+mod pictures;
 mod play;
 mod ui;
 mod voice;
@@ -31,7 +35,7 @@ pub struct Settings {
     pub max_tributes: usize,
     /// How long the Reaping stays open for the host to press Start.
     pub lobby_minutes: u64,
-    /// Seconds before the next round starts by itself, when the host doesn't press Next.
+    /// Seconds people get to read a round before the next one is posted.
     pub auto_advance_seconds: u64,
 }
 
@@ -40,7 +44,7 @@ impl Default for Settings {
         Settings {
             max_tributes: 24,
             lobby_minutes: 10,
-            auto_advance_seconds: 30,
+            auto_advance_seconds: 45,
         }
     }
 }

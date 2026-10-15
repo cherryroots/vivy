@@ -3,7 +3,7 @@
 //! A new picture is `POST /v1/images/generations`; a picture made from others (an edit, or
 //! "draw me in this style") is `POST /v1/images/edits` with those pictures as `data:` URLs.
 //! Both answer with the picture as base64 and the tokens it used, which [`Spend`] adds
-//! up under OpenAI as the job "drawing".
+//! up under OpenAI as the request's job ("drawing", or "game_art" for the games).
 //!
 //! Any feature can use this through `ctx.ai.images`; the drawing feature's chat tool does.
 //!
@@ -44,6 +44,8 @@ pub struct PictureRequest<'a> {
     pub format: &'a str,
     /// "auto" or "low" (less strict).
     pub moderation: &'a str,
+    /// The job its cost is counted under in OpenAI's spend, its own line on the status.
+    pub job: &'static str,
 }
 
 /// A finished picture.
@@ -76,7 +78,7 @@ impl Images {
         let picture = read_answer(&answer, drawing.format)?;
         if let Some(spend) = &self.spend {
             let used = price::image_cost(&answer["usage"]);
-            spend.add("drawing", used).await;
+            spend.add(drawing.job, used).await;
         }
         Ok(picture)
     }
@@ -161,6 +163,7 @@ mod tests {
             quality: "medium",
             format: "png",
             moderation: "auto",
+            job: "drawing",
         }
     }
 

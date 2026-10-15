@@ -18,23 +18,31 @@ use crate::ai::{
 /// How many times she may write a round before the game gives up.
 const TRIES: usize = 3;
 
-const SYSTEM: &str = "You are Vivy, a Discord bot, and right now you're the Gamemaker of a Hunger Games-style battle royale played in your Discord server. The tributes are real members of the server, and everyone is watching the arena in the channel, so it's a show: dramatic, funny, a little dark, and full of personality. You decide everything that happens in the arena. \
+const SYSTEM: &str = "You are Vivy, a Discord bot, and right now you're the Gamemaker of a Hunger Games-style battle royale played in your Discord server. The tributes are real members of the server, and everyone is watching the arena in the channel, so it's a show: dark, brutal and dramatic, and the violence is where the comedy is: over-the-top, creative, absurd kills told deadpan, with plenty of personality. You decide everything that happens in the arena. \
 Each round you get the tributes, the arena, the story so far and what kind of round it is, and you write what happens to every living tribute this round. \
-Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, alliances, betrayals, traps, accidents, silly moments, near misses, someone just trying to survive. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back. The places in the arena are the server's channels; use them when it's fun. \
-Keep it playful: cartoon violence, no gore, nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
+Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, alliances, betrayals, ambushes, traps, accidents, desperate last stands, someone just trying to survive. Tributes fight with real weapons they find, steal or loot from the dead: swords, spears, axes, bows, knives, maces, tridents, slingshots, explosives, poison. Say how each kill happens, plainly. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back. The places in the arena are the server's channels; use them when it's fun. \
+Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}]}], \"victory\": string or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}]}], \"victory\": string or null, \"picture\": string or null}
 - Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
+- `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the supply camp in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones and how each tribute looks, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words: \"the supply camp\" for the Cornucopia, and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
-/// is: what she's told. `notes` are in the same order as the tributes.
-pub fn brief(game: &Game, kind: Kind, arena: &[String], notes: &[Option<String>]) -> String {
+/// is: what she's told. `notes` are in the same order as the tributes. With `pictures`,
+/// every round asks for a `picture` too.
+pub fn brief(
+    game: &Game,
+    kind: Kind,
+    arena: &[String],
+    notes: &[Option<String>],
+    pictures: bool,
+) -> String {
     let alive = game.alive();
     let (min, max) = game.deaths_range(kind);
     let mut text = String::new();
@@ -117,6 +125,16 @@ pub fn brief(game: &Game, kind: Kind, arena: &[String], notes: &[Option<String>]
     text.push_str(&format!(
         "\nThis round: {what} {alive} tributes are alive. {deaths}"
     ));
+    if pictures {
+        text.push(' ');
+        text.push_str(match kind {
+            Kind::Bloodbath => "Also write a `picture`: everyone racing to the supply camp as the game begins, and where each event happens.",
+            Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
+            Kind::Feast(_) => "Also write a `picture`: a long table of food and gear at the supply camp, and each event where it happens.",
+            Kind::Day(_) => "Also write a `picture`: each event where it happens.",
+            Kind::Finale => "Also write a `picture`: the final showdown between the last two, where it happens. The winner gets a picture of their own after it.",
+        });
+    }
     text
 }
 
@@ -157,11 +175,12 @@ pub async fn write(
     kind: Kind,
     arena: Vec<String>,
     notes: Arc<Vec<Option<String>>>,
+    pictures: bool,
     channel: u64,
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena, &notes))],
+        parts: vec![Part::Text(brief(&game, kind, &arena, &notes, pictures))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
@@ -197,7 +216,8 @@ pub async fn write(
     anyhow::bail!("Vivy's round didn't pass the rules {TRIES} times")
 }
 
-struct NoTools;
+/// For a call with no tools: any call is answered with an error.
+pub(super) struct NoTools;
 
 #[async_trait]
 impl ToolRunner for NoTools {
@@ -261,6 +281,7 @@ mod tests {
             Kind::Finale,
             Vec::new(),
             Arc::new(Vec::new()),
+            false,
             5,
         )
         .await
@@ -295,6 +316,7 @@ mod tests {
                 deaths: Vec::new(),
             }],
             victory: None,
+            picture: None,
         });
         let notes = vec![
             Some("Plays chess".into()),
@@ -306,6 +328,13 @@ mod tests {
             Kind::Finale,
             &["general".into(), "memes".into()],
             &notes,
+            false,
+        );
+        assert!(!text.contains("`picture`"));
+        let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
+        assert!(drawn.contains("Also write a `picture`: each event where it happens."));
+        assert!(
+            brief(&game, Kind::Finale, &[], &notes, true).contains("`picture`: the final showdown")
         );
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
