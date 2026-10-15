@@ -63,7 +63,7 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 ### Hunger Games
 
-`/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round of a battle royale set in the server's own channels (the Bloodbath, days and nights, the Feast, the final showdown) until one tribute wins. The fallen get last words (a real message of theirs), the host can let her work in fun things she remembers about the tributes, and with an ElevenLabs key her Gamemaker announcements are also voice messages in a Gamemaker voice of their own. The host can also have her draw a map of the arena with every round, with the tributes as sprites where the action is, and the victor surrounded by everyone they killed. Each round follows the last by itself.
+`/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round of a battle royale set in the server's own channels (the Bloodbath, days and nights, the Feast, the final showdown) until one tribute wins. The fallen get last words (a real message of theirs), the host can let her work in fun things she remembers about the tributes, and with an ElevenLabs key her Gamemaker announcements are also voice messages in a Gamemaker voice of their own. The host can also have her draw a map of the arena with every round, with the tributes as sprites where the action is, and the victor surrounded by everyone they killed. Each round follows the last by itself, and `/games leaderboard` keeps the server's wins and kills.
 
 ### Control panel
 
