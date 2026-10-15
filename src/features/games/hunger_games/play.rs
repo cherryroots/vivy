@@ -25,7 +25,7 @@ use super::game::{Game, Kind};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
-use super::{looks, notes, voice};
+use super::{looks, notes, stats, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
@@ -507,6 +507,15 @@ async fn play(
             }
             let winner = game.winner().map(|t| t.id);
             info!(winner, rounds = game.rounds.len(), "Hunger Games ended");
+            // For `/games leaderboard`.
+            let (guild, finished) = (stage.guild.get(), game.clone());
+            let saved = bot
+                .db
+                .call(move |conn| stats::record(conn, guild, channel.get(), &finished))
+                .await;
+            if let Err(err) = saved {
+                warn!("couldn't save the Hunger Games stats: {err:#}");
+            }
             return;
         }
         if let Kind::Night(day) = kind {

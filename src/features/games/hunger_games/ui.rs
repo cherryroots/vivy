@@ -279,6 +279,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
             kills(t.kills)
         ));
     }
+    text.push_str("-# Wins and kills are counted on `/games leaderboard`.");
     split_message(&text, DISCORD_LIMIT)
 }
 

@@ -4,7 +4,7 @@ A battle royale between server members, played in plain Discord messages. The ho
 
 It's one of the games in the games feature (`src/features/games/`), next to [who said it?](who-said-it.md): Discord needs one `/games` command to hold both games, so they share that feature and its gate, `[features.games]`. It borrows who said it?'s quote reader and channel rules for last words and the arena.
 
-Stages 1 to 4 of the plan are built: the text game, last words, her memory notes about the tributes, the Gamemaker's voice, and pictures. Still to come: a leaderboard.
+All 5 stages of the plan are built: the text game, last words, her memory notes about the tributes, the Gamemaker's voice, pictures, and the leaderboard.
 
 ## Playing
 
@@ -14,9 +14,10 @@ Stages 1 to 4 of the plan are built: the text game, last words, her memory notes
 4. The rounds follow, one message each (two or more when a round is long): **the Bloodbath**, then days and nights, with **the Feast** instead of day 2 (when at least 4 are alive), and **the final showdown** once two are left. Each event is its own paragraph, 💀 when someone dies in it. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font; they ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, the Feast and the final showdown, and is also spoken as a voice message in the Gamemaker's voice just before that round (see [Gamemaker voice](#gamemaker-voice)).
 5. After each night, **the fallen of the day** lists who died since the last list, each with their **last words** (a real message they once sent, with a link to it) when one was found, all behind spoilers so people still reading don't find out early. Each one's kills are next to their name. When the game ends, **the last of the fallen** covers the rest, the final showdown's loser among them.
 6. The next round starts by itself after `auto_advance_seconds` (45). There's no Next button: Cherry turned manual advancing off so each round and its picture can go out together. Bot admins can press the host's buttons in the Reaping too.
-7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills, all behind spoilers (the heading only says there is a victor). Her line to the winner follows as a voice message.
+7. At the end, **the victor** message: her line to the winner, and everyone's placing with their kills, all behind spoilers (the heading only says there is a victor), and a small line pointing to the leaderboard. Her line to the winner follows as a voice message.
+8. **`/games leaderboard`** shows the server's top 10: wins, then kills, then fewest games, with how many games were played and the most kills anyone got in one game. With `member`, it shows one member's record instead: wins and games, kills (and the most in one game), best finish and average place, and the most days they lived through. Both are plain messages that name people without pinging them.
 
-A channel has one Hunger Games at a time, and a restart ends the game (nothing is saved).
+A channel has one Hunger Games at a time, and a restart ends the game. Only games that reach a victor are saved for the leaderboard; cancelled and called-off games aren't.
 
 ## Settings
 
@@ -39,6 +40,7 @@ All under `src/features/games/hunger_games/`.
 | `voice.rs` | The Gamemaker's lines as voice messages, through the voice feature's `send_voice_message` tool (see below). |
 | `notes.rs` | Her memory notes about each tribute, read through the `memory` chat tool (see below). `files_in` and `file_text` read the tool's answers (pure). |
 | `play.rs` | `/games hungergames`, the task that runs the Reaping and then the game, and the presses. Running games are kept in `GAMES` by channel. |
+| `stats.rs` | Saving a finished game (`record`), each tribute's place, kills and days lived (`placings`, pure), and `/games leaderboard` with its texts (`board`, `member_text`, pure). |
 | `mod.rs` | The settings. |
 
 ## How it works
@@ -98,11 +100,12 @@ While people read a round, the next one is already being written (and drawn), in
 
 ## Feature hooks it uses
 
-Through the games feature (`games/mod.rs`): the `hungergames` subcommand of `/games`, and `on_component` for IDs starting with `games:hunger:`.
+Through the games feature (`games/mod.rs`): the `hungergames` and `leaderboard` subcommands of `/games`, `on_component` for IDs starting with `games:hunger:`, and the games feature's migrations (owner `games`). The leaderboard is `/games leaderboard`, not `/games hungergames leaderboard`: Discord allows only two levels under a command, and making `hungergames` a group would turn starting a game into `/games hungergames start`.
 
 ## Tables
 
-None yet.
+- `games_hunger_games`: one row per finished game: server, channel, winner, how many rounds, when.
+- `games_hunger_tributes`: one row per tribute in it: place (1 is the victor), kills, and days lived through (the highest day of the rounds before the one they died in, so the Bloodbath is 0, dying on day 2 is 1 and on night 2 is 2). Deleting a game deletes its rows.
 
 ## Background loops
 

@@ -3,7 +3,8 @@
 //! (`[features.games]`).
 //!
 //! - `who_said_it/`: `/games whosaidit`, guessing who wrote old messages from the server
-//! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes
+//! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes,
+//!   and `/games leaderboard`, its wins and kills
 //!
 //! Each game's buttons start with `games:<game>:`, and `on_component` hands a press to its
 //! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
@@ -40,6 +41,10 @@ impl Feature for Games {
         vec![games()]
     }
 
+    fn migrations(&self) -> &'static [&'static str] {
+        hunger_games::MIGRATIONS
+    }
+
     async fn on_component(
         &self,
         ctx: &BotCtx,
@@ -60,7 +65,11 @@ impl Feature for Games {
 #[poise::command(
     slash_command,
     guild_only,
-    subcommands("who_said_it::who_said_it", "hunger_games::hunger_games"),
+    subcommands(
+        "who_said_it::who_said_it",
+        "hunger_games::hunger_games",
+        "hunger_games::leaderboard"
+    ),
     subcommand_required
 )]
 pub async fn games(_ctx: Context<'_>) -> Result<()> {

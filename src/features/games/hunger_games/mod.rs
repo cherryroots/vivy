@@ -12,6 +12,7 @@
 //! - `pictures.rs`: pictures she draws during the game, through the drawing feature's tool
 //! - `looks.rs`: how the arena map and the tributes' sprites look, described once per game
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
+//! - `stats.rs`: finished games saved, and `/games leaderboard`
 
 mod game;
 mod last_words;
@@ -19,6 +20,7 @@ mod looks;
 mod notes;
 mod pictures;
 mod play;
+mod stats;
 mod ui;
 mod voice;
 mod writer;
@@ -26,6 +28,7 @@ mod writer;
 use serde::Deserialize;
 
 pub use play::{hunger_games, on_component};
+pub use stats::{MIGRATIONS, leaderboard};
 
 /// `[features.games.hunger_games]` settings.
 #[derive(Debug, Clone, Deserialize)]
