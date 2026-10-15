@@ -27,7 +27,7 @@ All under `src/features/chat/`, in a good reading order:
 | `history.rs` | Turning a Discord message into stored parts (`read_message`), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
 | `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `can_read`) |
-| `search.rs` | The `search_messages` tool, which calls Discord's search endpoint directly |
+| `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels the asker can read |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
@@ -163,7 +163,7 @@ Chat's own tools:
 | `look_at_profile_picture` | `avatar.rs` | Shows the model someone's profile picture as a picture: their picture for this server if they set one, otherwise their main one (Discord's default when they have none). `me` is Vivy herself, so in a server it's her current face. Downloaded as a 512 px PNG (an animated one gives its first frame). Only the text stays in the history |
 | `read_recent_messages` | `tools.rs` | The messages just before the one being answered, 1 to 50 (default 20), oldest first |
 | `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel |
-| `search_messages` | `search.rs` | Discord's server-wide search (words, author, channel, attachment type, dates, sort), filtered to channels the asker can read, with message links. Waits once if Discord is still indexing |
+| `search_messages` | `search.rs` | Discord's server-wide search with every filter the API has: words (and how far apart they may be), authors and author types, channels, mentions of people, roles or @everyone, replies to people or messages, pinned, has (each can be negated, like `-link`), embed types and providers, link sites, attachment names and extensions, dates, sort, limit and offset for paging. Starts with how many match. Filtered to channels the asker can read, with message links; age-restricted channels only when asked in one. Waits and tries again while Discord is indexing or rate-limiting |
 | `get_pinned_messages` | `tools.rs` | The current channel's pins (at most 25), newest first, with links |
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |

@@ -158,7 +158,7 @@ fn id_at(at: DateTime<Utc>) -> MessageId {
 /// A message's text as a quote, or `None` when it doesn't make one: from a bot, a webhook
 /// or a system message, with a link (they're rarely funny without the picture), too short
 /// or too long.
-fn quote_text(msg: &Message, settings: &Settings) -> Option<String> {
+pub(super) fn quote_text(msg: &Message, settings: &Settings) -> Option<String> {
     if msg.author.bot || msg.webhook_id.is_some() {
         return None;
     }

@@ -253,6 +253,7 @@ async fn run(
     // Last words take a while to read, and aren't needed until the first cannons.
     let words = bot.tasks.spawn(last_words::load(
         bot.clone(),
+        guild,
         sources,
         quote_settings,
         ids.clone(),

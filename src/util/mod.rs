@@ -6,6 +6,7 @@ pub mod frames;
 pub mod http;
 pub mod media;
 pub mod reply;
+pub mod search;
 pub mod split;
 pub mod svg;
 pub mod text;
