@@ -890,6 +890,8 @@ mod tests {
         assert!(svg.contains(">$5.62<") && svg.contains(">of $25<"));
         assert!(svg.contains(">AI SPEND THIS MONTH<") && svg.contains(">OPENAI<"));
         assert!(svg.contains("on pace for $"));
+        // Too long for the card on one line, so keep-warm goes on the next.
+        assert!(svg.contains(">keep-warm saved $1.24<"));
         assert!(svg.contains(">in 2h 14m<"));
         assert!(svg.contains(">VIVY&apos;S MIND<") || svg.contains(">VIVY'S MIND<"));
         assert!(svg.contains(">in 5h 20m with Sam (2 planned): ask how the job"));
