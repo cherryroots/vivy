@@ -21,7 +21,7 @@ const TRIES: usize = 3;
 const SYSTEM: &str = "You are Vivy, a Discord bot, and right now you're the Gamemaker of a Hunger Games-style battle royale played in your Discord server. The tributes are real members of the server, and everyone is watching the arena in the channel, so it's a show: dark, brutal and dramatic, and the violence is where the comedy is: over-the-top, creative, absurd kills told deadpan, with plenty of personality. You decide everything that happens in the arena. \
 Each round you get the tributes, the arena, the story so far and what kind of round it is, and you write what happens to every living tribute this round. \
 Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, ambushes, traps, accidents, desperate last stands. About half the events each round are quiet ones with no deaths: camping, foraging, hunting, building traps, sharing food, forming alliances or breaking them, arguing, napping, talking to the cameras, someone doing something stupid. Say how each kill happens, plainly. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back, and an alliance can end in betrayal. \
-Everyone starts unarmed. Weapons are found in the arena's places, which are the server's channels, and each weapon is themed to the place it's found in: be creative (a channel about music might hide a razor-edged vinyl record or a mic-stand spear, one about cooking a cast-iron skillet or a cleaver, one about games a controller swung on its cable), but every weapon must be able to kill. Each tribute carries one weapon at a time, and keeps it until they find, steal or loot a better one. The unarmed fight with fists, rocks, sticks and traps, and usually lose to the armed. \
+Everyone starts unarmed. Weapons are found in the arena's places, which are the server's channels, and each weapon is themed to the place it's found in: be creative (a channel about music might hide a razor-edged vinyl record or a mic-stand spear, one about cooking a cast-iron skillet or a cleaver, one about games a controller swung on its cable), but every weapon must be able to kill. Each tribute carries one weapon at a time, and keeps it until they find, steal or loot a better one. The unarmed fight with fists, rocks, sticks and traps, and usually lose to the armed. An Octagon prize is the deadliest weapon in the arena: whoever carries one wins nearly every fight, and only an ambush, a trap, being outnumbered or the arena itself can take them down; whoever kills them can loot it. \
 Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
@@ -112,7 +112,7 @@ pub fn brief(
         Kind::Octagon(day) => {
             let entrants: Vec<String> = game.entrants().into_iter().map(Game::tag).collect();
             format!(
-                "Day {day}: the Octagon. The cage in the middle of the arena opens, and you put up a prize for whoever wins it: usually a legendary weapon, which goes in the champion's `finds`, or else a sponsor's gift. Announce the Octagon and its prize with your `gamemaker` line. The bold step in: {}, and nobody else. They fight one-on-one bouts, one after another, until one champion is left; put each bout in its own event. A loser either dies or yields and limps out of the cage to the crowd's boos, alive. Write the winner's tag as `champion`. Everyone else sits it out: watching from the shadows, using the distraction, or too scared to come near, and nobody else dies.",
+                "Day {day}: the Octagon. The cage in the middle of the arena opens, and you put up a prize for whoever wins it: a legendary weapon, the deadliest in the arena, which goes in the champion's `finds` (name it so it sounds legendary). Announce the Octagon and its prize with your `gamemaker` line. The bold step in: {}, and nobody else. They fight one-on-one bouts, one after another, until one champion is left; put each bout in its own event. A loser either dies or yields and limps out of the cage to the crowd's boos, alive. Write the winner's tag as `champion`. Everyone else sits it out: watching from the shadows, using the distraction, or too scared to come near, and nobody else dies.",
                 entrants.join(", ")
             )
         }
@@ -173,6 +173,9 @@ fn state(game: &Game, index: usize) -> String {
         n => parts.push(format!("{n} kills")),
     }
     parts.push(match &t.weapon {
+        Some(weapon) if game.holds_prize(index) => {
+            format!("armed with {weapon}, an Octagon prize (wins nearly every fight)")
+        }
         Some(weapon) => format!("armed with {weapon}"),
         None => "unarmed".to_string(),
     });

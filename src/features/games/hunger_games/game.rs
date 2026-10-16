@@ -217,6 +217,31 @@ impl Game {
             .count() as u32
     }
 
+    /// The weapons won as Octagon prizes: what each champion found in the round they won.
+    /// A prize stays one when it's looted, so it can change hands.
+    pub fn prizes(&self) -> Vec<&str> {
+        self.rounds
+            .iter()
+            .filter_map(|r| {
+                let champion = r.champion?;
+                r.events
+                    .iter()
+                    .flat_map(|e| &e.finds)
+                    .filter(|(who, _)| *who == champion)
+                    .map(|(_, weapon)| weapon.as_str())
+                    .next_back()
+            })
+            .collect()
+    }
+
+    /// Whether the tribute at `index` carries an Octagon prize.
+    pub fn holds_prize(&self, index: usize) -> bool {
+        self.tributes[index]
+            .weapon
+            .as_deref()
+            .is_some_and(|weapon| self.prizes().contains(&weapon))
+    }
+
     /// The cowards, by index: everyone who was alive when an Octagon opened but never
     /// stepped into one. Empty when no Octagon was held.
     pub fn cowards(&self) -> Vec<usize> {
@@ -549,6 +574,16 @@ impl Game {
                         ));
                     }
                 }
+                // The prize is what makes winning worth it, so there always is one.
+                let won = events
+                    .iter()
+                    .flat_map(|e| &e.finds)
+                    .any(|(who, _)| *who == champion);
+                if !won {
+                    return Err(format!(
+                        "{tag} wins the Octagon but gets no prize: put the legendary weapon they win in their `finds`."
+                    ));
+                }
                 (entrants, Some(champion))
             }
             _ => (Vec::new(), None),
@@ -813,9 +848,29 @@ mod tests {
                 .unwrap_err()
                 .contains("dies this round")
         );
-        let played = g.check(kind, round(Some("T1"), "T2")).unwrap();
+        // The champion always wins a prize.
+        assert!(
+            g.check(kind, round(Some("T1"), "T2"))
+                .unwrap_err()
+                .contains("no prize")
+        );
+        let prized = |champion: Option<&str>, victim: &str| {
+            let mut w = round(champion, victim);
+            w.events[0].finds = vec![WrittenFind {
+                tribute: "T1".into(),
+                weapon: "the golden halberd".into(),
+            }];
+            w
+        };
+        let played = g.check(kind, prized(Some("T1"), "T2")).unwrap();
         assert_eq!(played.entrants, vec![0, 1]);
         assert_eq!(played.champion, Some(0));
+        // The prize is kept, and marks whoever carries it.
+        let mut after = g.clone();
+        after.apply(played);
+        assert_eq!(after.prizes(), vec!["the golden halberd"]);
+        assert!(after.holds_prize(0));
+        assert!(!after.holds_prize(2));
         // Outside the Octagon, nobody dies.
         let mut w = written(vec![
             event("{T1} and {T2} spar, and {T2} yields.", &["T1", "T2"], &[]),
