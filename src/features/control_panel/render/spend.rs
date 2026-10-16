@@ -45,23 +45,29 @@ pub(super) fn spend(svg: &mut Svg, d: &Dashboard) {
     // Only guess at the month's end after a day of it.
     let pace_of = |usd: f64| (elapsed >= 86_400.0).then(|| usd * length / elapsed);
 
-    // The cards, all as tall as the one with the most jobs.
-    let rows = d
-        .spends
-        .iter()
-        .filter_map(|spend| spend.view.as_ref().ok())
+    // The cards, all as tall as the one with the most jobs and the longest summary.
+    let count = d.spends.len() as f32;
+    let width = (RIGHT - LEFT - GAP * (count - 1.0)) / count;
+    let views = || d.spends.iter().filter_map(|spend| spend.view.as_ref().ok());
+    let rows = views()
         .map(|view| view.jobs.as_ref().map_or(0, Vec::len).min(MAX_JOB_ROWS))
         .max()
         .unwrap_or(0);
-    let height = 150.0 + 20.0 * rows as f32;
-    let count = d.spends.len() as f32;
-    let width = (RIGHT - LEFT - GAP * (count - 1.0)) / count;
+    let summary_rows = views()
+        .map(|view| summary_lines(view, pace_of(view.usd), width - 32.0).len())
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let height = 150.0 + SUMMARY_LINE * (summary_rows - 1) as f32 + 20.0 * rows as f32;
     let y = svg.y;
     for (n, spend) in d.spends.iter().enumerate() {
         let x = LEFT + (width + GAP) * n as f32;
         let area = [x, y, width, height];
         match &spend.view {
-            Ok(view) => spend_card(svg, d, area, spend.provider, view, pace_of(view.usd)),
+            Ok(view) => {
+                let pace = pace_of(view.usd);
+                spend_card(svg, d, area, spend.provider, view, pace, summary_rows);
+            }
             Err(err) => {
                 svg.rect(area, ROW, 8.0, "");
                 card_title(svg, x, y, &display_name(spend.provider).to_uppercase());
@@ -104,7 +110,42 @@ pub(super) fn spend(svg: &mut Svg, d: &Dashboard) {
     svg.y += chart_height;
 }
 
+/// How far apart the summary's lines are when it doesn't fit on one.
+const SUMMARY_LINE: f32 = 17.0;
+
+/// The line under a card's bar: the share of the budget, the pace, the cache hits and what
+/// keeping the cache warm saved. When it's wider than `width` it breaks between its parts,
+/// so it never runs past the card's edge.
+fn summary_lines(spend: &SpendView, pace: Option<f64>, width: f32) -> Vec<String> {
+    let mut parts = Vec::new();
+    if spend.budget > 0.0 {
+        parts.push(format!("{:.0}%", spend.usd / spend.budget * 100.0));
+    }
+    if let Some(pace) = pace {
+        parts.push(format!("on pace for ${pace:.2}"));
+    }
+    if let Some(hits) = spend.cache_hits {
+        parts.push(format!("{:.0}% cache hits", hits * 100.0));
+    }
+    if let Some(net) = spend.warm_cache {
+        parts.push(warm_cache_text(net));
+    }
+    let mut lines: Vec<String> = Vec::new();
+    for part in parts {
+        match lines.last_mut() {
+            Some(line) if text_width(&format!("{line}  ·  {part}"), 12.0) <= width => {
+                line.push_str("  ·  ");
+                line.push_str(&part);
+            }
+            _ => lines.push(part),
+        }
+    }
+    lines
+}
+
 /// One provider's card: its total, budget bar, pace, admin key, cache hits and jobs.
+/// `summary_rows` is how many lines every card leaves for its summary, so the rows below
+/// line up across the cards.
 fn spend_card(
     svg: &mut Svg,
     d: &Dashboard,
@@ -112,6 +153,7 @@ fn spend_card(
     provider: &str,
     spend: &SpendView,
     pace: Option<f64>,
+    summary_rows: usize,
 ) {
     let color = provider_color(provider);
     let (inner, right) = (x + 16.0, x + w - 16.0);
@@ -156,25 +198,16 @@ fn spend_card(
         let filled = (width * share.min(1.0) as f32).max(6.0);
         svg.rect([inner, y + 70.0, filled, 6.0], bar_color, 3.0, "");
     }
-    let mut summary = Vec::new();
-    if let Some(share) = share {
-        summary.push(format!("{:.0}%", share * 100.0));
+    for (n, line) in summary_lines(spend, pace, right - inner).iter().enumerate() {
+        svg.text(
+            inner,
+            y + 94.0 + SUMMARY_LINE * n as f32,
+            line,
+            Style::new(12.0, MUTED).weight(500),
+        );
     }
-    if let Some(pace) = pace {
-        summary.push(format!("on pace for ${pace:.2}"));
-    }
-    if let Some(hits) = spend.cache_hits {
-        summary.push(format!("{:.0}% cache hits", hits * 100.0));
-    }
-    if let Some(net) = spend.warm_cache {
-        summary.push(warm_cache_text(net));
-    }
-    svg.text(
-        inner,
-        y + 94.0,
-        &summary.join("  ·  "),
-        Style::new(12.0, MUTED).weight(500),
-    );
+    // Everything below moves down for the extra summary lines.
+    let y = y + SUMMARY_LINE * (summary_rows - 1) as f32;
 
     // The admin key and the last bill read.
     let mut key = spend.admin_key.clone();
