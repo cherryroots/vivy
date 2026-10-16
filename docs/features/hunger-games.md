@@ -77,7 +77,7 @@ In what she writes, tributes are tags: `T1` is the first tribute. The text says 
 
 ### One round
 
-`writer::brief` tells her the arena's places: one per tribute, picked at random when the game starts from every channel Vivy can see (text, announcement, forum, voice and stage channels where games aren't turned off), leaving out the channel the game is played in, and the same places all game. Only the names are used, so private channels can be places (Cherry: nothing in the server is really hidden); last words still come only from channels everyone can read. It also tells her each tribute's tag, name, kills or death, weapon and allies, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
+`writer::brief` tells her the arena's places: one per tribute, picked at random when the game starts from every channel Vivy can see (text, announcement and forum channels where games aren't turned off; not voice or stage channels, Cherry's call), leaving out the channel the game is played in, and the same places all game. Only the names are used, so private channels can be places (Cherry: nothing in the server is really hidden); last words still come only from channels everyone can read. It also tells her each tribute's tag, name, kills or death, weapon and allies, the story so far with names filled in, what kind of round it is, and how many must die. She answers with one JSON object:
 
 ```json
 {"gamemaker": "…or null", "events": [{"text": "{T1} …", "tributes": ["T1", "T2"], "deaths": [{"tribute": "T2", "by": "T1"}], "finds": [{"tribute": "T1", "weapon": "…"}], "allies": [], "leaves": []}], "victory": "…or null", "picture": "…or null"}

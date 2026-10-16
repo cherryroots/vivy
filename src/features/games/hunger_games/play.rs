@@ -199,14 +199,9 @@ struct Setup {
 /// A place in the arena: its channel's name and ID.
 type Place = (String, u64);
 
-/// The kinds of channel that can be places in the arena.
-const PLACES: [ChannelType; 5] = [
-    ChannelType::Text,
-    ChannelType::News,
-    ChannelType::Forum,
-    ChannelType::Voice,
-    ChannelType::Stage,
-];
+/// The kinds of channel that can be places in the arena: not voice or stage channels
+/// (Cherry's call).
+const PLACES: [ChannelType; 3] = [ChannelType::Text, ChannelType::News, ChannelType::Forum];
 
 /// The channels everyone can read, for last words, and the arena's possible places in
 /// random order: the name and ID of every channel Vivy can see but this one (Cherry: nothing
