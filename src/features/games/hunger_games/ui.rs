@@ -282,8 +282,7 @@ pub fn unspoken(line: &str) -> String {
 
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
 /// tribute who fell (user ID, kills, last words), with their kills and their last words
-/// when they have some, all behind spoilers so people still reading the rounds don't find
-/// out early.
+/// when they have some.
 pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String {
     let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
@@ -293,13 +292,13 @@ pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String 
             .iter()
             .map(|(id, count, words)| match words {
                 Some(words) => format!(
-                    "💥 ||{}{}: “{}” [↗](<{}>)||",
+                    "💥 {}{}: “{}” [↗](<{}>)",
                     mention(*id),
                     kills(*count),
                     words.text,
                     words.link
                 ),
-                None => format!("💥 ||{}{}||", mention(*id), kills(*count)),
+                None => format!("💥 {}{}", mention(*id), kills(*count)),
             })
             .collect();
         text.push_str(&format!(
@@ -313,15 +312,13 @@ pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String 
     text
 }
 
-/// The end: the winner, her line to them, and everyone's placing, all behind spoilers so
-/// people still reading the last rounds don't find out who won.
+/// The end: the winner, her line to them, and everyone's placing.
 pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let placings = game.placings();
     let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
     if let Some(line) = victory {
-        // A `||` of her own would end the spoiler early.
-        let line = shorten_at_word(&unspoken(line), 600).replace("||", "|");
-        text.push_str(&format!("> 🎙️ ||*{line}*||\n\n"));
+        let line = shorten_at_word(&unspoken(line), 600);
+        text.push_str(&format!("> 🎙️ *{line}*\n\n"));
     }
     for (i, t) in placings.iter().enumerate() {
         let place = if i == 0 {
@@ -329,11 +326,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
         } else {
             format!("{}.", i + 1)
         };
-        text.push_str(&format!(
-            "{place} ||{}{}||\n",
-            mention(t.id),
-            kills(t.kills)
-        ));
+        text.push_str(&format!("{place} {}{}\n", mention(t.id), kills(t.kills)));
     }
     text.push_str("-# Wins and kills are counted on `/games leaderboard`.");
     split_message(&text, DISCORD_LIMIT)
@@ -373,23 +366,24 @@ mod tests {
     }
 
     #[test]
-    fn the_fallen_and_the_victor_are_spoilers() {
+    fn the_fallen_and_the_victor_are_shown_plainly() {
         let mut game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
         game.tributes[1].died_in = Some(0);
         game.tributes[0].kills = 1;
-        let text = victor(&game, Some("Well done, Moss || hi")).join("");
-        assert!(!text.lines().next().unwrap().contains("Moss"));
-        assert!(text.contains("> 🎙️ ||*Well done, Moss | hi*||"));
-        assert!(text.contains("👑 ||<@1>, 1 kill||"));
-        assert!(text.contains("2. ||<@2>||"));
+        let text = victor(&game, Some("[booming] Well done, Moss")).join("");
+        assert!(!text.contains("||"));
+        assert!(text.contains("> 🎙️ *Well done, Moss*"));
+        assert!(text.contains("👑 <@1>, 1 kill"));
+        assert!(text.contains("2. <@2>"));
         let words = LastWords {
             text: "brb".into(),
             link: "https://discord.com/channels/1/2/3".into(),
         };
         let text = cannons("The fallen of day 1", &[(2, 0, Some(words)), (1, 2, None)]);
         assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
-        assert!(text.contains("💥 ||<@2>: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
-        assert!(text.contains("💥 ||<@1>, 2 kills||"));
+        assert!(!text.contains("||"));
+        assert!(text.contains("💥 <@2>: “brb” [↗](<https://discord.com/channels/1/2/3>)"));
+        assert!(text.contains("💥 <@1>, 2 kills"));
     }
 
     #[test]
