@@ -73,7 +73,7 @@ fn days_lived(game: &Game, died_in: Option<usize>) -> u32 {
         .iter()
         .map(|r| match r.kind {
             Kind::Day(n) | Kind::Night(n) | Kind::Feast(n) => n,
-            Kind::Bloodbath | Kind::Finale => 0,
+            Kind::Scatter | Kind::Finale => 0,
         })
         .max()
         .unwrap_or(0)
@@ -314,13 +314,14 @@ mod tests {
             events: vec![Event {
                 text: String::new(),
                 deaths,
+                ..Default::default()
             }],
             victory: None,
             picture: None,
         }
     }
 
-    /// Moss kills Ash in the Bloodbath and Fern on night 1, and wins.
+    /// Moss kills Ash in the Scatter and Fern on night 1, and wins.
     fn finished() -> Game {
         let mut game = Game::new(vec![
             (1, "Moss".into()),
@@ -332,7 +333,7 @@ mod tests {
             victim,
             by: Some(by),
         };
-        game.apply(round(Kind::Bloodbath, vec![kill(1, 0)]));
+        game.apply(round(Kind::Scatter, vec![kill(1, 0)]));
         game.apply(round(Kind::Day(1), vec![]));
         game.apply(round(Kind::Night(1), vec![kill(2, 0)]));
         game.apply(round(
@@ -362,7 +363,7 @@ mod tests {
     fn counts_days_lived() {
         let mut game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
         for kind in [
-            Kind::Bloodbath,
+            Kind::Scatter,
             Kind::Day(1),
             Kind::Night(1),
             Kind::Feast(2),

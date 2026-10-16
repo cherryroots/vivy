@@ -175,7 +175,7 @@ pub fn lobby_closed(tributes: &[(u64, String)], why: &str) -> CreateEmbed {
 /// blank line between events so each stands on its own. Long rounds come in several parts.
 pub fn round(game: &Game, round: &Round) -> Vec<String> {
     let emoji = match round.kind {
-        Kind::Bloodbath => "🩸",
+        Kind::Scatter => "🏃",
         Kind::Day(_) => "☀️",
         Kind::Night(_) => "🌙",
         Kind::Feast(_) => "🍖",
@@ -192,10 +192,13 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
         blocks.push(format!("> 🎙️ *{}*", shorten_at_word(&unspoken(line), 600)));
     }
     for event in &round.events {
-        let skull = if event.deaths.is_empty() {
-            "▫️"
-        } else {
+        // 💀 when someone dies, 🗡️ when someone gets a weapon.
+        let skull = if !event.deaths.is_empty() {
             "💀"
+        } else if !event.finds.is_empty() {
+            "🗡️"
+        } else {
+            "▫️"
         };
         blocks.push(format!("{skull} {}", fill(&event.text, name)));
     }
@@ -353,6 +356,7 @@ mod tests {
                 } else {
                     Vec::new()
                 },
+                ..Default::default()
             })
             .collect();
         let played = Round {
