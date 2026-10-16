@@ -23,14 +23,15 @@ Each round you get the tributes, the arena, the story so far and what kind of ro
 Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, ambushes, traps, accidents, desperate last stands. About half the events each round are quiet ones with no deaths: camping, foraging, hunting, building traps, sharing food, forming alliances or breaking them, arguing, napping, talking to the cameras, someone doing something stupid. Say how each kill happens, plainly. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back, and an alliance can end in betrayal. \
 Everyone starts unarmed. Weapons are found in the arena's places, which are the server's channels, and each weapon is themed to the place it's found in: be creative (a channel about music might hide a razor-edged vinyl record or a mic-stand spear, one about cooking a cast-iron skillet or a cleaver, one about games a controller swung on its cable), but every weapon must be able to kill. Each tribute carries one weapon at a time, and keeps it until they find, steal or loot a better one. The unarmed fight with fists, rocks, sticks and traps, and usually lose to the armed. \
 Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
-Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write in English.";
+Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"victory\": string or null, \"picture\": string or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null}
 - Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
 - `allies`: two or more tributes in that event who team up (joining someone's alliance brings you into it). `leaves`: tributes in that event who walk out on their alliance. Killing an ally ends the killer's alliance by itself. Leave both out or empty otherwise.
+- `champion`: only in an Octagon round: the tag of the one who wins it, alive at the end. Otherwise null.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
@@ -108,11 +109,15 @@ pub fn brief(
         }
         Kind::Day(day) => format!("Day {day}."),
         Kind::Night(day) => format!("Night {day}."),
-        Kind::Feast(day) => format!(
-            "Day {day}: the Feast. You've laid out a feast of supplies and weapons in the Octagon in the middle of the arena, worth risking everything for. Announce it with your `gamemaker` line."
-        ),
+        Kind::Octagon(day) => {
+            let entrants: Vec<String> = game.entrants().into_iter().map(Game::tag).collect();
+            format!(
+                "Day {day}: the Octagon. The cage in the middle of the arena opens, and you put up a prize for whoever wins it: usually a legendary weapon, which goes in the champion's `finds`, or else a sponsor's gift. Announce the Octagon and its prize with your `gamemaker` line. The bold step in: {}, and nobody else. They fight one-on-one bouts, one after another, until one champion is left; put each bout in its own event. A loser either dies or yields and limps out of the cage to the crowd's boos, alive. Write the winner's tag as `champion`. Everyone else sits it out: watching from the shadows, using the distraction, or too scared to come near, and nobody else dies.",
+                entrants.join(", ")
+            )
+        }
         Kind::Finale => {
-            "The final showdown: only two are left. Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner.".to_string()
+            "The final showdown: only two are left, and you force them into the Octagon in the middle of the arena to settle it in the cage. Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner.".to_string()
         }
     };
     let deaths = if min == max {
@@ -133,9 +138,9 @@ pub fn brief(
         text.push_str(match kind {
             Kind::Scatter => "Also write a `picture`: everyone running out from their starting plates in a ring around the Octagon toward the zones, and where each event happens.",
             Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
-            Kind::Feast(_) => "Also write a `picture`: a long table of food and weapons in the Octagon, and each event where it happens.",
+            Kind::Octagon(_) => "Also write a `picture`: the fighters in a bout inside the Octagon, the others watching from the zones, and each event where it happens.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
-            Kind::Finale => "Also write a `picture`: the final showdown between the last two, where it happens. The winner gets a picture of their own after it.",
+            Kind::Finale => "Also write a `picture`: the final showdown between the last two inside the Octagon. The winner gets a picture of their own after it.",
         });
     }
     text
@@ -147,7 +152,7 @@ pub fn title(kind: Kind) -> String {
         Kind::Scatter => "The Scatter".to_string(),
         Kind::Day(day) => format!("Day {day}"),
         Kind::Night(day) => format!("Night {day}"),
-        Kind::Feast(day) => format!("Day {day}: the Feast"),
+        Kind::Octagon(day) => format!("Day {day}: the Octagon"),
         Kind::Finale => "The final showdown".to_string(),
     }
 }
@@ -350,6 +355,8 @@ mod tests {
             }],
             victory: None,
             picture: None,
+            entrants: Vec::new(),
+            champion: None,
         });
         let notes = vec![
             Some("Plays chess".into()),

@@ -170,26 +170,75 @@ pub fn lobby_closed(tributes: &[(u64, String)], why: &str) -> CreateEmbed {
         .color(COLOR)
 }
 
-/// A round as played: her Gamemaker line, the events with names filled in, and who's left.
-/// Plain message text rather than an embed, because embeds use Discord's smaller font, with a
-/// blank line between events so each stands on its own. Long rounds come in several parts.
-pub fn round(game: &Game, round: &Round) -> Vec<String> {
+/// A tribute as shown in game messages: their mention, which Discord shows as their name
+/// in blue. Game messages ping nobody (see `play::text`), so it's only a link.
+pub fn mention(id: u64) -> String {
+    format!("<@{id}>")
+}
+
+/// `text` with every place Vivy wrote as `#name` turned into a link to its channel, shown
+/// in blue. `places` are the arena's places (name and channel ID). Longer names are tried
+/// first, so `#memes-2` isn't read as `#memes`, and a name only counts when it isn't the
+/// start of a longer word.
+pub fn link_places(text: &str, places: &[(String, u64)]) -> String {
+    let mut places: Vec<&(String, u64)> = places.iter().filter(|(n, _)| !n.is_empty()).collect();
+    places.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('#') {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 1..];
+        let found = places.iter().find(|(name, _)| {
+            after.starts_with(name.as_str())
+                && !after[name.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        });
+        match found {
+            Some((name, id)) => {
+                out.push_str(&format!("<#{id}>"));
+                rest = &after[name.len()..];
+            }
+            None => {
+                out.push('#');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A round as played: her Gamemaker line, who steps into the Octagon, the events with
+/// tributes and places as blue links, and who's left. `places` are the arena's places (name
+/// and channel ID). Plain message text rather than an embed, because embeds use Discord's
+/// smaller font, with a blank line between events so each stands on its own. Long rounds
+/// come in several parts.
+pub fn round(game: &Game, round: &Round, places: &[(String, u64)]) -> Vec<String> {
     let emoji = match round.kind {
         Kind::Scatter => "🏃",
         Kind::Day(_) => "☀️",
         Kind::Night(_) => "🌙",
-        Kind::Feast(_) => "🍖",
+        Kind::Octagon(_) => "🏟️",
         Kind::Finale => "⚔️",
     };
     let name = |i: usize| {
-        game.tributes.get(i).map_or_else(
-            || "someone".to_string(),
-            |t| format!("**{}**", escape(&t.name)),
-        )
+        game.tributes
+            .get(i)
+            .map_or_else(|| "someone".to_string(), |t| mention(t.id))
     };
     let mut blocks = vec![format!("## {emoji} {}", title(round.kind))];
     if let Some(line) = &round.gamemaker {
-        blocks.push(format!("> 🎙️ *{}*", shorten_at_word(&unspoken(line), 600)));
+        let line = shorten_at_word(&unspoken(line), 600);
+        blocks.push(format!("> 🎙️ *{}*", link_places(&line, places)));
+    }
+    if !round.entrants.is_empty() {
+        let names: Vec<String> = round.entrants.iter().map(|&i| name(i)).collect();
+        blocks.push(format!(
+            "🥊 Stepping into the Octagon: {}",
+            names.join(", ")
+        ));
     }
     for event in &round.events {
         // 💀 when someone dies, 🗡️ when someone gets a weapon.
@@ -200,7 +249,11 @@ pub fn round(game: &Game, round: &Round) -> Vec<String> {
         } else {
             "▫️"
         };
-        blocks.push(format!("{skull} {}", fill(&event.text, name)));
+        let line = link_places(&fill(&event.text, name), places);
+        blocks.push(format!("{skull} {line}"));
+    }
+    if let Some(champion) = round.champion {
+        blocks.push(format!("🏆 Champion of the Octagon: {}", name(champion)));
     }
     let left = game.alive();
     blocks.push(if left == 1 {
@@ -228,25 +281,25 @@ pub fn unspoken(line: &str) -> String {
 }
 
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
-/// tribute who fell (name, kills, last words), with their kills and their last words when
-/// they have some, all behind spoilers so people still reading the rounds don't find out
-/// early.
-pub fn cannons(title: &str, fallen: &[(String, u32, Option<LastWords>)]) -> String {
+/// tribute who fell (user ID, kills, last words), with their kills and their last words
+/// when they have some, all behind spoilers so people still reading the rounds don't find
+/// out early.
+pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String {
     let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
     } else {
         let lines: Vec<String> = fallen
             .iter()
-            .map(|(name, count, words)| match words {
+            .map(|(id, count, words)| match words {
                 Some(words) => format!(
-                    "💥 ||**{}**{}: “{}” [↗](<{}>)||",
-                    escape(name),
+                    "💥 ||{}{}: “{}” [↗](<{}>)||",
+                    mention(*id),
                     kills(*count),
                     words.text,
                     words.link
                 ),
-                None => format!("💥 ||**{}**{}||", escape(name), kills(*count)),
+                None => format!("💥 ||{}{}||", mention(*id), kills(*count)),
             })
             .collect();
         text.push_str(&format!(
@@ -278,7 +331,7 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
         };
         text.push_str(&format!(
             "{place} ||{}{}||\n",
-            escape(&t.name),
+            mention(t.id),
             kills(t.kills)
         ));
     }
@@ -327,19 +380,16 @@ mod tests {
         let text = victor(&game, Some("Well done, Moss || hi")).join("");
         assert!(!text.lines().next().unwrap().contains("Moss"));
         assert!(text.contains("> 🎙️ ||*Well done, Moss | hi*||"));
-        assert!(text.contains("👑 ||Moss, 1 kill||"));
-        assert!(text.contains("2. ||Ash||"));
+        assert!(text.contains("👑 ||<@1>, 1 kill||"));
+        assert!(text.contains("2. ||<@2>||"));
         let words = LastWords {
             text: "brb".into(),
             link: "https://discord.com/channels/1/2/3".into(),
         };
-        let text = cannons(
-            "The fallen of day 1",
-            &[("Ash".into(), 0, Some(words)), ("Moss".into(), 2, None)],
-        );
+        let text = cannons("The fallen of day 1", &[(2, 0, Some(words)), (1, 2, None)]);
         assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
-        assert!(text.contains("💥 ||**Ash**: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
-        assert!(text.contains("💥 ||**Moss**, 2 kills||"));
+        assert!(text.contains("💥 ||<@2>: “brb” [↗](<https://discord.com/channels/1/2/3>)||"));
+        assert!(text.contains("💥 ||<@1>, 2 kills||"));
     }
 
     #[test]
@@ -365,13 +415,60 @@ mod tests {
             events,
             victory: None,
             picture: None,
+            entrants: Vec::new(),
+            champion: None,
         };
         game.apply(played.clone());
-        let parts = round(&game, &played);
+        let parts = round(&game, &played, &[]);
         assert!(parts.len() > 1);
         assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
-        assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 **P1** walks"));
+        assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 <@1> walks"));
         assert!(parts.last().unwrap().ends_with("-# 23 tributes left"));
+    }
+
+    #[test]
+    fn places_become_channel_links() {
+        let places = vec![("memes".to_string(), 7), ("memes-2".to_string(), 8)];
+        assert_eq!(
+            link_places(
+                "From #memes to #memes-2, past #memesters and #nowhere.",
+                &places
+            ),
+            "From <#7> to <#8>, past #memesters and #nowhere."
+        );
+        assert_eq!(link_places("#memes", &places), "<#7>");
+        assert_eq!(link_places("No places", &[]), "No places");
+    }
+
+    #[test]
+    fn the_octagon_shows_who_stepped_in_and_who_won() {
+        let mut game = Game::new(vec![
+            (1, "Moss".into()),
+            (2, "Ash".into()),
+            (3, "Fern".into()),
+        ]);
+        let played = Round {
+            kind: Kind::Octagon(2),
+            gamemaker: Some("[booming] The Octagon opens in #general!".into()),
+            events: vec![Event {
+                text: "{T1} beats {T3} in the cage.".into(),
+                deaths: vec![Death {
+                    victim: 2,
+                    by: Some(0),
+                }],
+                ..Default::default()
+            }],
+            victory: None,
+            picture: None,
+            entrants: vec![0, 2],
+            champion: Some(0),
+        };
+        game.apply(played.clone());
+        let text = round(&game, &played, &[("general".into(), 5)]).join("");
+        assert!(text.starts_with("## 🏟️ Day 2: the Octagon\n\n> 🎙️ *The Octagon opens in <#5>!*"));
+        assert!(text.contains("🥊 Stepping into the Octagon: <@1>, <@3>"));
+        assert!(text.contains("💀 <@1> beats <@3> in the cage."));
+        assert!(text.contains("🏆 Champion of the Octagon: <@1>"));
     }
 
     #[test]
