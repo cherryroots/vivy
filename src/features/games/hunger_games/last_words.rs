@@ -201,7 +201,8 @@ pub fn pick(
     }
 }
 
-/// A quote as last words: on one line, unable to break out of a spoiler, and short enough.
+/// A quote as last words: on one line, unable to hide the rest of the line behind a spoiler,
+/// and short enough.
 fn tidy(text: &str) -> Option<String> {
     let text = text
         .split_whitespace()

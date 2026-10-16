@@ -189,12 +189,15 @@ struct Setup {
     guild: GuildId,
     channel: ChannelId,
     provider: Arc<dyn ChatProvider>,
-    /// The arena's possible places (see [`arena`]).
-    arena: Vec<String>,
+    /// The arena's possible places, name and channel ID (see [`arena`]).
+    arena: Vec<Place>,
     /// Where last words are read from.
     sources: Vec<Source>,
     quote_settings: crate::features::games::who_said_it::Settings,
 }
+
+/// A place in the arena: its channel's name and ID.
+type Place = (String, u64);
 
 /// The kinds of channel that can be places in the arena.
 const PLACES: [ChannelType; 5] = [
@@ -206,10 +209,10 @@ const PLACES: [ChannelType; 5] = [
 ];
 
 /// The channels everyone can read, for last words, and the arena's possible places in
-/// random order: the names of every channel Vivy can see but this one (Cherry: nothing in
-/// the server is really hidden, and only the names are used). The game keeps as many of
-/// those as it has tributes, as the arena's places for the whole game.
-fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, Vec<String>)> {
+/// random order: the name and ID of every channel Vivy can see but this one (Cherry: nothing
+/// in the server is really hidden, and only the names and links are used). The game keeps
+/// as many of those as it has tributes, as the arena's places for the whole game.
+fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, Vec<Place>)> {
     let me = bot.cache.current_user().id;
     let cached = bot
         .cache
@@ -220,17 +223,17 @@ fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, 
     let member = cached.members.get(&me);
     // The channel the game is played in is left out: it's where everyone watches from,
     // not a place in the arena (often a test thread, too).
-    let mut names: Vec<String> = cached
+    let mut places: Vec<Place> = cached
         .channels
         .values()
         .filter(|c| c.id != here && PLACES.contains(&c.kind))
         .filter(|c| bot.allows("games", Some(guild), c.id))
         .filter(|c| member.is_none_or(|m| cached.user_permissions_in(c, m).view_channel()))
-        .map(|c| c.name.clone())
+        .map(|c| (c.name.clone(), c.id.get()))
         .collect();
     drop(cached);
-    fastrand::shuffle(&mut names);
-    Ok((sources, names))
+    fastrand::shuffle(&mut places);
+    Ok((sources, places))
 }
 
 /// The Reaping, then the Games.
@@ -285,12 +288,13 @@ async fn run(
         guild,
         channel,
         provider,
-        mut arena,
+        arena: mut links,
         sources,
         quote_settings,
     } = setup;
     // One place per tribute, the same ones all game.
-    arena.truncate(tributes.len());
+    links.truncate(tributes.len());
+    let arena: Vec<String> = links.iter().map(|(name, _)| name.clone()).collect();
     let ids: Vec<u64> = tributes.iter().map(|(id, _)| *id).collect();
     // Last words take a while to read, and aren't needed until the first cannons.
     let words = bot.tasks.spawn(last_words::load(
@@ -333,6 +337,7 @@ async fn run(
         Writing {
             provider,
             arena,
+            links,
             notes: Arc::new(notes),
             looks,
         },
@@ -358,6 +363,7 @@ async fn play(
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
     let looks = writing.looks.take().map(looks::Shared::new);
     let places = writing.arena.clone();
+    let links = writing.links.clone();
     let easel = Easel {
         guild: stage.guild,
         channel,
@@ -481,7 +487,7 @@ async fn play(
         let over = game.winner().is_some();
 
         // The map goes with the round's last part.
-        let parts = ui::round(&game, &game.rounds[index]);
+        let parts = ui::round(&game, &game.rounds[index], &links);
         let count = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
             let picture = if i + 1 == count {
@@ -619,6 +625,8 @@ struct Writing {
     provider: Arc<dyn ChatProvider>,
     /// The arena's places.
     arena: Vec<String>,
+    /// The arena's places with their channel IDs, to show them as links.
+    links: Vec<Place>,
     /// Her notes about each tribute, in the game's order.
     notes: Arc<Vec<Option<String>>>,
     /// How each tribute looks, being described, when pictures are on: then she writes
@@ -658,10 +666,10 @@ async fn post_cannons(
     words: &mut Later<HashMap<u64, LastWords>>,
 ) {
     let words = words.get().await;
-    let fallen: Vec<(String, u32, Option<LastWords>)> = game
+    let fallen: Vec<(u64, u32, Option<LastWords>)> = game
         .fallen_since(from)
         .iter()
-        .map(|t| (t.name.clone(), t.kills, words.get(&t.id).cloned()))
+        .map(|t| (t.id, t.kills, words.get(&t.id).cloned()))
         .collect();
     let message = text(ui::cannons(title, &fallen));
     if let Err(err) = channel.send_message(&bot.http, message).await {

@@ -1,4 +1,4 @@
-//! The Gamemaker's voice: her announcements (opening the Games, the Feast, the final
+//! The Gamemaker's voice: her announcements (opening the Games, the Octagon, the final
 //! showdown) and her words to the victor, also sent as Discord voice messages in a voice of
 //! their own (`gamemaker` in `[features.voice.voices]`).
 //!

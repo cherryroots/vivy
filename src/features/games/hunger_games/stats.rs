@@ -65,14 +65,14 @@ pub fn placings(game: &Game) -> Vec<Placing> {
 }
 
 /// The days someone lived through, dying in round `died_in` (or never): the highest day of
-/// the rounds before that one. A Day or Feast and its Night both count as that day, so dying
+/// the rounds before that one. A Day or Octagon and its Night both count as that day, so dying
 /// on night 2 is 2 days and dying on day 2 is 1.
 fn days_lived(game: &Game, died_in: Option<usize>) -> u32 {
     let end = died_in.unwrap_or(game.rounds.len());
     game.rounds[..end.min(game.rounds.len())]
         .iter()
         .map(|r| match r.kind {
-            Kind::Day(n) | Kind::Night(n) | Kind::Feast(n) => n,
+            Kind::Day(n) | Kind::Night(n) | Kind::Octagon(n) => n,
             Kind::Scatter | Kind::Finale => 0,
         })
         .max()
@@ -318,6 +318,8 @@ mod tests {
             }],
             victory: None,
             picture: None,
+            entrants: Vec::new(),
+            champion: None,
         }
     }
 
@@ -366,7 +368,7 @@ mod tests {
             Kind::Scatter,
             Kind::Day(1),
             Kind::Night(1),
-            Kind::Feast(2),
+            Kind::Octagon(2),
             Kind::Night(2),
             Kind::Day(3),
         ] {

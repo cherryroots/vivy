@@ -25,6 +25,9 @@ pub struct Tribute {
     pub weapon: Option<String>,
     /// Their alliance, or `None` on their own: allies share a number.
     pub team: Option<u32>,
+    /// How bold they are, 0 to 99, rolled when the game starts and never shown: the bold
+    /// step into the Octagon, the cowards hang back. Kills add to it (see [`Game::entrants`]).
+    pub nerve: u32,
 }
 
 impl Tribute {
@@ -41,17 +44,18 @@ pub enum Kind {
     Scatter,
     Day(u32),
     Night(u32),
-    /// Once, instead of the second day: a feast of supplies that draws everyone in.
-    Feast(u32),
+    /// After a day, at most twice a game (see [`Game::octagon_due`]): the bold fight
+    /// one-on-one in the Octagon in the middle for a prize, until one champion is left.
+    Octagon(u32),
     /// The last two, until one is left.
     Finale,
 }
 
 impl Kind {
-    /// Whether Vivy says a Gamemaker line before this round: when the Games open, at the
-    /// Feast, and for the final two.
+    /// Whether Vivy says a Gamemaker line before this round: when the Games open, when the
+    /// Octagon opens, and for the final two.
     pub fn announced(self) -> bool {
-        matches!(self, Kind::Scatter | Kind::Feast(_) | Kind::Finale)
+        matches!(self, Kind::Scatter | Kind::Octagon(_) | Kind::Finale)
     }
 }
 
@@ -88,6 +92,9 @@ pub struct Round {
     pub victory: Option<String>,
     /// What to draw on the arena map for this round, when she was asked to.
     pub picture: Option<String>,
+    /// In an Octagon round, who stepped in (indexes), and who won it.
+    pub entrants: Vec<usize>,
+    pub champion: Option<usize>,
 }
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
@@ -100,6 +107,8 @@ pub struct Written {
     pub victory: Option<String>,
     #[serde(default)]
     pub picture: Option<String>,
+    #[serde(default)]
+    pub champion: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -135,6 +144,14 @@ const MAX_EVENT: usize = 400;
 const MAX_IN_EVENT: usize = 6;
 /// The longest a weapon's name may be, in characters.
 const MAX_WEAPON: usize = 60;
+/// The nerve it takes to step into the Octagon.
+const BRAVE: u32 = 60;
+/// How much nerve each kill adds.
+const KILL_NERVE: u32 = 15;
+/// The most who fight in one Octagon, so its round stays readable.
+const MOST_IN_OCTAGON: usize = 4;
+/// The fewest alive for the Octagon to open: two to fight and someone to watch.
+const OCTAGON_ALIVE: usize = 4;
 
 /// The whole game: the tributes and the rounds played so far.
 #[derive(Debug, Clone)]
@@ -156,6 +173,7 @@ impl Game {
                     died_in: None,
                     weapon: None,
                     team: None,
+                    nerve: fastrand::u32(..100),
                 })
                 .collect(),
             rounds: Vec::new(),
@@ -217,22 +235,62 @@ impl Game {
         if alive == 2 {
             return Some(Kind::Finale);
         }
-        let feast_done = self.rounds.iter().any(|r| matches!(r.kind, Kind::Feast(_)));
         Some(match self.rounds.last().map(|r| r.kind) {
             None => Kind::Scatter,
             Some(Kind::Scatter) => Kind::Day(1),
-            Some(Kind::Day(day) | Kind::Feast(day)) => Kind::Night(day),
-            Some(Kind::Night(day)) if day + 1 == 2 && !feast_done && alive >= 4 => {
-                Kind::Feast(day + 1)
-            }
+            Some(Kind::Day(day)) if self.octagon_due() => Kind::Octagon(day),
+            Some(Kind::Day(day) | Kind::Octagon(day)) => Kind::Night(day),
             Some(Kind::Night(day)) => Kind::Day(day + 1),
             // A Finale always leaves one, so nothing follows it.
             Some(Kind::Finale) => return None,
         })
     }
 
+    /// Whether the Octagon opens after this day. It's rare, so each one is a big moment
+    /// (Cherry's call): 12 or more tributes get two, once about a third and again about two
+    /// thirds have fallen; 6 to 11 get one, at about half; fewer get none, since the final
+    /// showdown is in the Octagon anyway. Counted by deaths, so it follows the game's pace,
+    /// and only with at least [`OCTAGON_ALIVE`] alive.
+    pub fn octagon_due(&self) -> bool {
+        let total = self.tributes.len();
+        let marks = match total {
+            12.. => vec![total.div_ceil(3), (total * 2).div_ceil(3)],
+            6..=11 => vec![total.div_ceil(2)],
+            _ => Vec::new(),
+        };
+        let held = self
+            .rounds
+            .iter()
+            .filter(|r| matches!(r.kind, Kind::Octagon(_)))
+            .count();
+        let fallen = total - self.alive();
+        marks
+            .get(held)
+            .is_some_and(|&mark| fallen >= mark && self.alive() >= OCTAGON_ALIVE)
+    }
+
+    /// Who steps into the Octagon, by index: the living whose nerve (with 15 for each kill)
+    /// is at least 60, boldest first, but never fewer than the two boldest or more than four.
+    /// Worked out from the game, so the brief and the check agree.
+    pub fn entrants(&self) -> Vec<usize> {
+        let mut living: Vec<(u32, usize)> = (0..self.tributes.len())
+            .filter(|&i| self.tributes[i].alive())
+            .map(|i| {
+                let t = &self.tributes[i];
+                (t.nerve + KILL_NERVE * t.kills, i)
+            })
+            .collect();
+        living.sort_by_key(|&(nerve, i)| (std::cmp::Reverse(nerve), i));
+        let brave = living.iter().filter(|(nerve, _)| *nerve >= BRAVE).count();
+        let count = brave.clamp(2, MOST_IN_OCTAGON).min(living.len());
+        let mut entrants: Vec<usize> = living[..count].iter().map(|&(_, i)| i).collect();
+        entrants.sort_unstable();
+        entrants
+    }
+
     /// How many should die in the next round, of `kind`, at least and at most. At most 2 in
-    /// the Scatter, since everyone runs, about a quarter at the Feast, and an eighth
+    /// the Scatter, since everyone runs, one fewer than the fighters in the Octagon (losers
+    /// may yield instead), and an eighth
     /// to a sixth on days and nights, so 24 tributes take around 15 rounds and 5 take
     /// around 6. A day or night may pass with nobody dying, but never two in a row. Until
     /// the Finale at least two stay alive, so there's always a final two.
@@ -244,11 +302,14 @@ impl Game {
         if kind == Kind::Scatter {
             return (0, (alive - 2).min(2));
         }
+        if let Kind::Octagon(_) = kind {
+            let bouts = self.entrants().len().saturating_sub(1);
+            return (1, bouts.clamp(1, alive - 2));
+        }
         let share = match kind {
             Kind::Day(_) => 0.12,
             Kind::Night(_) => 0.15,
-            Kind::Feast(_) => 0.25,
-            Kind::Scatter | Kind::Finale => unreachable!(),
+            Kind::Scatter | Kind::Octagon(_) | Kind::Finale => unreachable!(),
         };
         let most = alive - 2;
         let max = ((alive as f64 * share).ceil() as usize).clamp(1, most);
@@ -440,6 +501,31 @@ impl Game {
             };
             return Err(format!("{dead} died, but this round {wanted} should die."));
         }
+        let (entrants, champion) = match kind {
+            Kind::Octagon(_) => {
+                let entrants = self.entrants();
+                let tag = written.champion.unwrap_or_default();
+                let champion = self
+                    .index_of(&tag)
+                    .filter(|i| entrants.contains(i))
+                    .ok_or_else(|| {
+                        "`champion` must be the tag of the one who steps into the Octagon and wins it.".to_string()
+                    })?;
+                for death in events.iter().flat_map(|e| &e.deaths) {
+                    if death.victim == champion {
+                        return Err(format!("{tag} is the champion but dies this round."));
+                    }
+                    if !entrants.contains(&death.victim) {
+                        return Err(format!(
+                            "{} dies, but only those in the Octagon may die this round.",
+                            Game::tag(death.victim)
+                        ));
+                    }
+                }
+                (entrants, Some(champion))
+            }
+            _ => (Vec::new(), None),
+        };
         let clean =
             |line: Option<String>| line.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
         Ok(Round {
@@ -448,6 +534,8 @@ impl Game {
             events,
             victory: clean(written.victory).filter(|_| kind == Kind::Finale),
             picture: clean(written.picture),
+            entrants,
+            champion,
         })
     }
 
@@ -585,30 +673,143 @@ mod tests {
             events,
             victory: None,
             picture: Some("A forest".into()),
+            champion: None,
         }
     }
 
     #[test]
-    fn rounds_go_bloodbath_day_night_feast() {
+    fn rounds_go_scatter_day_night() {
         let mut g = game(8);
         assert_eq!(g.next_kind(), Some(Kind::Scatter));
-        let empty = |kind| Round {
-            kind,
-            gamemaker: None,
-            events: Vec::new(),
-            victory: None,
-            picture: None,
-        };
-        g.apply(empty(Kind::Scatter));
+        g.apply(round_with(Kind::Scatter, 0));
         assert_eq!(g.next_kind(), Some(Kind::Day(1)));
-        g.apply(empty(Kind::Day(1)));
+        g.apply(round_with(Kind::Day(1), 0));
         assert_eq!(g.next_kind(), Some(Kind::Night(1)));
-        g.apply(empty(Kind::Night(1)));
-        assert_eq!(g.next_kind(), Some(Kind::Feast(2)));
-        g.apply(empty(Kind::Feast(2)));
+        g.apply(round_with(Kind::Night(1), 0));
+        assert_eq!(g.next_kind(), Some(Kind::Day(2)));
+    }
+
+    /// `game(total)` with the first `dead` tributes fallen and `held` Octagons played.
+    fn with_fallen(total: u64, dead: usize, held: usize) -> Game {
+        let mut g = game(total);
+        for t in &mut g.tributes[..dead] {
+            t.died_in = Some(0);
+        }
+        for _ in 0..held {
+            g.rounds.push(round_with(Kind::Octagon(1), 0));
+        }
+        g
+    }
+
+    #[test]
+    fn the_octagon_opens_by_deaths() {
+        // 24 tributes: at 8 fallen, then at 16.
+        assert!(!with_fallen(24, 7, 0).octagon_due());
+        assert!(with_fallen(24, 8, 0).octagon_due());
+        assert!(!with_fallen(24, 15, 1).octagon_due());
+        assert!(with_fallen(24, 16, 1).octagon_due());
+        assert!(!with_fallen(24, 20, 2).octagon_due());
+        // 12 tributes: at 4 and 8, while 4 are alive.
+        assert!(with_fallen(12, 4, 0).octagon_due());
+        assert!(with_fallen(12, 8, 1).octagon_due());
+        assert!(!with_fallen(12, 9, 1).octagon_due());
+        // 8 tributes: once, at 4 fallen.
+        assert!(!with_fallen(8, 3, 0).octagon_due());
+        assert!(with_fallen(8, 4, 0).octagon_due());
+        assert!(!with_fallen(8, 4, 1).octagon_due());
+        // 5 tributes: never.
+        assert!(!with_fallen(5, 1, 0).octagon_due());
+        // It comes after a day, then the night follows.
+        let mut g = with_fallen(8, 4, 0);
+        g.rounds.push(round_with(Kind::Day(2), 0));
+        assert_eq!(g.next_kind(), Some(Kind::Octagon(2)));
+        g.rounds.push(round_with(Kind::Octagon(2), 0));
         assert_eq!(g.next_kind(), Some(Kind::Night(2)));
-        g.apply(empty(Kind::Night(2)));
-        assert_eq!(g.next_kind(), Some(Kind::Day(3)));
+    }
+
+    #[test]
+    fn the_boldest_step_in() {
+        let mut g = game(6);
+        for (t, nerve) in g.tributes.iter_mut().zip([10, 70, 20, 65, 30, 5]) {
+            t.nerve = nerve;
+        }
+        assert_eq!(g.entrants(), vec![1, 3]);
+        // Nobody brave: still the two boldest.
+        g.tributes[1].nerve = 50;
+        g.tributes[3].nerve = 40;
+        assert_eq!(g.entrants(), vec![1, 3]);
+        // Kills add nerve: two kills make P3 (20 + 30) bolder than P2 (50).
+        g.tributes[2].kills = 2;
+        assert_eq!(g.entrants(), vec![1, 2]);
+        // Everyone brave: at most four.
+        for t in &mut g.tributes {
+            t.nerve = 90;
+        }
+        assert_eq!(g.entrants(), vec![0, 1, 2, 3]);
+        assert_eq!(g.deaths_range(Kind::Octagon(2)), (1, 3));
+        // The dead don't step in.
+        g.tributes[0].died_in = Some(0);
+        assert_eq!(g.entrants(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn the_octagon_needs_a_champion_from_inside() {
+        let mut g = game(5);
+        for (t, nerve) in g.tributes.iter_mut().zip([90, 80, 10, 10, 10]) {
+            t.nerve = nerve;
+        }
+        let round = |champion: Option<&str>, victim: &str| {
+            let mut w = written(vec![
+                event(
+                    "{T1} and {T2} fight in the cage, and one falls.",
+                    &["T1", "T2"],
+                    &[(victim, None)],
+                ),
+                event("{T3}, {T4} and {T5} watch.", &["T3", "T4", "T5"], &[]),
+            ]);
+            w.champion = champion.map(str::to_string);
+            w
+        };
+        let kind = Kind::Octagon(2);
+        assert!(
+            g.check(kind, round(None, "T2"))
+                .unwrap_err()
+                .contains("`champion`")
+        );
+        assert!(
+            g.check(kind, round(Some("T3"), "T2"))
+                .unwrap_err()
+                .contains("`champion`")
+        );
+        assert!(
+            g.check(kind, round(Some("T1"), "T1"))
+                .unwrap_err()
+                .contains("dies this round")
+        );
+        let played = g.check(kind, round(Some("T1"), "T2")).unwrap();
+        assert_eq!(played.entrants, vec![0, 1]);
+        assert_eq!(played.champion, Some(0));
+        // Outside the Octagon, nobody dies.
+        let mut w = written(vec![
+            event("{T1} and {T2} spar, and {T2} yields.", &["T1", "T2"], &[]),
+            event(
+                "{T3} trips over {T4} and {T5}.",
+                &["T3", "T4", "T5"],
+                &[("T3", None)],
+            ),
+        ]);
+        w.champion = Some("T1".into());
+        assert!(
+            g.check(kind, w)
+                .unwrap_err()
+                .contains("only those in the Octagon")
+        );
+        // Other rounds have no champion.
+        let mut w = round(Some("T1"), "T2");
+        w.gamemaker = None;
+        let day = g.check(Kind::Day(2), w).unwrap();
+        assert_eq!(day.champion, None);
+        assert!(day.entrants.is_empty());
     }
 
     #[test]
@@ -634,6 +835,8 @@ mod tests {
                 .collect(),
             victory: None,
             picture: None,
+            entrants: Vec::new(),
+            champion: None,
         }
     }
 
@@ -642,7 +845,6 @@ mod tests {
         let mut g = game(24);
         // Everyone runs in the Scatter, so few die.
         assert_eq!(g.deaths_range(Kind::Scatter), (0, 2));
-        assert_eq!(g.deaths_range(Kind::Feast(2)), (3, 6));
         g.rounds.push(round_with(Kind::Scatter, 0));
         // The first day can't be quiet after a quiet Scatter.
         assert_eq!(g.deaths_range(Kind::Day(1)), (1, 3));
@@ -650,12 +852,17 @@ mod tests {
         assert_eq!(g.deaths_range(Kind::Scatter), (0, 1));
         g.rounds.push(round_with(Kind::Scatter, 1));
         assert_eq!(g.deaths_range(Kind::Day(1)), (0, 1));
-        assert_eq!(g.deaths_range(Kind::Feast(2)), (1, 1));
+        assert_eq!(g.deaths_range(Kind::Octagon(2)), (1, 1));
         assert_eq!(game(2).deaths_range(Kind::Finale), (1, 1));
         for alive in 3..=24 {
             let mut g = game(alive as u64);
             g.rounds.push(round_with(Kind::Scatter, 1));
-            for kind in [Kind::Scatter, Kind::Day(1), Kind::Night(1), Kind::Feast(2)] {
+            for kind in [
+                Kind::Scatter,
+                Kind::Day(1),
+                Kind::Night(1),
+                Kind::Octagon(2),
+            ] {
                 let (min, max) = g.deaths_range(kind);
                 assert!(
                     min <= max && max >= 1 && max <= alive - 2,
