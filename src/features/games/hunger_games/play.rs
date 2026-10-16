@@ -13,9 +13,10 @@ use std::time::Duration;
 use chrono::Utc;
 use poise::CreateReply;
 use serenity::all::{
-    ChannelId, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateAttachment, CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage,
-    EditMessage, GuildId, Message, MessageId, UserId,
+    ChannelId, ChannelType, ComponentInteraction, ComponentInteractionDataKind,
+    CreateAllowedMentions, CreateAttachment, CreateInteractionResponse,
+    CreateInteractionResponseMessage, CreateMessage, EditMessage, GuildId, Message, MessageId,
+    UserId,
 };
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
@@ -195,19 +196,39 @@ struct Setup {
     quote_settings: crate::features::games::who_said_it::Settings,
 }
 
-/// The channels everyone can read (for last words), and their names other than this
-/// channel's, in random order: the game keeps as many of those as it has tributes, as the
-/// arena's places for the whole game.
+/// The kinds of channel that can be places in the arena.
+const PLACES: [ChannelType; 5] = [
+    ChannelType::Text,
+    ChannelType::News,
+    ChannelType::Forum,
+    ChannelType::Voice,
+    ChannelType::Stage,
+];
+
+/// The channels everyone can read, for last words, and the arena's possible places in
+/// random order: the names of every channel Vivy can see but this one (Cherry: nothing in
+/// the server is really hidden, and only the names are used). The game keeps as many of
+/// those as it has tributes, as the arena's places for the whole game.
 fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, Vec<String>)> {
+    let me = bot.cache.current_user().id;
     let cached = bot
         .cache
         .guild(guild)
         .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
     let sources = sources::pick(bot, &cached, here, From::Server)?;
+    // Without her own member in the cache, every channel the server lists counts.
+    let member = cached.members.get(&me);
+    // The channel the game is played in is left out: it's where everyone watches from,
+    // not a place in the arena (often a test thread, too).
+    let mut names: Vec<String> = cached
+        .channels
+        .values()
+        .filter(|c| c.id != here && PLACES.contains(&c.kind))
+        .filter(|c| bot.allows("games", Some(guild), c.id))
+        .filter(|c| member.is_none_or(|m| cached.user_permissions_in(c, m).view_channel()))
+        .map(|c| c.name.clone())
+        .collect();
     drop(cached);
-    // The channel the game is played in has no name here, so it's left out: it's where
-    // everyone watches from, not a place in the arena (often a test thread, too).
-    let mut names: Vec<String> = sources.iter().filter_map(|s| s.name.clone()).collect();
     fastrand::shuffle(&mut names);
     Ok((sources, names))
 }
@@ -280,7 +301,7 @@ async fn run(
         ids.clone(),
     ));
     // How the tributes and the arena look in her pictures, worked out while she writes the
-    // Bloodbath.
+    // Scatter.
     // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
     let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
     let looks = drawing.then(|| {
@@ -346,7 +367,7 @@ async fn play(
     // Whether the channel was told why a picture is missing: once a game is enough.
     let told = Arc::new(AtomicBool::new(false));
     // Writes a round and, with pictures on, draws its map right after, so the two are
-    // posted together. The Bloodbath's map is drawn once it's posted instead: nobody waits
+    // posted together. The Scatter's map is drawn once it's posted instead: nobody waits
     // on a next round then, and people are already reading.
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
@@ -365,19 +386,26 @@ async fn play(
                 channel.get(),
             )
             .await?;
-            let Some(looks) = looks.filter(|_| kind != Kind::Bloodbath) else {
+            let Some(looks) = looks.filter(|_| kind != Kind::Scatter) else {
                 return anyhow::Ok((round, Pictures::default()));
             };
             let looks = looks.get().await;
+            // The game once this round is played: who carries what by the end of it.
+            let mut after = game_before.clone();
+            after.apply(round.clone());
+            let weapons = after.weapons();
             // The final showdown is zoomed in on its zone; other rounds show the whole map.
             let map = async {
                 let Some(picture) = round.picture.as_deref() else {
                     return Ok(None);
                 };
                 let (prompt, style) = match kind {
-                    Kind::Finale => (looks::showdown(&arena, looks, picture), pictures::SHOWDOWN),
+                    Kind::Finale => (
+                        looks::showdown(&arena, looks, &weapons, picture),
+                        pictures::SHOWDOWN,
+                    ),
                     _ => (
-                        looks::prompt(&arena, looks, picture, game_before.alive()),
+                        looks::prompt(&arena, looks, &weapons, picture, game_before.alive()),
                         pictures::MAP,
                     ),
                 };
@@ -385,13 +413,11 @@ async fn play(
             };
             // After the final showdown, the victor up close, with everyone they killed.
             let victor = async {
-                let mut after = game_before.clone();
-                after.apply(round.clone());
                 let winner = match after.winner_index() {
                     Some(winner) if kind == Kind::Finale => winner,
                     _ => return Ok(None),
                 };
-                let prompt = looks::victor(looks, winner, &after.victims(winner));
+                let prompt = looks::victor(looks, &weapons, winner, &after.victims(winner));
                 pictures::draw(&ctx, easel, &prompt, pictures::VICTORY)
                     .await
                     .map(Some)
@@ -411,7 +437,7 @@ async fn play(
     };
     let mut words = Later::Working(words);
     let intro = format!(
-        "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Bloodbath…",
+        "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Scatter…",
         game.tributes.len()
     );
     if let Err(err) = channel.say(&bot.http, intro).await {
@@ -468,14 +494,16 @@ async fn play(
         if let Some(reason) = drawn.missing {
             no_picture(bot, channel, &told, reason).await;
         }
-        if kind == Kind::Bloodbath
+        if kind == Kind::Scatter
             && let Some(looks) = looks.clone()
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
             let (ctx, arena, told) = (bot.clone(), places.clone(), told.clone());
             let everyone = game.tributes.len();
+            let weapons = game.weapons();
             bot.tasks.spawn(async move {
-                let prompt = looks::prompt(&arena, looks.get().await, &prompt, everyone);
+                let looks = looks.get().await;
+                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone);
                 match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
                     Ok(picture) => {
                         let caption = "🗺️ The arena as the Games begin".to_string();

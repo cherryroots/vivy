@@ -3,8 +3,8 @@
 //!
 //! Vivy writes every round (see `writer.rs`), and this file decides whether what she wrote
 //! can happen: every living tribute is in exactly one event, only the living die, and about
-//! as many die as the pacing asks for. A round that passes is applied: the dead are marked
-//! and the killers get their kills.
+//! as many die as the pacing asks for. A round that passes is applied: the dead are marked,
+//! the killers get their kills, weapons change hands and alliances form and break.
 //!
 //! In what she writes, tributes are tags like `T3` (the third tribute), never names, so a
 //! name can't be misspelled or mixed up. `{T3}` in an event's text becomes the name when
@@ -20,6 +20,11 @@ pub struct Tribute {
     pub kills: u32,
     /// The round they died in (0 is the first), or `None` while alive.
     pub died_in: Option<usize>,
+    /// The weapon they carry, or `None` while unarmed. A new find replaces it, and the dead
+    /// keep theirs, so Vivy knows what there is to loot.
+    pub weapon: Option<String>,
+    /// Their alliance, or `None` on their own: allies share a number.
+    pub team: Option<u32>,
 }
 
 impl Tribute {
@@ -31,8 +36,9 @@ impl Tribute {
 /// What kind of round it is. Days and nights are numbered from 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// The first round: everyone runs for the supplies in the middle.
-    Bloodbath,
+    /// The first round: everyone starts in a ring around the Octagon in the middle and runs
+    /// for the zones, unarmed.
+    Scatter,
     Day(u32),
     Night(u32),
     /// Once, instead of the second day: a feast of supplies that draws everyone in.
@@ -45,7 +51,7 @@ impl Kind {
     /// Whether Vivy says a Gamemaker line before this round: when the Games open, at the
     /// Feast, and for the final two.
     pub fn announced(self) -> bool {
-        matches!(self, Kind::Bloodbath | Kind::Feast(_) | Kind::Finale)
+        matches!(self, Kind::Scatter | Kind::Feast(_) | Kind::Finale)
     }
 }
 
@@ -58,11 +64,17 @@ pub struct Death {
 }
 
 /// One thing that happens to one or more tributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Event {
     /// The text, with `{T1}`-style tags where names go.
     pub text: String,
     pub deaths: Vec<Death>,
+    /// Weapons found, stolen or looted from the dead: who, and what.
+    pub finds: Vec<(usize, String)>,
+    /// Who teams up in this event: they share an alliance from now on.
+    pub allies: Vec<usize>,
+    /// Who leaves their alliance in this event.
+    pub leaves: Vec<usize>,
 }
 
 /// A round as it's played.
@@ -90,12 +102,24 @@ pub struct Written {
     pub picture: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct WrittenEvent {
     pub text: String,
     pub tributes: Vec<String>,
     #[serde(default)]
     pub deaths: Vec<WrittenDeath>,
+    #[serde(default)]
+    pub finds: Vec<WrittenFind>,
+    #[serde(default)]
+    pub allies: Vec<String>,
+    #[serde(default)]
+    pub leaves: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct WrittenFind {
+    pub tribute: String,
+    pub weapon: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,6 +133,8 @@ pub struct WrittenDeath {
 const MAX_EVENT: usize = 400;
 /// The most tributes in one event.
 const MAX_IN_EVENT: usize = 6;
+/// The longest a weapon's name may be, in characters.
+const MAX_WEAPON: usize = 60;
 
 /// The whole game: the tributes and the rounds played so far.
 #[derive(Debug, Clone)]
@@ -128,6 +154,8 @@ impl Game {
                     name,
                     kills: 0,
                     died_in: None,
+                    weapon: None,
+                    team: None,
                 })
                 .collect(),
             rounds: Vec::new(),
@@ -163,6 +191,23 @@ impl Game {
             .collect()
     }
 
+    /// Each tribute's weapon, in the game's order.
+    pub fn weapons(&self) -> Vec<Option<String>> {
+        self.tributes.iter().map(|t| t.weapon.clone()).collect()
+    }
+
+    /// The living allies of tribute `index`.
+    pub fn allies_of(&self, index: usize) -> Vec<usize> {
+        let Some(team) = self.tributes[index].team else {
+            return Vec::new();
+        };
+        (0..self.tributes.len())
+            .filter(|&i| {
+                i != index && self.tributes[i].alive() && self.tributes[i].team == Some(team)
+            })
+            .collect()
+    }
+
     /// The round to play next, or `None` when the game is over.
     pub fn next_kind(&self) -> Option<Kind> {
         let alive = self.alive();
@@ -174,8 +219,8 @@ impl Game {
         }
         let feast_done = self.rounds.iter().any(|r| matches!(r.kind, Kind::Feast(_)));
         Some(match self.rounds.last().map(|r| r.kind) {
-            None => Kind::Bloodbath,
-            Some(Kind::Bloodbath) => Kind::Day(1),
+            None => Kind::Scatter,
+            Some(Kind::Scatter) => Kind::Day(1),
             Some(Kind::Day(day) | Kind::Feast(day)) => Kind::Night(day),
             Some(Kind::Night(day)) if day + 1 == 2 && !feast_done && alive >= 4 => {
                 Kind::Feast(day + 1)
@@ -186,8 +231,8 @@ impl Game {
         })
     }
 
-    /// How many should die in the next round, of `kind`, at least and at most. At most
-    /// about a fifth of the living in the Bloodbath, a quarter at the Feast, and an eighth
+    /// How many should die in the next round, of `kind`, at least and at most. At most 2 in
+    /// the Scatter, since everyone runs, about a quarter at the Feast, and an eighth
     /// to a sixth on days and nights, so 24 tributes take around 15 rounds and 5 take
     /// around 6. A day or night may pass with nobody dying, but never two in a row. Until
     /// the Finale at least two stay alive, so there's always a final two.
@@ -196,12 +241,14 @@ impl Game {
         if kind == Kind::Finale || alive <= 2 {
             return (1, 1);
         }
+        if kind == Kind::Scatter {
+            return (0, (alive - 2).min(2));
+        }
         let share = match kind {
-            Kind::Bloodbath => 0.2,
             Kind::Day(_) => 0.12,
             Kind::Night(_) => 0.15,
             Kind::Feast(_) => 0.25,
-            Kind::Finale => unreachable!(),
+            Kind::Scatter | Kind::Finale => unreachable!(),
         };
         let most = alive - 2;
         let max = ((alive as f64 * share).ceil() as usize).clamp(1, most);
@@ -318,8 +365,63 @@ impl Game {
                 };
                 deaths.push(Death { victim, by });
             }
+            let dies = |i: usize| deaths.iter().any(|d| d.victim == i);
+            let member = |tag: &str, what: &str| {
+                self.index_of(tag)
+                    .filter(|i| members.contains(i))
+                    .ok_or_else(|| format!("{tag} {what} in an event they aren't in."))
+            };
+            let mut finds: Vec<(usize, String)> = Vec::new();
+            for find in event.finds {
+                let who = member(&find.tribute, "finds a weapon")?;
+                if dies(who) {
+                    return Err(format!(
+                        "{} finds a weapon but dies in the same event; only the living keep weapons.",
+                        find.tribute
+                    ));
+                }
+                let weapon = find.weapon.trim().to_string();
+                if weapon.is_empty() || weapon.chars().count() > MAX_WEAPON {
+                    return Err(format!(
+                        "A weapon's name is 1 to {MAX_WEAPON} characters; {}'s isn't.",
+                        find.tribute
+                    ));
+                }
+                // One weapon each: the last find in an event is the one kept.
+                finds.retain(|(i, _)| *i != who);
+                finds.push((who, weapon));
+            }
+            let mut allies = Vec::new();
+            for tag in &event.allies {
+                let who = member(tag, "teams up")?;
+                if dies(who) {
+                    return Err(format!("{tag} teams up but dies in the same event."));
+                }
+                if !allies.contains(&who) {
+                    allies.push(who);
+                }
+            }
+            if allies.len() == 1 {
+                return Err("`allies` needs at least two tributes who team up.".to_string());
+            }
+            let mut leaves = Vec::new();
+            for tag in &event.leaves {
+                let who = member(tag, "leaves an alliance")?;
+                if allies.contains(&who) {
+                    return Err(format!("{tag} can't both team up and leave in one event."));
+                }
+                if !leaves.contains(&who) {
+                    leaves.push(who);
+                }
+            }
             dead += deaths.len();
-            events.push(Event { text, deaths });
+            events.push(Event {
+                text,
+                deaths,
+                finds,
+                allies,
+                leaves,
+            });
         }
         if let Some(missing) =
             (0..self.tributes.len()).find(|&i| self.tributes[i].alive() && !seen[i])
@@ -349,13 +451,44 @@ impl Game {
         })
     }
 
-    /// Plays a checked round: the dead die, killers get their kills.
+    /// Plays a checked round: the dead die, killers get their kills, the finders get their
+    /// weapons, and alliances form and break. Killing an ally ends the killer's alliance.
     pub fn apply(&mut self, round: Round) {
         let index = self.rounds.len();
-        for death in round.events.iter().flat_map(|e| &e.deaths) {
-            self.tributes[death.victim].died_in = Some(index);
-            if let Some(by) = death.by {
-                self.tributes[by].kills += 1;
+        for event in &round.events {
+            for death in &event.deaths {
+                self.tributes[death.victim].died_in = Some(index);
+                if let Some(by) = death.by {
+                    self.tributes[by].kills += 1;
+                    let team = self.tributes[by].team;
+                    if team.is_some() && team == self.tributes[death.victim].team {
+                        self.tributes[by].team = None;
+                    }
+                }
+            }
+            for (who, weapon) in &event.finds {
+                self.tributes[*who].weapon = Some(weapon.clone());
+            }
+            for &who in &event.leaves {
+                self.tributes[who].team = None;
+            }
+            if !event.allies.is_empty() {
+                // Joining someone who already has allies brings you into their alliance.
+                let next = self
+                    .tributes
+                    .iter()
+                    .filter_map(|t| t.team)
+                    .max()
+                    .unwrap_or(0)
+                    + 1;
+                let team = event
+                    .allies
+                    .iter()
+                    .find_map(|&i| self.tributes[i].team)
+                    .unwrap_or(next);
+                for &who in &event.allies {
+                    self.tributes[who].team = Some(team);
+                }
             }
         }
         self.rounds.push(round);
@@ -442,6 +575,7 @@ mod tests {
                     by: by.map(str::to_string),
                 })
                 .collect(),
+            ..Default::default()
         }
     }
 
@@ -457,7 +591,7 @@ mod tests {
     #[test]
     fn rounds_go_bloodbath_day_night_feast() {
         let mut g = game(8);
-        assert_eq!(g.next_kind(), Some(Kind::Bloodbath));
+        assert_eq!(g.next_kind(), Some(Kind::Scatter));
         let empty = |kind| Round {
             kind,
             gamemaker: None,
@@ -465,7 +599,7 @@ mod tests {
             victory: None,
             picture: None,
         };
-        g.apply(empty(Kind::Bloodbath));
+        g.apply(empty(Kind::Scatter));
         assert_eq!(g.next_kind(), Some(Kind::Day(1)));
         g.apply(empty(Kind::Day(1)));
         assert_eq!(g.next_kind(), Some(Kind::Night(1)));
@@ -495,6 +629,7 @@ mod tests {
                 .map(|victim| Event {
                     text: String::new(),
                     deaths: vec![Death { victim, by: None }],
+                    ..Default::default()
                 })
                 .collect(),
             victory: None,
@@ -505,26 +640,22 @@ mod tests {
     #[test]
     fn pacing_keeps_a_final_two() {
         let mut g = game(24);
-        assert_eq!(g.deaths_range(Kind::Bloodbath), (2, 5));
+        // Everyone runs in the Scatter, so few die.
+        assert_eq!(g.deaths_range(Kind::Scatter), (0, 2));
         assert_eq!(g.deaths_range(Kind::Feast(2)), (3, 6));
-        g.rounds.push(round_with(Kind::Bloodbath, 0));
-        // The first day can't be quiet after a quiet Bloodbath.
+        g.rounds.push(round_with(Kind::Scatter, 0));
+        // The first day can't be quiet after a quiet Scatter.
         assert_eq!(g.deaths_range(Kind::Day(1)), (1, 3));
         let mut g = game(3);
-        assert_eq!(g.deaths_range(Kind::Bloodbath), (1, 1));
-        g.rounds.push(round_with(Kind::Bloodbath, 1));
+        assert_eq!(g.deaths_range(Kind::Scatter), (0, 1));
+        g.rounds.push(round_with(Kind::Scatter, 1));
         assert_eq!(g.deaths_range(Kind::Day(1)), (0, 1));
         assert_eq!(g.deaths_range(Kind::Feast(2)), (1, 1));
         assert_eq!(game(2).deaths_range(Kind::Finale), (1, 1));
         for alive in 3..=24 {
             let mut g = game(alive as u64);
-            g.rounds.push(round_with(Kind::Bloodbath, 1));
-            for kind in [
-                Kind::Bloodbath,
-                Kind::Day(1),
-                Kind::Night(1),
-                Kind::Feast(2),
-            ] {
+            g.rounds.push(round_with(Kind::Scatter, 1));
+            for kind in [Kind::Scatter, Kind::Day(1), Kind::Night(1), Kind::Feast(2)] {
                 let (min, max) = g.deaths_range(kind);
                 assert!(
                     min <= max && max >= 1 && max <= alive - 2,
@@ -535,11 +666,94 @@ mod tests {
     }
 
     #[test]
+    fn weapons_and_alliances_carry_over() {
+        let mut g = game(5);
+        let mut found = event(
+            "{T1} pulls a vinyl razor from a crate while {T2} and {T3} shake hands.",
+            &["T1", "T2", "T3"],
+            &[],
+        );
+        found.finds = vec![WrittenFind {
+            tribute: "T1".into(),
+            weapon: " vinyl razor ".into(),
+        }];
+        found.allies = vec!["T2".into(), "T3".into()];
+        let round = g
+            .check(
+                Kind::Scatter,
+                written(vec![found, event("{T4} and {T5} run.", &["T4", "T5"], &[])]),
+            )
+            .unwrap();
+        g.apply(round);
+        assert_eq!(g.tributes[0].weapon.as_deref(), Some("vinyl razor"));
+        assert_eq!(g.allies_of(1), vec![2]);
+        assert!(g.allies_of(0).is_empty());
+
+        // T4 joins them; then T2 kills their ally T3, which ends T2's alliance.
+        let mut joined = event("{T4} joins {T3}.", &["T3", "T4"], &[]);
+        joined.allies = vec!["T4".into(), "T3".into()];
+        let betrayal = event("{T2} drowns {T5}.", &["T2", "T5"], &[("T5", Some("T2"))]);
+        let round = g
+            .check(
+                Kind::Day(1),
+                written(vec![joined, betrayal, event("{T1} naps.", &["T1"], &[])]),
+            )
+            .unwrap();
+        g.apply(round);
+        assert_eq!(g.allies_of(2), vec![1, 3]);
+        let mut stab = event("{T2} betrays {T3}.", &["T2", "T3"], &[("T3", Some("T2"))]);
+        stab.finds = vec![WrittenFind {
+            tribute: "T2".into(),
+            weapon: "T3's spoon".into(),
+        }];
+        let rest = event("{T1} and {T4} hide.", &["T1", "T4"], &[]);
+        let round = g.check(Kind::Night(1), written(vec![stab, rest])).unwrap();
+        g.apply(round);
+        assert!(g.allies_of(1).is_empty(), "the betrayer is on their own");
+        assert_eq!(g.tributes[1].weapon.as_deref(), Some("T3's spoon"));
+        assert_eq!(g.weapons()[0].as_deref(), Some("vinyl razor"));
+    }
+
+    #[test]
+    fn finds_and_alliances_are_checked() {
+        let g = game(3);
+        let check = |e: WrittenEvent| {
+            let rest = event("{T3} waits.", &["T3"], &[]);
+            g.check(Kind::Scatter, written(vec![e, rest])).unwrap_err()
+        };
+        let mut outside = event("{T1} and {T2} run.", &["T1", "T2"], &[]);
+        outside.finds = vec![WrittenFind {
+            tribute: "T3".into(),
+            weapon: "rock".into(),
+        }];
+        assert!(check(outside).contains("T3 finds a weapon in an event they aren't in"));
+        let mut dying = event("{T1} kills {T2}.", &["T1", "T2"], &[("T2", Some("T1"))]);
+        dying.finds = vec![WrittenFind {
+            tribute: "T2".into(),
+            weapon: "rock".into(),
+        }];
+        assert!(check(dying).contains("dies in the same event"));
+        let mut long = event("{T1} and {T2} run.", &["T1", "T2"], &[]);
+        long.finds = vec![WrittenFind {
+            tribute: "T1".into(),
+            weapon: "a".repeat(61),
+        }];
+        assert!(check(long).contains("1 to 60 characters"));
+        let mut alone = event("{T1} and {T2} run.", &["T1", "T2"], &[]);
+        alone.allies = vec!["T1".into()];
+        assert!(check(alone).contains("at least two"));
+        let mut both = event("{T1} and {T2} run.", &["T1", "T2"], &[]);
+        both.allies = vec!["T1".into(), "T2".into()];
+        both.leaves = vec!["T2".into()];
+        assert!(check(both).contains("both team up and leave"));
+    }
+
+    #[test]
     fn a_good_round_is_applied() {
         let mut g = game(4);
         let round = g
             .check(
-                Kind::Bloodbath,
+                Kind::Scatter,
                 written(vec![
                     event(
                         "{T1} pushes {T2} off a cliff.",
