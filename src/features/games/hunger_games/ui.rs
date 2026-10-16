@@ -312,7 +312,8 @@ pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String 
     text
 }
 
-/// The end: the winner, her line to them, and everyone's placing.
+/// The end: the winner, her line to them, everyone's placing (with kills and Octagons
+/// won), and the cowards who never stepped into an Octagon that opened.
 pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     let placings = game.placings();
     let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
@@ -326,9 +327,34 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
         } else {
             format!("{}.", i + 1)
         };
-        text.push_str(&format!("{place} {}{}\n", mention(t.id), kills(t.kills)));
+        let octagons = game
+            .tributes
+            .iter()
+            .position(|other| other.id == t.id)
+            .map_or(0, |i| game.octagon_wins(i));
+        let octagons = match octagons {
+            0 => String::new(),
+            1 => ", 🏟️ won the Octagon".to_string(),
+            n => format!(", 🏟️ won {n} Octagons"),
+        };
+        text.push_str(&format!(
+            "{place} {}{}{octagons}\n",
+            mention(t.id),
+            kills(t.kills)
+        ));
     }
-    text.push_str("-# Wins and kills are counted on `/games leaderboard`.");
+    let cowards: Vec<String> = game
+        .cowards()
+        .into_iter()
+        .map(|i| mention(game.tributes[i].id))
+        .collect();
+    if !cowards.is_empty() {
+        text.push_str(&format!(
+            "\n🐔 Never dared to step into the Octagon: {}\n",
+            cowards.join(", ")
+        ));
+    }
+    text.push_str("-# Wins, kills and Octagons won are counted on `/games leaderboard`.");
     split_message(&text, DISCORD_LIMIT)
 }
 
@@ -375,6 +401,8 @@ mod tests {
         assert!(text.contains("> 🎙️ *Well done, Moss*"));
         assert!(text.contains("👑 <@1>, 1 kill"));
         assert!(text.contains("2. <@2>"));
+        // No Octagon was held, so nobody is a coward.
+        assert!(!text.contains("🐔"));
         let words = LastWords {
             text: "brb".into(),
             link: "https://discord.com/channels/1/2/3".into(),
@@ -463,6 +491,45 @@ mod tests {
         assert!(text.contains("🥊 Stepping into the Octagon: <@1>, <@3>"));
         assert!(text.contains("💀 <@1> beats <@3> in the cage."));
         assert!(text.contains("🏆 Champion of the Octagon: <@1>"));
+    }
+
+    #[test]
+    fn the_victor_names_octagon_winners_and_cowards() {
+        let mut game = Game::new(vec![
+            (1, "Moss".into()),
+            (2, "Ash".into()),
+            (3, "Fern".into()),
+            (4, "Reed".into()),
+            (5, "Sage".into()),
+        ]);
+        let death = |victim, by| Event {
+            text: String::new(),
+            deaths: vec![Death { victim, by }],
+            ..Default::default()
+        };
+        let round = |kind, events| Round {
+            kind,
+            gamemaker: None,
+            events,
+            victory: None,
+            picture: None,
+            entrants: Vec::new(),
+            champion: None,
+        };
+        // Sage dies before the Octagon, so isn't a coward; Reed steps in and dies there.
+        game.apply(round(Kind::Day(1), vec![death(4, None)]));
+        game.apply(Round {
+            entrants: vec![0, 3],
+            champion: Some(0),
+            ..round(Kind::Octagon(1), vec![death(3, Some(0))])
+        });
+        game.apply(round(Kind::Night(1), vec![death(2, None)]));
+        game.apply(round(Kind::Finale, vec![death(1, Some(0))]));
+        assert_eq!(game.cowards(), vec![1, 2]);
+        let text = victor(&game, None).join("");
+        assert!(text.contains("👑 <@1>, 2 kills, 🏟️ won the Octagon\n"));
+        assert!(text.contains("🐔 Never dared to step into the Octagon: <@2>, <@3>\n"));
+        assert!(text.ends_with("Octagons won are counted on `/games leaderboard`."));
     }
 
     #[test]

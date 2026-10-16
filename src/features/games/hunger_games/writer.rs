@@ -138,7 +138,7 @@ pub fn brief(
         text.push_str(match kind {
             Kind::Scatter => "Also write a `picture`: everyone running out from their starting plates in a ring around the Octagon toward the zones, and where each event happens.",
             Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
-            Kind::Octagon(_) => "Also write a `picture`: the fighters in a bout inside the Octagon, the others watching from the zones, and each event where it happens.",
+            Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
             Kind::Finale => "Also write a `picture`: the final showdown between the last two inside the Octagon. The winner gets a picture of their own after it.",
         });

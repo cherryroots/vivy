@@ -1,5 +1,5 @@
 //! Hunger Games stats: every game that reaches a victor is saved, with each tribute's
-//! place, kills and days lived through, and `/games leaderboard` shows the server's best,
+//! place, kills, Octagons won and days lived through, and `/games leaderboard` shows the server's best,
 //! or one member's record.
 //!
 //! Games that are cancelled or called off aren't saved, so only finished games count.
@@ -35,6 +35,8 @@ pub const MIGRATIONS: &[&str] = &[
         days INTEGER NOT NULL,
         PRIMARY KEY (game_id, user_id)
     );",
+    // 2
+    "ALTER TABLE games_hunger_tributes ADD COLUMN octagons INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// How many people the leaderboard shows.
@@ -47,11 +49,14 @@ pub struct Placing {
     /// 1 is the victor.
     pub place: u32,
     pub kills: u32,
+    /// Octagons won.
+    pub octagons: u32,
     pub days: u32,
 }
 
 /// How everyone did in a finished game, from the victor down.
 pub fn placings(game: &Game) -> Vec<Placing> {
+    let index = |id: u64| game.tributes.iter().position(|t| t.id == id);
     game.placings()
         .iter()
         .enumerate()
@@ -59,6 +64,7 @@ pub fn placings(game: &Game) -> Vec<Placing> {
             user: t.id,
             place: i as u32 + 1,
             kills: t.kills,
+            octagons: index(t.id).map_or(0, |i| game.octagon_wins(i)),
             days: days_lived(game, t.died_in),
         })
         .collect()
@@ -99,9 +105,10 @@ pub fn record(conn: &mut Connection, guild: u64, channel: u64, game: &Game) -> R
     let id = tx.last_insert_rowid();
     for p in placings(game) {
         tx.execute(
-            "INSERT OR REPLACE INTO games_hunger_tributes (game_id, user_id, place, kills, days)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, p.user, p.place, p.kills, p.days],
+            "INSERT OR REPLACE INTO games_hunger_tributes
+                 (game_id, user_id, place, kills, octagons, days)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, p.user, p.place, p.kills, p.octagons, p.days],
         )?;
     }
     tx.commit()?;
@@ -115,16 +122,18 @@ struct Ranked {
     games: u64,
     wins: u64,
     kills: u64,
+    octagons: u64,
 }
 
-/// The server's best: most wins, then most kills, then fewest games.
+/// The server's best: most wins, then most kills, then most Octagons won, then fewest
+/// games.
 fn top(conn: &Connection, guild: u64, limit: usize) -> rusqlite::Result<Vec<Ranked>> {
     let mut stmt = conn.prepare(
-        "SELECT t.user_id, COUNT(*), SUM(t.place = 1), SUM(t.kills)
+        "SELECT t.user_id, COUNT(*), SUM(t.place = 1), SUM(t.kills), SUM(t.octagons)
          FROM games_hunger_tributes t JOIN games_hunger_games g ON g.id = t.game_id
          WHERE g.guild_id = ?1
          GROUP BY t.user_id
-         ORDER BY 3 DESC, 4 DESC, 2 ASC
+         ORDER BY 3 DESC, 4 DESC, 5 DESC, 2 ASC
          LIMIT ?2",
     )?;
     stmt.query_map(params![guild, limit as i64], |row| {
@@ -133,6 +142,7 @@ fn top(conn: &Connection, guild: u64, limit: usize) -> rusqlite::Result<Vec<Rank
             games: row.get(1)?,
             wins: row.get(2)?,
             kills: row.get(3)?,
+            octagons: row.get(4)?,
         })
     })?
     .collect()
@@ -168,6 +178,7 @@ struct Record {
     wins: u64,
     kills: u64,
     most_kills: u64,
+    octagons: u64,
     best_place: u64,
     average_place: f64,
     most_days: u64,
@@ -176,7 +187,7 @@ struct Record {
 fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<Record>> {
     conn.query_row(
         "SELECT COUNT(*), SUM(t.place = 1), SUM(t.kills), MAX(t.kills), MIN(t.place),
-                AVG(t.place), MAX(t.days)
+                AVG(t.place), MAX(t.days), SUM(t.octagons)
          FROM games_hunger_tributes t JOIN games_hunger_games g ON g.id = t.game_id
          WHERE g.guild_id = ?1 AND t.user_id = ?2",
         params![guild, user],
@@ -193,12 +204,13 @@ fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Optio
                 best_place: row.get(4)?,
                 average_place: row.get(5)?,
                 most_days: row.get(6)?,
+                octagons: row.get(7)?,
             }))
         },
     )
 }
 
-/// Hunger Games wins and kills in this server
+/// Hunger Games wins, kills and Octagons won in this server
 #[poise::command(slash_command, guild_only)]
 pub async fn leaderboard(
     ctx: Context<'_>,
@@ -251,8 +263,13 @@ fn board(ranked: &[Ranked], games: u64, best: Option<(u64, u64)>) -> String {
     }
     let mut text = String::from("## 🏆 Hunger Games leaderboard\n");
     for (i, r) in ranked.iter().enumerate() {
+        // Octagon wins only when there are some, so most lines stay short on a phone.
+        let octagons = match r.octagons {
+            0 => String::new(),
+            n => format!(" · 🏟️ {}", count(n as usize, "Octagon")),
+        };
         text.push_str(&format!(
-            "{}. <@{}> · 👑 {} · 🗡️ {} · {}\n",
+            "{}. <@{}> · 👑 {} · 🗡️ {}{octagons} · {}\n",
             i + 1,
             r.user,
             count(r.wins as usize, "win"),
@@ -277,12 +294,14 @@ fn member_text(user: u64, record: Option<&Record>) -> String {
         "## 🏆 <@{user}> in the Hunger Games\n\
          👑 {} in {}\n\
          🗡️ {} (most in one game: {})\n\
+         🏟️ {} won\n\
          🥇 Best finish: {} · average place {:.1}\n\
          📅 Longest run: {}",
         count(r.wins as usize, "win"),
         count(r.games as usize, "game"),
         count(r.kills as usize, "kill"),
         r.most_kills,
+        count(r.octagons as usize, "Octagon"),
         ordinal(r.best_place),
         r.average_place,
         count(r.most_days as usize, "day"),
@@ -323,7 +342,7 @@ mod tests {
         }
     }
 
-    /// Moss kills Ash in the Scatter and Fern on night 1, and wins.
+    /// Moss kills Ash in the Scatter and Fern on night 1, and wins; Reed wins the Octagon.
     fn finished() -> Game {
         let mut game = Game::new(vec![
             (1, "Moss".into()),
@@ -337,6 +356,12 @@ mod tests {
         };
         game.apply(round(Kind::Scatter, vec![kill(1, 0)]));
         game.apply(round(Kind::Day(1), vec![]));
+        // Reed wins the Octagon against Moss; Fern hangs back.
+        game.apply(Round {
+            entrants: vec![0, 3],
+            champion: Some(3),
+            ..round(Kind::Octagon(1), vec![])
+        });
         game.apply(round(Kind::Night(1), vec![kill(2, 0)]));
         game.apply(round(
             Kind::Finale,
@@ -351,13 +376,18 @@ mod tests {
     #[test]
     fn places_everyone_with_their_days() {
         let placings = placings(&finished());
-        let summary: Vec<(u64, u32, u32, u32)> = placings
+        let summary: Vec<(u64, u32, u32, u32, u32)> = placings
             .iter()
-            .map(|p| (p.user, p.place, p.kills, p.days))
+            .map(|p| (p.user, p.place, p.kills, p.octagons, p.days))
             .collect();
         assert_eq!(
             summary,
-            vec![(1, 1, 2, 1), (4, 2, 0, 1), (3, 3, 0, 1), (2, 4, 0, 0)]
+            vec![
+                (1, 1, 2, 0, 1),
+                (4, 2, 0, 1, 1),
+                (3, 3, 0, 0, 1),
+                (2, 4, 0, 0, 0)
+            ]
         );
     }
 
@@ -399,7 +429,8 @@ mod tests {
                 user: 1,
                 games: 2,
                 wins: 2,
-                kills: 4
+                kills: 4,
+                octagons: 0
             }
         );
         assert_eq!(ranked.len(), 4);
@@ -408,20 +439,34 @@ mod tests {
         assert_eq!(most_kills(&conn, 9).unwrap(), None);
 
         let reed = record_of(&conn, 7, 4).unwrap().unwrap();
-        assert_eq!((reed.games, reed.wins, reed.best_place), (2, 0, 2));
+        assert_eq!(
+            (reed.games, reed.wins, reed.octagons, reed.best_place),
+            (2, 0, 2, 2)
+        );
         assert_eq!(record_of(&conn, 7, 99).unwrap(), None);
     }
 
     #[test]
     fn writes_the_board() {
-        let ranked = vec![Ranked {
-            user: 5,
-            games: 3,
-            wins: 1,
-            kills: 4,
-        }];
+        let ranked = vec![
+            Ranked {
+                user: 5,
+                games: 3,
+                wins: 1,
+                kills: 4,
+                octagons: 0,
+            },
+            Ranked {
+                user: 6,
+                games: 3,
+                wins: 0,
+                kills: 1,
+                octagons: 2,
+            },
+        ];
         let text = board(&ranked, 3, Some((5, 3)));
         assert!(text.contains("1. <@5> · 👑 1 win · 🗡️ 4 kills · 3 games"));
+        assert!(text.contains("2. <@6> · 👑 0 wins · 🗡️ 1 kill · 🏟️ 2 Octagons · 3 games"));
         assert!(text.ends_with("-# 3 games played. Most kills in one game: <@5> with 3."));
         assert!(board(&[], 0, None).contains("No Hunger Games finished"));
     }
@@ -433,12 +478,14 @@ mod tests {
             wins: 1,
             kills: 5,
             most_kills: 3,
+            octagons: 1,
             best_place: 1,
             average_place: 2.75,
             most_days: 4,
         };
         let text = member_text(5, Some(&record));
         assert!(text.contains("👑 1 win in 4 games"));
+        assert!(text.contains("🏟️ 1 Octagon won"));
         assert!(text.contains("Best finish: 1st · average place 2.8"));
         assert!(member_text(5, None).contains("hasn't finished"));
         assert_eq!(ordinal(12), "12th");

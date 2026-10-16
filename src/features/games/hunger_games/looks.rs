@@ -222,28 +222,17 @@ pub fn map(arena: &[String], looks: &Looks) -> String {
     text
 }
 
-/// The final showdown's picture: zoomed in on the one zone where the last two fight, so
-/// they're drawn big. The image model gets every zone's look, to draw the right one.
-pub fn showdown(
-    arena: &[String],
-    looks: &Looks,
-    weapons: &[Option<String>],
-    picture: &str,
-) -> String {
-    let mut zones = vec![OCTAGON.to_string()];
-    for (i, place) in arena.iter().enumerate() {
-        let zone = match label(place) {
-            Some(label) => format!("the zone labelled \"{label}\""),
-            None => continue,
-        };
-        zones.push(match looks.zones.get(i) {
-            Some(Some(terrain)) => format!("{zone}: {terrain}"),
-            _ => zone,
-        });
-    }
+/// The picture of a fight in the Octagon (an Octagon round, or the final showdown): zoomed
+/// in on the cage in the middle of the map, so the `fighters` are drawn big.
+pub fn cage(looks: &Looks, weapons: &[Option<String>], picture: &str, fighters: usize) -> String {
+    let people = match fighters {
+        1 => "Exactly 1 player is in the picture, the one described above.".to_string(),
+        n => format!(
+            "Exactly {n} players are in the picture, each one described above, each drawn once."
+        ),
+    };
     format!(
-        "A close, zoomed-in view of just one zone of the battlefield map, where the last two players fight. Draw only the zone this happens in, as it looks here: {}.\n\nThe fight: {}\n\nExactly 2 players are in the picture, each described above, each drawn once. Nobody else is anywhere: no crowds, guards, monsters or robots.",
-        zones.join("; "),
+        "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere: no crowds, audience, referees, guards, monsters or robots.",
         fill(picture, looks, weapons)
     )
 }
@@ -393,20 +382,24 @@ mod tests {
     }
 
     #[test]
-    fn zooms_in_on_the_showdown() {
+    fn zooms_in_on_the_cage() {
         let looks = Looks {
             tributes: vec![Some("a frog knight".into()), None],
             zones: vec![Some("an arcade ruin".into()), None],
         };
-        let text = showdown(
-            &["gaming".into(), "💬".into()],
+        let text = cage(
             &looks,
             &[None, Some("a mic-stand spear".into())],
-            "In gaming, {T1} duels {T2}.",
+            "{T1} duels {T2}.",
+            2,
         );
-        assert!(text.contains("as it looks here: the Octagon in the center: an eight-sided fighting cage with a chain-link fence on a raised stone platform; the zone labelled \"gaming\": an arcade ruin."));
-        assert!(text.contains("The fight: In gaming, (a frog knight, empty-handed) duels a player holding a mic-stand spear."));
-        assert!(text.contains("Exactly 2 players"));
+        assert!(text.contains("just the middle of the battlefield map: the Octagon in the center: an eight-sided fighting cage"));
+        assert!(text.contains(
+            "The fight: (a frog knight, empty-handed) duels a player holding a mic-stand spear."
+        ));
+        assert!(text.contains("Exactly 2 players are in the picture"));
+        assert!(!text.contains("arcade ruin"));
+        assert!(cage(&looks, &[], "{T1} wins.", 1).contains("Exactly 1 player is in the picture"));
     }
 
     #[test]

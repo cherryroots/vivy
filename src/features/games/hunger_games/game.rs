@@ -209,6 +209,33 @@ impl Game {
             .collect()
     }
 
+    /// How many Octagons the tribute at `index` won.
+    pub fn octagon_wins(&self, index: usize) -> u32 {
+        self.rounds
+            .iter()
+            .filter(|r| r.champion == Some(index))
+            .count() as u32
+    }
+
+    /// The cowards, by index: everyone who was alive when an Octagon opened but never
+    /// stepped into one. Empty when no Octagon was held.
+    pub fn cowards(&self) -> Vec<usize> {
+        let octagons: Vec<(usize, &Round)> = self
+            .rounds
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| matches!(r.kind, Kind::Octagon(_)))
+            .collect();
+        (0..self.tributes.len())
+            .filter(|&i| {
+                // Dying in a round means being alive when it began.
+                let there = |at: usize| self.tributes[i].died_in.is_none_or(|died| died >= at);
+                octagons.iter().any(|&(at, _)| there(at))
+                    && !octagons.iter().any(|(_, r)| r.entrants.contains(&i))
+            })
+            .collect()
+    }
+
     /// Each tribute's weapon, in the game's order.
     pub fn weapons(&self) -> Vec<Option<String>> {
         self.tributes.iter().map(|t| t.weapon.clone()).collect()
