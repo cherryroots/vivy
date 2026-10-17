@@ -199,14 +199,9 @@ struct Setup {
 /// A place in the arena: its channel's name and ID.
 type Place = (String, u64);
 
-/// The kinds of channel that can be places in the arena.
-const PLACES: [ChannelType; 5] = [
-    ChannelType::Text,
-    ChannelType::News,
-    ChannelType::Forum,
-    ChannelType::Voice,
-    ChannelType::Stage,
-];
+/// The kinds of channel that can be places in the arena: not voice or stage channels
+/// (Cherry's call).
+const PLACES: [ChannelType; 3] = [ChannelType::Text, ChannelType::News, ChannelType::Forum];
 
 /// The channels everyone can read, for last words, and the arena's possible places in
 /// random order: the name and ID of every channel Vivy can see but this one (Cherry: nothing
@@ -400,15 +395,17 @@ async fn play(
             let mut after = game_before.clone();
             after.apply(round.clone());
             let weapons = after.weapons();
-            // The final showdown is zoomed in on its zone; other rounds show the whole map.
+            // Fights in the Octagon (its rounds and the final showdown) are zoomed in on the
+            // cage; other rounds show the whole map.
             let map = async {
                 let Some(picture) = round.picture.as_deref() else {
                     return Ok(None);
                 };
                 let (prompt, style) = match kind {
-                    Kind::Finale => (
-                        looks::showdown(&arena, looks, &weapons, picture),
-                        pictures::SHOWDOWN,
+                    Kind::Finale => (looks::cage(looks, &weapons, picture, 2), pictures::CAGE),
+                    Kind::Octagon(_) => (
+                        looks::cage(looks, &weapons, picture, round.entrants.len()),
+                        pictures::CAGE,
                     ),
                     _ => (
                         looks::prompt(&arena, looks, &weapons, picture, game_before.alive()),
