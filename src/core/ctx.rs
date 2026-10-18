@@ -96,11 +96,11 @@ impl BotCtx {
         self.config.admins.contains(&user.get())
     }
 
-    /// Whether the user is Vivy's owner: they own the bot's Discord application (or are on
-    /// the team that does), or they're listed in `admins`. She follows her owner's
-    /// instructions where other people can't direct her (see chat's prompt).
+    /// Whether the user is Vivy's owner: they own the bot's Discord application, or are on
+    /// the team that does. `admins` don't count. She follows her owner's messages that start
+    /// with § where other people can't direct her (see chat's prompt).
     pub fn is_owner(&self, user: UserId) -> bool {
-        self.app_owners.contains(&user) || self.is_admin(user)
+        self.app_owners.contains(&user)
     }
 }
 

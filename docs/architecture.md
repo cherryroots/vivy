@@ -160,7 +160,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | `features` | Every feature, in the order of `features::all()` |
 | `bot_id`, `started_at` | The bot's own user ID, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application or is in `admins`), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 

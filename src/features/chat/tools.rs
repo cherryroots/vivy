@@ -59,7 +59,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_bot_owner",
-            description: "Who your owner is: the people who run you as a bot (they own your Discord application, or are your admins), with their names and IDs, and whether the asker is one of them. Use it when someone asks who owns or made you, or says they're your owner.",
+            description: "Who your owner is: whoever owns your Discord application (the bot), with their names and IDs, and whether the asker is one of them. Use it when someone asks who owns or made you, or says they're your owner.",
             parameters: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
@@ -327,30 +327,17 @@ async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<St
     Ok(lines.join("\n"))
 }
 
-/// One line per owner: the Discord application's owners first, then the admins not already
-/// listed. Ends with whether the asker is one of them.
+/// One line per owner of the bot's Discord application, then whether the asker is one.
 async fn bot_owner(ctx: &BotCtx, asker: &Asker) -> Result<String> {
-    let admins = ctx.config.admins.iter().map(|&id| UserId::new(id));
+    if ctx.app_owners.is_empty() {
+        return Ok("Nobody is set as your owner.".to_string());
+    }
     let mut lines = Vec::new();
-    let mut listed = Vec::new();
-    for (user, role) in ctx
-        .app_owners
-        .iter()
-        .map(|&id| (id, "owns your Discord application"))
-        .chain(admins.map(|id| (id, "one of your admins")))
-    {
-        if listed.contains(&user) {
-            continue;
-        }
-        listed.push(user);
-        let name = match user.to_user(&ctx.http).await {
+    for &user in ctx.app_owners.iter() {
+        lines.push(match user.to_user(&ctx.http).await {
             Ok(found) => format!("{} (@{}, ID {user})", found.display_name(), found.name),
             Err(_) => format!("ID {user}"),
-        };
-        lines.push(format!("{name}: {role}"));
-    }
-    if lines.is_empty() {
-        return Ok("Nobody is set as your owner.".to_string());
+        });
     }
     lines.push(if ctx.is_owner(asker.user) {
         "The asker is your owner.".to_string()

@@ -149,7 +149,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     let framework = poise::Framework::builder()
         .options(options)
         // poise's owners come from `admins` in config.toml, not from the Discord application
-        // (Vivy's own owner check, `BotCtx::is_owner`, uses both). This has to be set here: the builder overwrites `initialize_owners` in the options.
+        // (Vivy's own owner, `BotCtx::is_owner`, is the application's). This has to be set here: the builder overwrites `initialize_owners` in the options.
         .initialize_owners(false)
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
