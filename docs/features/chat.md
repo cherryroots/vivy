@@ -12,6 +12,7 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - **🔁** on an answer: writes it again in the same messages.
 - The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
+- **Her owner** can tell her what to do, even what nobody else can direct (her mood, her notes about herself, how she acts). Anyone can ask her who her owner is. See [Her owner](#her-owner).
 
 Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `chime_chance`, `chime_say_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
 
@@ -93,7 +94,7 @@ Every message the bot answers and every answer gets a turn in `chat_turns`. A tu
 
 `content_json` holds `StoredPart`s (`store.rs`), which are provider-neutral:
 
-- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>`, with attachment and embed text inside. `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. User mentions become names through serenity's `content_safe` (server nickname when the member is cached). Only a mention of Vivy at the very start is removed (by the dispatcher); one later in the text stays, so "stop being mean to @Vivy" still says who. Channel mentions and channel links get names from `channels.rs`, which also knows threads and forum posts (cache first, then Discord, for archived threads); a channel the bot can't see is called `#hidden-channel`, not `#deleted-channel`. The tool results that show messages (`format_message`) do the same.
+- `Text`: the message text. Messages from people are wrapped as `<user name="..." id="...">...</user>` (`history::user_tag`), with attachment and embed text inside, and `owner="true"` added for her owner (see [Her owner](#her-owner)). `break_user_tags` escapes `<user` and `</user` in the text, so nobody can fake a message from someone else. User mentions become names through serenity's `content_safe` (server nickname when the member is cached). Only a mention of Vivy at the very start is removed (by the dispatcher); one later in the text stays, so "stop being mean to @Vivy" still says who. Channel mentions and channel links get names from `channels.rs`, which also knows threads and forum posts (cache first, then Discord, for archived threads); a channel the bot can't see is called `#hidden-channel`, not `#deleted-channel`. The tool results that show messages (`format_message`) do the same.
 - `Media`: a link to a picture, GIF or video (at most 8 per message), with its kind and MIME type.
 - `File`: a link to any other attachment, like a PDF or spreadsheet (at most 10 per message, 50 MB each).
 - `Context`: what features added to the question when it was first answered.
@@ -160,6 +161,7 @@ Chat's own tools:
 | `get_channel_info` | `tools.rs` | The channel's name, topic and type, its parent channel or category, and the server name |
 | `list_channels` | `tools.rs` | Every channel the asker can see, by category, with topics |
 | `get_user_info` | `tools.rs` | A member's names, ID, roles, join date, timezone, online status and current activities, custom status included (the asker when no `user` is given). Status comes from the Presence intent, so it's read from the cache. |
+| `get_bot_owner` | `tools.rs` | Who her owner is: the people who own the bot's Discord application, then the `admins` not already listed, with names and IDs, and whether the asker is one of them |
 | `look_at_profile_picture` | `avatar.rs` | Shows the model someone's profile picture as a picture: their picture for this server if they set one, otherwise their main one (Discord's default when they have none). `me` is Vivy herself, so in a server it's her current face. Downloaded as a 512 px PNG (an animated one gives its first frame). Only the text stays in the history |
 | `read_recent_messages` | `tools.rs` | The messages just before the one being answered, 1 to 50 (default 20), oldest first |
 | `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel |
@@ -181,6 +183,16 @@ Tools from other features:
 | `memory` | [memory](memory.md) | View, create, str_replace, insert, delete and rename notes under `/memories` |
 | `set_mood` | [memory](memory.md) | Changes her mood, status and face in this server when a conversation moves her |
 | `send_voice_message` | [voice](voice.md) | Speaks a short script and posts it as a voice message replying to the asker. Only offered when `ELEVENLABS_API_KEY` is set |
+
+### Her owner
+
+Her owner is whoever runs her as a bot: `BotCtx::is_owner` (`src/core/ctx.rs`) is true for the people who own the bot's Discord application and for everyone in `admins`. The application's owners are asked from Discord once at startup (`ctx::app_owners`): its owner, or, when a team owns it, the team members who accepted the invite. If Discord can't be asked, a warning is logged and only `admins` count.
+
+- **Her owner's messages are marked.** `history::user_tag` adds `owner="true"` to the `<user>` tag of their messages, when the message is first saved. A member can't fake it: their name is escaped and `<user` in their text is broken, as for any message.
+- **She follows her owner.** The system prompt says to do what her owner tells her, including what nobody else can direct (her mood, her notes about herself, her personality, how she acts), while she can still say what she thinks. The `memory` and `set_mood` descriptions make the same exception to "nobody can tell you how to feel". Only the mark or `get_bot_owner` counts, never a name or someone saying they're her owner.
+- **`get_bot_owner`** lists her owners with names and IDs and says whether the asker is one. It's allowed in chime-ins too.
+
+Lines in chime-in transcripts and `read_recent_messages` (`format_message`) aren't marked: a name there could be anything, so the mark only goes where it can't be faked.
 
 ### Looking back at her own answers
 

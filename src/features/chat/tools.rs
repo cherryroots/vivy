@@ -58,6 +58,11 @@ pub fn defs() -> Vec<ToolDef> {
             }),
         },
         ToolDef {
+            name: "get_bot_owner",
+            description: "Who your owner is: the people who run you as a bot (they own your Discord application, or are your admins), with their names and IDs, and whether the asker is one of them. Use it when someone asks who owns or made you, or says they're your owner.",
+            parameters: json!({"type": "object", "properties": {}}),
+        },
+        ToolDef {
             name: "read_recent_messages",
             description: "The messages in this channel just before the one you're answering, oldest first. Use it to see what was said before.",
             parameters: json!({
@@ -97,6 +102,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
         "get_channel_info" => channel_info(ctx, asker).await,
         "list_channels" => list_channels(ctx, asker).await,
         "get_user_info" => user_info(ctx, asker, text("user")).await,
+        "get_bot_owner" => bot_owner(ctx, asker).await,
         "read_recent_messages" => {
             let count = args["count"].as_u64().unwrap_or(20).clamp(1, MAX_RECENT);
             recent_messages(ctx, asker, count).await
@@ -318,6 +324,39 @@ async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<St
         None => "Timezone: not set".to_string(),
     });
     lines.extend(presence);
+    Ok(lines.join("\n"))
+}
+
+/// One line per owner: the Discord application's owners first, then the admins not already
+/// listed. Ends with whether the asker is one of them.
+async fn bot_owner(ctx: &BotCtx, asker: &Asker) -> Result<String> {
+    let admins = ctx.config.admins.iter().map(|&id| UserId::new(id));
+    let mut lines = Vec::new();
+    let mut listed = Vec::new();
+    for (user, role) in ctx
+        .app_owners
+        .iter()
+        .map(|&id| (id, "owns your Discord application"))
+        .chain(admins.map(|id| (id, "one of your admins")))
+    {
+        if listed.contains(&user) {
+            continue;
+        }
+        listed.push(user);
+        let name = match user.to_user(&ctx.http).await {
+            Ok(found) => format!("{} (@{}, ID {user})", found.display_name(), found.name),
+            Err(_) => format!("ID {user}"),
+        };
+        lines.push(format!("{name}: {role}"));
+    }
+    if lines.is_empty() {
+        return Ok("Nobody is set as your owner.".to_string());
+    }
+    lines.push(if ctx.is_owner(asker.user) {
+        "The asker is your owner.".to_string()
+    } else {
+        "The asker isn't your owner.".to_string()
+    });
     Ok(lines.join("\n"))
 }
 

@@ -122,6 +122,7 @@ impl Feature for Chat {
             "get_current_time" => "🕒 Checking the time…",
             "get_channel_info" | "list_channels" => "🧭 Looking around the server…",
             "get_user_info" => "👤 Looking someone up…",
+            "get_bot_owner" => "👑 Checking who my owner is…",
             avatar::TOOL => "🖼️ Looking at a profile picture…",
             "read_recent_messages" => "📜 Reading the chat…",
             "get_message" => "🔗 Opening a message…",

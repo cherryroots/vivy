@@ -148,11 +148,12 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     let setup_tasks = tasks.clone();
     let framework = poise::Framework::builder()
         .options(options)
-        // Owners come from `admins` in config.toml, not from the Discord application. This
-        // has to be set here: the builder overwrites `initialize_owners` in the options.
+        // poise's owners come from `admins` in config.toml, not from the Discord application
+        // (Vivy's own owner check, `BotCtx::is_owner`, uses both). This has to be set here: the builder overwrites `initialize_owners` in the options.
         .initialize_owners(false)
         .setup(move |ctx, ready, framework| {
             Box::pin(async move {
+                let app_owners = crate::core::ctx::app_owners(&ctx.http).await;
                 let bot = BotCtx {
                     http: ctx.http.clone(),
                     cache: ctx.cache.clone(),
@@ -167,6 +168,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
                     timers,
                     features: features.clone(),
                     bot_id: ready.user.id,
+                    app_owners: Arc::new(app_owners),
                     started_at: Utc::now(),
                 };
                 if let Some(channel) = config.logging.log_channel {
