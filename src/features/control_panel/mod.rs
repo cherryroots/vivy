@@ -11,9 +11,7 @@ mod status;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serenity::all::{
-    ChannelId, ComponentInteraction, CreateInteractionResponse, CreateInteractionResponseMessage,
-};
+use serenity::all::{ChannelId, ComponentInteraction, CreateInteractionResponse, EditMessage};
 use tracing::{Instrument as _, info, info_span};
 
 use crate::core::{BotCtx, Feature, Result, settings, user_error};
@@ -79,14 +77,15 @@ impl Feature for ControlPanel {
         let on = !settings::owner_mode(&ctx.db).await?;
         settings::set_owner_mode(&ctx.db, on).await?;
         info!(on, "owner mode turned {}", if on { "on" } else { "off" });
-        // Only the button changes; the picture stays until the next refresh.
-        let response =
-            CreateInteractionResponseMessage::new().components(status::owner_mode_buttons(on));
-        i.create_response(
-            &ctx.http,
-            CreateInteractionResponse::UpdateMessage(response),
-        )
-        .await?;
+        // Only the button changes. Not through an `UpdateMessage` response: serenity always
+        // sends its attachments, an empty list, so Discord would drop the picture until the
+        // next refresh. An `EditMessage` without attachments keeps them.
+        i.create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+            .await?;
+        let edit = EditMessage::new().components(status::owner_mode_buttons(on));
+        i.channel_id
+            .edit_message(&ctx.http, i.message.id, edit)
+            .await?;
         Ok(())
     }
 }
