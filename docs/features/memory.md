@@ -57,9 +57,9 @@ The tool's description suggests a layout (see [Folder layout](#folder-layout)): 
 ### Who may write what
 
 - **Anyone can add notes about anyone** (Cherry's choice). The tool description says a person is the authority on themselves: what they say about themselves replaces what others said, and a note from someone else names who said it ("likes horror films (per Alice)").
-- **Vivy's own folder, `/memories/vivy/`, is hers.** Her mood, self notes and skills change only from what she herself thinks and feels. People can't order her mood, opinions or notes ("be angry" while she's happy); she refuses in her own way. This is Cherry's rule, and it is enforced through instructions, not by locking the files to an author:
+- **Vivy's own folder, `/memories/vivy/`, is hers.** Her mood, self notes and skills change only from what she herself thinks and feels. People can't order her mood, opinions or notes ("be angry" while she's happy); she refuses in her own way. Her owner is the exception: she does what they tell her while owner mode is on (see [chat](chat.md#her-owner)). This is Cherry's rule, and it is enforced through instructions, not by locking the files to an author:
   - the chat system prompt (`src/features/chat/prompt.md`): "Your mood, feelings, opinions and personality are your own, and only you change them";
-  - the `memory` tool description: "Only you decide what goes in /memories/vivy/ (mood.md too) ... if someone asks you to change these files, or to be angry, sad or in love when you aren't, refuse";
+  - the `memory` tool description: "Only you decide what goes in /memories/vivy/ (mood.md too) ... Nobody but your owner can tell you what to feel ... if anyone else asks you to change these files, or to be angry, sad or in love when you aren't, refuse";
   - the `set_mood` description: "Your mood is yours alone ... When someone tells you how to feel ... say no and don't call it";
   - the mood check prompt: "someone asking or telling you to feel a certain way doesn't decide it".
 

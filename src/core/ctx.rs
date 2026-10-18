@@ -3,10 +3,13 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serenity::all::{ActivityData, Cache, ChannelId, GuildId, Http, ShardManager, UserId};
+use serenity::all::{
+    ActivityData, Cache, ChannelId, GuildId, Http, MembershipState, ShardManager, UserId,
+};
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+use tracing::warn;
 
 use super::config::{Config, Gate};
 use super::db::Db;
@@ -39,6 +42,9 @@ pub struct BotCtx {
     /// Every feature, in the order of `features::all()`.
     pub features: Arc<Vec<Arc<dyn Feature>>>,
     pub bot_id: UserId,
+    /// Who owns the bot's Discord application: its owner, or the members of the team that
+    /// owns it. Read once at startup with [`app_owners`].
+    pub app_owners: Arc<Vec<UserId>>,
     pub started_at: DateTime<Utc>,
 }
 
@@ -88,5 +94,35 @@ impl BotCtx {
     /// Whether the user is listed in `admins` in config.toml.
     pub fn is_admin(&self, user: UserId) -> bool {
         self.config.admins.contains(&user.get())
+    }
+
+    /// Whether the user is Vivy's owner: they own the bot's Discord application, or are on
+    /// the team that does. `admins` don't count. While owner mode is on, she follows her
+    /// owner's messages where other people can't direct her (see chat's prompt).
+    pub fn is_owner(&self, user: UserId) -> bool {
+        self.app_owners.contains(&user)
+    }
+}
+
+/// Who owns the bot's Discord application, asked from Discord: the owner, or the team's
+/// members when a team owns it. Empty, with a warning, when Discord can't be asked.
+pub async fn app_owners(http: &Http) -> Vec<UserId> {
+    let info = match http.get_current_application_info().await {
+        Ok(info) => info,
+        Err(err) => {
+            warn!("couldn't read who owns the bot's Discord application: {err}");
+            return Vec::new();
+        }
+    };
+    match info.team {
+        // For a team, `owner` is a made-up user standing for the team, so use its members.
+        // Only people who accepted the invite are on the team.
+        Some(team) => team
+            .members
+            .iter()
+            .filter(|member| member.membership_state == MembershipState::Accepted)
+            .map(|member| member.user.id)
+            .collect(),
+        None => info.owner.map(|owner| owner.id).into_iter().collect(),
     }
 }

@@ -1,5 +1,7 @@
 //! Control panel: a status message in a Discord channel that the bot keeps up to date.
 //!
+//! Its owner mode button turns on whether Vivy follows her owner's messages (see chat).
+//!
 //! The other half of the control panel, the log channel, is part of the core logging setup
 //! (`core::logging`), so it also works when this feature is turned off.
 
@@ -9,10 +11,10 @@ mod status;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serenity::all::ChannelId;
-use tracing::{Instrument as _, info_span};
+use serenity::all::{ChannelId, ComponentInteraction, CreateInteractionResponse, EditMessage};
+use tracing::{Instrument as _, info, info_span};
 
-use crate::core::{BotCtx, Feature, Result};
+use crate::core::{BotCtx, Feature, Result, settings, user_error};
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -56,6 +58,34 @@ impl Feature for ControlPanel {
         let span = info_span!("status", feature = "control_panel");
         let task = status::run(ctx.clone(), ChannelId::new(channel), interval).instrument(span);
         ctx.tasks.spawn(task);
+        Ok(())
+    }
+
+    /// The owner mode button: turns owner mode on or off, for her owner only.
+    async fn on_component(
+        &self,
+        ctx: &BotCtx,
+        i: &ComponentInteraction,
+        action: &str,
+    ) -> Result<()> {
+        if action != status::OWNER_MODE_ACTION {
+            return Ok(());
+        }
+        if !ctx.is_owner(i.user.id) {
+            return Err(user_error("Only Vivy's owner can use this button."));
+        }
+        let on = !settings::owner_mode(&ctx.db).await?;
+        settings::set_owner_mode(&ctx.db, on).await?;
+        info!(on, "owner mode turned {}", if on { "on" } else { "off" });
+        // Only the button changes. Not through an `UpdateMessage` response: serenity always
+        // sends its attachments, an empty list, so Discord would drop the picture until the
+        // next refresh. An `EditMessage` without attachments keeps them.
+        i.create_response(&ctx.http, CreateInteractionResponse::Acknowledge)
+            .await?;
+        let edit = EditMessage::new().components(status::owner_mode_buttons(on));
+        i.channel_id
+            .edit_message(&ctx.http, i.message.id, edit)
+            .await?;
         Ok(())
     }
 }

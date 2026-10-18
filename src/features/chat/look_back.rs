@@ -778,6 +778,10 @@ mod tests {
             plain_question("<user name=\"Cherry\" id=\"1\">what time is it</user>"),
             "Cherry: what time is it"
         );
+        assert_eq!(
+            plain_question("<user name=\"Cherry\" id=\"1\" owner=\"true\">hi</user>"),
+            "Cherry: hi"
+        );
         assert_eq!(plain_question("no tags"), "no tags");
     }
 

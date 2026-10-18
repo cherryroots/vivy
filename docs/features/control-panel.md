@@ -4,7 +4,7 @@ The control panel lets admins watch the bot from two Discord channels. The **log
 
 ## Using it
 
-There are no commands. Both channels are set in `config.toml`:
+There are no commands. The status message has one button, **👑 Owner mode**, which only Vivy's owner can press (see [Owner mode](#owner-mode)). Both channels are set in `config.toml`:
 
 - the log channel under `[logging]` (`log_channel`, `log_level`; the old names `discord_channel` and `discord_level` still work);
 - the status channel under `[features.control_panel]` (`status_channel`, `status_interval_seconds`; the old `status_interval_secs` still works).
@@ -23,7 +23,7 @@ The two halves are independent. The log channel is part of the core logging setu
 | `src/features/control_panel/history.rs` | Saving and loading the numbers behind the graphs (`control_panel_samples`). |
 | `src/features/control_panel/render.rs` | Lays out the status picture as SVG: `Dashboard` (everything it shows), `online_svg`, `offline_svg`. Pure functions. Its parts are in `render/`: `spend.rs` (the AI spend cards and the month's graph), `graphs.rs` (line graphs and bars) and `format.rs` (numbers, times and Discord markup as text). |
 | `src/features/control_panel/status.rs` | The refresh loop (`run`): gathers the numbers, draws the picture, edits the message, saves samples, and the fallback embed. Also the migrations. |
-| `src/features/control_panel/mod.rs` | The `ControlPanel` feature and its `Settings`. Starts the loop. |
+| `src/features/control_panel/mod.rs` | The `ControlPanel` feature and its `Settings`. Starts the loop and handles the owner mode button. |
 | `src/core/logging.rs` | The `tracing` setup: readable lines on stdout, the Discord log channel, and the in-memory error counts the status picture shows. |
 
 The picture is drawn as SVG text, then turned into a PNG by the shared `src/util/svg.rs` (`to_png`), the same code the movie wheel uses.
@@ -60,7 +60,7 @@ Each tick:
 1. `gather` reads everything into a `Dashboard`: uptime, server count, gateway latency (the slowest shard), the process's memory (with the `sysinfo` crate), the database file size plus its `-wal` file, the error stats, the AI view, the spend view, every enabled feature's `stats()` and `panels()`, and the timers. `run` adds the graph history it keeps (see "Graph history" below).
 2. Once per 15-minute slot, `save_samples` saves the numbers for the graphs (see below).
 3. `online` draws the picture with `render::online_svg` and `svg::to_png` inside `spawn_blocking` (it takes CPU and reads font files, so it runs on a separate thread pool, not on the async threads that answer Discord). The fallback embed is built first, so if drawing fails, or even panics, the message shows the same information as an embed.
-4. `show` edits the message: it replaces the text and removes the old picture or embed. If the message was deleted (Discord error 10008, Unknown Message), it posts a new one.
+4. `show` edits the message: it replaces the text, removes the old picture or embed, and sets the owner mode button. If the message was deleted (Discord error 10008, Unknown Message), it posts a new one.
 
 The text above the picture is `-# Updated <t:…:R>`. Discord renders that timestamp as "12 seconds ago" and keeps counting on its own, so if the bot dies without a goodbye, the message visibly goes stale.
 
@@ -107,6 +107,10 @@ loop {
 
 Only loops that actually started are listed, so a turned-off feature's loop doesn't appear. The control panel adds its own timer, `Status graphs` (`every 15m`), which reports when samples are saved.
 
+### Owner mode
+
+The status message has one button under the picture, `control_panel:owner_mode` (`status::owner_mode_buttons`): **👑 Owner mode: off**, grey, or **👑 Owner mode: on**, green. Only Vivy's owner (`BotCtx::is_owner`, whoever owns the bot's Discord application) can press it; anyone else is told so privately. A press flips the setting in the core `bot_settings` table (`core::settings::set_owner_mode`) and updates the button at once by acknowledging the press and editing only the message's buttons. (Answering with an `UpdateMessage` response would drop the picture: serenity always sends that response's attachments, an empty list.) Each refresh draws the button from the saved setting, and the stopped message has no button. While owner mode is on, chat marks the owner's messages so she follows them (see [chat](chat.md#her-owner)). The setting lives in the core because chat reads it and features don't import each other.
+
 ## Feature hooks it uses
 
 | Method | What it does here |
@@ -114,6 +118,7 @@ Only loops that actually started are listed, so a turned-off feature's loop does
 | `name` | `"control_panel"` |
 | `migrations` | `status::MIGRATIONS` |
 | `start` | Reads `Settings` and spawns the status loop when there is a `status_channel`. |
+| `on_component` | The owner mode button. |
 
 It doesn't implement `stats` or `panels` itself. Instead it calls them on every other feature. The log channel uses no hooks at all: it is core code, set up in `src/main.rs`.
 

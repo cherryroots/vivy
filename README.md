@@ -21,6 +21,7 @@ Every feature has a section in `config.toml` and can be turned off or limited to
 - **Tools:** web search and web pages, code in a sandbox that keeps its files per channel (on Claude, with Anthropic's skills for spreadsheets, documents, slides and PDFs), attached files, message search, pins and server events.
 - **Controls:** ❌ under an answer stops or deletes it, 🔁 asks again. Only the person who asked can use them.
 - **Chime-ins:** now and then (5% of messages, then a half-hour cooldown per channel) she reads the last 15 messages to learn from them; 10% of those times she adds a line and 40% she reacts.
+- **Her owner:** whoever owns the bot's Discord application can tell her what to do, even her mood and personality, which nobody else can, while owner mode is on (the 👑 button on the status message, which only the owner can press). Ask her who her owner is and she checks.
 - **Follow-ups:** when someone mentions something coming up, she can check in afterwards to ask how it went.
 - **Cost:** Claude's and OpenAI's spend are tracked per month, each against its own `monthly_budget`, with warnings in the log channel at 80% and 100%. Optional Admin keys (Anthropic's and OpenAI's) read the real bills; read the caution in `.env.example` first.
 

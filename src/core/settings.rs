@@ -1,4 +1,4 @@
-//! Per-user settings shared by all features. For now only the timezone.
+//! Settings shared by all features: each user's timezone, and owner mode for the whole bot.
 
 use chrono_tz::Tz;
 use rusqlite::{Connection, OptionalExtension};
@@ -37,6 +37,37 @@ pub async fn set_timezone(db: &Db, user: UserId, zone: Tz) -> anyhow::Result<()>
         .await
 }
 
+/// Whether owner mode is on: while it is, her owner's messages are marked so she follows
+/// them (see chat's `history::user_tag`). Off until the owner turns it on with the button
+/// on the status message.
+pub fn owner_mode_sync(conn: &Connection) -> anyhow::Result<bool> {
+    let value: Option<String> = conn
+        .query_row(
+            "SELECT value FROM bot_settings WHERE key = 'owner_mode'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(value.as_deref() == Some("on"))
+}
+
+pub fn set_owner_mode_sync(conn: &Connection, on: bool) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO bot_settings (key, value) VALUES ('owner_mode', ?1)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        [if on { "on" } else { "off" }],
+    )?;
+    Ok(())
+}
+
+pub async fn owner_mode(db: &Db) -> anyhow::Result<bool> {
+    db.call(|conn| owner_mode_sync(conn)).await
+}
+
+pub async fn set_owner_mode(db: &Db, on: bool) -> anyhow::Result<()> {
+    db.call(move |conn| set_owner_mode_sync(conn, on)).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +81,15 @@ mod tests {
         set_timezone_sync(&conn, user, Tz::Europe__Oslo).unwrap();
         set_timezone_sync(&conn, user, Tz::Asia__Tokyo).unwrap();
         assert_eq!(timezone_sync(&conn, user).unwrap(), Some(Tz::Asia__Tokyo));
+    }
+
+    #[test]
+    fn owner_mode_starts_off_and_toggles() {
+        let conn = test_connection("none", &[]);
+        assert!(!owner_mode_sync(&conn).unwrap());
+        set_owner_mode_sync(&conn, true).unwrap();
+        assert!(owner_mode_sync(&conn).unwrap());
+        set_owner_mode_sync(&conn, false).unwrap();
+        assert!(!owner_mode_sync(&conn).unwrap());
     }
 }

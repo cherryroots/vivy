@@ -52,6 +52,7 @@ const UNPROMPTED_TOOLS: &[&str] = &[
     "get_current_time",
     "get_channel_info",
     "get_user_info",
+    "get_bot_owner",
     "read_recent_messages",
     "get_message",
     "search_messages",

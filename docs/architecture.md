@@ -160,7 +160,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | `features` | Every feature, in the order of `features::all()` |
 | `bot_id`, `started_at` | The bot's own user ID, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 
@@ -188,7 +188,7 @@ Inside the closure everything is ordinary synchronous Rust, and the connection i
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
-Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `legacy_imports`, `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
+Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `legacy_imports`, `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
 
 For tests, `db::test_connection(owner, migrations)` gives an in-memory database with the core tables and one feature's tables.
 
