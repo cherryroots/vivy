@@ -97,8 +97,8 @@ impl BotCtx {
     }
 
     /// Whether the user is Vivy's owner: they own the bot's Discord application, or are on
-    /// the team that does. `admins` don't count. She follows her owner's messages that start
-    /// with § where other people can't direct her (see chat's prompt).
+    /// the team that does. `admins` don't count. While owner mode is on, she follows her
+    /// owner's messages where other people can't direct her (see chat's prompt).
     pub fn is_owner(&self, user: UserId) -> bool {
         self.app_owners.contains(&user)
     }

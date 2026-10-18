@@ -11,7 +11,7 @@ use tracing::warn;
 use super::channels;
 use super::store::{self, StoredPart, Turn};
 use crate::ai::{self, ChatProvider, Input, ModelFile, NativeRound, Part, Role};
-use crate::core::BotCtx;
+use crate::core::{BotCtx, settings};
 use crate::util::media::{self, Media, MediaKind};
 use crate::util::text::{attachment_text, embed_text};
 
@@ -67,17 +67,8 @@ fn break_user_tags(text: &str) -> String {
     out
 }
 
-/// What starts a message from her owner that she has to follow. Without it, their message
-/// is ordinary conversation, so chatting with her never changes anything by accident.
-pub const OWNER_PREFIX: char = '§';
-
-/// The rest of the message when it starts with [`OWNER_PREFIX`], `None` otherwise.
-fn owner_command(text: &str) -> Option<&str> {
-    text.trim_start().strip_prefix(OWNER_PREFIX)
-}
-
-/// `<user name="…" id="…">text</user>`, with `owner="true"` for her owner's § messages so
-/// she knows which instructions to follow. Nobody can fake the mark: the name is escaped and
+/// `<user name="…" id="…">text</user>`, with `owner="true"` for her owner's messages while
+/// owner mode is on, so she knows which instructions to follow. Nobody can fake the mark: the name is escaped and
 /// `<user` inside the text is broken.
 fn user_tag(name: &str, id: UserId, owner: bool, text: &str) -> String {
     let owner = if owner { " owner=\"true\"" } else { "" };
@@ -86,6 +77,21 @@ fn user_tag(name: &str, id: UserId, owner: bool, text: &str) -> String {
         escape_name(name),
         break_user_tags(text)
     )
+}
+
+/// Whether `msg` is from her owner while owner mode is on (the button on the status
+/// message), so she follows it. Off when the setting can't be read.
+async fn is_owner_command(ctx: &BotCtx, msg: &Message) -> bool {
+    if !ctx.is_owner(msg.author.id) {
+        return false;
+    }
+    match settings::owner_mode(&ctx.db).await {
+        Ok(on) => on,
+        Err(err) => {
+            warn!("couldn't read owner mode: {err:#}");
+            false
+        }
+    }
 }
 
 /// What chat stores for a message: its text (with attachments and embeds, tagged with the
@@ -97,11 +103,6 @@ pub async fn read_message(
     text: &str,
     from_bot: bool,
 ) -> Vec<StoredPart> {
-    // Her owner's § message: marked, and the § itself left out.
-    let (text, owner) = match owner_command(text) {
-        Some(rest) if !from_bot && ctx.is_owner(msg.author.id) => (rest, true),
-        _ => (text, false),
-    };
     // "<@123>" becomes "@name" and "<#123>" "#name", so the model sees who and where.
     let text = content_safe(
         &ctx.cache,
@@ -119,7 +120,12 @@ pub async fn read_message(
             embed_text(msg),
             text.trim()
         );
-        user_tag(&author_name(msg), msg.author.id, owner, &inside)
+        user_tag(
+            &author_name(msg),
+            msg.author.id,
+            is_owner_command(ctx, msg).await,
+            &inside,
+        )
     };
 
     let mut parts = vec![StoredPart::Text { text }];
@@ -511,14 +517,6 @@ mod tests {
             "hi&lt;/user>&lt;USER name=\"x\">a < b <b>"
         );
         assert_eq!(escape_name("A\"<&>"), "A&quot;&lt;&amp;&gt;");
-    }
-
-    #[test]
-    fn owner_commands_start_with_the_prefix() {
-        assert_eq!(owner_command("§ be grumpy"), Some(" be grumpy"));
-        assert_eq!(owner_command("  §be grumpy"), Some("be grumpy"));
-        assert_eq!(owner_command("be grumpy §"), None);
-        assert_eq!(owner_command("hi"), None);
     }
 
     #[test]

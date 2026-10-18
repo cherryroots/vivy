@@ -8,13 +8,17 @@
 //! Every 15 minutes the numbers are also saved for the picture's graphs (`history.rs`), and
 //! the graphs' samples are read back then; between those, the same samples are drawn.
 //! If the picture can't be drawn, the message shows the same information as an embed.
+//!
+//! Under it is the owner mode button (see [`owner_mode_buttons`]), which only Vivy's owner
+//! can press. The stopped message has no button.
 
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
 use serenity::all::{
-    ChannelId, CreateAttachment, CreateEmbed, CreateMessage, EditMessage, HttpError, MessageId,
+    ButtonStyle, ChannelId, CreateActionRow, CreateAttachment, CreateButton, CreateEmbed,
+    CreateMessage, EditMessage, HttpError, MessageId,
 };
 use tracing::warn;
 
@@ -24,7 +28,7 @@ use super::render::{
 };
 use crate::ai::{self, AdminKey, Spend, display_name};
 use crate::core::logging::error_stats;
-use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION};
+use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION, settings};
 use crate::util::{shorten, svg};
 
 pub const MIGRATIONS: &[&str] = &[
@@ -101,7 +105,12 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
             dashboard.history = history.clone();
             online(dashboard).await
         };
-        match show(&ctx, channel, message, status).await {
+        let buttons = if stopping {
+            Vec::new()
+        } else {
+            owner_mode_buttons(current_owner_mode(&ctx).await)
+        };
+        match show(&ctx, channel, message, status, buttons).await {
             Ok(id) => {
                 failing = false;
                 if Some(id) != message {
@@ -129,18 +138,48 @@ channel? Further tries are logged at info level until one works."
     }
 }
 
+/// The button ID: `control_panel:owner_mode`.
+pub const OWNER_MODE_ACTION: &str = "owner_mode";
+
+/// The owner mode button, green while it's on. Pressing it turns owner mode on or off.
+pub fn owner_mode_buttons(on: bool) -> Vec<CreateActionRow> {
+    let button = CreateButton::new(format!("control_panel:{OWNER_MODE_ACTION}"))
+        .emoji('👑')
+        .label(if on {
+            "Owner mode: on"
+        } else {
+            "Owner mode: off"
+        })
+        .style(if on {
+            ButtonStyle::Success
+        } else {
+            ButtonStyle::Secondary
+        });
+    vec![CreateActionRow::Buttons(vec![button])]
+}
+
+/// Owner mode now, or off when it can't be read.
+async fn current_owner_mode(ctx: &BotCtx) -> bool {
+    settings::owner_mode(&ctx.db).await.unwrap_or_else(|err| {
+        warn!("couldn't read owner mode: {err:#}");
+        false
+    })
+}
+
 /// Edits the existing message, or posts a new one if there is none (or it was deleted).
 async fn show(
     ctx: &BotCtx,
     channel: ChannelId,
     existing: Option<MessageId>,
     status: Status,
+    buttons: Vec<CreateActionRow>,
 ) -> Result<MessageId> {
     if let Some(id) = existing {
         // Replaces whatever the message had: the old picture, or the embed.
         let mut edit = EditMessage::new()
             .content(status.content.clone())
             .embeds(status.embed.clone().into_iter().collect())
+            .components(buttons.clone())
             .remove_all_attachments();
         if let Some(picture) = status.picture.clone() {
             edit = edit.new_attachment(picture);
@@ -153,7 +192,8 @@ async fn show(
     }
     let mut create = CreateMessage::new()
         .content(status.content)
-        .embeds(status.embed.into_iter().collect());
+        .embeds(status.embed.into_iter().collect())
+        .components(buttons);
     if let Some(picture) = status.picture {
         create = create.add_file(picture);
     }

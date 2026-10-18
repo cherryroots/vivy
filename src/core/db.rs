@@ -135,6 +135,11 @@ pub const CORE_MIGRATIONS: &[&str] = &[
         cache_write INTEGER NOT NULL,
         PRIMARY KEY (month, provider, job)
     );",
+    // 4: settings for the whole bot, like owner mode (see `core::settings`).
+    "CREATE TABLE bot_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );",
 ];
 
 /// An in-memory database with the core tables and the given migrations, for tests.

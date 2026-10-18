@@ -188,7 +188,7 @@ Inside the closure everything is ordinary synchronous Rust, and the connection i
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
-Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `legacy_imports`, `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
+Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `legacy_imports`, `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
 
 For tests, `db::test_connection(owner, migrations)` gives an in-memory database with the core tables and one feature's tables.
 
