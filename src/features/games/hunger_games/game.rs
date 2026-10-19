@@ -404,6 +404,36 @@ impl Game {
         self.tributes.iter().map(|t| t.weapon.clone()).collect()
     }
 
+    /// Each tribute's weapon as drawn on the map of the last round played: what they carry
+    /// by the end of it, except that someone who died in it is drawn empty-handed when their
+    /// weapon was likely looted: someone else in the same event found a weapon, or one of
+    /// the living carries one by the same name. Otherwise the weapon would be drawn twice,
+    /// in the looter's hands and by the body (Cherry saw it).
+    pub fn weapons_drawn(&self) -> Vec<Option<String>> {
+        let mut weapons = self.weapons();
+        let Some(round) = self.rounds.last() else {
+            return weapons;
+        };
+        for event in &round.events {
+            for death in &event.deaths {
+                let victim = death.victim;
+                let found_by_another = event.finds.iter().any(|(who, _)| *who != victim);
+                let carried = self.tributes[victim]
+                    .weapon
+                    .as_deref()
+                    .is_some_and(|weapon| {
+                        self.tributes
+                            .iter()
+                            .any(|t| t.alive() && t.weapon.as_deref() == Some(weapon))
+                    });
+                if found_by_another || carried {
+                    weapons[victim] = None;
+                }
+            }
+        }
+        weapons
+    }
+
     /// The living allies of tribute `index`.
     pub fn allies_of(&self, index: usize) -> Vec<usize> {
         let Some(team) = self.tributes[index].team else {
@@ -1286,6 +1316,38 @@ mod tests {
         // Once either is dead, the grudge can't play out anymore.
         g.tributes[2].died_in = Some(0);
         assert_eq!(g.open_grudges().len(), 1);
+    }
+
+    #[test]
+    fn a_looted_weapon_is_drawn_once() {
+        let mut g = game(4);
+        g.tributes[0].weapon = Some("ban hammer".into());
+        g.tributes[2].weapon = Some("spoon".into());
+        let mut round = round_with(Kind::Day(1), 0);
+        round.events = vec![
+            // P2 kills P1 and takes the hammer.
+            Event {
+                deaths: vec![Death {
+                    victim: 0,
+                    by: Some(1),
+                }],
+                finds: vec![(1, "ban hammer".into())],
+                ..Default::default()
+            },
+            // P4 kills P3 and takes nothing: the spoon lies by the body.
+            Event {
+                deaths: vec![Death {
+                    victim: 2,
+                    by: Some(3),
+                }],
+                ..Default::default()
+            },
+        ];
+        g.apply(round);
+        assert_eq!(
+            g.weapons_drawn(),
+            vec![None, Some("ban hammer".into()), Some("spoon".into()), None]
+        );
     }
 
     fn round_with(kind: Kind, deaths: usize) -> Round {
