@@ -41,12 +41,14 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
-/// is: what she's told. `notes` are in the same order as the tributes. With `pictures`,
-/// every round asks for a `picture` too.
+/// is: what she's told. `areas` describe the arena's places, in its order (see
+/// `areas.rs`); `notes` are in the same order as the tributes. With `pictures`, every
+/// round asks for a `picture` too.
 pub fn brief(
     game: &Game,
     kind: Kind,
     arena: &[String],
+    areas: &[Option<String>],
     notes: &[Option<String>],
     pictures: bool,
 ) -> String {
@@ -72,6 +74,22 @@ pub fn brief(
         );
         text.push_str(&places(closed.clone(), false).join(", "));
         text.push('\n');
+        // What each open place is like, so events and the weapons found there fit it.
+        let described: Vec<String> = arena
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !closed.contains(i))
+            .filter_map(|(i, name)| {
+                let area = areas.get(i)?.as_deref()?;
+                Some(format!("- #{name}: {area}\n"))
+            })
+            .collect();
+        if !described.is_empty() {
+            text.push_str(
+                "What each place is like (keep events and the weapons found there true to it):\n",
+            );
+            text.push_str(&described.concat());
+        }
         let shut = places(closed, true);
         if !shut.is_empty() {
             text.push_str(&format!(
@@ -357,18 +375,22 @@ pub fn parse(answer: &str) -> Result<Written, String> {
 
 /// Has her write the round of `kind`, checked. Fails when every try was wrong or the
 /// model couldn't be reached.
+#[allow(clippy::too_many_arguments)]
 pub async fn write(
     provider: Arc<dyn ChatProvider>,
     game: Game,
     kind: Kind,
     arena: Vec<String>,
+    areas: Arc<Vec<Option<String>>>,
     notes: Arc<Vec<Option<String>>>,
     pictures: bool,
     channel: u64,
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena, &notes, pictures))],
+        parts: vec![Part::Text(brief(
+            &game, kind, &arena, &areas, &notes, pictures,
+        ))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
@@ -471,6 +493,7 @@ mod tests {
             Kind::Day(1),
             Vec::new(),
             Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
             false,
             5,
         )
@@ -545,12 +568,15 @@ mod tests {
             &game,
             Kind::Day(1),
             &["general".into(), "memes".into()],
+            &[Some("A sunny plaza with a broken fountain.".into()), None],
             &notes,
             false,
         );
         assert!(!text.contains("`picture`"));
+        assert!(text.contains("What each place is like (keep events and the weapons found there true to it):\n- #general: A sunny plaza with a broken fountain.\n"));
+        assert!(!text.contains("- #memes"));
         assert!(text.contains("they finally find each other in one of the places still open (#general, #memes). Announce the final two"));
-        let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
+        let drawn = brief(&game, Kind::Day(1), &[], &[], &notes, true);
         assert!(drawn.contains("Also write a `picture`: the showdown between everyone left"));
         assert!(drawn.contains("And give the 3 most interesting events their own `picture`"));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
@@ -574,7 +600,7 @@ mod tests {
             octagon: true,
         };
         game.remember(&[(7, 8, 3, Some(axe)), (1, 8, 1, None)]);
-        let text = brief(&game, Kind::Scatter, &arena, &[], false);
+        let text = brief(&game, Kind::Scatter, &arena, &[], &[], false);
         assert!(text.contains(
             "- T7 killed T8 3 times, the last time with an axe in the Octagon\n- T1 killed T8 once\n"
         ));
@@ -594,7 +620,7 @@ mod tests {
             reward: None,
             theme: None,
         });
-        let text = brief(&game, Kind::Day(2), &arena, &[], false);
+        let text = brief(&game, Kind::Day(2), &arena, &[], &[], false);
         assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2\n"));
         assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-3, #room-4, #room-5, #room-6, #room-7\n"));
         assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-3, #room-4, #room-5, #room-6, #room-7."));
@@ -613,7 +639,7 @@ mod tests {
             game.tributes[b].partner = Some(a);
         }
         game.tributes[1].died_in = Some(0);
-        let text = brief(&game, Kind::Day(1), &[], &[], false);
+        let text = brief(&game, Kind::Day(1), &[], &[], &[], false);
         assert!(text.contains("This is a team Games"));
         assert!(text.contains("- T1: P1 (alive, unarmed, teammate T2 has fallen)"));
         assert!(text.contains("- T3: P3 (alive, unarmed, teammate T4)"));
@@ -623,14 +649,14 @@ mod tests {
         game.rounds.push(scatter());
         game.places = 3;
         let arena: Vec<String> = (0..3).map(|i| format!("room-{i}")).collect();
-        let text = brief(&game, Kind::Day(1), &arena, &[], false);
+        let text = brief(&game, Kind::Day(1), &arena, &[], &[], false);
         assert!(text.contains("Only two teams are left, somewhere in the shrinking arena"));
         assert!(text.contains("Nothing is forced"));
         assert!(
             text.contains("At most 2 tributes may die this round, and it's fine if nobody does.")
         );
         game.places = 1;
-        let text = brief(&game, Kind::Day(1), &arena[..1], &[], false);
+        let text = brief(&game, Kind::Day(1), &arena[..1], &[], &[], false);
         assert!(text.contains(
             "in #room-0, the last place the fire hasn't reached. Announce the final teams"
         ));

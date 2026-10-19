@@ -7,13 +7,16 @@
 //! - `writer.rs`: what she's told each round, and reading her answer
 //! - `ui.rs`: the Reaping, round, cannon and victor messages, and the button IDs (pure)
 //! - `last_words.rs`: a real message from each tribute, shown when they fall
-//! - `notes.rs`: Vivy's memory notes about the tributes, through the `memory` tool
+//! - `notes.rs`: Vivy's memory notes about the tributes and the channels, through the
+//!   `memory` tool
+//! - `areas.rs`: what each of the arena's places is like, described once per game
 //! - `voice.rs`: the Gamemaker's lines as voice messages, through the voice feature's tool
 //! - `pictures.rs`: pictures she draws during the game, through the drawing feature's tool
 //! - `looks.rs`: how the arena map and the tributes' sprites look, described once per game
 //! - `play.rs`: `/games hungergames`, the task that runs a game, and button presses
 //! - `stats.rs`: finished games saved, and `/games leaderboard`
 
+mod areas;
 mod game;
 mod last_words;
 mod looks;

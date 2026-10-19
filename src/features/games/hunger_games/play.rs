@@ -27,7 +27,7 @@ use super::game::{self, FEWEST_FOR_TEAMS, Game, Kind, Reward, Round};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
-use super::{looks, notes, stats, voice};
+use super::{areas, looks, notes, stats, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
@@ -339,8 +339,21 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    // How the tributes and the arena look in her pictures, worked out while she writes the
-    // Scatter.
+    // What each place is like, from her note about what the channels are for, worked out
+    // while her notes about the tributes are read.
+    let areas = async {
+        let channels = notes::channels(bot, guild, channel, lobby_message.id).await;
+        areas::describe(provider.clone(), arena.clone(), channels).await
+    };
+    let notes = async {
+        if extras.memories {
+            notes::about(bot, guild, channel, lobby_message.id, &ids).await
+        } else {
+            vec![None; ids.len()]
+        }
+    };
+    let (areas, notes) = tokio::join!(areas, notes);
+    // How the tributes look in her pictures, worked out while she writes the Scatter.
     // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
     let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
     let looks = drawing.then(|| {
@@ -349,14 +362,9 @@ async fn run(
             provider.clone(),
             guild,
             tributes.clone(),
-            arena.clone(),
+            areas.clone(),
         ))
     });
-    let notes = if extras.memories {
-        notes::about(bot, guild, channel, lobby_message.id, &ids).await
-    } else {
-        vec![None; ids.len()]
-    };
     // Who killed whom in this server's earlier Games, for grudges.
     let (guild_id, past_ids) = (guild.get(), ids.clone());
     let past = bot
@@ -387,6 +395,7 @@ async fn run(
         Writing {
             provider,
             arena,
+            areas: Arc::new(areas),
             links,
             notes: Arc::new(notes),
             looks,
@@ -429,7 +438,7 @@ async fn play(
         let (provider, game) = (writing.provider.clone(), game.clone());
         let game_before = game.clone();
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
-        let links = links.clone();
+        let (areas, links) = (writing.areas.clone(), links.clone());
         let (ctx, looks) = (bot.clone(), looks.clone());
         bot.tasks.spawn(async move {
             let drawn = looks.is_some();
@@ -438,6 +447,7 @@ async fn play(
                 game,
                 kind,
                 arena.clone(),
+                areas,
                 notes,
                 drawn,
                 channel.get(),
@@ -875,6 +885,8 @@ struct Writing {
     provider: Arc<dyn ChatProvider>,
     /// The arena's places.
     arena: Vec<String>,
+    /// What each place is like (see `areas.rs`).
+    areas: Arc<Vec<Option<String>>>,
     /// The arena's places with their channel IDs, to show them as links.
     links: Vec<Place>,
     /// Her notes about each tribute, in the game's order.

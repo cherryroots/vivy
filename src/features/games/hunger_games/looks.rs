@@ -2,8 +2,8 @@
 //! map of the arena with a zone for each of its places, and each tribute as a sprite.
 //!
 //! When the Games start with pictures on, one model call gets every tribute's profile
-//! picture and the arena's places, and describes a sprite for each tribute, inspired by
-//! their picture, and the terrain of each zone. [`map`] lays the zones out around the
+//! picture and describes a sprite for each tribute, inspired by their picture. Each zone's
+//! scenery is the area's description from `areas.rs`. [`map`] lays the zones out around the
 //! Octagon in a fixed order, and [`fill`] puts each tribute's sprite, with the weapon they
 //! carry at that point in the game, in place of their tag (`{T3}`) in her picture prompt.
 //! [`scene`] zooms in on one event, and [`cage`] on the Octagon.
@@ -45,11 +45,11 @@ const OCTAGON: &str = "the Octagon in the center: an eight-sided fighting cage w
 const SYSTEM: &str = "You design the look of a Hunger Games-style battle royale played by members of a Discord server, drawn as a top-down 2D map of the arena with the tributes as small pixel-art sprites, like a retro strategy game. \
 Each member's profile picture is shown with their tag (T1, T2...). For each tribute, describe their sprite, inspired by their profile picture: a person or character becomes a sprite of them; an animal or creature can stay one; a thing, logo or art becomes a sprite whose colors and costume clearly come from it. \
 Each sprite is one line of 10 to 25 words that reads at a tiny size: bold main colors, hair or headgear and outfit. No weapon or anything held: what they carry changes during the game and is added for each picture. Make every tribute easy to tell apart from the others by color. Nothing about real identity, health or body size, no names and no words or letters. For a tribute with no picture, invent a fitting sprite from their name. \
-The arena's zones are listed with keys (Z1, Z2...) and their names. For each zone, describe its terrain in 3 to 10 words, fitting its name when you can (a channel about games could be an arcade ruin, one about food an orchard), each zone clearly different. Terrain is scenery only: places and things, never people, characters, creatures, robots or crowds. \
-Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ..., \"Z1\": \"terrain\", ...}, with every tribute and every zone.";
+Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ...}, with every tribute.";
 
 /// How the tributes and the zones look, in the game's and the arena's order: `None` for
-/// any the answer left out, or all when the call failed.
+/// any the answer left out, or all when the call failed. The zones are the areas'
+/// descriptions (`areas.rs`).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Looks {
     pub tributes: Vec<Option<String>>,
@@ -86,13 +86,13 @@ impl Shared {
     }
 }
 
-/// Describes how the tributes and the arena's zones look.
+/// Describes how the tributes look; the zones look as `areas` describe them.
 pub async fn describe(
     bot: BotCtx,
     provider: Arc<dyn ChatProvider>,
     guild: GuildId,
     tributes: Vec<(u64, String)>,
-    arena: Vec<String>,
+    areas: Vec<Option<String>>,
 ) -> Looks {
     // The profile pictures download side by side.
     let downloads: Vec<_> = tributes
@@ -114,12 +114,6 @@ pub async fn describe(
             Err(_) => parts.push(Part::Text(format!("{tag}, named {name}: no picture."))),
         }
     }
-    let zones: Vec<String> = arena
-        .iter()
-        .enumerate()
-        .map(|(i, place)| format!("Z{}: {place}", i + 1))
-        .collect();
-    parts.push(Part::Text(format!("The zones:\n{}", zones.join("\n"))));
     let request = ChatRequest {
         system: SYSTEM.to_string(),
         input: Input::Full(vec![Turn {
@@ -132,17 +126,22 @@ pub async fn describe(
     };
     match complete(provider.as_ref(), request, &NoTools, 1).await {
         Ok(done) => {
-            let looks = parse(&done.text, tributes.len(), arena.len());
+            let looks = parse(&done.text, tributes.len(), 0);
             info!(
                 tributes = looks.tributes.iter().flatten().count(),
-                zones = looks.zones.iter().flatten().count(),
                 "described how the Hunger Games look"
             );
-            looks
+            Looks {
+                zones: areas,
+                ..looks
+            }
         }
         Err(err) => {
             warn!("couldn't describe how the Hunger Games look: {err:#}");
-            parse("", tributes.len(), arena.len())
+            Looks {
+                zones: areas,
+                ..parse("", tributes.len(), 0)
+            }
         }
     }
 }
