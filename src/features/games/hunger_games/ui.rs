@@ -7,7 +7,7 @@ use serenity::all::{
     CreateSelectMenuKind, ReactionType, UserId,
 };
 
-use super::game::{Game, Kind, Reward, Round, fill};
+use super::game::{Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
@@ -284,12 +284,13 @@ pub fn link_places(text: &str, places: &[(String, u64)]) -> String {
     out
 }
 
-/// A round as played: her Gamemaker line, who steps into the Octagon, the events with
-/// tributes and places as blue links, and who's left. `places` are the arena's places (name
-/// and channel ID). Plain message text rather than an embed, because embeds use Discord's
-/// smaller font, with a blank line between events so each stands on its own. Long rounds
-/// come in several parts.
-pub fn round(game: &Game, round: &Round, places: &[(String, u64)]) -> Vec<String> {
+/// The round at `index` as played: her Gamemaker line, the places that close, who steps
+/// into the Octagon, the events with tributes and places as blue links, and who's left.
+/// `places` are the arena's places (name and channel ID). Plain message text rather than
+/// an embed, because embeds use Discord's smaller font, with a blank line between events so
+/// each stands on its own. Long rounds come in several parts.
+pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String> {
+    let round = &game.rounds[index];
     let emoji = match round.kind {
         Kind::Scatter => "🏃",
         Kind::Day(_) => "☀️",
@@ -306,6 +307,18 @@ pub fn round(game: &Game, round: &Round, places: &[(String, u64)]) -> Vec<String
     if let Some(line) = &round.gamemaker {
         let line = shorten_at_word(&unspoken(line), 600);
         blocks.push(format!("> 🎙️ *{}*", link_places(&line, places)));
+    }
+    let closing: Vec<String> = places
+        .get(game.closing(index))
+        .unwrap_or_default()
+        .iter()
+        .map(|(_, id)| format!("<#{id}>"))
+        .collect();
+    if !closing.is_empty() {
+        blocks.push(format!(
+            "🔥 The arena shrinks: walls of fire close off {}.",
+            and_list(&closing)
+        ));
     }
     if !round.entrants.is_empty() {
         let names: Vec<String> = round.entrants.iter().map(|&i| name(i)).collect();
@@ -324,7 +337,18 @@ pub fn round(game: &Game, round: &Round, places: &[(String, u64)]) -> Vec<String
             "▫️"
         };
         let line = link_places(&fill(&event.text, name), places);
-        blocks.push(format!("{skull} {line}"));
+        let mut block = format!("{skull} {line}");
+        // A grudge from earlier Games, settled.
+        for death in &event.deaths {
+            if let Some(by) = death.by.filter(|&by| game.revenge(by, death.victim)) {
+                block.push_str(&format!(
+                    "\n-# 😈 Revenge: {} killed {} in an earlier Games.",
+                    name(death.victim),
+                    name(by)
+                ));
+            }
+        }
+        blocks.push(block);
     }
     if let Some(champion) = round.champion {
         let prize = round
@@ -439,6 +463,33 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     split_message(&text, DISCORD_LIMIT)
 }
 
+/// The grudges from earlier Games as the Games begin, like "😈 <@1> has killed <@2> twice
+/// before", or `None` when there are none.
+pub fn grudges(game: &Game) -> Option<String> {
+    let lines: Vec<String> = game
+        .open_grudges()
+        .iter()
+        .map(|g| {
+            format!(
+                "😈 {} has killed {} {} before.",
+                mention(game.tributes[g.killer].id),
+                mention(game.tributes[g.victim].id),
+                g.how_often()
+            )
+        })
+        .collect();
+    (!lines.is_empty()).then(|| format!("**Old grudges:**\n{}", lines.join("\n")))
+}
+
+/// `a`, `a and b`, or `a, b and c`.
+fn and_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// ", 2 kills" after a name, or nothing for none.
 fn kills(count: u32) -> String {
     match count {
@@ -451,7 +502,7 @@ fn kills(count: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::games::hunger_games::game::{Death, Event};
+    use crate::features::games::hunger_games::game::{Death, Event, Round};
 
     #[test]
     fn ids_read_back() {
@@ -525,8 +576,8 @@ mod tests {
             champion: None,
             reward: None,
         };
-        game.apply(played.clone());
-        let parts = round(&game, &played, &[]);
+        game.apply(played);
+        let parts = round(&game, 0, &[]);
         assert!(parts.len() > 1);
         assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
         assert!(parts[0].starts_with("## ☀️ Day 1\n\n> 🎙️ *Hello*\n\n💀 <@1> walks"));
@@ -571,12 +622,64 @@ mod tests {
             champion: Some(0),
             reward: Some(Reward::Armour),
         };
-        game.apply(played.clone());
-        let text = round(&game, &played, &[("general".into(), 5)]).join("");
+        game.apply(played);
+        let text = round(&game, 0, &[("general".into(), 5)]).join("");
         assert!(text.starts_with("## 🏟️ Day 2: the Octagon\n\n> 🎙️ *The Octagon opens in <#5>!*"));
         assert!(text.contains("🥊 Stepping into the Octagon: <@1>, <@3>"));
         assert!(text.contains("💀 <@1> beats <@3> in the cage."));
         assert!(text.contains("🏆 Champion of the Octagon: <@1>, winning 🛡️ golden armour"));
+    }
+
+    #[test]
+    fn rounds_show_the_arena_shrinking_and_revenge() {
+        let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
+        let places: Vec<(String, u64)> = (0..8).map(|i| (format!("room-{i}"), 10 + i)).collect();
+        game.places = places.len();
+        // P7 killed P6 in an earlier Games.
+        game.remember(&[(7, 6, 1)]);
+        assert_eq!(
+            grudges(&game).unwrap(),
+            "**Old grudges:**\n😈 <@7> has killed <@6> once before."
+        );
+        let day = |kind: Kind, events: Vec<Event>| Round {
+            kind,
+            gamemaker: None,
+            events,
+            victory: None,
+            picture: None,
+            entrants: Vec::new(),
+            champion: None,
+            reward: None,
+        };
+        let dies = |victim: usize, by: Option<usize>| Event {
+            text: format!("{{T{}}} falls.", victim + 1),
+            deaths: vec![Death { victim, by }],
+            ..Default::default()
+        };
+        game.apply(day(Kind::Night(1), (0..5).map(|i| dies(i, None)).collect()));
+        // Now P6 gets their revenge, as day 2 closes four places.
+        game.apply(day(
+            Kind::Day(2),
+            vec![Event {
+                text: "{T6} gets {T7} back.".into(),
+                deaths: vec![Death {
+                    victim: 6,
+                    by: Some(5),
+                }],
+                ..Default::default()
+            }],
+        ));
+        let text = round(&game, 1, &places).join("");
+        assert!(text.contains(
+            "🔥 The arena shrinks: walls of fire close off <#14>, <#15>, <#16> and <#17>."
+        ));
+        assert!(text.contains(
+            "💀 <@6> gets <@7> back.\n-# 😈 Revenge: <@7> killed <@6> in an earlier Games."
+        ));
+        // Nothing closed the night before.
+        assert!(!round(&game, 0, &places).join("").contains("🔥"));
+        // The grudge is settled, so it's no longer brought up.
+        assert_eq!(grudges(&game), None);
     }
 
     #[test]

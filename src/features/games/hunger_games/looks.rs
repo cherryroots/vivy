@@ -197,9 +197,11 @@ pub fn parse(answer: &str, tributes: usize, zones: usize) -> Looks {
     looks
 }
 
-/// The arena as the image model is told it every time: the Cornucopia in the middle and
-/// each place as a zone around it, labelled with its name, with its terrain.
-pub fn map(arena: &[String], looks: &Looks) -> String {
+/// The arena as the image model is told it every time: the Octagon in the middle and
+/// each place as a zone around it, labelled with its name, with its terrain. The last
+/// `closed` places are closed off by fire as the arena shrinks.
+pub fn map(arena: &[String], looks: &Looks, closed: usize) -> String {
+    let first_closed = arena.len().saturating_sub(closed);
     let mut text = format!("The map, laid out the same in every picture: {OCTAGON}");
     for (i, place) in arena.iter().enumerate() {
         let direction = DIRECTIONS[i % DIRECTIONS.len()];
@@ -216,7 +218,12 @@ pub fn map(arena: &[String], looks: &Looks) -> String {
             Some(Some(terrain)) => format!(": {terrain}"),
             _ => String::new(),
         };
-        text.push_str(&format!("; {at}, {zone}{terrain}"));
+        let fire = if i >= first_closed {
+            ", closed off: ringed by a wall of fire, scorched and empty"
+        } else {
+            ""
+        };
+        text.push_str(&format!("; {at}, {zone}{terrain}{fire}"));
     }
     text.push('.');
     text
@@ -248,15 +255,16 @@ fn label(place: &str) -> Option<String> {
     (!kept.is_empty()).then(|| kept.chars().take(24).collect())
 }
 
-/// What the image model gets for a round: the map, then her prompt with the sprites in,
-/// and how many people there are (`alive` when the round began): image models fill an
-/// empty place with crowds of their own otherwise.
+/// What the image model gets for a round: the map (with `closed` places closed off), then
+/// her prompt with the sprites in, and how many people there are (`alive` when the round
+/// began): image models fill an empty place with crowds of their own otherwise.
 pub fn prompt(
     arena: &[String],
     looks: &Looks,
     weapons: &[Option<String>],
     picture: &str,
     alive: usize,
+    closed: usize,
 ) -> String {
     let people = match alive {
         1 => "Exactly 1 player is on the map, the one described above.".to_string(),
@@ -266,7 +274,7 @@ pub fn prompt(
     };
     format!(
         "{}\n\nThis round: {}\n\n{people} Nobody else is anywhere on the map: no crowds, townsfolk, guards, soldiers, enemies, monsters or robots. The zones are empty scenery.",
-        map(arena, looks),
+        map(arena, looks, closed),
         fill(picture, looks, weapons)
     )
 }
@@ -353,9 +361,10 @@ mod tests {
             .map(|s| s.to_string())
             .chain((0..8).map(|i| format!("room-{i}")))
             .collect();
-        let map = map(&arena, &looks);
+        let map = map(&arena, &looks, 1);
         assert!(map.starts_with("The map, laid out the same in every picture: the Octagon in the center: an eight-sided fighting cage with a chain-link fence on a raised stone platform; to the north, a zone labelled \"gaming\": an arcade ruin; to the east, a zone; "));
-        assert!(map.contains("further out to the east, a zone labelled \"room-7\"."));
+        assert!(map.contains("further out to the east, a zone labelled \"room-7\", closed off: ringed by a wall of fire, scorched and empty."));
+        assert!(!map.contains("\"room-6\", closed"));
     }
 
     #[test]
@@ -375,7 +384,14 @@ mod tests {
 
     #[test]
     fn says_how_many_are_on_the_map() {
-        let text = prompt(&["general".into()], &Looks::default(), &[], "{T1} naps.", 3);
+        let text = prompt(
+            &["general".into()],
+            &Looks::default(),
+            &[],
+            "{T1} naps.",
+            3,
+            0,
+        );
         assert!(text.contains("This round: a player empty-handed naps."));
         assert!(text.contains("Exactly 3 players are on the map"));
         assert!(text.contains("Nobody else is anywhere on the map"));

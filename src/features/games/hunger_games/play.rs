@@ -350,8 +350,20 @@ async fn run(
     } else {
         vec![None; ids.len()]
     };
+    // Who killed whom in this server's earlier Games, for grudges.
+    let (guild_id, past_ids) = (guild.get(), ids.clone());
+    let past = bot
+        .db
+        .call(move |conn| Ok(stats::grudges(conn, guild_id, &past_ids)?))
+        .await
+        .unwrap_or_else(|err| {
+            warn!("couldn't read the Hunger Games grudges: {err:#}");
+            Vec::new()
+        });
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
-    let game = Game::new(tributes);
+    let mut game = Game::new(tributes);
+    game.places = links.len();
+    game.remember(&past);
     let stage = Stage {
         guild,
         channel,
@@ -427,7 +439,14 @@ async fn play(
             // The game once this round is played: who carries what by the end of it.
             let mut after = game_before.clone();
             after.apply(round.clone());
-            let weapons = after.weapons();
+            // The final showdown and the victor are drawn with what everyone fought with;
+            // other rounds with what everyone carries by the end of it, a looted weapon only
+            // in its new hands.
+            let weapons = if kind == Kind::Finale {
+                game_before.weapons()
+            } else {
+                after.weapons_drawn()
+            };
             // Fights in the Octagon (its rounds and the final showdown) are zoomed in on the
             // cage; other rounds show the whole map.
             let map = async {
@@ -440,10 +459,14 @@ async fn play(
                         looks::cage(looks, &weapons, picture, round.entrants.len()),
                         pictures::CAGE,
                     ),
-                    _ => (
-                        looks::prompt(&arena, looks, &weapons, picture, game_before.alive()),
-                        pictures::MAP,
-                    ),
+                    _ => {
+                        let closed = game_before.closed(game_before.rounds.len()).len();
+                        let alive = game_before.alive();
+                        (
+                            looks::prompt(&arena, looks, &weapons, picture, alive, closed),
+                            pictures::MAP,
+                        )
+                    }
                 };
                 pictures::draw(&ctx, easel, &prompt, style).await.map(Some)
             };
@@ -472,10 +495,14 @@ async fn play(
         })
     };
     let mut words = Later::Working(words);
-    let intro = format!(
+    let mut intro = format!(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Scatter…",
         game.tributes.len()
     );
+    if let Some(grudges) = ui::grudges(&game) {
+        intro.push_str("\n\n");
+        intro.push_str(&grudges);
+    }
     if let Err(err) = channel.say(&bot.http, intro).await {
         warn!("couldn't post the Hunger Games intro: {err}");
     }
@@ -519,7 +546,7 @@ async fn play(
         let over = game.winner().is_some();
 
         // The map goes with the round's last part.
-        let parts = ui::round(&game, &game.rounds[index], &links);
+        let parts = ui::round(&game, index, &links);
         let count = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
             let picture = if i + 1 == count {
@@ -538,10 +565,10 @@ async fn play(
         {
             let (ctx, arena, told) = (bot.clone(), places.clone(), told.clone());
             let everyone = game.tributes.len();
-            let weapons = game.weapons();
+            let weapons = game.weapons_drawn();
             bot.tasks.spawn(async move {
                 let looks = looks.get().await;
-                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone);
+                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone, 0);
                 match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
                     Ok(picture) => {
                         let caption = "🗺️ The arena as the Games begin".to_string();
