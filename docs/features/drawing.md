@@ -8,7 +8,7 @@ There are no commands. In chat, ask Vivy for a picture, or to change one you sho
 
 The tool is offered when `OPENAI_TOKEN` is set in `.env`, whichever provider chats (Claude can call it too), and only in normal chat answers (not in chime-ins, whose tool list is an allow-list in `src/features/chat/chime.rs`).
 
-Settings live under `[features.drawing]`: `model`, `edit_model`, `quality`, `format`, `moderation`, `monthly_pictures` (all servers together, default 100) and `per_user_monthly_pictures` (for one person, default 20, so nobody uses up the month alone; 0 turns either limit off). `config.example.toml` explains each one. The games' pictures (job `game_art`) use the less strict filter, WebP, and the quality the game asks for (`quality` in the tool's arguments: `medium` for the Hunger Games' maps and close-ups, `high` for the victor), or `high` when it doesn't say.
+Settings live under `[features.drawing]`: `model`, `edit_model`, `quality`, `format`, `moderation`, `monthly_pictures` (all servers together, default 100) and `per_user_monthly_pictures` (for one person, default 20, so nobody uses up the month alone; 0 turns either limit off). `config.example.toml` explains each one. The games' pictures (job `game_art`) use the less strict filter and the quality the game asks for (`quality` in the tool's arguments: `medium` for the Hunger Games' maps and close-ups, `high` for the victor), or `high` when it doesn't say.
 
 ## Files
 

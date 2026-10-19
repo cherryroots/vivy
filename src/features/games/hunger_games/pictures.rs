@@ -114,7 +114,7 @@ fn why(error: &str) -> &'static str {
     }
 }
 
-/// A file name for the `n`th picture of a message: `arena-1.webp`, or the picture's own
+/// A file name for the `n`th picture of a message: `arena-1.png`, or the picture's own
 /// kind.
 pub fn file_name(picture: &ModelImage, n: usize) -> String {
     let extension = picture.mime.strip_prefix("image/").unwrap_or("png");

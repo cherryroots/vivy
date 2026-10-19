@@ -287,7 +287,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             pictures: &pictures,
             size: size_for(shape),
             quality: quality(&settings, args),
-            format: format(&settings, args),
+            format: &settings.format,
             moderation: moderation(&settings, args),
             job: job(args),
         };
@@ -399,16 +399,6 @@ fn quality<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     }
 }
 
-/// The picture's file format: the setting, except that games use WebP, so a round's
-/// pictures together stay well under Discord's upload limit (pixel art loses nothing to
-/// see at full quality).
-fn format<'a>(settings: &'a Settings, args: &Value) -> &'a str {
-    match job(args) {
-        "game_art" => "webp",
-        _ => &settings.format,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,8 +434,6 @@ mod tests {
         let medium = json!({"job": "game_art", "quality": "medium"});
         assert_eq!(quality(&settings, &medium), "medium");
         assert_eq!(quality(&settings, &json!({"quality": "low"})), "medium");
-        assert_eq!(format(&settings, &medium), "webp");
-        assert_eq!(format(&settings, &json!({})), "png");
         assert_eq!(quality(&settings, &json!({})), "medium");
     }
 
