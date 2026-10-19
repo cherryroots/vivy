@@ -15,8 +15,7 @@ use super::store::{Reminder, Summary};
 use crate::util::{count, shorten};
 
 /// The snooze buttons under a delivered reminder that add a fixed time: (label, minutes).
-/// "Tomorrow 9:00" and "Pick a time…" come after them. The labels are short so all four
-/// fit one row on a phone.
+/// "Pick a time…" comes after them. The labels are short so they fit one row on a phone.
 const SNOOZES: [(&str, i64); 2] = [("10 min", 10), ("1 hour", 60)];
 
 /// Every button, menu and modal this feature makes. The ID text is built and parsed only
@@ -25,11 +24,9 @@ const SNOOZES: [(&str, i64); 2] = [("10 min", 10), ("1 hour", 60)];
 pub enum Action {
     /// The `/reminders` delete menu. The reminder ID is the selected value.
     Delete,
-    /// A snooze button on a delivered reminder: `minutes` from now. (Before "Tomorrow" had
-    /// its own button, it was this with 1440 minutes; those buttons still work.)
+    /// A snooze button on a delivered reminder: `minutes` from now. (Older messages also
+    /// have one with 1440 minutes, a day; those buttons still work.)
     Snooze { id: i64, minutes: i64 },
-    /// "Snooze until tomorrow": 09:00 the next morning in the owner's timezone.
-    Tomorrow { id: i64 },
     /// "Pick a time…": opens the modal to type a time.
     AskSnooze { id: i64 },
     /// The snooze modal.
@@ -43,7 +40,6 @@ impl Action {
         match self {
             Action::Delete => "reminders:delete".to_string(),
             Action::Snooze { id, minutes } => format!("reminders:snooze:{id}:{minutes}"),
-            Action::Tomorrow { id } => format!("reminders:tomorrow:{id}"),
             Action::AskSnooze { id } => format!("reminders:asksnooze:{id}"),
             Action::SnoozeTo { id } => format!("reminders:snoozeto:{id}"),
             Action::Cancel { id } => format!("reminders:cancel:{id}"),
@@ -58,9 +54,6 @@ impl Action {
             ["snooze", id, minutes] => Some(Action::Snooze {
                 id: id.parse().ok()?,
                 minutes: minutes.parse().ok()?,
-            }),
-            ["tomorrow", id] => Some(Action::Tomorrow {
-                id: id.parse().ok()?,
             }),
             ["asksnooze", id] => Some(Action::AskSnooze {
                 id: id.parse().ok()?,
@@ -176,7 +169,6 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz)
         .iter()
         .map(|&(label, minutes)| button(Action::Snooze { id, minutes }, label))
         .collect();
-    buttons.push(button(Action::Tomorrow { id }, "Tomorrow 9:00"));
     buttons.push(button(Action::AskSnooze { id }, "Pick a time…"));
 
     let mut message = CreateMessage::new()
@@ -406,10 +398,7 @@ mod tests {
             .iter()
             .map(|b| b["label"].as_str().unwrap())
             .collect();
-        assert_eq!(
-            labels,
-            ["10 min", "1 hour", "Tomorrow 9:00", "Pick a time…"]
-        );
+        assert_eq!(labels, ["10 min", "1 hour", "Pick a time…"]);
     }
 
     #[test]
@@ -420,7 +409,6 @@ mod tests {
                 id: 12,
                 minutes: 60,
             },
-            Action::Tomorrow { id: 12 },
             Action::AskSnooze { id: 12 },
             Action::SnoozeTo { id: 12 },
             Action::Cancel { id: 12 },
