@@ -470,19 +470,20 @@ impl Game {
         now.start..before.start
     }
 
-    /// How many places are closed once `fallen` tributes have fallen. Nothing closes until
-    /// half have, then it's an even share of the rest per death, so the last two alive have
-    /// only [`ALWAYS_OPEN`] places left.
+    /// How many places are closed once `fallen` tributes have fallen. The first close as
+    /// soon as half have fallen (Cherry: with 6 tributes it has to start at 3 left), then an
+    /// even share more with each death, so the last two alive have only [`ALWAYS_OPEN`]
+    /// places left.
     fn closed_after(&self, fallen: usize) -> usize {
         let total = self.tributes.len();
         let half = total / 2;
-        // Deaths from half fallen to the final two.
-        let span = total.saturating_sub(2 + half);
+        // The deaths from half fallen up to the final two, each closing a share.
+        let steps = total.saturating_sub(1 + half);
         let closable = self.places.saturating_sub(ALWAYS_OPEN);
-        if fallen <= half || span == 0 {
+        if fallen < half || steps == 0 {
             return 0;
         }
-        ((fallen - half) * closable / span).min(closable)
+        ((fallen - half + 1) * closable / steps).min(closable)
     }
 
     /// How many fell before the round at `at`.
@@ -1256,11 +1257,18 @@ mod tests {
             g.apply(round_with(Kind::Night(1), dead));
             g.closed(1)
         };
-        assert_eq!(closed(7), 14..14);
-        // Then 12 places close over the 5 deaths to the final two, the last places first.
-        assert_eq!(closed(8), 12..14);
-        assert_eq!(closed(10), 7..14);
-        assert_eq!(closed(11), 5..14);
+        assert_eq!(closed(6), 14..14);
+        // From half fallen, 12 places close over the 6 deaths to the final two, the last
+        // places first.
+        assert_eq!(closed(7), 12..14);
+        assert_eq!(closed(8), 10..14);
+        assert_eq!(closed(10), 6..14);
+        assert_eq!(closed(11), 4..14);
+        // 6 tributes: half of the places close at 3 left.
+        let mut six = game(6);
+        six.places = 6;
+        six.apply(round_with(Kind::Night(1), 3));
+        assert_eq!(six.closed(1), 4..6);
         // An arena with no places never shrinks.
         let mut g = game(14);
         g.apply(round_with(Kind::Night(1), 11));
@@ -1272,19 +1280,19 @@ mod tests {
         let mut g = game(14);
         g.places = 14;
         g.apply(round_with(Kind::Night(1), 8));
-        // Day 2 closes two places.
-        assert_eq!(g.closing(1), 12..14);
+        // Day 2 closes four places.
+        assert_eq!(g.closing(1), 10..14);
         g.apply(round_with(Kind::Day(2), 0));
         g.tributes[8].died_in = Some(1);
         // The Octagon that follows keeps the arena as it was, though one more fell.
         assert_eq!(g.next_kind(), Some(Kind::Octagon(2)));
-        assert_eq!(g.closed(2), 12..14);
+        assert_eq!(g.closed(2), 10..14);
         assert!(g.closing(2).is_empty());
         g.apply(round_with(Kind::Octagon(2), 0));
         // Night 2 closes the next ones.
         assert_eq!(g.next_kind(), Some(Kind::Night(2)));
-        assert_eq!(g.closed(3), 10..14);
-        assert_eq!(g.closing(3), 10..12);
+        assert_eq!(g.closed(3), 8..14);
+        assert_eq!(g.closing(3), 8..10);
         // The first rounds close nothing.
         assert!(g.closing(0).is_empty());
     }

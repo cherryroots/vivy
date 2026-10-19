@@ -466,7 +466,7 @@ mod tests {
         let text = brief(&game, Kind::Scatter, &arena, &[], false);
         assert!(text.contains("- T7 killed T8 3 times\n- T1 killed T8 once\n"));
         assert!(!text.contains("walls of fire"));
-        // Five fall in the first night, so day 2 closes three places.
+        // Five fall in the first night, so day 2 closes four places.
         for t in &mut game.tributes[..5] {
             t.died_in = Some(0);
         }
@@ -481,9 +481,9 @@ mod tests {
             reward: None,
         });
         let text = brief(&game, Kind::Day(2), &arena, &[], false);
-        assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2, #room-3, #room-4\n"));
-        assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-5, #room-6, #room-7\n"));
-        assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-5, #room-6, #room-7."));
+        assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2, #room-3\n"));
+        assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-4, #room-5, #room-6, #room-7\n"));
+        assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-4, #room-5, #room-6, #room-7."));
         // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
         assert!(text.contains("- T7 killed T8 3 times\n\n"));
         assert!(!text.contains("T1 killed"));

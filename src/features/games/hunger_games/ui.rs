@@ -657,7 +657,7 @@ mod tests {
             ..Default::default()
         };
         game.apply(day(Kind::Night(1), (0..5).map(|i| dies(i, None)).collect()));
-        // Now P6 gets their revenge, as day 2 closes three places.
+        // Now P6 gets their revenge, as day 2 closes four places.
         game.apply(day(
             Kind::Day(2),
             vec![Event {
@@ -670,9 +670,9 @@ mod tests {
             }],
         ));
         let text = round(&game, 1, &places).join("");
-        assert!(
-            text.contains("🔥 The arena shrinks: walls of fire close off <#15>, <#16> and <#17>.")
-        );
+        assert!(text.contains(
+            "🔥 The arena shrinks: walls of fire close off <#14>, <#15>, <#16> and <#17>."
+        ));
         assert!(text.contains(
             "💀 <@6> gets <@7> back.\n-# 😈 Revenge: <@7> killed <@6> in an earlier Games."
         ));
