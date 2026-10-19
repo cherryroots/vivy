@@ -75,6 +75,8 @@ pub fn to_messages(
                 } => content.push(tool_result(call_id, output, images)),
                 // Another provider's answer: its text parts stand in for it.
                 Part::Native { .. } => {}
+                // Claude reads videos as frame grids; these are only made for Gemini.
+                Part::Video(_) | Part::YouTube(_) => {}
             }
         }
         if content.is_empty() {

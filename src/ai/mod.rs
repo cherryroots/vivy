@@ -1,6 +1,6 @@
 //! Talking to AI models.
 //!
-//! Every provider (OpenAI, Claude) implements [`ChatProvider`]. The rest of the bot
+//! Every provider (OpenAI, Claude, Gemini) implements [`ChatProvider`]. The rest of the bot
 //! only sees the types in this file: a conversation is a list of [`Turn`]s, and an answer
 //! arrives as a stream of [`ChatEvent`]s. Discord, message splitting, the tool loop and the
 //! bot's own tools live outside, so every provider reuses them.
@@ -9,6 +9,7 @@ mod api;
 pub mod claude;
 mod complete;
 pub mod fallback;
+pub mod gemini;
 pub mod openai;
 mod spend;
 mod sse;
@@ -23,6 +24,7 @@ use crate::util::media::ModelImage;
 
 pub use claude::{Claude, ClaudeConfig};
 pub use complete::{ToolRunner, complete};
+pub use gemini::{Gemini, GeminiConfig};
 pub use openai::images::{Images, PictureRequest};
 pub use openai::{OpenAi, OpenAiConfig};
 pub use spend::{AdminKey, Bill, Spend};
@@ -42,6 +44,11 @@ pub enum Part {
     Image(ModelImage),
     /// A file someone attached that isn't a picture or video: a PDF, a spreadsheet, a zip...
     File(ModelFile),
+    /// A video as it is, for a provider that watches videos itself
+    /// ([`ChatProvider::watches_video`]). Others get it as frame grids in `Image`s.
+    Video(ModelFile),
+    /// A YouTube video by its link, for a provider that watches videos itself.
+    YouTube(String),
     /// The answer to a [`ToolCall`], sent back to the model.
     ToolResult {
         call_id: String,
@@ -320,6 +327,12 @@ pub trait ChatProvider: Send + Sync {
         false
     }
 
+    /// Whether the model watches videos itself (Gemini). History then sends a posted video
+    /// as [`Part::Video`] and YouTube links as [`Part::YouTube`], instead of frame grids.
+    fn watches_video(&self) -> bool {
+        false
+    }
+
     /// Starts an answer. Events arrive on the returned channel until [`ChatEvent::Done`] or
     /// an error. Dropping the receiver stops the request.
     async fn stream(
@@ -342,11 +355,14 @@ pub struct AiConfig {
     pub fallback: Option<Provider>,
     pub openai: OpenAiConfig,
     pub claude: ClaudeConfig,
+    pub gemini: GeminiConfig,
 }
 
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const OPENAI_EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
+const GEMINI_LEVELS: [&str; 4] = ["minimal", "low", "medium", "high"];
 const VERBOSITIES: [&str; 3] = ["low", "medium", "high"];
+const VIDEO_PROCESSING: [&str; 2] = ["static", "agentic"];
 
 /// Settings the APIs would refuse, found at startup instead of on the first answer: an
 /// `effort` or `verbosity` that isn't one of the allowed words. Each gives one warning
@@ -395,10 +411,34 @@ pub fn config_warnings(config: &AiConfig) -> Vec<String> {
         &config.openai.verbosity,
         &VERBOSITIES,
     );
+    check(
+        "ai.gemini.thinking_level".into(),
+        &config.gemini.thinking_level,
+        &GEMINI_LEVELS,
+    );
+    for (name, job) in &config.gemini.jobs {
+        if let Some(effort) = &job.effort {
+            check(
+                format!("ai.gemini.jobs.{name}.effort"),
+                effort,
+                &GEMINI_LEVELS,
+            );
+        }
+    }
+    check(
+        "ai.gemini.video_processing".into(),
+        &config.gemini.video_processing,
+        &VIDEO_PROCESSING,
+    );
+    check(
+        "ai.gemini.youtube_processing".into(),
+        &config.gemini.youtube_processing,
+        &VIDEO_PROCESSING,
+    );
     warnings
 }
 
-/// `provider = "openai"` or `provider = "claude"` under `[ai]`. Any other value stops the
+/// `provider = "openai"`, `"claude"` or `"gemini"` under `[ai]`. Any other value stops the
 /// bot at startup with a config error. Left out, it's OpenAI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -406,13 +446,15 @@ pub enum Provider {
     #[default]
     Openai,
     Claude,
+    Gemini,
 }
 
-/// "Claude" for "claude", "OpenAI" for "openai".
+/// "Claude" for "claude", "OpenAI" for "openai", "Gemini" for "gemini".
 pub fn display_name(name: &str) -> &str {
     match name {
         "claude" => "Claude",
         "openai" => "OpenAI",
+        "gemini" => "Gemini",
         other => other,
     }
 }
@@ -425,7 +467,7 @@ pub struct Ai {
     /// Takes over while the main provider is out (see [`fallback`]).
     backup: Option<Arc<dyn ChatProvider>>,
     fallback: Option<Arc<fallback::State>>,
-    /// What each provider that's set up cost this month: Claude first, then OpenAI.
+    /// What each provider that's set up cost this month: Claude, OpenAI, then Gemini.
     pub spends: Vec<Spend>,
     /// Drawing pictures with OpenAI's Image API, when `OPENAI_TOKEN` is set.
     pub images: Option<Images>,
