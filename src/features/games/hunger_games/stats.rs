@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{CreateAllowedMentions, User};
 
 use super::game::{Game, Kind};
-use crate::core::{Context, Result};
+use crate::core::{Context, Result, user_error};
 use crate::util::count;
 
 pub const MIGRATIONS: &[&str] = &[
@@ -255,6 +255,47 @@ pub async fn leaderboard(
     Ok(())
 }
 
+/// Deletes every saved game of a server, so the leaderboard starts over. How many games
+/// were deleted.
+fn reset(conn: &mut Connection, guild: u64) -> rusqlite::Result<usize> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "DELETE FROM games_hunger_tributes WHERE game_id IN
+             (SELECT id FROM games_hunger_games WHERE guild_id = ?1)",
+        [guild],
+    )?;
+    let games = tx.execute(
+        "DELETE FROM games_hunger_games WHERE guild_id = ?1",
+        [guild],
+    )?;
+    tx.commit()?;
+    Ok(games)
+}
+
+/// Start the Hunger Games leaderboard over (admins)
+#[poise::command(slash_command, guild_only, ephemeral, rename = "resetleaderboard")]
+pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<()> {
+    if !ctx.data().is_admin(ctx.author().id) {
+        return Err(user_error("Only admins can use this command."));
+    }
+    let guild = ctx
+        .guild_id()
+        .context("guild_only command without a server")?
+        .get();
+    let cleared = ctx
+        .data()
+        .db
+        .call(move |conn| Ok(reset(conn, guild)?))
+        .await?;
+    tracing::info!(guild, cleared, "Hunger Games leaderboard reset");
+    ctx.say(format!(
+        "Reset: deleted {}. Everyone's wins, kills and Octagons start from zero.",
+        count(cleared, "saved game")
+    ))
+    .await?;
+    Ok(())
+}
+
 /// The leaderboard message.
 fn board(ranked: &[Ranked], games: u64, best: Option<(u64, u64)>) -> String {
     if ranked.is_empty() {
@@ -339,6 +380,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         }
     }
 
@@ -437,6 +479,15 @@ mod tests {
         assert_eq!(games_played(&conn, 7).unwrap(), 2);
         assert_eq!(most_kills(&conn, 7).unwrap(), Some((1, 2)));
         assert_eq!(most_kills(&conn, 9).unwrap(), None);
+
+        // Resetting one server leaves the other alone.
+        let mut other = test_connection("games", MIGRATIONS);
+        record(&mut other, 7, 1, &finished()).unwrap();
+        record(&mut other, 8, 1, &finished()).unwrap();
+        assert_eq!(reset(&mut other, 7).unwrap(), 1);
+        assert!(top(&other, 7, 10).unwrap().is_empty());
+        assert_eq!(games_played(&other, 8).unwrap(), 1);
+        assert_eq!(top(&other, 8, 10).unwrap().len(), 4);
 
         let reed = record_of(&conn, 7, 4).unwrap().unwrap();
         assert_eq!(

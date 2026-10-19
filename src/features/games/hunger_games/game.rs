@@ -81,6 +81,51 @@ pub struct Event {
     pub leaves: Vec<usize>,
 }
 
+/// What the champion of an Octagon wins, as the crowd votes before it opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reward {
+    /// The deadliest weapon in the arena: whoever carries it wins nearly every fight, and
+    /// it can be looted.
+    Weapon,
+    /// The champion can't die in the next two rounds (not counting the final showdown).
+    Armour,
+    /// The champion tracks someone down and kills them in the next round.
+    Hunt,
+}
+
+impl Reward {
+    pub const ALL: [Reward; 3] = [Reward::Weapon, Reward::Armour, Reward::Hunt];
+
+    /// Its name in buttons and messages.
+    pub fn name(self) -> &'static str {
+        match self {
+            Reward::Weapon => "Legendary weapon",
+            Reward::Armour => "Golden armour",
+            Reward::Hunt => "The hunt",
+        }
+    }
+
+    pub fn emoji(self) -> &'static str {
+        match self {
+            Reward::Weapon => "⚔️",
+            Reward::Armour => "🛡️",
+            Reward::Hunt => "🐺",
+        }
+    }
+
+    /// What it does, in a few words for people.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Reward::Weapon => "the deadliest weapon in the arena, wins nearly every fight",
+            Reward::Armour => "can't die for the next two rounds",
+            Reward::Hunt => "hunts someone down and kills them the next round",
+        }
+    }
+}
+
+/// How many rounds after the Octagon its golden armour lasts.
+const ARMOUR_ROUNDS: usize = 2;
+
 /// A round as it's played.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Round {
@@ -92,9 +137,10 @@ pub struct Round {
     pub victory: Option<String>,
     /// What to draw on the arena map for this round, when she was asked to.
     pub picture: Option<String>,
-    /// In an Octagon round, who stepped in (indexes), and who won it.
+    /// In an Octagon round, who stepped in (indexes), who won it, and what they won.
     pub entrants: Vec<usize>,
     pub champion: Option<usize>,
+    pub reward: Option<Reward>,
 }
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
@@ -158,6 +204,9 @@ const OCTAGON_ALIVE: usize = 4;
 pub struct Game {
     pub tributes: Vec<Tribute>,
     pub rounds: Vec<Round>,
+    /// The prize for the coming Octagon, once the crowd has voted. A legendary weapon
+    /// when there was no vote.
+    pub prize: Option<Reward>,
 }
 
 impl Game {
@@ -177,6 +226,7 @@ impl Game {
                 })
                 .collect(),
             rounds: Vec::new(),
+            prize: None,
         }
     }
 
@@ -217,11 +267,32 @@ impl Game {
             .count() as u32
     }
 
+    /// Whether the tribute at `index` wears golden armour from an Octagon they won, in the
+    /// round at `at` (an index into the rounds).
+    pub fn armoured(&self, index: usize, at: usize) -> bool {
+        self.rounds.iter().enumerate().any(|(won_in, r)| {
+            r.champion == Some(index)
+                && r.reward == Some(Reward::Armour)
+                && (won_in + 1..=won_in + ARMOUR_ROUNDS).contains(&at)
+        })
+    }
+
+    /// Who must kill someone in the round at `at`: the champion of the Octagon just before
+    /// it, when they won the hunt.
+    pub fn hunter(&self, at: usize) -> Option<usize> {
+        let before = self.rounds.get(at.checked_sub(1)?)?;
+        let hunter = before
+            .champion
+            .filter(|_| before.reward == Some(Reward::Hunt))?;
+        self.tributes[hunter].alive().then_some(hunter)
+    }
+
     /// The weapons won as Octagon prizes: what each champion found in the round they won.
     /// A prize stays one when it's looted, so it can change hands.
     pub fn prizes(&self) -> Vec<&str> {
         self.rounds
             .iter()
+            .filter(|r| r.reward == Some(Reward::Weapon))
             .filter_map(|r| {
                 let champion = r.champion?;
                 r.events
@@ -358,6 +429,8 @@ impl Game {
             let bouts = self.entrants().len().saturating_sub(1);
             return (1, bouts.clamp(1, alive - 2));
         }
+        // A hunt from the Octagon means at least one dies.
+        let hunted = self.hunter(self.rounds.len()).is_some();
         let share = match kind {
             Kind::Day(_) => 0.12,
             Kind::Night(_) => 0.15,
@@ -371,7 +444,7 @@ impl Game {
             .is_none_or(|r| r.events.iter().all(|e| e.deaths.is_empty()));
         let may_be_quiet = matches!(kind, Kind::Day(_) | Kind::Night(_)) && !last_was_quiet;
         let floor = max / 2;
-        let min = if floor == 0 && may_be_quiet {
+        let min = if floor == 0 && may_be_quiet && !hunted {
             0
         } else {
             floor.max(1)
@@ -553,6 +626,29 @@ impl Game {
             };
             return Err(format!("{dead} died, but this round {wanted} should die."));
         }
+        // What earlier Octagon champions won.
+        let now = self.rounds.len();
+        for death in events.iter().flat_map(|e| &e.deaths) {
+            if kind != Kind::Finale && self.armoured(death.victim, now) {
+                return Err(format!(
+                    "{} wears the golden armour from the Octagon and can't die this round.",
+                    Game::tag(death.victim)
+                ));
+            }
+        }
+        if let Some(hunter) = self.hunter(now).filter(|_| kind != Kind::Finale) {
+            let killed = events
+                .iter()
+                .flat_map(|e| &e.deaths)
+                .any(|d| d.by == Some(hunter));
+            if !killed {
+                return Err(format!(
+                    "{} won the hunt in the Octagon, so this round they track someone down and kill them.",
+                    Game::tag(hunter)
+                ));
+            }
+        }
+        let reward = self.prize.unwrap_or(Reward::Weapon);
         let (entrants, champion) = match kind {
             Kind::Octagon(_) => {
                 let entrants = self.entrants();
@@ -574,12 +670,12 @@ impl Game {
                         ));
                     }
                 }
-                // The prize is what makes winning worth it, so there always is one.
+                // The weapon is what makes winning worth it, so there always is one.
                 let won = events
                     .iter()
                     .flat_map(|e| &e.finds)
                     .any(|(who, _)| *who == champion);
-                if !won {
+                if reward == Reward::Weapon && !won {
                     return Err(format!(
                         "{tag} wins the Octagon but gets no prize: put the legendary weapon they win in their `finds`."
                     ));
@@ -596,6 +692,7 @@ impl Game {
             events,
             victory: clean(written.victory).filter(|_| kind == Kind::Finale),
             picture: clean(written.picture),
+            reward: champion.map(|_| reward),
             entrants,
             champion,
         })
@@ -894,6 +991,98 @@ mod tests {
         assert!(day.entrants.is_empty());
     }
 
+    /// A game of 6 where P1 just won an Octagon (round 0) with `reward`.
+    fn after_octagon(reward: Reward) -> Game {
+        let mut g = game(6);
+        g.rounds.push(Round {
+            entrants: vec![0, 1],
+            champion: Some(0),
+            reward: Some(reward),
+            ..round_with(Kind::Octagon(1), 0)
+        });
+        g
+    }
+
+    /// Everyone alive in their own event, with `victim` killed by `by`.
+    fn night(g: &Game, victim: &str, by: Option<&str>) -> Written {
+        let mut w = written(
+            (1..=g.tributes.len())
+                .filter(|&n| g.tributes[n - 1].alive())
+                .filter(|&n| format!("T{n}") != victim && Some(format!("T{n}").as_str()) != by)
+                .map(|n| {
+                    let tag = format!("T{n}");
+                    event(&format!("{{{tag}}} sleeps."), &[tag.as_str()], &[])
+                })
+                .collect(),
+        );
+        let mut tags = vec![victim];
+        tags.extend(by);
+        let text = match by {
+            Some(by) => format!("{{{by}}} gets {{{victim}}}."),
+            None => format!("{{{victim}}} falls off a cliff."),
+        };
+        w.events.push(event(&text, &tags, &[(victim, by)]));
+        w.gamemaker = None;
+        w
+    }
+
+    #[test]
+    fn golden_armour_keeps_the_champion_alive_for_two_rounds() {
+        let mut g = after_octagon(Reward::Armour);
+        assert!(g.armoured(0, 1) && g.armoured(0, 2) && !g.armoured(0, 3));
+        assert!(!g.armoured(1, 1));
+        let err = g
+            .check(Kind::Night(1), night(&g, "T1", Some("T2")))
+            .unwrap_err();
+        assert!(err.contains("golden armour"), "{err}");
+        assert!(g.check(Kind::Night(1), night(&g, "T3", Some("T2"))).is_ok());
+        // It doesn't decide the final showdown.
+        for t in &mut g.tributes[2..] {
+            t.died_in = Some(0);
+        }
+        assert!(g.check(Kind::Finale, night(&g, "T1", Some("T2"))).is_ok());
+    }
+
+    #[test]
+    fn the_hunt_makes_the_champion_kill_next_round() {
+        let g = after_octagon(Reward::Hunt);
+        assert_eq!(g.hunter(1), Some(0));
+        assert_eq!(g.hunter(2), None);
+        // Someone has to die, even when the night could have been quiet.
+        assert!(g.deaths_range(Kind::Night(1)).0 >= 1);
+        let err = g
+            .check(Kind::Night(1), night(&g, "T3", Some("T2")))
+            .unwrap_err();
+        assert!(err.contains("won the hunt"), "{err}");
+        assert!(g.check(Kind::Night(1), night(&g, "T3", Some("T1"))).is_ok());
+    }
+
+    #[test]
+    fn only_a_weapon_prize_needs_a_find() {
+        let mut g = game(5);
+        for (t, nerve) in g.tributes.iter_mut().zip([90, 80, 10, 10, 10]) {
+            t.nerve = nerve;
+        }
+        let mut w = written(vec![
+            event("{T1} beats {T2}.", &["T1", "T2"], &[("T2", Some("T1"))]),
+            event("{T3}, {T4} and {T5} watch.", &["T3", "T4", "T5"], &[]),
+        ]);
+        w.champion = Some("T1".into());
+        assert!(
+            g.check(Kind::Octagon(2), w)
+                .unwrap_err()
+                .contains("no prize")
+        );
+        g.prize = Some(Reward::Hunt);
+        let mut w = written(vec![
+            event("{T1} beats {T2}.", &["T1", "T2"], &[("T2", Some("T1"))]),
+            event("{T3}, {T4} and {T5} watch.", &["T3", "T4", "T5"], &[]),
+        ]);
+        w.champion = Some("T1".into());
+        let played = g.check(Kind::Octagon(2), w).unwrap();
+        assert_eq!(played.reward, Some(Reward::Hunt));
+    }
+
     #[test]
     fn two_left_is_the_finale_and_one_left_is_the_end() {
         let mut g = game(2);
@@ -919,6 +1108,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         }
     }
 

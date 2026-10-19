@@ -285,7 +285,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             prompt: &prompt,
             pictures: &pictures,
             size: size_for(shape),
-            quality: &settings.quality,
+            quality: quality(&settings, args),
             format: &settings.format,
             moderation: moderation(&settings, args),
             job: job(args),
@@ -385,6 +385,15 @@ fn moderation<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     }
 }
 
+/// How good a picture is: the setting, except that games draw at high quality (Cherry's
+/// call: their maps are full of small sprites).
+fn quality<'a>(settings: &'a Settings, args: &Value) -> &'a str {
+    match job(args) {
+        "game_art" => "high",
+        _ => &settings.quality,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +425,8 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(moderation(&settings, &json!({"job": "game_art"})), "low");
         assert_eq!(moderation(&settings, &json!({})), "auto");
+        assert_eq!(quality(&settings, &json!({"job": "game_art"})), "high");
+        assert_eq!(quality(&settings, &json!({})), "medium");
     }
 
     #[test]

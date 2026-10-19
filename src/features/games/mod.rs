@@ -68,7 +68,8 @@ impl Feature for Games {
     subcommands(
         "who_said_it::who_said_it",
         "hunger_games::hunger_games",
-        "hunger_games::leaderboard"
+        "hunger_games::leaderboard",
+        "hunger_games::reset_leaderboard"
     ),
     subcommand_required
 )]

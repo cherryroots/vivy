@@ -4,10 +4,10 @@
 
 use serenity::all::{
     ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu,
-    CreateSelectMenuKind, UserId,
+    CreateSelectMenuKind, ReactionType, UserId,
 };
 
-use super::game::{Game, Kind, Round, fill};
+use super::game::{Game, Kind, Reward, Round, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
@@ -26,6 +26,8 @@ pub enum Action {
     Memories,
     /// The host turns the pictures she draws during the game on or off.
     Pictures,
+    /// A vote for the prize of the coming Octagon.
+    Prize(Reward),
 }
 
 /// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
@@ -38,6 +40,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Cancel => "cancel".to_string(),
         Action::Memories => "memories".to_string(),
         Action::Pictures => "pictures".to_string(),
+        Action::Prize(reward) => format!("prize-{}", reward_key(reward)),
     };
     format!("games:hunger:{game}:{action}")
 }
@@ -54,9 +57,80 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "cancel" => Action::Cancel,
         "memories" => Action::Memories,
         "pictures" => Action::Pictures,
-        _ => return None,
+        _ => Action::Prize(
+            Reward::ALL
+                .into_iter()
+                .find(|&r| what.strip_prefix("prize-") == Some(reward_key(r)))?,
+        ),
     };
     Some((game, action))
+}
+
+fn reward_key(reward: Reward) -> &'static str {
+    match reward {
+        Reward::Weapon => "weapon",
+        Reward::Armour => "armour",
+        Reward::Hunt => "hunt",
+    }
+}
+
+/// The vote for the coming Octagon's prize: each prize with what it does and its votes so
+/// far, a countdown to `closes_at` (a Unix time), and a button for each. Plain text, like
+/// the rounds.
+pub fn prize_vote(
+    game: u32,
+    votes: &[(Reward, usize)],
+    closes_at: i64,
+) -> (String, Vec<CreateActionRow>) {
+    let mut text = format!(
+        "## 🏟️ The Octagon opens next!\nVote for the prize its champion takes. Voting closes <t:{closes_at}:R>.\n"
+    );
+    for &(reward, count) in votes {
+        text.push_str(&format!(
+            "\n{} **{}**: {} · {}",
+            reward.emoji(),
+            reward.name(),
+            reward.blurb(),
+            count_votes(count)
+        ));
+    }
+    let buttons = Reward::ALL
+        .into_iter()
+        .map(|r| {
+            CreateButton::new(custom_id(game, Action::Prize(r)))
+                .label(r.name())
+                .emoji(ReactionType::Unicode(r.emoji().to_string()))
+                .style(ButtonStyle::Primary)
+        })
+        .collect();
+    (text, vec![CreateActionRow::Buttons(buttons)])
+}
+
+/// The vote once it's closed: what won, and the count for each.
+pub fn prize_chosen(won: Reward, votes: &[(Reward, usize)], random: bool) -> String {
+    let counts: Vec<String> = votes
+        .iter()
+        .map(|&(r, n)| format!("{} {}", r.emoji(), n))
+        .collect();
+    let how = if random {
+        "Nobody could agree, so Vivy picked"
+    } else {
+        "The crowd has spoken"
+    };
+    format!(
+        "## 🏟️ The Octagon's prize\n{how}: {} **{}** ({}).\n-# Votes: {}",
+        won.emoji(),
+        won.name(),
+        won.blurb(),
+        counts.join(" · ")
+    )
+}
+
+fn count_votes(n: usize) -> String {
+    match n {
+        1 => "1 vote".to_string(),
+        n => format!("{n} votes"),
+    }
 }
 
 /// What the host turned on in the Reaping. Both start off.
@@ -253,7 +327,14 @@ pub fn round(game: &Game, round: &Round, places: &[(String, u64)]) -> Vec<String
         blocks.push(format!("{skull} {line}"));
     }
     if let Some(champion) = round.champion {
-        blocks.push(format!("🏆 Champion of the Octagon: {}", name(champion)));
+        let prize = round
+            .reward
+            .map(|r| format!(", winning {} {}", r.emoji(), r.name().to_lowercase()))
+            .unwrap_or_default();
+        blocks.push(format!(
+            "🏆 Champion of the Octagon: {}{prize}",
+            name(champion)
+        ));
     }
     let left = game.alive();
     blocks.push(if left == 1 {
@@ -381,6 +462,9 @@ mod tests {
             Action::Cancel,
             Action::Memories,
             Action::Pictures,
+            Action::Prize(Reward::Weapon),
+            Action::Prize(Reward::Armour),
+            Action::Prize(Reward::Hunt),
         ] {
             let id = custom_id(9, action);
             let rest = id.strip_prefix("games:").unwrap();
@@ -439,6 +523,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         };
         game.apply(played.clone());
         let parts = round(&game, &played, &[]);
@@ -484,13 +569,14 @@ mod tests {
             picture: None,
             entrants: vec![0, 2],
             champion: Some(0),
+            reward: Some(Reward::Armour),
         };
         game.apply(played.clone());
         let text = round(&game, &played, &[("general".into(), 5)]).join("");
         assert!(text.starts_with("## 🏟️ Day 2: the Octagon\n\n> 🎙️ *The Octagon opens in <#5>!*"));
         assert!(text.contains("🥊 Stepping into the Octagon: <@1>, <@3>"));
         assert!(text.contains("💀 <@1> beats <@3> in the cage."));
-        assert!(text.contains("🏆 Champion of the Octagon: <@1>"));
+        assert!(text.contains("🏆 Champion of the Octagon: <@1>, winning 🛡️ golden armour"));
     }
 
     #[test]
@@ -515,6 +601,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         };
         // Sage dies before the Octagon, so isn't a coward; Reed steps in and dies there.
         game.apply(round(Kind::Day(1), vec![death(4, None)]));
@@ -530,6 +617,21 @@ mod tests {
         assert!(text.contains("👑 <@1>, 2 kills, 🏟️ won the Octagon\n"));
         assert!(text.contains("🐔 Never dared to step into the Octagon: <@2>, <@3>\n"));
         assert!(text.ends_with("Octagons won are counted on `/games leaderboard`."));
+    }
+
+    #[test]
+    fn the_prize_vote_shows_counts_then_the_winner() {
+        let counts = [(Reward::Weapon, 1), (Reward::Armour, 0), (Reward::Hunt, 2)];
+        let (text, rows) = prize_vote(4, &counts, 1700);
+        assert!(text.contains("Voting closes <t:1700:R>"));
+        assert!(text.contains("🛡️ **Golden armour**: can't die for the next two rounds · 0 votes"));
+        assert!(text.contains("🐺 **The hunt**"));
+        assert!(text.contains("· 1 vote"));
+        assert_eq!(rows.len(), 1);
+        let text = prize_chosen(Reward::Hunt, &counts, false);
+        assert!(text.contains("The crowd has spoken: 🐺 **The hunt**"));
+        assert!(text.contains("Votes: ⚔️ 1 · 🛡️ 0 · 🐺 2"));
+        assert!(prize_chosen(Reward::Weapon, &counts, true).contains("Vivy picked"));
     }
 
     #[test]

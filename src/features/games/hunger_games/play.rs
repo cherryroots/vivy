@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::game::{Game, Kind};
+use super::game::{Game, Kind, Reward};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
@@ -77,6 +77,38 @@ struct Running {
     lobby: Mutex<Lobby>,
     /// Wakes the game's task: Start or Cancel in the Reaping.
     wake: Notify,
+    /// The vote for the coming Octagon's prize, while it's open.
+    vote: Mutex<Option<Vote>>,
+}
+
+/// A vote for an Octagon's prize: when it closes (a Unix time), and each voter's pick.
+/// Anyone in the channel can vote, once, and change their vote until it closes.
+struct Vote {
+    closes_at: i64,
+    ballots: HashMap<u64, Reward>,
+}
+
+impl Vote {
+    /// Each prize and its votes, in the order of the buttons.
+    fn counts(&self) -> Vec<(Reward, usize)> {
+        Reward::ALL
+            .into_iter()
+            .map(|r| (r, self.ballots.values().filter(|&&b| b == r).count()))
+            .collect()
+    }
+}
+
+/// The prize with the most votes, picked at random among a tie (or among all of them when
+/// nobody voted), and whether it came to chance.
+fn winner(counts: &[(Reward, usize)]) -> (Reward, bool) {
+    let most = counts.iter().map(|&(_, n)| n).max().unwrap_or(0);
+    let top: Vec<Reward> = counts
+        .iter()
+        .filter(|&&(_, n)| n == most)
+        .map(|&(r, _)| r)
+        .collect();
+    let won = top[fastrand::usize(..top.len())];
+    (won, top.len() > 1)
 }
 
 impl Running {
@@ -142,6 +174,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
             extras: ui::Extras::default(),
         }),
         wake: Notify::new(),
+        vote: Mutex::new(None),
     });
     {
         let mut games = GAMES.lock().unwrap();
@@ -481,6 +514,8 @@ async fn play(
             speak(line).await;
         }
         game.apply(round);
+        // The voted prize was for this round's Octagon, if it was one.
+        game.prize = None;
         let over = game.winner().is_some();
 
         // The map goes with the round's last part.
@@ -555,6 +590,27 @@ async fn play(
             cannons_from = game.rounds.len();
         }
 
+        // Before an Octagon, the crowd votes for its prize for the first two thirds of the
+        // wait, and she writes (and draws) it in the last third, taking longer if she needs
+        // to (Cherry's call).
+        if let Some(next @ Kind::Octagon(_)) = game.next_kind() {
+            let voting = auto * 2 / 3;
+            match prize_vote(bot, channel, running, voting).await {
+                Some(prize) => game.prize = Some(prize),
+                None => return,
+            }
+            pending = Some(write(&game, next));
+            tokio::select! {
+                () = bot.shutdown.cancelled() => {
+                    if let Some(writing) = pending.take() {
+                        writing.abort();
+                    }
+                    return;
+                }
+                () = tokio::time::sleep(auto - voting) => {}
+            }
+            continue;
+        }
         // She writes (and draws) the next round while people read this one.
         if let Some(next) = game.next_kind() {
             pending = Some(write(&game, next));
@@ -569,6 +625,52 @@ async fn play(
             () = tokio::time::sleep(auto) => {}
         }
     }
+}
+
+/// Runs the vote for the coming Octagon's prize for `open`, with a countdown, then shows
+/// what won and returns it. `None` when the bot is shutting down.
+async fn prize_vote(
+    bot: &BotCtx,
+    channel: ChannelId,
+    running: &Running,
+    open: Duration,
+) -> Option<Reward> {
+    let closes_at = Utc::now().timestamp() + open.as_secs() as i64;
+    let vote = Vote {
+        closes_at,
+        ballots: HashMap::new(),
+    };
+    let (content, components) = ui::prize_vote(running.id, &vote.counts(), closes_at);
+    *running.vote.lock().unwrap() = Some(vote);
+    let posted = channel
+        .send_message(&bot.http, text(content).components(components))
+        .await;
+    if let Err(err) = &posted {
+        warn!("couldn't post the Octagon prize vote: {err}");
+    }
+    tokio::select! {
+        () = bot.shutdown.cancelled() => return None,
+        () = tokio::time::sleep(open) => {}
+    }
+    let counts = running
+        .vote
+        .lock()
+        .unwrap()
+        .take()
+        .map(|v| v.counts())
+        .unwrap_or_default();
+    let (won, random) = winner(&counts);
+    info!(prize = won.name(), random, "Octagon prize voted");
+    if let Ok(mut message) = posted {
+        let closed = EditMessage::new()
+            .content(ui::prize_chosen(won, &counts, random))
+            .components(Vec::new())
+            .allowed_mentions(CreateAllowedMentions::new());
+        if let Err(err) = message.edit(&bot.http, closed).await {
+            warn!("couldn't close the Octagon prize vote: {err}");
+        }
+    }
+    Some(won)
 }
 
 /// The pictures that go with a round, when pictures are on.
@@ -710,6 +812,25 @@ pub async fn on_component(
     let user = interaction.user.id;
     let in_charge = user == running.host || bot.is_admin(user);
 
+    // A vote for the Octagon's prize, during the game.
+    if let ui::Action::Prize(reward) = action {
+        let shown = running.vote.lock().unwrap().as_mut().map(|vote| {
+            vote.ballots.insert(user.get(), reward);
+            ui::prize_vote(running.id, &vote.counts(), vote.closes_at)
+        });
+        let Some((content, components)) = shown else {
+            return tell(bot, interaction, "This vote is over.").await;
+        };
+        let message = CreateInteractionResponseMessage::new()
+            .content(content)
+            .components(components)
+            .allowed_mentions(CreateAllowedMentions::new());
+        interaction
+            .create_response(&bot.http, CreateInteractionResponse::UpdateMessage(message))
+            .await?;
+        return Ok(());
+    }
+
     if running.lobby.lock().unwrap().state != State::Open {
         return tell(bot, interaction, "The Reaping is over.").await;
     }
@@ -792,6 +913,8 @@ pub async fn on_component(
             let mut lobby = running.lobby.lock().unwrap();
             lobby.extras.pictures = !lobby.extras.pictures;
         }
+        // Handled above, during the game.
+        ui::Action::Prize(_) => return Ok(()),
         ui::Action::Start | ui::Action::Cancel => {
             if !in_charge {
                 return tell(
@@ -850,4 +973,33 @@ async fn tell(bot: &BotCtx, interaction: &ComponentInteraction, text: &str) -> R
         .create_response(&bot.http, CreateInteractionResponse::Message(message))
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_most_votes_win() {
+        let mut vote = Vote {
+            closes_at: 0,
+            ballots: HashMap::new(),
+        };
+        vote.ballots.insert(1, Reward::Hunt);
+        vote.ballots.insert(2, Reward::Hunt);
+        vote.ballots.insert(3, Reward::Armour);
+        // Changing your mind replaces your vote.
+        vote.ballots.insert(3, Reward::Hunt);
+        let counts = vote.counts();
+        assert_eq!(
+            counts,
+            vec![(Reward::Weapon, 0), (Reward::Armour, 0), (Reward::Hunt, 3)]
+        );
+        assert_eq!(winner(&counts), (Reward::Hunt, false));
+        // A tie, or nobody voting, comes to chance.
+        let tie = [(Reward::Weapon, 2), (Reward::Armour, 2), (Reward::Hunt, 1)];
+        let (won, random) = winner(&tie);
+        assert!(random && won != Reward::Hunt);
+        assert!(winner(&[(Reward::Weapon, 0), (Reward::Armour, 0), (Reward::Hunt, 0)]).1);
+    }
 }
