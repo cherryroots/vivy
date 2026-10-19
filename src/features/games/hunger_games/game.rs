@@ -949,16 +949,48 @@ impl Game {
         };
         let clean =
             |line: Option<String>| line.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+        let picture = clean(written.picture);
+        if let Some(picture) = &picture {
+            self.check_picture(kind, picture, &entrants)?;
+        }
         Ok(Round {
             kind,
             gamemaker: clean(written.gamemaker).filter(|_| kind.announced()),
             events,
             victory: clean(written.victory).filter(|_| kind == Kind::Finale),
-            picture: clean(written.picture),
+            picture,
             reward: champion.map(|_| reward),
             entrants,
             champion,
         })
+    }
+
+    /// Checks a round's `picture`: tributes are drawn from their tags, so a picture with
+    /// names instead shows strangers (Cherry saw a final showdown drawn with people who
+    /// weren't in the game). A fight in the Octagon must tag everyone in it; any other
+    /// picture must tag someone.
+    fn check_picture(&self, kind: Kind, picture: &str, entrants: &[usize]) -> Result<(), String> {
+        let tagged = tags_in(picture);
+        let fighters: Vec<usize> = match kind {
+            Kind::Finale => (0..self.tributes.len())
+                .filter(|&i| self.tributes[i].alive())
+                .collect(),
+            Kind::Octagon(_) => entrants.to_vec(),
+            _ => Vec::new(),
+        };
+        if let Some(&missing) = fighters.iter().find(|i| !tagged.contains(i)) {
+            return Err(format!(
+                "The `picture` doesn't tag {{{0}}}, who fights in it: write every tribute in it as their tag, like {{{0}}}, never by name, so they're drawn as themselves.",
+                Game::tag(missing)
+            ));
+        }
+        if tagged.is_empty() {
+            return Err(
+                "The `picture` tags nobody: write every tribute in it as their tag, like {T1}, never by name, so they're drawn as themselves."
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Plays a checked round: the dead die, killers get their kills, the finders get their
@@ -1101,7 +1133,7 @@ mod tests {
             gamemaker: Some("Welcome!".into()),
             events,
             victory: None,
-            picture: Some("A forest".into()),
+            picture: None,
             champion: None,
         }
     }
@@ -1609,6 +1641,45 @@ mod tests {
         assert_eq!(g.entrants(), vec![0, 2]);
     }
 
+    #[test]
+    fn pictures_tag_who_is_in_them() {
+        let g = game(2);
+        let finale = |picture: &str| {
+            let mut w = written(vec![event(
+                "{T1} beats {T2}.",
+                &["T1", "T2"],
+                &[("T2", Some("T1"))],
+            )]);
+            w.picture = Some(picture.into());
+            g.check(Kind::Finale, w)
+        };
+        // Names instead of tags draw strangers.
+        assert!(
+            finale("P1 beats P2 in the cage.")
+                .unwrap_err()
+                .contains("doesn't tag {T1}")
+        );
+        assert!(
+            finale("{T1} beats P2 in the cage.")
+                .unwrap_err()
+                .contains("doesn't tag {T2}")
+        );
+        assert!(finale("{T1} beats {T2} in the cage.").is_ok());
+        // Other rounds must tag someone.
+        let g = game(3);
+        let mut w = written(vec![event(
+            "{T1}, {T2} and {T3} nap.",
+            &["T1", "T2", "T3"],
+            &[],
+        )]);
+        w.picture = Some("Everyone naps in the woods.".into());
+        assert!(
+            g.check(Kind::Scatter, w)
+                .unwrap_err()
+                .contains("tags nobody")
+        );
+    }
+
     fn round_with(kind: Kind, deaths: usize) -> Round {
         Round {
             kind,
@@ -1760,7 +1831,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(round.gamemaker.as_deref(), Some("Welcome!"));
-        assert_eq!(round.picture.as_deref(), Some("A forest"));
+        assert_eq!(round.picture, None);
         g.apply(round);
         assert_eq!(g.alive(), 3);
         assert_eq!(g.tributes[0].kills, 1);

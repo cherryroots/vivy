@@ -84,7 +84,8 @@ pub async fn draw(
         .await
     {
         Ok(reply) => {
-            info!("drew a Hunger Games picture");
+            // The whole prompt, to see what a strange picture was asked for.
+            info!(prompt, "drew a Hunger Games picture");
             reply.images.into_iter().next().ok_or("the drawing failed")
         }
         Err(err) => {
