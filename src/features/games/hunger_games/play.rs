@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::game::{Game, Kind, Reward};
+use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
@@ -310,6 +310,7 @@ async fn run(
         tributes = tributes.len(),
         memories = extras.memories,
         pictures = extras.pictures,
+        teams = extras.teams,
         "Hunger Games started"
     );
     let Setup {
@@ -364,6 +365,9 @@ async fn run(
     let mut game = Game::new(tributes);
     game.places = links.len();
     game.remember(&past);
+    if extras.teams {
+        game.pair_up();
+    }
     let stage = Stage {
         guild,
         channel,
@@ -454,7 +458,10 @@ async fn play(
                     return Ok(None);
                 };
                 let (prompt, style) = match kind {
-                    Kind::Finale => (looks::cage(looks, &weapons, picture, 2), pictures::CAGE),
+                    Kind::Finale => (
+                        looks::cage(looks, &weapons, picture, game_before.alive()),
+                        pictures::CAGE,
+                    ),
                     Kind::Octagon(_) => (
                         looks::cage(looks, &weapons, picture, round.entrants.len()),
                         pictures::CAGE,
@@ -470,13 +477,20 @@ async fn play(
                 };
                 pictures::draw(&ctx, easel, &prompt, style).await.map(Some)
             };
-            // After the final showdown, the victor up close, with everyone they killed.
+            // After the final showdown, the victor up close (a team's survivors), with
+            // everyone they killed.
             let victor = async {
-                let winner = match after.winner_index() {
-                    Some(winner) if kind == Kind::Finale => winner,
-                    _ => return Ok(None),
-                };
-                let prompt = looks::victor(looks, &weapons, winner, &after.victims(winner));
+                let winners = after.winners();
+                if kind != Kind::Finale || winners.is_empty() {
+                    return Ok(None);
+                }
+                let standing: Vec<usize> = winners
+                    .iter()
+                    .copied()
+                    .filter(|&i| after.tributes[i].alive())
+                    .collect();
+                let victims: Vec<usize> = winners.iter().flat_map(|&i| after.victims(i)).collect();
+                let prompt = looks::victor(looks, &weapons, &standing, &victims);
                 pictures::draw(&ctx, easel, &prompt, pictures::VICTORY)
                     .await
                     .map(Some)
@@ -499,6 +513,14 @@ async fn play(
         "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Scatter…",
         game.tributes.len()
     );
+    if let Some(teams) = ui::teams(&game) {
+        intro.push_str("\n\n");
+        intro.push_str(&teams);
+    } else if running.lobby.lock().unwrap().extras.teams {
+        intro.push_str(&format!(
+            "\n\n👥 Teams need {FEWEST_FOR_TEAMS} or more tributes, so it's every tribute for themselves."
+        ));
+    }
     if let Some(grudges) = ui::grudges(&game) {
         intro.push_str("\n\n");
         intro.push_str(&grudges);
@@ -543,7 +565,7 @@ async fn play(
         game.apply(round);
         // The voted prize was for this round's Octagon, if it was one.
         game.prize = None;
-        let over = game.winner().is_some();
+        let over = game.next_kind().is_none();
 
         // The map goes with the round's last part.
         let parts = ui::round(&game, index, &links);
@@ -598,8 +620,12 @@ async fn play(
             if let Some(line) = victory {
                 speak(line).await;
             }
-            let winner = game.winner().map(|t| t.id);
-            info!(winner, rounds = game.rounds.len(), "Hunger Games ended");
+            let winners: Vec<u64> = game
+                .winners()
+                .into_iter()
+                .map(|i| game.tributes[i].id)
+                .collect();
+            info!(?winners, rounds = game.rounds.len(), "Hunger Games ended");
             // For `/games leaderboard`.
             let (guild, finished) = (stage.guild.get(), game.clone());
             let saved = bot
@@ -939,6 +965,13 @@ pub async fn on_component(
             }
             let mut lobby = running.lobby.lock().unwrap();
             lobby.extras.pictures = !lobby.extras.pictures;
+        }
+        ui::Action::Teams => {
+            if !in_charge {
+                return tell(bot, interaction, "Only the host turns teams on or off.").await;
+            }
+            let mut lobby = running.lobby.lock().unwrap();
+            lobby.extras.teams = !lobby.extras.teams;
         }
         // Handled above, during the game.
         ui::Action::Prize(_) => return Ok(()),

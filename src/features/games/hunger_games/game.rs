@@ -30,6 +30,9 @@ pub struct Tribute {
     /// How bold they are, 0 to 99, rolled when the game starts and never shown: the bold
     /// step into the Octagon, the cowards hang back. Kills add to it (see [`Game::entrants`]).
     pub nerve: u32,
+    /// In a team Games, their teammate (an index into the tributes): they never hurt each
+    /// other and win together. `None` in a solo Games, or for the odd one out.
+    pub partner: Option<usize>,
 }
 
 impl Tribute {
@@ -224,6 +227,9 @@ const OCTAGON_ALIVE: usize = 4;
 const MOST_GRUDGES: usize = 8;
 /// How many of the arena's places stay open to the end, however small it gets.
 const ALWAYS_OPEN: usize = 2;
+/// The fewest tributes for a team Games: three teams of two, so there's a game before the
+/// final showdown.
+pub const FEWEST_FOR_TEAMS: usize = 6;
 
 /// The whole game: the tributes and the rounds played so far.
 #[derive(Debug, Clone)]
@@ -253,6 +259,7 @@ impl Game {
                     weapon: None,
                     team: None,
                     nerve: fastrand::u32(..100),
+                    partner: None,
                 })
                 .collect(),
             rounds: Vec::new(),
@@ -302,17 +309,63 @@ impl Game {
         self.tributes.iter().filter(|t| t.alive()).count()
     }
 
-    /// The winner, once only one is left.
-    pub fn winner(&self) -> Option<&Tribute> {
-        let mut alive = self.tributes.iter().filter(|t| t.alive());
-        let first = alive.next()?;
-        alive.next().is_none().then_some(first)
+    /// Splits the tributes into random pairs for a team Games, with one on their own when
+    /// there's an odd number. Does nothing with fewer than [`FEWEST_FOR_TEAMS`]; then it's an
+    /// ordinary Games.
+    pub fn pair_up(&mut self) {
+        if self.tributes.len() < FEWEST_FOR_TEAMS {
+            return;
+        }
+        let mut order: Vec<usize> = (0..self.tributes.len()).collect();
+        fastrand::shuffle(&mut order);
+        for pair in order.chunks(2) {
+            if let [a, b] = *pair {
+                self.tributes[a].partner = Some(b);
+                self.tributes[b].partner = Some(a);
+            }
+        }
     }
 
-    /// The winner's index, once one is left.
-    pub fn winner_index(&self) -> Option<usize> {
-        let winner = self.winner()?;
-        self.tributes.iter().position(|t| t.id == winner.id)
+    /// Whether this is a team Games.
+    pub fn teams(&self) -> bool {
+        self.tributes.iter().any(|t| t.partner.is_some())
+    }
+
+    /// The team of the tribute at `index`, as the lower index of the pair (or their own
+    /// index when they're alone). Teammates share it.
+    pub fn team_of(&self, index: usize) -> usize {
+        self.tributes[index].partner.map_or(index, |p| p.min(index))
+    }
+
+    /// The teams with someone still alive, each with how many of them are, by team.
+    fn teams_alive(&self) -> Vec<(usize, usize)> {
+        let mut teams: Vec<(usize, usize)> = Vec::new();
+        for i in (0..self.tributes.len()).filter(|&i| self.tributes[i].alive()) {
+            let team = self.team_of(i);
+            match teams.iter_mut().find(|(t, _)| *t == team) {
+                Some((_, count)) => *count += 1,
+                None => teams.push((team, 1)),
+            }
+        }
+        teams
+    }
+
+    /// How many teams have someone alive: in a solo Games, how many are alive.
+    pub fn sides(&self) -> usize {
+        self.teams_alive().len()
+    }
+
+    /// The winners (indexes), once only one team has anyone alive: the last one standing,
+    /// or in a team Games both of the last team, a teammate who fell on the way included
+    /// (Cherry: pairs win together). Empty while the Games go on.
+    pub fn winners(&self) -> Vec<usize> {
+        let teams = self.teams_alive();
+        let [(team, _)] = teams[..] else {
+            return Vec::new();
+        };
+        (0..self.tributes.len())
+            .filter(|&i| self.team_of(i) == team)
+            .collect()
     }
 
     /// Everyone `killer` killed (indexes), in the order they died.
@@ -503,13 +556,14 @@ impl Game {
         }
     }
 
-    /// The round to play next, or `None` when the game is over.
+    /// The round to play next, or `None` when the game is over. Counted in teams, which in
+    /// a solo Games are the tributes themselves: the final showdown is between the last two.
     pub fn next_kind(&self) -> Option<Kind> {
-        let alive = self.alive();
-        if alive <= 1 {
+        let sides = self.sides();
+        if sides <= 1 {
             return None;
         }
-        if alive == 2 {
+        if sides == 2 {
             return Some(Kind::Finale);
         }
         Some(match self.rounds.last().map(|r| r.kind) {
@@ -558,6 +612,14 @@ impl Game {
             })
             .collect();
         living.sort_by_key(|&(nerve, i)| (std::cmp::Reverse(nerve), i));
+        // Teammates never fight each other, so only the bolder of a pair steps in.
+        let mut teams = Vec::new();
+        living.retain(|&(_, i)| {
+            let team = self.team_of(i);
+            let first = !teams.contains(&team);
+            teams.push(team);
+            first
+        });
         let brave = living.iter().filter(|(nerve, _)| *nerve >= BRAVE).count();
         let count = brave.clamp(2, MOST_IN_OCTAGON).min(living.len());
         let mut entrants: Vec<usize> = living[..count].iter().map(|&(_, i)| i).collect();
@@ -573,7 +635,12 @@ impl Game {
     /// the Finale at least two stay alive, so there's always a final two.
     pub fn deaths_range(&self, kind: Kind) -> (usize, usize) {
         let alive = self.alive();
-        if kind == Kind::Finale || alive <= 2 {
+        if kind == Kind::Finale {
+            // Everyone left on one of the two sides, so one or two in a team Games.
+            let left = self.teams_alive().into_iter().map(|(_, n)| n);
+            return (left.clone().min().unwrap_or(1), left.max().unwrap_or(1));
+        }
+        if alive <= 2 {
             return (1, 1);
         }
         if kind == Kind::Scatter {
@@ -703,6 +770,13 @@ impl Game {
                             })?,
                     ),
                 };
+                if by.is_some_and(|by| self.tributes[by].partner == Some(victim)) {
+                    return Err(format!(
+                        "{} and {} are teammates, and teammates never kill each other.",
+                        death.by.as_deref().unwrap_or_default().trim(),
+                        death.tribute
+                    ));
+                }
                 deaths.push(Death { victim, by });
             }
             let dies = |i: usize| deaths.iter().any(|d| d.victim == i);
@@ -779,6 +853,29 @@ impl Game {
                 format!("{min} to {max}")
             };
             return Err(format!("{dead} died, but this round {wanted} should die."));
+        }
+        // A team Games ends with the final showdown, and only then.
+        if self.teams() {
+            let mut after = self.clone();
+            for death in events.iter().flat_map(|e| &e.deaths) {
+                after.tributes[death.victim].died_in = Some(self.rounds.len());
+            }
+            match (kind, after.sides()) {
+                (Kind::Finale, 1) => {}
+                (Kind::Finale, _) => {
+                    return Err(
+                        "In the final showdown, one team is wiped out: everyone left on the losing side dies."
+                            .to_string(),
+                    );
+                }
+                (_, 0 | 1) => {
+                    return Err(
+                        "That wipes out every team but one before the final showdown: at least two teams must have someone alive after this round."
+                            .to_string(),
+                    );
+                }
+                _ => {}
+            }
         }
         // What earlier Octagon champions won.
         let now = self.rounds.len();
@@ -906,10 +1003,17 @@ impl Game {
             .collect()
     }
 
-    /// Everyone from first place to last: the winner, then whoever died last, and so on.
-    pub fn placings(&self) -> Vec<&Tribute> {
-        let mut order: Vec<&Tribute> = self.tributes.iter().collect();
-        order.sort_by_key(|t| std::cmp::Reverse(t.died_in.unwrap_or(usize::MAX)));
+    /// Everyone from first place to last, by index: the winners, then whoever died last,
+    /// and so on.
+    pub fn placings(&self) -> Vec<usize> {
+        let winners = self.winners();
+        let mut order: Vec<usize> = (0..self.tributes.len()).collect();
+        order.sort_by_key(|&i| {
+            (
+                !winners.contains(&i),
+                std::cmp::Reverse(self.tributes[i].died_in.unwrap_or(usize::MAX)),
+            )
+        });
         order
     }
 }
@@ -1243,7 +1347,7 @@ mod tests {
         assert_eq!(g.next_kind(), Some(Kind::Finale));
         g.tributes[1].died_in = Some(0);
         assert_eq!(g.next_kind(), None);
-        assert_eq!(g.winner().map(|t| t.id), Some(1));
+        assert_eq!(g.winners(), vec![0]);
     }
 
     /// A round in which `deaths` tributes died, for the pacing tests.
@@ -1356,6 +1460,131 @@ mod tests {
             g.weapons_drawn(),
             vec![None, Some("ban hammer".into()), Some("spoon".into()), None]
         );
+    }
+
+    /// `game(count)` in pairs: P1 with P2, P3 with P4, and so on.
+    fn teamed(count: u64) -> Game {
+        let mut g = game(count);
+        for i in 0..g.tributes.len() / 2 * 2 {
+            g.tributes[i].partner = Some(i ^ 1);
+        }
+        g
+    }
+
+    #[test]
+    fn teams_are_random_pairs_of_six_or_more() {
+        let mut g = game(7);
+        g.pair_up();
+        assert!(g.teams());
+        let alone: Vec<usize> = (0..7)
+            .filter(|&i| g.tributes[i].partner.is_none())
+            .collect();
+        assert_eq!(alone.len(), 1);
+        for (i, t) in g.tributes.iter().enumerate() {
+            if let Some(p) = t.partner {
+                assert_eq!(g.tributes[p].partner, Some(i));
+                assert_eq!(g.team_of(i), g.team_of(p));
+            }
+        }
+        assert_eq!(g.sides(), 4);
+        let mut few = game(5);
+        few.pair_up();
+        assert!(!few.teams());
+    }
+
+    #[test]
+    fn a_team_games_ends_when_one_team_is_left() {
+        let mut g = teamed(6);
+        assert_eq!(g.next_kind(), Some(Kind::Scatter));
+        // P1 and P3 fall: three teams still have someone.
+        g.tributes[0].died_in = Some(0);
+        g.tributes[2].died_in = Some(0);
+        g.rounds.push(round_with(Kind::Scatter, 0));
+        assert_eq!(g.next_kind(), Some(Kind::Day(1)));
+        // P2 falls too: two teams are left, so it's the final showdown, where everyone on
+        // one side dies (P4 alone, or P5 and P6).
+        g.tributes[1].died_in = Some(0);
+        assert_eq!(g.next_kind(), Some(Kind::Finale));
+        assert_eq!(g.deaths_range(Kind::Finale), (1, 2));
+        assert!(g.winners().is_empty());
+        // P5 and P6 win it together, P6 though they fell.
+        g.tributes[3].died_in = Some(1);
+        g.tributes[5].died_in = Some(1);
+        assert_eq!(g.next_kind(), None);
+        assert_eq!(g.winners(), vec![4, 5]);
+        assert_eq!(g.placings()[..3], [4, 5, 3]);
+        // A solo game's winner is the last one standing.
+        let mut solo = game(3);
+        solo.tributes[0].died_in = Some(0);
+        solo.tributes[2].died_in = Some(1);
+        assert_eq!(solo.winners(), vec![1]);
+    }
+
+    #[test]
+    fn teammates_never_kill_each_other_and_teams_end_in_the_finale() {
+        let g = teamed(6);
+        let w = written(vec![
+            event("{T1} turns on {T2}.", &["T1", "T2"], &[("T2", Some("T1"))]),
+            event(
+                "{T3}, {T4}, {T5} and {T6} hide.",
+                &["T3", "T4", "T5", "T6"],
+                &[],
+            ),
+        ]);
+        assert!(
+            g.check(Kind::Day(1), w)
+                .unwrap_err()
+                .contains("teammates never kill")
+        );
+        // A day can't wipe out every team but one.
+        let mut g = teamed(6);
+        for i in [0, 1, 2] {
+            g.tributes[i].died_in = Some(0);
+        }
+        g.rounds.push(round_with(Kind::Night(1), 0));
+        // Three left in two teams is the final showdown; with a third team it's a day.
+        let mut g7 = teamed(7);
+        for i in [0, 1, 2] {
+            g7.tributes[i].died_in = Some(0);
+        }
+        g7.rounds.push(round_with(Kind::Night(1), 0));
+        assert_eq!(g7.next_kind(), Some(Kind::Day(2)));
+        // Two of the three teams falling at once (the Scatter allows two deaths) is too many.
+        let wipe = written(vec![
+            event("{T4} trips.", &["T4"], &[("T4", None)]),
+            event("{T7} trips.", &["T7"], &[("T7", None)]),
+            event("{T5} and {T6} watch.", &["T5", "T6"], &[]),
+        ]);
+        let err = g7.check(Kind::Scatter, wipe).unwrap_err();
+        assert!(err.contains("at least two teams"), "{err}");
+        // In the final showdown, a whole side must fall.
+        assert_eq!(g.next_kind(), Some(Kind::Finale));
+        let half = written(vec![event(
+            "{T4} fights {T5} and {T6}.",
+            &["T4", "T5", "T6"],
+            &[("T5", Some("T4"))],
+        )]);
+        assert!(
+            g.check(Kind::Finale, half)
+                .unwrap_err()
+                .contains("one team is wiped out")
+        );
+        let done = written(vec![event(
+            "{T5} and {T6} corner {T4}.",
+            &["T4", "T5", "T6"],
+            &[("T4", Some("T5"))],
+        )]);
+        assert!(g.check(Kind::Finale, done).is_ok());
+    }
+
+    #[test]
+    fn only_one_of_a_team_steps_into_the_octagon() {
+        let mut g = teamed(6);
+        for (t, nerve) in g.tributes.iter_mut().zip([90, 80, 70, 10, 10, 5]) {
+            t.nerve = nerve;
+        }
+        // P2 is bold but P1 is bolder, and they're a team.
+        assert_eq!(g.entrants(), vec![0, 2]);
     }
 
     fn round_with(kind: Kind, deaths: usize) -> Round {
@@ -1517,7 +1746,7 @@ mod tests {
         assert_eq!(g.fallen_since(0)[0].name, "P2");
         assert_eq!(g.victims(0), vec![1]);
         assert_eq!(g.victims(2), Vec::<usize>::new());
-        assert_eq!(g.winner_index(), None);
+        assert!(g.winners().is_empty());
     }
 
     #[test]
@@ -1611,8 +1840,7 @@ mod tests {
         let mut g = game(3);
         g.tributes[0].died_in = Some(0);
         g.tributes[2].died_in = Some(1);
-        let names: Vec<&str> = g.placings().iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["P2", "P3", "P1"]);
+        assert_eq!(g.placings(), [1, 2, 0]);
     }
 
     #[test]

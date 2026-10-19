@@ -77,6 +77,11 @@ pub fn brief(
         }
         text.push('\n');
     }
+    if game.teams() {
+        text.push_str(
+            "This is a team Games: the tributes fight in pairs, and each one's teammate is in their state below. Teammates look out for each other and never hurt each other, but they can get split up, and one can fall while the other fights on for both. A team wins together: the Games end when only one team has anyone left alive, and a fallen teammate shares the win. Anyone without a teammate fights alone. Alliances between teams can still form and break.\n\n",
+        );
+    }
     text.push_str("The tributes:\n");
     for (i, t) in game.tributes.iter().enumerate() {
         text.push_str(&format!(
@@ -159,6 +164,9 @@ pub fn brief(
                 entrants.join(", ")
             )
         }
+        Kind::Finale if game.teams() => {
+            "The final showdown: only two teams are left, and you force everyone still standing into the Octagon in the middle of the arena to settle it in the cage. Announce the final teams with your `gamemaker` line, then everyone left on one team dies and the other team wins. Write your `victory` line to the winning team, both of them by name, a fallen teammate too.".to_string()
+        }
         Kind::Finale => {
             "The final showdown: only two are left, and you force them into the Octagon in the middle of the arena to settle it in the cage. Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner.".to_string()
         }
@@ -183,7 +191,7 @@ pub fn brief(
             Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
-            Kind::Finale => "Also write a `picture`: the final showdown between the last two inside the Octagon. The winner gets a picture of their own after it.",
+            Kind::Finale => "Also write a `picture`: the final showdown between everyone left, inside the Octagon. The winners get a picture of their own after it.",
         });
     }
     text
@@ -246,6 +254,13 @@ fn state(game: &Game, index: usize) -> String {
     });
     if game.armoured(index, game.rounds.len()) && game.next_kind() != Some(Kind::Finale) {
         parts.push("wearing golden armour from the Octagon (can't die this round)".to_string());
+    }
+    if let Some(partner) = t.partner {
+        parts.push(if game.tributes[partner].alive() {
+            format!("teammate {}", Game::tag(partner))
+        } else {
+            format!("teammate {} has fallen", Game::tag(partner))
+        });
     }
     let allies: Vec<String> = game.allies_of(index).into_iter().map(Game::tag).collect();
     if !allies.is_empty() {
@@ -487,6 +502,21 @@ mod tests {
         // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
         assert!(text.contains("- T7 killed T8 3 times\n\n"));
         assert!(!text.contains("T1 killed"));
+    }
+
+    #[test]
+    fn a_team_brief_names_teammates() {
+        let mut game = Game::new((1..=6).map(|id| (id, format!("P{id}"))).collect());
+        for (a, b) in [(0, 1), (2, 3), (4, 5)] {
+            game.tributes[a].partner = Some(b);
+            game.tributes[b].partner = Some(a);
+        }
+        game.tributes[1].died_in = Some(0);
+        let text = brief(&game, Kind::Day(1), &[], &[], false);
+        assert!(text.contains("This is a team Games"));
+        assert!(text.contains("- T1: P1 (alive, unarmed, teammate T2 has fallen)"));
+        assert!(text.contains("- T3: P3 (alive, unarmed, teammate T4)"));
+        assert!(brief(&game, Kind::Finale, &[], &[], false).contains("only two teams are left"));
     }
 
     #[test]

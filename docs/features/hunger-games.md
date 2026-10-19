@@ -10,7 +10,7 @@ All 5 stages of the plan are built: the text game, last words, her memory notes 
 
 1. `/games hungergames` opens **the Reaping** in the channel. Whoever ran it is the host.
 2. The host picks tributes from the user menu. Anyone can press **Volunteer** to enter (and again to back out). Bots can't enter. 2 to 24 tributes (`max_tributes`).
-3. The host can press **🧠 Memories** to turn Vivy's memory notes about the tributes on (they're off by default; see [Memory notes](#memory-notes)) and **🎨 Pictures** to have her draw a map of the arena after every round (off by default; see [Pictures](#pictures)), then **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
+3. The host can press **🧠 Memories** to turn Vivy's memory notes about the tributes on (they're off by default; see [Memory notes](#memory-notes)) **🎨 Pictures** to have her draw a map of the arena after every round (off by default; see [Pictures](#pictures)) and **👥 Teams** for a team Games (off by default; see [Team Games](#team-games)), then **Start**, or **Cancel**. Nobody starting within `lobby_minutes` (10) closes the Reaping.
 4. The rounds follow, one message each (two or more when a round is long): **the Scatter** (everyone starts unarmed in a ring around the Octagon in the middle and runs for the zones), then days and nights, with **the Octagon** after a day now and then (see [The Octagon](#the-octagon)), and **the final showdown** in the Octagon once two are left. Each event is its own paragraph, 💀 when someone dies in it and 🗡️ when someone gets a weapon. Rounds, cannons and the victor are plain message text, not embeds, because embeds use Discord's smaller font. Tributes show as mentions and the arena's places as channel links (`ui::mention`, `ui::link_places`, which turns each `#name` she writes into `<#id>`), so both stand out in blue, but the messages ping nobody, whatever a name or her text says. Her Gamemaker line opens the Games, each Octagon and the final showdown, and is also spoken as a voice message in the Gamemaker's voice just before that round (see [Gamemaker voice](#gamemaker-voice)).
 5. After each night, **the fallen of the day** lists who died since the last list, each with their **last words** (a real message they once sent, with a link to it) when one was found. Each one's kills are next to their name. When the game ends, **the last of the fallen** covers the rest, the final showdown's loser among them.
 6. The next round starts by itself after `auto_advance_seconds` (45). There's no Next button: Cherry turned manual advancing off so each round and its picture can go out together. Bot admins can press the host's buttons in the Reaping too.
@@ -31,7 +31,7 @@ All under `src/features/games/hunger_games/`.
 
 | File | What it holds |
 |---|---|
-| `game.rs` | The rules: which round comes next, how many should die (`deaths_range`), checking a round she wrote (`check`), applying it (deaths and kills), the fallen and the placings. Pure. |
+| `game.rs` | The rules: which round comes next, how many should die (`deaths_range`), checking a round she wrote (`check`), applying it (deaths and kills), the shrinking arena, teams, grudges, the fallen, the winners and the placings. Pure. |
 | `writer.rs` | What she's told each round (`brief`), reading her JSON (`parse`), and `write`, which asks her and sends a round that fails `check` back with the problem. |
 | `ui.rs` | The Reaping (an embed with a menu and buttons), and the round, cannon and victor texts (split with `util::split` when a round is over 2000 characters), and the IDs of the buttons and the menu (`games:hunger:<game>:<action>`). Pure. |
 | `last_words.rs` | Last words: searches each tribute's messages in the public channels with Discord's message search (`util::search`), with random reads of history (`quotes::read_once`) for anyone the search finds nothing for (`choose`, `pick` and `tidy`, pure). |
@@ -76,6 +76,16 @@ The code keeps what each tribute carries and who is allied with whom, so the sto
 ### The shrinking arena
 
 Once half the tributes have fallen, the arena starts closing in to drive the survivors together (Cherry's pick from the 2026-10-19 ideas). `Game::closed` works out which places are closed from the deaths alone: the first close as soon as half have fallen (with 6 tributes, at 3 left), then an even share more with each death up to the final two, the last places in the arena's order first (the outer rings of the map), until only 2 are left open. Places only close as a day or night begins, so an Octagon and the final showdown keep the arena as it was. Vivy's brief lists only the open places, the closed ones as walled off by fire, and, in the round where places close (`Game::closing`), that anyone there flees or the fire gets them. The round's message says so first ("🔥 The arena shrinks: walls of fire close off #a and #b."), and the map draws the closed zones scorched, empty and ringed by fire. `Game::places` is set to the arena's size when the game starts; 0 means it never shrinks.
+
+### Team Games
+
+With **👥 Teams** on in the Reaping and 6 or more tributes (`FEWEST_FOR_TEAMS`), `Game::pair_up` splits the tributes into random pairs when the Games start, with one on their own when the count is odd (Cherry's pick from the 2026-10-19 ideas). With fewer, the intro says it's every tribute for themselves. The intro lists the teams (`ui::teams`). Each tribute's `partner` is kept in the game, and the rules count teams instead of tributes (`Game::sides`; in a solo Games every tribute is their own team):
+
+- teammates never kill each other (the check refuses it), and only the bolder of a pair steps into the Octagon;
+- the final showdown starts when two teams have someone alive, and everyone left on one side dies in it (one or two deaths); before it, a round can't wipe out every team but one;
+- the Games end when one team is left, and a team wins together (`Game::winners`), a teammate who fell on the way included: both are 👑 in the victor message ("fell on the way" for the fallen one), both are saved as 1st (the next place is 3rd), and the victor picture shows the team's survivors side by side with everyone the team killed.
+
+Vivy is told it's a team Games, each tribute's teammate (and whether they've fallen) is in their state, and the final showdown's brief asks for a whole team to fall. Alliances between teams still form and break as usual. Round messages count the teams left too ("-# 5 tributes left (3 teams)").
 
 ### Grudges and nemeses
 

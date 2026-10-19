@@ -64,18 +64,26 @@ pub struct Placing {
     pub days: u32,
 }
 
-/// How everyone did in a finished game, from the victor down.
+/// How everyone did in a finished game, from the victors down. In a team Games both
+/// winners are 1st, and the next is 3rd.
 pub fn placings(game: &Game) -> Vec<Placing> {
-    let index = |id: u64| game.tributes.iter().position(|t| t.id == id);
+    let winners = game.winners();
     game.placings()
-        .iter()
+        .into_iter()
         .enumerate()
-        .map(|(i, t)| Placing {
-            user: t.id,
-            place: i as u32 + 1,
-            kills: t.kills,
-            octagons: index(t.id).map_or(0, |i| game.octagon_wins(i)),
-            days: days_lived(game, t.died_in),
+        .map(|(place, i)| {
+            let t = &game.tributes[i];
+            Placing {
+                user: t.id,
+                place: if winners.contains(&i) {
+                    1
+                } else {
+                    place as u32 + 1
+                },
+                kills: t.kills,
+                octagons: game.octagon_wins(i),
+                days: days_lived(game, t.died_in),
+            }
         })
         .collect()
 }
@@ -95,11 +103,13 @@ fn days_lived(game: &Game, died_in: Option<usize>) -> u32 {
         .unwrap_or(0)
 }
 
-/// Saves a finished game. Does nothing for a game with no victor.
+/// Saves a finished game. Does nothing for a game with no victor. A team Games keeps its
+/// first winner as the game's winner, and both as 1st in the tributes.
 pub fn record(conn: &mut Connection, guild: u64, channel: u64, game: &Game) -> Result<()> {
-    let Some(winner) = game.winner() else {
+    let Some(&winner) = game.winners().first() else {
         return Ok(());
     };
+    let winner = &game.tributes[winner];
     let tx = conn.transaction()?;
     tx.execute(
         "INSERT INTO games_hunger_games (guild_id, channel_id, winner_id, rounds, at)
@@ -513,6 +523,16 @@ mod tests {
                 (2, 4, 0, 0, 0)
             ]
         );
+    }
+
+    #[test]
+    fn both_of_a_winning_team_are_first() {
+        let mut game = finished();
+        // Moss and Ash were a team: Ash fell first but wins with Moss.
+        game.tributes[0].partner = Some(1);
+        game.tributes[1].partner = Some(0);
+        let places: Vec<(u64, u32)> = placings(&game).iter().map(|p| (p.user, p.place)).collect();
+        assert_eq!(places, vec![(1, 1), (2, 1), (4, 3), (3, 4)]);
     }
 
     #[test]
