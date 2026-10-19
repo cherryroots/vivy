@@ -229,6 +229,10 @@ struct Setup {
     quote_settings: crate::features::games::who_said_it::Settings,
 }
 
+/// The most places an arena has: one ring of zones around the Octagon on the map (see
+/// `looks::map`). More made the map too crowded to read.
+const MOST_PLACES: usize = 8;
+
 /// A place in the arena: its channel's name and ID.
 type Place = (String, u64);
 
@@ -321,8 +325,9 @@ async fn run(
         sources,
         quote_settings,
     } = setup;
-    // One place per tribute, the same ones all game.
-    links.truncate(tributes.len());
+    // One place per tribute, the same ones all game, but at most one ring of zones around
+    // the Octagon, so the map stays readable (Cherry's call).
+    links.truncate(tributes.len().min(MOST_PLACES));
     let arena: Vec<String> = links.iter().map(|(name, _)| name.clone()).collect();
     let ids: Vec<u64> = tributes.iter().map(|(id, _)| *id).collect();
     // Last words take a while to read, and aren't needed until the first cannons.

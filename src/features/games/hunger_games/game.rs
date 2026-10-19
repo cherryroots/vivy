@@ -579,14 +579,15 @@ impl Game {
 
     /// Whether the Octagon opens after this day. It's rare, so each one is a big moment
     /// (Cherry's call): 12 or more tributes get two, once about a third and again about two
-    /// thirds have fallen; 6 to 11 get one, at about half; fewer get none, since the final
+    /// thirds have fallen; 6 to 11 get one, at about a third (half came too late: in a game
+    /// of 8 that's day 4, with only 4 left, Cherry saw it); fewer get none, since the final
     /// showdown is in the Octagon anyway. Counted by deaths, so it follows the game's pace,
     /// and only with at least [`OCTAGON_ALIVE`] alive.
     pub fn octagon_due(&self) -> bool {
         let total = self.tributes.len();
         let marks = match total {
             12.. => vec![total.div_ceil(3), (total * 2).div_ceil(3)],
-            6..=11 => vec![total.div_ceil(2)],
+            6..=11 => vec![total.div_ceil(3)],
             _ => Vec::new(),
         };
         let held = self
@@ -1130,10 +1131,10 @@ mod tests {
         assert!(with_fallen(12, 4, 0).octagon_due());
         assert!(with_fallen(12, 8, 1).octagon_due());
         assert!(!with_fallen(12, 9, 1).octagon_due());
-        // 8 tributes: once, at 4 fallen.
-        assert!(!with_fallen(8, 3, 0).octagon_due());
-        assert!(with_fallen(8, 4, 0).octagon_due());
-        assert!(!with_fallen(8, 4, 1).octagon_due());
+        // 8 tributes: once, at 3 fallen.
+        assert!(!with_fallen(8, 2, 0).octagon_due());
+        assert!(with_fallen(8, 3, 0).octagon_due());
+        assert!(!with_fallen(8, 3, 1).octagon_due());
         // 5 tributes: never.
         assert!(!with_fallen(5, 1, 0).octagon_due());
         // It comes after a day, then the night follows.
