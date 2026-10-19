@@ -590,12 +590,24 @@ async fn play(
             cannons_from = game.rounds.len();
         }
 
-        // Before an Octagon, the crowd votes for its prize while people read this round, and
-        // she writes it once the vote is in.
-        if let Some(Kind::Octagon(_)) = game.next_kind() {
-            match prize_vote(bot, channel, running, auto).await {
+        // Before an Octagon, the crowd votes for its prize for the first two thirds of the
+        // wait, and she writes (and draws) it in the last third, taking longer if she needs
+        // to (Cherry's call).
+        if let Some(next @ Kind::Octagon(_)) = game.next_kind() {
+            let voting = auto * 2 / 3;
+            match prize_vote(bot, channel, running, voting).await {
                 Some(prize) => game.prize = Some(prize),
                 None => return,
+            }
+            pending = Some(write(&game, next));
+            tokio::select! {
+                () = bot.shutdown.cancelled() => {
+                    if let Some(writing) = pending.take() {
+                        writing.abort();
+                    }
+                    return;
+                }
+                () = tokio::time::sleep(auto - voting) => {}
             }
             continue;
         }
@@ -615,15 +627,15 @@ async fn play(
     }
 }
 
-/// Runs the vote for the coming Octagon's prize for `auto`, then shows what won and
-/// returns it. `None` when the bot is shutting down.
+/// Runs the vote for the coming Octagon's prize for `open`, with a countdown, then shows
+/// what won and returns it. `None` when the bot is shutting down.
 async fn prize_vote(
     bot: &BotCtx,
     channel: ChannelId,
     running: &Running,
-    auto: Duration,
+    open: Duration,
 ) -> Option<Reward> {
-    let closes_at = Utc::now().timestamp() + auto.as_secs() as i64;
+    let closes_at = Utc::now().timestamp() + open.as_secs() as i64;
     let vote = Vote {
         closes_at,
         ballots: HashMap::new(),
@@ -638,7 +650,7 @@ async fn prize_vote(
     }
     tokio::select! {
         () = bot.shutdown.cancelled() => return None,
-        () = tokio::time::sleep(auto) => {}
+        () = tokio::time::sleep(open) => {}
     }
     let counts = running
         .vote
