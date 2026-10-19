@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward};
+use super::game::{Endgame, FEWEST_FOR_TEAMS, Game, Kind, Reward};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
@@ -448,45 +448,42 @@ async fn play(
             // The game once this round is played: who carries what by the end of it.
             let mut after = game_before.clone();
             after.apply(round.clone());
-            // The final showdown and the victor are drawn with what everyone fought with;
-            // other rounds with what everyone carries by the end of it, a looted weapon only
-            // in its new hands.
-            let weapons = if kind == Kind::Finale {
+            // The showdown and the victor are drawn with what everyone fought with; other
+            // rounds with what everyone carries by the end of it, a looted weapon only in its
+            // new hands.
+            let at = game_before.rounds.len();
+            let weapons = if game_before.endgame(at) == Some(Endgame::Showdown) {
                 game_before.weapons()
             } else {
                 after.weapons_drawn()
             };
-            // Fights in the Octagon (its rounds and the final showdown) are zoomed in on the
-            // cage; other rounds show the whole map.
+            // Fights in the Octagon are zoomed in on the cage; other rounds show the whole
+            // map, the showdown too, which by then is little more than its last place.
             let map = async {
                 let Some(picture) = round.picture.as_deref() else {
                     return Ok(None);
                 };
                 let (prompt, style) = match kind {
-                    Kind::Finale => (
-                        looks::cage(looks, &weapons, picture, game_before.alive()),
-                        pictures::CAGE,
-                    ),
                     Kind::Octagon(_) => (
                         looks::cage(looks, &weapons, picture, round.entrants.len()),
                         pictures::CAGE,
                     ),
                     _ => {
-                        let closed = game_before.closed(game_before.rounds.len()).len();
+                        let burning = game_before.closing(at);
                         let alive = game_before.alive();
                         (
-                            looks::prompt(&arena, looks, &weapons, picture, alive, closed),
+                            looks::prompt(&arena, looks, &weapons, picture, alive, burning),
                             pictures::MAP,
                         )
                     }
                 };
                 pictures::draw(&ctx, easel, &prompt, style).await.map(Some)
             };
-            // After the final showdown, the victor up close (a team's survivors), with
-            // everyone they killed.
+            // After the showdown, the victor up close (a team's survivors), with everyone
+            // they killed.
             let victor = async {
                 let winners = after.winners();
-                if kind != Kind::Finale || winners.is_empty() {
+                if winners.is_empty() {
                     return Ok(None);
                 }
                 let standing: Vec<usize> = winners
@@ -596,7 +593,8 @@ async fn play(
             let weapons = game.weapons_drawn();
             bot.tasks.spawn(async move {
                 let looks = looks.get().await;
-                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone, 0);
+                let nothing = arena.len()..arena.len();
+                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone, nothing);
                 match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
                     Ok(picture) => {
                         let caption = "🗺️ The arena as the Games begin".to_string();
@@ -607,7 +605,7 @@ async fn play(
             });
         }
         if over {
-            // The fallen since the last cannons, the loser of the final showdown among them.
+            // The fallen since the last cannons, the loser of the showdown among them.
             if cannons_from < game.rounds.len() {
                 let title = "The last of the fallen";
                 post_cannons(bot, channel, &game, cannons_from, title, &mut words).await;
@@ -737,7 +735,7 @@ async fn prize_vote(
 struct Pictures {
     /// The map, posted with the round.
     map: Option<ModelImage>,
-    /// After the final showdown, the victor, posted with the victor message.
+    /// After the showdown, the victor, posted with the victor message.
     victor: Option<ModelImage>,
     /// Why a picture couldn't be drawn, when one couldn't.
     missing: Option<&'static str>,

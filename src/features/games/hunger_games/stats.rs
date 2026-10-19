@@ -13,7 +13,7 @@ use poise::CreateReply;
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{CreateAllowedMentions, User};
 
-use super::game::{Blow, Game, Kind};
+use super::game::{Blow, Game, Kind, PastKills};
 use super::ui;
 use crate::core::{Context, Result, user_error};
 use crate::util::count;
@@ -103,7 +103,7 @@ fn days_lived(game: &Game, died_in: Option<usize>) -> u32 {
         .iter()
         .map(|r| match r.kind {
             Kind::Day(n) | Kind::Night(n) | Kind::Octagon(n) => n,
-            Kind::Scatter | Kind::Finale => 0,
+            Kind::Scatter => 0,
         })
         .max()
         .unwrap_or(0)
@@ -166,11 +166,7 @@ pub fn record(
 
 /// Who killed whom in a server's earlier Games, among `ids`: (killer, victim, times, how
 /// the last time happened), by killer and victim.
-pub fn grudges(
-    conn: &Connection,
-    guild: u64,
-    ids: &[u64],
-) -> rusqlite::Result<Vec<(u64, u64, u32, Option<Blow>)>> {
+pub fn grudges(conn: &Connection, guild: u64, ids: &[u64]) -> rusqlite::Result<Vec<PastKills>> {
     let mut stmt = conn.prepare(
         "SELECT k.killer_id, k.victim_id, k.weapon, k.place_id, k.octagon
          FROM games_hunger_kills k JOIN games_hunger_games g ON g.id = k.game_id
@@ -568,8 +564,9 @@ mod tests {
         let mut night = round(Kind::Night(1), vec![kill(2, 0)]);
         night.events[0].text = "{T1} gets {T3} in #den.".into();
         game.apply(night);
+        // Reed falls to the arena in the showdown.
         game.apply(round(
-            Kind::Finale,
+            Kind::Day(2),
             vec![Death {
                 victim: 3,
                 by: None,
@@ -588,7 +585,8 @@ mod tests {
         assert_eq!(
             summary,
             vec![
-                (1, 1, 2, 0, 1),
+                // Moss wins the showdown on day 2.
+                (1, 1, 2, 0, 2),
                 (4, 2, 0, 1, 1),
                 (3, 3, 0, 0, 1),
                 (2, 4, 0, 0, 0)

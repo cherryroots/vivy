@@ -7,7 +7,7 @@ use serenity::all::{
     CreateSelectMenuKind, ReactionType, UserId,
 };
 
-use super::game::{Blow, FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
+use super::game::{Blow, Endgame, FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
@@ -337,19 +337,24 @@ fn place_at<'a>(after: &str, places: &[&'a (String, u64)]) -> Option<&'a (String
 /// each stands on its own. Long rounds come in several parts.
 pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String> {
     let round = &game.rounds[index];
+    let showdown = game.endgame(index) == Some(Endgame::Showdown);
     let emoji = match round.kind {
+        _ if showdown => "⚔️",
         Kind::Scatter => "🏃",
         Kind::Day(_) => "☀️",
         Kind::Night(_) => "🌙",
         Kind::Octagon(_) => "🏟️",
-        Kind::Finale => "⚔️",
     };
     let name = |i: usize| {
         game.tributes
             .get(i)
             .map_or_else(|| "someone".to_string(), |t| mention(t.id))
     };
-    let mut blocks = vec![format!("## {emoji} {}", title(round.kind))];
+    let mut heading = format!("## {emoji} {}", title(round.kind));
+    if showdown {
+        heading.push_str(": the showdown");
+    }
+    let mut blocks = vec![heading];
     if let Some(line) = &round.gamemaker {
         let line = shorten_at_word(&unspoken(line), 600);
         blocks.push(format!("> 🎙️ *{}*", link_places(&line, places)));
@@ -897,7 +902,7 @@ mod tests {
             ..round(Kind::Octagon(1), vec![death(3, Some(0))])
         });
         game.apply(round(Kind::Night(1), vec![death(2, None)]));
-        game.apply(round(Kind::Finale, vec![death(1, Some(0))]));
+        game.apply(round(Kind::Day(2), vec![death(1, Some(0))]));
         assert_eq!(game.cowards(), vec![1, 2]);
         let text = victor(&game, None).join("");
         assert!(text.contains("👑 <@1>, 2 kills, 🏟️ won the Octagon\n"));

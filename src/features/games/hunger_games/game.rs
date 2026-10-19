@@ -52,16 +52,26 @@ pub enum Kind {
     /// After a day, at most twice a game (see [`Game::octagon_due`]): the bold fight
     /// one-on-one in the Octagon in the middle for a prize, until one champion is left.
     Octagon(u32),
-    /// The last two, until one is left.
-    Finale,
 }
 
 impl Kind {
-    /// Whether Vivy says a Gamemaker line before this round: when the Games open, when the
-    /// Octagon opens, and for the final two.
+    /// Whether Vivy says a Gamemaker line before this round: when the Games open and when
+    /// the Octagon opens (and for the showdown, see [`Game::announced`]).
     pub fn announced(self) -> bool {
-        matches!(self, Kind::Scatter | Kind::Octagon(_) | Kind::Finale)
+        matches!(self, Kind::Scatter | Kind::Octagon(_))
     }
+}
+
+/// The last two sides' rounds (see [`Game::endgame`]): days and nights as usual, but they
+/// wander the shrinking arena until the fire drives them together. There's no final
+/// showdown in the Octagon anymore (Cherry found the wandering more fun).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endgame {
+    /// Nobody dies: they hunt each other, and one more place burns.
+    Wander,
+    /// The fire leaves them one place, or they've wandered long enough: they meet, and
+    /// one side falls.
+    Showdown,
 }
 
 /// Someone dying in an event: who (index into the tributes), and who killed them, if
@@ -92,7 +102,7 @@ pub enum Reward {
     /// The deadliest weapon in the arena: whoever carries it wins nearly every fight, and
     /// it can be looted.
     Weapon,
-    /// The champion can't die in the next two rounds (not counting the final showdown).
+    /// The champion can't die in the next two rounds (not counting the showdown).
     Armour,
     /// The champion tracks someone down and kills them in the next round.
     Hunt,
@@ -149,9 +159,13 @@ pub struct Blow {
     pub weapon: Option<String>,
     /// The channel it happened in, when the event names one of the arena's places.
     pub place: Option<u64>,
-    /// Whether it happened in the Octagon: one of its rounds or the final showdown.
+    /// Whether it happened in the Octagon, in one of its rounds.
     pub octagon: bool,
 }
+
+/// One pair from earlier Games: (killer's user ID, victim's user ID, how many times, how
+/// the last time happened).
+pub type PastKills = (u64, u64, u32, Option<Blow>);
 
 /// A kill in a game, for saving: indexes into its tributes, and where it is in the rounds.
 #[derive(Debug, Clone, PartialEq)]
@@ -182,7 +196,7 @@ pub struct Round {
     /// Vivy's Gamemaker line before the events (see [`Kind::announced`]).
     pub gamemaker: Option<String>,
     pub events: Vec<Event>,
-    /// In the Finale, what she says to the winner.
+    /// In the showdown, what she says to the winner.
     pub victory: Option<String>,
     /// What to draw on the arena map for this round, when she was asked to.
     pub picture: Option<String>,
@@ -249,7 +263,10 @@ const MOST_IN_OCTAGON: usize = 4;
 const OCTAGON_ALIVE: usize = 4;
 /// The most grudges from earlier Games she's told about, so the brief stays short.
 const MOST_GRUDGES: usize = 8;
-/// How many of the arena's places stay open to the end, however small it gets.
+/// The most rounds the last two sides wander before they meet, whatever is still open.
+const MOST_WANDERING: usize = 2;
+/// How many of the arena's places stay open until the last two sides are left, however
+/// small it gets.
 const ALWAYS_OPEN: usize = 2;
 /// The fewest tributes for a team Games: three teams of two, so there's a game before the
 /// final showdown.
@@ -293,10 +310,9 @@ impl Game {
         }
     }
 
-    /// Takes in who killed whom in earlier Games, as (killer's user ID, victim's user ID,
-    /// times, how the last time happened). Only pairs where both are in this game count,
-    /// the most often first.
-    pub fn remember(&mut self, past: &[(u64, u64, u32, Option<Blow>)]) {
+    /// Takes in who killed whom in earlier Games. Only pairs where both are in this game
+    /// count, the most often first.
+    pub fn remember(&mut self, past: &[PastKills]) {
         let index = |id: u64| self.tributes.iter().position(|t| t.id == id);
         let mut grudges: Vec<Grudge> = past
             .iter()
@@ -527,16 +543,62 @@ impl Game {
     }
 
     /// The places (indexes into the arena's places) closed off in the round at `at` (an
-    /// index into the rounds, or the next round's). The arena shrinks once half the
+    /// index into the rounds, or the next round's). The arena shrinks once a third of the
     /// tributes have fallen: from then on, places close as more fall, the last ones first,
-    /// until only two are left open for the final two. Places only close when a day or
-    /// night begins, so an Octagon or the final showdown keeps the arena as it was.
+    /// until only two are left open for the last two sides. Then one more closes with each
+    /// round they wander, down to the last one, where they meet (see [`Game::endgame`]).
+    /// Places only close when a day or night begins, so an Octagon keeps the arena as it
+    /// was.
     pub fn closed(&self, at: usize) -> Range<usize> {
         let count = (0..=at)
             .rev()
             .find(|&j| matches!(self.kind_at(j), Some(Kind::Day(_) | Kind::Night(_))))
-            .map_or(0, |j| self.closed_after(self.fallen_before(j)));
-        self.places - count..self.places
+            .map_or(0, |j| {
+                let wandered = self.endgame_from(j).map_or(0, |from| j - from);
+                self.closed_after(self.fallen_before(j)) + wandered
+            });
+        self.places - count.min(self.places.saturating_sub(1))..self.places
+    }
+
+    /// Where the last two sides are in the round at `at`, or `None` before that (or in a
+    /// Scatter or an Octagon). They wander while more than one place is open, one more
+    /// burning each round, and meet once one is left or they've wandered
+    /// [`MOST_WANDERING`] rounds.
+    pub fn endgame(&self, at: usize) -> Option<Endgame> {
+        let from = self.endgame_from(at)?;
+        let open = self.places - self.closed(at).len();
+        if open <= 1 || at - from >= MOST_WANDERING {
+            Some(Endgame::Showdown)
+        } else {
+            Some(Endgame::Wander)
+        }
+    }
+
+    /// The first day or night with only two sides left, up to the round at `at`.
+    fn endgame_from(&self, at: usize) -> Option<usize> {
+        if !matches!(self.kind_at(at), Some(Kind::Day(_) | Kind::Night(_))) {
+            return None;
+        }
+        (0..=at).find(|&j| {
+            matches!(self.kind_at(j), Some(Kind::Day(_) | Kind::Night(_))) && self.sides_at(j) == 2
+        })
+    }
+
+    /// How many sides had someone alive as the round at `at` began.
+    fn sides_at(&self, at: usize) -> usize {
+        let mut teams = Vec::new();
+        for (i, t) in self.tributes.iter().enumerate() {
+            if t.died_in.is_none_or(|died| died >= at) && !teams.contains(&self.team_of(i)) {
+                teams.push(self.team_of(i));
+            }
+        }
+        teams.len()
+    }
+
+    /// Whether Vivy says a Gamemaker line before the round at `at`: as its kind says, and
+    /// for the showdown.
+    pub fn announced(&self, kind: Kind, at: usize) -> bool {
+        kind.announced() || self.endgame(at) == Some(Endgame::Showdown)
     }
 
     /// The places that close as the round at `at` begins: closed now, but not in the round
@@ -551,9 +613,9 @@ impl Game {
     }
 
     /// How many places are closed once `fallen` tributes have fallen. The first close as
-    /// soon as a third have fallen, then an even share more with each death, so that by the
-    /// end only [`ALWAYS_OPEN`] places are left: with 2 alive, or 4 in a team Games, which
-    /// ends sooner. (Starting at half was too late: in a 10-player team Games it began on
+    /// soon as a third have fallen, then an even share more with each death, so that only
+    /// [`ALWAYS_OPEN`] places are left with 2 alive, or 4 in a team Games, which ends
+    /// sooner. (Starting at half was too late: in a 10-player team Games it began on
     /// day 4 and only closed 2 of 10 places, Cherry saw it.)
     fn closed_after(&self, fallen: usize) -> usize {
         let total = self.tributes.len();
@@ -588,15 +650,11 @@ impl Game {
         }
     }
 
-    /// The round to play next, or `None` when the game is over. Counted in teams, which in
-    /// a solo Games are the tributes themselves: the final showdown is between the last two.
+    /// The round to play next, or `None` when the game is over: once one side is left.
+    /// Counted in teams, which in a solo Games are the tributes themselves.
     pub fn next_kind(&self) -> Option<Kind> {
-        let sides = self.sides();
-        if sides <= 1 {
+        if self.sides() <= 1 {
             return None;
-        }
-        if sides == 2 {
-            return Some(Kind::Finale);
         }
         Some(match self.rounds.last().map(|r| r.kind) {
             None => Kind::Scatter,
@@ -604,17 +662,15 @@ impl Game {
             Some(Kind::Day(day)) if self.octagon_due() => Kind::Octagon(day),
             Some(Kind::Day(day) | Kind::Octagon(day)) => Kind::Night(day),
             Some(Kind::Night(day)) => Kind::Day(day + 1),
-            // A Finale always leaves one, so nothing follows it.
-            Some(Kind::Finale) => return None,
         })
     }
 
     /// Whether the Octagon opens after this day. It's rare, so each one is a big moment
     /// (Cherry's call): 12 or more tributes get two, once about a third and again about two
     /// thirds have fallen; 6 to 11 get one, at about a third (half came too late: in a game
-    /// of 8 that's day 4, with only 4 left, Cherry saw it); fewer get none, since the final
-    /// showdown is in the Octagon anyway. Counted by deaths, so it follows the game's pace,
-    /// and only with at least [`OCTAGON_ALIVE`] alive.
+    /// of 8 that's day 4, with only 4 left, Cherry saw it); fewer get none. Counted by
+    /// deaths, so it follows the game's pace, and only with at least [`OCTAGON_ALIVE`]
+    /// alive in at least three sides (the last two wander instead).
     pub fn octagon_due(&self) -> bool {
         let total = self.tributes.len();
         let marks = match total {
@@ -628,9 +684,9 @@ impl Game {
             .filter(|r| matches!(r.kind, Kind::Octagon(_)))
             .count();
         let fallen = total - self.alive();
-        marks
-            .get(held)
-            .is_some_and(|&mark| fallen >= mark && self.alive() >= OCTAGON_ALIVE)
+        marks.get(held).is_some_and(|&mark| {
+            fallen >= mark && self.alive() >= OCTAGON_ALIVE && self.sides() >= 3
+        })
     }
 
     /// Who steps into the Octagon, by index: the living whose nerve (with 15 for each kill)
@@ -665,19 +721,26 @@ impl Game {
     /// may yield instead), and an eighth
     /// to a sixth on days and nights, so 24 tributes take around 15 rounds and 5 take
     /// around 6. A day or night may pass with nobody dying, but never two in a row. Until
-    /// the Finale at least two stay alive, so there's always a final two.
+    /// the last two sides at least two stay alive. Then nobody dies while they wander, and
+    /// everyone on one side in the showdown (see [`Game::endgame`]).
     pub fn deaths_range(&self, kind: Kind) -> (usize, usize) {
         let alive = self.alive();
-        if kind == Kind::Finale {
-            // Everyone left on one of the two sides, so one or two in a team Games.
-            let left = self.teams_alive().into_iter().map(|(_, n)| n);
-            return (left.clone().min().unwrap_or(1), left.max().unwrap_or(1));
+        if matches!(kind, Kind::Day(_) | Kind::Night(_)) {
+            match self.endgame(self.rounds.len()) {
+                Some(Endgame::Wander) => return (0, 0),
+                Some(Endgame::Showdown) => {
+                    // Everyone left on one of the two sides, so one or two in a team Games.
+                    let left = self.teams_alive().into_iter().map(|(_, n)| n);
+                    return (left.clone().min().unwrap_or(1), left.max().unwrap_or(1));
+                }
+                None => {}
+            }
+        }
+        if kind == Kind::Scatter {
+            return (0, alive.saturating_sub(2).min(2));
         }
         if alive <= 2 {
             return (1, 1);
-        }
-        if kind == Kind::Scatter {
-            return (0, (alive - 2).min(2));
         }
         if let Kind::Octagon(_) = kind {
             let bouts = self.entrants().len().saturating_sub(1);
@@ -688,7 +751,7 @@ impl Game {
         let share = match kind {
             Kind::Day(_) => 0.12,
             Kind::Night(_) => 0.15,
-            Kind::Scatter | Kind::Octagon(_) | Kind::Finale => unreachable!(),
+            Kind::Scatter | Kind::Octagon(_) => unreachable!(),
         };
         let most = alive - 2;
         let max = ((alive as f64 * share).ceil() as usize).clamp(1, most);
@@ -926,40 +989,42 @@ impl Game {
             };
             return Err(format!("{dead} died, but this round {wanted} should die."));
         }
-        // A team Games ends with the final showdown, and only then.
+        // The Games end with the showdown, and only then.
+        let now = self.rounds.len();
+        let showdown = matches!(kind, Kind::Day(_) | Kind::Night(_))
+            && self.endgame(now) == Some(Endgame::Showdown);
         if self.teams() {
             let mut after = self.clone();
             for death in events.iter().flat_map(|e| &e.deaths) {
-                after.tributes[death.victim].died_in = Some(self.rounds.len());
+                after.tributes[death.victim].died_in = Some(now);
             }
-            match (kind, after.sides()) {
-                (Kind::Finale, 1) => {}
-                (Kind::Finale, _) => {
+            match (showdown, after.sides()) {
+                (true, 1) => {}
+                (true, _) => {
                     return Err(
-                        "In the final showdown, one team is wiped out: everyone left on the losing side dies."
+                        "In the showdown, one team is wiped out: everyone left on the losing side dies."
                             .to_string(),
                     );
                 }
-                (_, 0 | 1) => {
+                (false, 0 | 1) => {
                     return Err(
-                        "That wipes out every team but one before the final showdown: at least two teams must have someone alive after this round."
+                        "That wipes out every team but one before the showdown: at least two teams must have someone alive after this round."
                             .to_string(),
                     );
                 }
                 _ => {}
             }
         }
-        // What earlier Octagon champions won.
-        let now = self.rounds.len();
+        // What earlier Octagon champions won. Neither counts in the showdown.
         for death in events.iter().flat_map(|e| &e.deaths) {
-            if kind != Kind::Finale && self.armoured(death.victim, now) {
+            if !showdown && self.armoured(death.victim, now) {
                 return Err(format!(
                     "{} wears the golden armour from the Octagon and can't die this round.",
                     Game::tag(death.victim)
                 ));
             }
         }
-        if let Some(hunter) = self.hunter(now).filter(|_| kind != Kind::Finale) {
+        if let Some(hunter) = self.hunter(now).filter(|_| self.endgame(now).is_none()) {
             let killed = events
                 .iter()
                 .flat_map(|e| &e.deaths)
@@ -1011,13 +1076,13 @@ impl Game {
             |line: Option<String>| line.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
         let picture = clean(written.picture);
         if let Some(picture) = &picture {
-            self.check_picture(kind, picture, &entrants)?;
+            self.check_picture(kind, showdown, picture, &entrants)?;
         }
         Ok(Round {
             kind,
-            gamemaker: clean(written.gamemaker).filter(|_| kind.announced()),
+            gamemaker: clean(written.gamemaker).filter(|_| self.announced(kind, now)),
             events,
-            victory: clean(written.victory).filter(|_| kind == Kind::Finale),
+            victory: clean(written.victory).filter(|_| showdown),
             picture,
             reward: champion.map(|_| reward),
             entrants,
@@ -1027,12 +1092,18 @@ impl Game {
 
     /// Checks a round's `picture`: tributes are drawn from their tags, so a picture with
     /// names instead shows strangers (Cherry saw a final showdown drawn with people who
-    /// weren't in the game). A fight in the Octagon must tag everyone in it; any other
-    /// picture must tag someone.
-    fn check_picture(&self, kind: Kind, picture: &str, entrants: &[usize]) -> Result<(), String> {
+    /// weren't in the game). A fight in the Octagon or the showdown must tag everyone in
+    /// it; any other picture must tag someone.
+    fn check_picture(
+        &self,
+        kind: Kind,
+        showdown: bool,
+        picture: &str,
+        entrants: &[usize],
+    ) -> Result<(), String> {
         let tagged = tags_in(picture);
         let fighters: Vec<usize> = match kind {
-            Kind::Finale => (0..self.tributes.len())
+            _ if showdown => (0..self.tributes.len())
                 .filter(|&i| self.tributes[i].alive())
                 .collect(),
             Kind::Octagon(_) => entrants.to_vec(),
@@ -1428,11 +1499,12 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("golden armour"), "{err}");
         assert!(g.check(Kind::Night(1), night(&g, "T3", Some("T2"))).is_ok());
-        // It doesn't decide the final showdown.
+        // It doesn't decide the showdown.
         for t in &mut g.tributes[2..] {
             t.died_in = Some(0);
         }
-        assert!(g.check(Kind::Finale, night(&g, "T1", Some("T2"))).is_ok());
+        assert_eq!(g.endgame(1), Some(Endgame::Showdown));
+        assert!(g.check(Kind::Night(1), night(&g, "T1", Some("T2"))).is_ok());
     }
 
     #[test]
@@ -1476,12 +1548,52 @@ mod tests {
     }
 
     #[test]
-    fn two_left_is_the_finale_and_one_left_is_the_end() {
+    fn the_last_two_wander_until_the_fire_drives_them_together() {
         let mut g = game(2);
-        assert_eq!(g.next_kind(), Some(Kind::Finale));
-        g.tributes[1].died_in = Some(0);
+        g.places = 3;
+        assert_eq!(g.next_kind(), Some(Kind::Scatter));
+        assert_eq!(g.deaths_range(Kind::Scatter), (0, 0));
+        assert_eq!(g.endgame(0), None);
+        g.rounds.push(round_with(Kind::Scatter, 0));
+        // Day 1: all three places are open, so they wander, and nobody dies.
+        assert_eq!(g.endgame(1), Some(Endgame::Wander));
+        assert_eq!(g.deaths_range(Kind::Day(1)), (0, 0));
+        assert_eq!(g.closed(1), 3..3);
+        g.rounds.push(round_with(Kind::Day(1), 0));
+        // Night 1: one more place burns each round they wander.
+        assert_eq!(g.closed(2), 2..3);
+        assert_eq!(g.closing(2), 2..3);
+        assert_eq!(g.endgame(2), Some(Endgame::Wander));
+        g.rounds.push(round_with(Kind::Night(1), 0));
+        // Day 2: one place is left, so they meet there, and one of them dies.
+        assert_eq!(g.closed(3), 1..3);
+        assert_eq!(g.endgame(3), Some(Endgame::Showdown));
+        assert_eq!(g.deaths_range(Kind::Day(2)), (1, 1));
+        assert!(g.announced(Kind::Day(2), 3) && !g.announced(Kind::Day(1), 1));
+        let mut w = written(vec![event(
+            "{T1} finds {T2} in #room-0.",
+            &["T1", "T2"],
+            &[("T2", Some("T1"))],
+        )]);
+        w.victory = Some("Well done.".into());
+        let round = g.check(Kind::Day(2), w).unwrap();
+        assert_eq!(round.victory.as_deref(), Some("Well done."));
+        assert_eq!(round.gamemaker.as_deref(), Some("Welcome!"));
+        g.apply(round);
         assert_eq!(g.next_kind(), None);
         assert_eq!(g.winners(), vec![0]);
+        // With many places still open, they wander two rounds at most.
+        let mut g = game(2);
+        g.places = 8;
+        for kind in [Kind::Scatter, Kind::Day(1), Kind::Night(1)] {
+            g.rounds.push(round_with(kind, 0));
+        }
+        assert_eq!(g.endgame(3), Some(Endgame::Showdown));
+        // Three sides left isn't the endgame yet.
+        let mut quiet = game(3);
+        quiet.places = 3;
+        quiet.rounds.push(round_with(Kind::Scatter, 0));
+        assert_eq!(quiet.endgame(1), None);
     }
 
     /// A round in which `deaths` tributes died, for the pacing tests.
@@ -1656,11 +1768,12 @@ mod tests {
         g.tributes[2].died_in = Some(0);
         g.rounds.push(round_with(Kind::Scatter, 0));
         assert_eq!(g.next_kind(), Some(Kind::Day(1)));
-        // P2 falls too: two teams are left, so it's the final showdown, where everyone on
-        // one side dies (P4 alone, or P5 and P6).
+        // P2 falls too: two teams are left, and with no places to wander it's the showdown
+        // at once, where everyone on one side dies (P4 alone, or P5 and P6).
         g.tributes[1].died_in = Some(0);
-        assert_eq!(g.next_kind(), Some(Kind::Finale));
-        assert_eq!(g.deaths_range(Kind::Finale), (1, 2));
+        assert_eq!(g.next_kind(), Some(Kind::Day(1)));
+        assert_eq!(g.endgame(1), Some(Endgame::Showdown));
+        assert_eq!(g.deaths_range(Kind::Day(1)), (1, 2));
         assert!(g.winners().is_empty());
         // P5 and P6 win it together, P6 though they fell.
         g.tributes[3].died_in = Some(1);
@@ -1676,7 +1789,7 @@ mod tests {
     }
 
     #[test]
-    fn teammates_never_kill_each_other_and_teams_end_in_the_finale() {
+    fn teammates_never_kill_each_other_and_teams_end_in_the_showdown() {
         let g = teamed(6);
         let w = written(vec![
             event("{T1} turns on {T2}.", &["T1", "T2"], &[("T2", Some("T1"))]),
@@ -1697,7 +1810,7 @@ mod tests {
             g.tributes[i].died_in = Some(0);
         }
         g.rounds.push(round_with(Kind::Night(1), 0));
-        // Three left in two teams is the final showdown; with a third team it's a day.
+        // Three left in two teams is the showdown; with a third team it's a day.
         let mut g7 = teamed(7);
         for i in [0, 1, 2] {
             g7.tributes[i].died_in = Some(0);
@@ -1712,15 +1825,15 @@ mod tests {
         ]);
         let err = g7.check(Kind::Scatter, wipe).unwrap_err();
         assert!(err.contains("at least two teams"), "{err}");
-        // In the final showdown, a whole side must fall.
-        assert_eq!(g.next_kind(), Some(Kind::Finale));
+        // In the showdown, a whole side must fall.
+        assert_eq!(g.endgame(1), Some(Endgame::Showdown));
         let half = written(vec![event(
             "{T4} fights {T5} and {T6}.",
             &["T4", "T5", "T6"],
             &[("T5", Some("T4"))],
         )]);
         assert!(
-            g.check(Kind::Finale, half)
+            g.check(Kind::Day(2), half)
                 .unwrap_err()
                 .contains("one team is wiped out")
         );
@@ -1729,7 +1842,7 @@ mod tests {
             &["T4", "T5", "T6"],
             &[("T4", Some("T5"))],
         )]);
-        assert!(g.check(Kind::Finale, done).is_ok());
+        assert!(g.check(Kind::Day(2), done).is_ok());
     }
 
     #[test]
@@ -1744,7 +1857,8 @@ mod tests {
 
     #[test]
     fn pictures_tag_who_is_in_them() {
-        let g = game(2);
+        let mut g = game(2);
+        g.rounds.push(round_with(Kind::Scatter, 0));
         let finale = |picture: &str| {
             let mut w = written(vec![event(
                 "{T1} beats {T2}.",
@@ -1752,7 +1866,7 @@ mod tests {
                 &[("T2", Some("T1"))],
             )]);
             w.picture = Some(picture.into());
-            g.check(Kind::Finale, w)
+            g.check(Kind::Day(1), w)
         };
         // Names instead of tags draw strangers.
         assert!(
@@ -1813,7 +1927,9 @@ mod tests {
         g.rounds.push(round_with(Kind::Scatter, 1));
         assert_eq!(g.deaths_range(Kind::Day(1)), (0, 1));
         assert_eq!(g.deaths_range(Kind::Octagon(2)), (1, 1));
-        assert_eq!(game(2).deaths_range(Kind::Finale), (1, 1));
+        let mut two = game(2);
+        two.rounds.push(round_with(Kind::Scatter, 0));
+        assert_eq!(two.deaths_range(Kind::Day(1)), (1, 1));
         for alive in 3..=24 {
             let mut g = game(alive as u64);
             g.rounds.push(round_with(Kind::Scatter, 1));
@@ -2011,18 +2127,18 @@ mod tests {
         assert!(stray.unwrap_err().contains("isn't in its tributes"));
         g.tributes[2].died_in = Some(0);
         let ghost = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event("{T3} haunts.", &["T3"], &[])]),
         );
         assert_eq!(ghost.unwrap_err(), "T3 is already dead.");
         let unknown = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event("{T9} appears.", &["T9"], &[])]),
         );
         assert_eq!(unknown.unwrap_err(), "T9 isn't one of the tributes.");
         // The dead can be named in any event: T3 is dead now.
         let looted = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event(
                 "{T1} loots {T3}'s body, then beats {T2}.",
                 &["T1", "T2"],
@@ -2032,7 +2148,7 @@ mod tests {
         assert!(looted.is_ok(), "{looted:?}");
         // A stray tag past the tributes is still refused.
         let stray = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event(
                 "{T1} beats {T2} for {T9}.",
                 &["T1", "T2"],
@@ -2046,7 +2162,7 @@ mod tests {
     fn a_killer_must_be_someone_else_in_the_event() {
         let g = game(2);
         let suicide = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event(
                 "{T1} and {T2} duel.",
                 &["T1", "T2"],
@@ -2055,7 +2171,7 @@ mod tests {
         );
         assert!(suicide.unwrap_err().contains("isn't another tribute"));
         let accident = g.check(
-            Kind::Finale,
+            Kind::Day(1),
             written(vec![event(
                 "{T1} and {T2} duel.",
                 &["T1", "T2"],
