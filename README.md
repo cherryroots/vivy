@@ -5,7 +5,7 @@ Vivy is a Discord bot written in Rust: a chat companion with her own memory, moo
 The code aims to be:
 
 - **Event driven.** Each feature is its own module that listens to the Discord events it cares about, with guards deciding when it runs. Features never import each other.
-- **Provider agnostic.** AI chat sits behind one trait, so Claude, OpenAI or Gemini can be swapped in.
+- **Provider agnostic.** AI chat sits behind one trait, so Claude or OpenAI can be swapped in (and another provider added).
 - **Simple and readable.** Easy to study for someone learning Rust.
 
 Built with [serenity](https://github.com/serenity-rs/serenity) and [poise](https://github.com/serenity-rs/poise) for Discord, [tokio](https://tokio.rs), and one SQLite file. [`docs/feature-map.md`](docs/feature-map.md) is the overview of every feature and what's next, [`docs/architecture.md`](docs/architecture.md) explains how the code fits together, and `docs/features/` has a page per feature.
@@ -103,7 +103,7 @@ sudo chmod 600 /opt/vivy/.env
 
 Then fill in the two files:
 
-- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` and/or `GEMINI_API_KEY` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY`, `TINYFISH_API_KEY` and the two admin keys.
+- `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY` and/or `OPENAI_TOKEN` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY`, `TINYFISH_API_KEY` and the two admin keys.
 - `config.toml` holds everything else: your user ID in `admins`, `main_server`, the log and status channel IDs, and per-feature settings.
 
 ### 4. Run with systemd

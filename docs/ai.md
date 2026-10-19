@@ -1,10 +1,10 @@
 # The `ai` module
 
-`src/ai/` is how the bot talks to AI models. Every provider (Claude, OpenAI and Gemini) implements one trait, `ChatProvider`. The rest of the bot only sees the types in `src/ai/mod.rs`: a conversation is a list of `Turn`s, and an answer arrives as a stream of `ChatEvent`s.
+`src/ai/` is how the bot talks to AI models. Every provider (Claude and OpenAI today) implements one trait, `ChatProvider`. The rest of the bot only sees the types in `src/ai/mod.rs`: a conversation is a list of `Turn`s, and an answer arrives as a stream of `ChatEvent`s.
 
 What stays outside the providers, so every provider reuses it: Discord, message splitting, media extraction, the tool loop, and the bot's own tools. The Discord side of chat is in [chat](features/chat.md); the core (config, database, `BotCtx`, utilities) is in [architecture](architecture.md).
 
-All three providers are called over plain HTTP with `reqwest` and `serde_json`, with a small parser for the streamed answers in `sse.rs`. There is no client crate: the official SDKs aren't in Rust, and community crates tend to lag behind new API features.
+Both providers are called over plain HTTP with `reqwest` and `serde_json`, with a small parser for the streamed answers in `sse.rs`. There is no client crate: the official SDKs aren't in Rust, and community crates tend to lag behind new API features.
 
 ## Files
 
@@ -26,9 +26,6 @@ All three providers are called over plain HTTP with `reqwest` and `serde_json`, 
 | `claude/uploads.rs` | Files API IDs kept in the `claude_uploads` table |
 | `claude/price.rs` | List prices per model, and what one response cost |
 | `claude/billing.rs` | Reading Anthropic's Cost API with an Admin key |
-| `gemini/mod.rs` | The Gemini provider (Interactions API), `GeminiConfig`, and `Collector`, which rebuilds the streamed steps |
-| `gemini/files.rs` | `Files`: uploading videos and PDFs with Gemini's Files API |
-| `gemini/price.rs` | List prices, and what one interaction cost |
 
 ## The types
 
@@ -39,8 +36,6 @@ pub enum Part {
     Text(String),
     Image(ModelImage),          // from util::media: a MIME type and the bytes
     File(ModelFile),            // any other attachment: name, MIME type, bytes
-    Video(ModelFile),           // a video as it is, only for a provider that watches videos (Gemini)
-    YouTube(String),            // a YouTube link, the same
     ToolResult { call_id: String, output: String },
     Native { provider: String, model: String, rounds: Vec<NativeRound> },
 }
@@ -99,10 +94,6 @@ pub trait ChatProvider: Send + Sync {
         false
     }
 
-    fn watches_video(&self) -> bool {
-        false
-    }
-
     async fn stream(
         &self,
         request: ChatRequest,
@@ -117,7 +108,7 @@ Some Rust terms here:
 - `#[async_trait]` (from the `async-trait` crate) lets a trait have `async fn` methods that can be called through `dyn ChatProvider`.
 - `Send + Sync` means a provider can be shared between threads and tasks. The bot keeps providers as `Arc<dyn ChatProvider>`: a shared pointer to "some type that implements the trait".
 - `stream` returns the receiving end of a `tokio::sync::mpsc` channel. The provider spawns a task that reads the HTTP stream and sends events into the channel until `Done` or an error. Dropping the receiver stops the request: the provider's task notices that sending failed and returns.
-- `sends_full_history` and `watches_video` have a default body, so a provider only overrides them when it needs to. Claude returns `true`: every request carries the whole conversation, so history sends every turn's media and never changes earlier turns (see [chat](features/chat.md)). Gemini returns `true` from `watches_video`: history then sends posted videos as `Part::Video` (the file itself) and YouTube links as `Part::YouTube`, instead of frame grids. Claude and OpenAI never get those two parts and skip them.
+- `sends_full_history` has a default body, so a provider only overrides it when it needs to. Claude returns `true`: every request carries the whole conversation, so history sends every turn's media and never changes earlier turns (see [chat](features/chat.md)).
 
 ## The tool loop
 
@@ -142,7 +133,7 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | Job | Model | Effort | Web | Code | Why |
 |---|---|---|---|---|---|
 | `chat`, `chime` | main | main | yes | yes | Her answers and lines. Chime-ins send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so they read the system prompt and tools from the same cache. Neither can change model: their history is saved and continued with the main one. |
-| `emoji` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | Describing a picture in one line. |
+| `emoji` | Claude Haiku (OpenAI: main) | low | no | no | Describing a picture in one line. |
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
@@ -202,23 +193,6 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds (or a longer `Retry-After`/`retry-after-ms`, up to 60 seconds). Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).
 - When the stream ends with `response.completed` (or `response.incomplete`), `add_spend` prices the response's `usage` with `price::chat_cost` and adds it to OpenAI's `Spend` (see below).
 
-## Gemini
-
-`gemini/mod.rs`. One `POST https://generativelanguage.googleapis.com/v1beta/interactions` with `"stream": true` per round, with the key in the `x-goog-api-key` header. This is Google's Interactions API, the newer one that `generateContent` is being moved to. The model is Gemini 4 Argon (`gemini-4-argon`, 1M tokens of context, 64k out).
-
-- The body has `system_instruction` (the system prompt), `input`, the job's `model`, `tools`, `generation_config` (`thinking_level` from the job's effort or `thinking_level`, and `thinking_summaries`) and `"store": true`. Gemini 4 ignores `temperature`, so it's left out. Gemini caches implicitly (there is no cache key to send).
-- Built-in tools: `google_search` and `url_context` when the job has the web (search, then read the pages it found or the links people post), `code_execution` when it has code. Then the bot's tools as `function` tools.
-- Gemini stores every interaction (55 days on a paid key), so like OpenAI `Done.continuation` is the interaction's ID, and the next request sends `previous_interaction_id` with only what's new. Gemini keeps its own thinking (and its thought signatures) on its side, so `Part::Native` is ignored.
-- `input` is a list of steps: a person's turn is `user_input`, an earlier answer is `model_output` with its text (when the conversation started on another provider), and each tool result is a `function_result` with the call's `call_id` and `name`. The tool loop only keeps the call ID, so the provider remembers each call's name in `call_names`.
-- Pictures go inline as `{"type": "image", "data": <base64>, "mime_type": ...}`.
-- Videos people post are uploaded with the Files API (`files.rs`: a resumable upload, then the file is checked every 2 seconds until Google has processed it) and sent as `{"type": "video", "uri": ..., "processing": video_processing}`. The model watches the whole video with its sound, not a few frames. Google deletes uploads after 48 hours; uploads from the last 47 are reused by content (the same `ContentKey` hash as Claude's uploads), in memory only.
-- YouTube links in people's messages (`youtube.com/watch`, `youtu.be`, shorts, live) are sent as videos by their link, `{"type": "video", "uri": "https://www.youtube.com/watch?v=...", "processing": youtube_processing}`: only public videos work, at most 10 per request, from the newest 4 messages that link any (`history::youtube_videos`). YouTube's preview thumbnail is still sent as a picture too.
-- `processing` is `"static"` (frames once a second with the sound, all at once: best for short clips, the default for posted videos) or `"agentic"` (the model looks through the video and loads the parts it needs: up to 88% fewer tokens on long videos, but slower; the default for YouTube, since a long video watched statically could fill the context window).
-- PDFs are uploaded the same way and sent as `document`s. Other files get a note saying they can't be opened; small text files are already in the message text.
-- The stream sends `interaction.created`, then each step as `step.start`, `step.delta`s and `step.stop`, then `interaction.completed` with the `usage`. `Collector` rebuilds the steps: `text` deltas become `TextDelta`s, `thought_summary` deltas become `Progress` notes for the status line (only for requests with the bot's tools, when `thought_summaries` is on), function call arguments arrive as `arguments_delta` text and are parsed at `step.stop`, and Google Search and URL context steps show what they search for or read. Unknown event and step types are skipped, as Google asks.
-- 429, 500, 502, 503 and 504 are retried twice, after 2 and 6 seconds. Errors become an `ApiError` with provider `"gemini"`; an `error` event mid-stream gets the status its code has as an HTTP answer (`gateway_timeout` 504, `internal` 500, `resource_exhausted` 429...), so the fallback reads it the same way. Gemini's "You exceeded your current quota" is OpenAI's wording, so out of credit is recognised already.
-- Code execution makes no files to download, so `download_file` always fails.
-
 ### Pictures
 
 `openai/images.rs`. `Ai::images` is set whenever `OPENAI_TOKEN` is in `.env`, whichever provider chats, so any feature can draw (the [drawing](features/drawing.md) feature's chat tool does). `Images::draw` takes a `PictureRequest` (model, prompt, pictures to start from, size, quality, format, moderation):
@@ -274,7 +248,6 @@ Callers take `ctx.ai.chat()` once per answer and keep that provider for the whol
 
 - After each Claude response, `add_spend` (in `claude/mod.rs`) prices its usage (input, cache writes and reads, output, web searches) with `price::cost`, from a table of list prices per model ID prefix. Cache writes cost 1.25 times the input price for 5 minutes and 2 times for an hour (`usage.cache_creation.ephemeral_1h_input_tokens`); web searches $10 per 1000. An unknown model is priced like Opus 5.5.
 - After each OpenAI response, `add_spend` (in `openai/mod.rs`) prices it with `price::chat_cost`: uncached input, cached input and output tokens from a table per model ID prefix, twice that on the `fast` service tier, plus $10 per 1000 web searches. Left out, so the estimate runs a little low: long-prompt prices, cache writes, and code interpreter containers ($0.03 a session). An unknown model is priced like gpt-6.1-sol. Pictures are priced by `price::image_cost`.
-- After each Gemini interaction, `add_spend` (in `gemini/mod.rs`) prices its `usage` with `price::cost`: `total_input_tokens` plus `total_tool_use_tokens` (pages URL context read) as input, less `total_cached_tokens` at the cache price, and `total_output_tokens` plus `total_thought_tokens` as output, plus $14 per 1000 Google searches. Gemini 4 Argon costs $2 in, $0.10 cached, $10 out per million until 2026-11-30 and twice that from 2026-12-01 (checked 2026-10-14); the price table switches on that date. The first 5000 searches a month are free, which the estimate ignores, so it runs a little high. Google has no Admin API for the bill, so there's no `billed_spend` for Gemini.
 - `Spend::add` adds it to `ai_spend` (the month's total) and to `ai_spend_jobs` (per job). Months are calendar months in UTC.
 - At 80% and 100% of `monthly_budget` under `[ai.claude]` / `[ai.openai]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
 - With an Admin key in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill` with that company's `Bill` on the shutdown tracker, which reads the bill now and every hour (until the bot stops) and replaces the month's total with it:
@@ -297,15 +270,13 @@ Background loops: the timers `"Anthropic bill"` and `"OpenAI bill"` (`"hourly"`)
 
 ## Configuration
 
-`[ai]` in `config.toml` is read into `AiConfig` (`mod.rs`): `provider`, `fallback`, `[ai.claude]` (`ClaudeConfig`), `[ai.openai]` (`OpenAiConfig`) and `[ai.gemini]` (`GeminiConfig`). `config.example.toml` explains each key. Keys come from `.env`: `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` (and optional `OPENAI_BASE`), `GEMINI_API_KEY`, and the optional `ANTHROPIC_ADMIN_KEY` and `OPENAI_ADMIN_KEY`.
+`[ai]` in `config.toml` is read into `AiConfig` (`mod.rs`): `provider`, `fallback`, `[ai.claude]` (`ClaudeConfig`) and `[ai.openai]` (`OpenAiConfig`). `config.example.toml` explains each key. Keys come from `.env`: `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` (and optional `OPENAI_BASE`), and the optional `ANTHROPIC_ADMIN_KEY` and `OPENAI_ADMIN_KEY`.
 
 `ai_from_env` in `src/main.rs` builds the providers at startup. Only the main provider's key is read, plus the fallback's when one is set (and different from the main one). Without the main key, `ctx.ai.chat()` returns `None` and chat says it is turned off; a missing fallback key only means there is no fallback. All providers share one `reqwest::Client` with a 10-second connect timeout and a 5-minute read timeout.
 
-## Adding a provider
+## Adding a provider (for example Gemini)
 
-Gemini was added with these steps, so `src/ai/gemini/` is a worked example.
-
-1. **Write the provider.** Add `src/ai/<name>/mod.rs` with a `GeminiConfig` (`#[derive(Deserialize)]`, `#[serde(default)]`, and a `Default` impl) and a `Gemini` struct that implements `ChatProvider`:
+1. **Write the provider.** Add `src/ai/gemini.rs` with a `GeminiConfig` (`#[derive(Deserialize)]`, `#[serde(default)]`, and a `Default` impl) and a `Gemini` struct that implements `ChatProvider`:
    - `name` returns `"gemini"`; `model` returns the configured model.
    - `stream` turns `request.input` into Gemini's format, posts it through `fallback::send` (so a dropped connection is retried once), and spawns a task that reads the stream with `SseParser` and sends `TextDelta`, `Activity` and finally one `Done` into an `mpsc` channel. Stop reading when sending fails.
    - Put tool calls in `Done.tool_calls` and the raw output in `Done.native`. If Gemini can continue a stored conversation, put its ID in `Done.continuation`; otherwise leave it `None` and override `sends_full_history` to return `true`.

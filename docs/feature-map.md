@@ -10,7 +10,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
-| [ai.md](ai.md) | The AI providers (Claude, OpenAI, Gemini), pictures, conversation history, fallback and spend |
+| [ai.md](ai.md) | The AI providers (Claude, OpenAI), pictures, conversation history, fallback and spend |
 | [features/chat.md](features/chat.md) | Chat: answers, tools, chime-ins, follow-ups, server emoji |
 | [features/reminders.md](features/reminders.md) | Reminders: the time grammar, the scheduler, snooze |
 | [features/wheel.md](features/wheel.md) | The movie wheel: the money rules, seasons, the round picture |
@@ -82,7 +82,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 |---|---|
 | Discord library | `serenity` for events and the REST API, `poise` for slash commands |
 | Structure | One crate, plain modules. Features never import each other; they work together through chat tools, chat context, bot events and the status picture. Each declares everything it adds in its `Feature` impl. A Cargo workspace with a crate per feature would let the compiler enforce that, but isn't worth the build setup yet. |
-| AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Gemini (Interactions API) can be picked as either, and watches videos and YouTube links itself. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
+| AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
 | Prompt caching | The system prompt and tool list never change. Anything that changes (the time, memory's file list, Vivy's mood) comes from tools or goes after the newest question. |
 | Storage | One SQLite file in WAL mode, raw SQL through `rusqlite` on its own thread (`tokio-rusqlite`), per-feature migrations. No ORM, like voltgpt. |
 | Config | Secrets in `.env`, everything else in `config.toml`. Per-feature gating is config, not code (voltgpt hardcoded its main server and blocked channels). Mistakes warn, never stop the bot. |
@@ -194,6 +194,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #82 | | Settings to tune things that were fixed in code: Hunger Games `close_ups`, `picture_quality`, `victor_picture_quality`, `max_places`, `describe_areas`, `most_in_octagon`, `wander_rounds`; chat `max_tool_rounds`, `history_turns`, `follow_ups_per_person`; snails `count_within_days`; who said it `pause_seconds` |
 | #83 | | Reminders: the "Tomorrow 9:00" snooze button is removed; 10 min, 1 hour and Pick a time… stay |
 | #84 | | Chat: Discord message links in a question are opened for her (up to 3, as the asker, only channels they can read): author, time, whole text, text attachments, embeds and pictures come with the question as `<linked_messages>`; the prompt and `get_message`'s description say Discord links are hers to open and her web tools can't, so she stops saying she can't open them |
+| #85 | | Gemini provider removed (#64): `provider`/`fallback` = "gemini", `[ai.gemini]` and `GEMINI_API_KEY` are gone; videos and YouTube links go back to frame grids for every provider |
 
 ## Not built yet
 

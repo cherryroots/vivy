@@ -16,14 +16,12 @@ use crate::util::svg::{
 /// Each provider's color in the spend section.
 const CLAUDE: &str = "#d97757";
 const OPENAI: &str = "#10a37f";
-const GEMINI: &str = "#4285f4";
 
 /// Each provider's line and labels on the spend graph and cards.
 fn provider_color(provider: &str) -> &'static str {
     match provider {
         "claude" => CLAUDE,
         "openai" => OPENAI,
-        "gemini" => GEMINI,
         _ => ACCENT,
     }
 }
