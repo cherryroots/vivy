@@ -535,6 +535,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         }
     }
 

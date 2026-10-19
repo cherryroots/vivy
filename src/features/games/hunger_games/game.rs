@@ -205,7 +205,29 @@ pub struct Round {
     pub entrants: Vec<usize>,
     pub champion: Option<usize>,
     pub reward: Option<Reward>,
+    /// In the Scatter, the theme she picks for the game (see [`Theme`]).
+    pub theme: Option<Theme>,
 }
+
+/// The game's theme, which Vivy picks as she writes the Scatter and is reminded of every
+/// round, so her Gamemaker lines and some events tie the game together. A light theme,
+/// not a plot (Cherry's call): the code decides the deaths and the Octagon, so a planned
+/// story would keep breaking.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Theme {
+    /// The season's name, like "The Static Season".
+    pub name: String,
+    /// One quirk of this arena that everyone knows about: a storm, a sponsor, a rule.
+    #[serde(default)]
+    pub twist: String,
+    /// What she means to spring on them once, later on. The tributes don't know.
+    #[serde(default)]
+    pub surprise: String,
+}
+
+/// The longest a theme's name may be, in characters, and its twist or surprise.
+const MAX_THEME_NAME: usize = 60;
+const MAX_THEME_PART: usize = 300;
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
 #[derive(Debug, Deserialize)]
@@ -219,6 +241,8 @@ pub struct Written {
     pub picture: Option<String>,
     #[serde(default)]
     pub champion: Option<String>,
+    #[serde(default)]
+    pub theme: Option<Theme>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -285,6 +309,8 @@ pub struct Game {
     pub places: usize,
     /// Who killed whom in earlier Games, among these tributes, most often first.
     pub grudges: Vec<Grudge>,
+    /// The theme she picked in the Scatter, once it's played.
+    pub theme: Option<Theme>,
 }
 
 impl Game {
@@ -306,6 +332,7 @@ impl Game {
                 .collect(),
             rounds: Vec::new(),
             prize: None,
+            theme: None,
             places: 0,
             grudges: Vec::new(),
         }
@@ -1088,6 +1115,18 @@ impl Game {
             victory: clean(written.victory).filter(|_| ends),
             picture,
             reward: champion.map(|_| reward),
+            theme: written
+                .theme
+                .filter(|_| kind == Kind::Scatter)
+                .and_then(|t| {
+                    let cut = |text: String, most: usize| text.trim().chars().take(most).collect();
+                    let name: String = cut(t.name, MAX_THEME_NAME);
+                    (!name.is_empty()).then(|| Theme {
+                        name,
+                        twist: cut(t.twist, MAX_THEME_PART),
+                        surprise: cut(t.surprise, MAX_THEME_PART),
+                    })
+                }),
             entrants,
             champion,
         })
@@ -1131,6 +1170,9 @@ impl Game {
     /// weapons, and alliances form and break. Killing an ally ends the killer's alliance.
     pub fn apply(&mut self, round: Round) {
         let index = self.rounds.len();
+        if round.theme.is_some() {
+            self.theme = round.theme.clone();
+        }
         for event in &round.events {
             for death in &event.deaths {
                 self.tributes[death.victim].died_in = Some(index);
@@ -1299,6 +1341,7 @@ mod tests {
             victory: None,
             picture: None,
             champion: None,
+            theme: None,
         }
     }
 
@@ -1931,6 +1974,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         }
     }
 
@@ -2049,6 +2093,37 @@ mod tests {
         both.allies = vec!["T1".into(), "T2".into()];
         both.leaves = vec!["T2".into()];
         assert!(check(both).contains("both team up and leave"));
+    }
+
+    #[test]
+    fn the_scatter_picks_a_theme() {
+        let mut g = game(2);
+        let theme = |name: &str| Theme {
+            name: name.into(),
+            twist: " Acid rain at noon. ".into(),
+            surprise: "The Octagon floods.".into(),
+        };
+        let mut w = written(vec![event("{T1} and {T2} run.", &["T1", "T2"], &[])]);
+        w.theme = Some(theme("  The Static Season "));
+        let round = g.check(Kind::Scatter, w).unwrap();
+        assert_eq!(round.theme.as_ref().unwrap().name, "The Static Season");
+        assert_eq!(round.theme.as_ref().unwrap().twist, "Acid rain at noon.");
+        g.apply(round);
+        assert_eq!(g.theme.as_ref().unwrap().surprise, "The Octagon floods.");
+        // Only the Scatter picks one, and a theme with no name is dropped.
+        let mut w = written(vec![event("{T1} and {T2} nap.", &["T1", "T2"], &[])]);
+        w.theme = Some(theme("Another"));
+        let mut quiet = game(3);
+        quiet.rounds.push(round_with(Kind::Scatter, 1));
+        let mut w3 = written(vec![event(
+            "{T1}, {T2} and {T3} nap.",
+            &["T1", "T2", "T3"],
+            &[],
+        )]);
+        w3.theme = Some(theme("Another"));
+        assert_eq!(quiet.check(Kind::Day(1), w3).unwrap().theme, None);
+        w.theme = Some(theme(" "));
+        assert_eq!(game(2).check(Kind::Scatter, w).unwrap().theme, None);
     }
 
     #[test]

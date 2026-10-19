@@ -27,7 +27,7 @@ Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null, \"theme\": {\"name\": string, \"twist\": string, \"surprise\": string} or null}
 - Every living tribute is in exactly one event's `tributes`, and every tribute in an event's `tributes` is tagged in its text. A living tribute is tagged only in the text of their own event, never in another one (not even a teammate thinking of them). The dead are not in any `tributes`, but their tags may appear in any text: looting their body, avenging them, mourning them.
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
@@ -36,6 +36,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
+- `theme`: only in the Scatter: the theme you pick for these Games. `name` is the season's name (a few words, like `The Static Season`), `twist` one quirk of this arena everyone knows about (a storm, a sponsor, a strange rule), and `surprise` something you mean to spring on them once, later on, that they don't know yet. Make it fit the tributes and the places. It's a mood, not a plot: the deaths and the Octagon aren't yours to plan. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
@@ -144,6 +145,12 @@ pub fn brief(
         text.push_str(&grudges.join("\n"));
         text.push('\n');
     }
+    if let Some(theme) = &game.theme {
+        text.push_str(&format!(
+            "\nThis season's theme, which you picked: {}. The arena's twist: {} Your surprise, which the tributes don't know about yet: {} Let the theme colour your Gamemaker lines and some events, and spring the surprise once, when it fits (an Octagon or the last two are good moments; the story so far shows whether you already did). Don't force it into every event.\n",
+            theme.name, theme.twist, theme.surprise
+        ));
+    }
     if !game.rounds.is_empty() {
         text.push_str("\nThe story so far:\n");
         for round in &game.rounds {
@@ -160,7 +167,7 @@ pub fn brief(
     }
     let what = match kind {
         Kind::Scatter => {
-            "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Open the Games with your `gamemaker` announcement.".to_string()
+            "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Pick this season's `theme`, and open the Games with your `gamemaker` announcement, which names it.".to_string()
         }
         Kind::Day(_) | Kind::Night(_) => {
             let name = title(kind);
@@ -482,6 +489,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         }
     }
 
@@ -510,12 +518,18 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         });
         let notes = vec![
             Some("Plays chess".into()),
             Some("dead, unused".into()),
             None,
         ];
+        game.theme = Some(super::super::game::Theme {
+            name: "The Static Season".into(),
+            twist: "Acid rain at noon.".into(),
+            surprise: "The Octagon floods.".into(),
+        });
         // Two are left, and with no places to wander it's the showdown at once.
         let text = brief(
             &game,
@@ -535,6 +549,7 @@ mod tests {
         assert!(text.contains("- T2: Cherry (dead, their cleaver lies where they fell)"));
         assert!(text.contains("- Moss bonks Cherry."));
         assert!(text.contains("Exactly 1 tribute must die"));
+        assert!(text.contains("This season's theme, which you picked: The Static Season. The arena's twist: Acid rain at noon. Your surprise, which the tributes don't know about yet: The Octagon floods."));
     }
 
     #[test]
@@ -566,6 +581,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         });
         let text = brief(&game, Kind::Day(2), &arena, &[], false);
         assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2\n"));
