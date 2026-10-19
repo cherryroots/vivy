@@ -2,8 +2,8 @@
 //! place, kills, Octagons won and days lived through, and `/games leaderboard` shows the server's best,
 //! or one member's record.
 //!
-//! Who killed whom is saved too, so the next Games can bring up old grudges and a member's
-//! record names their nemesis.
+//! Who killed whom is saved too, with the weapon and the place, so the next Games can bring
+//! up old grudges and how they happened, and a member's record names their nemesis.
 //!
 //! Games that are cancelled or called off aren't saved, so only finished games count.
 
@@ -13,7 +13,8 @@ use poise::CreateReply;
 use rusqlite::{Connection, OptionalExtension, params};
 use serenity::all::{CreateAllowedMentions, User};
 
-use super::game::{Game, Kind};
+use super::game::{Blow, Game, Kind, PastKills};
+use super::ui;
 use crate::core::{Context, Result, user_error};
 use crate::util::count;
 
@@ -47,6 +48,11 @@ pub const MIGRATIONS: &[&str] = &[
         victim_id INTEGER NOT NULL
     );
     CREATE INDEX games_hunger_kills_game ON games_hunger_kills (game_id);",
+    // 4: how each kill happened, so revenge can call back to it. Kills saved before this
+    // have no weapon (NULL); '' is bare hands.
+    "ALTER TABLE games_hunger_kills ADD COLUMN weapon TEXT;
+    ALTER TABLE games_hunger_kills ADD COLUMN place_id INTEGER;
+    ALTER TABLE games_hunger_kills ADD COLUMN octagon INTEGER NOT NULL DEFAULT 0;",
 ];
 
 /// How many people the leaderboard shows.
@@ -97,15 +103,22 @@ fn days_lived(game: &Game, died_in: Option<usize>) -> u32 {
         .iter()
         .map(|r| match r.kind {
             Kind::Day(n) | Kind::Night(n) | Kind::Octagon(n) => n,
-            Kind::Scatter | Kind::Finale => 0,
+            Kind::Scatter => 0,
         })
         .max()
         .unwrap_or(0)
 }
 
 /// Saves a finished game. Does nothing for a game with no victor. A team Games keeps its
-/// first winner as the game's winner, and both as 1st in the tributes.
-pub fn record(conn: &mut Connection, guild: u64, channel: u64, game: &Game) -> Result<()> {
+/// first winner as the game's winner, and both as 1st in the tributes. `places` are the
+/// arena's places (name and channel ID), to save where each kill happened.
+pub fn record(
+    conn: &mut Connection,
+    guild: u64,
+    channel: u64,
+    game: &Game,
+    places: &[(String, u64)],
+) -> Result<()> {
     let Some(&winner) = game.winners().first() else {
         return Ok(());
     };
@@ -131,54 +144,76 @@ pub fn record(conn: &mut Connection, guild: u64, channel: u64, game: &Game) -> R
             params![id, p.user, p.place, p.kills, p.octagons, p.days],
         )?;
     }
-    for (killer, victim) in kills(game) {
+    for kill in game.kills() {
+        let round = &game.rounds[kill.round];
+        let text = &round.events[kill.event].text;
         tx.execute(
-            "INSERT INTO games_hunger_kills (game_id, killer_id, victim_id) VALUES (?1, ?2, ?3)",
-            params![id, killer, victim],
+            "INSERT INTO games_hunger_kills (game_id, killer_id, victim_id, weapon, place_id, octagon)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                id,
+                game.tributes[kill.killer].id,
+                game.tributes[kill.victim].id,
+                kill.weapon.unwrap_or_default(),
+                ui::first_place(text, places),
+                matches!(round.kind, Kind::Octagon(_)),
+            ],
         )?;
     }
     tx.commit()?;
     Ok(())
 }
 
-/// Every kill in a game, as (killer's user ID, victim's user ID).
-fn kills(game: &Game) -> Vec<(u64, u64)> {
-    game.rounds
-        .iter()
-        .flat_map(|r| &r.events)
-        .flat_map(|e| &e.deaths)
-        .filter_map(|d| Some((game.tributes[d.by?].id, game.tributes[d.victim].id)))
-        .collect()
-}
-
-/// Who killed whom in a server's earlier Games, among `ids`: (killer, victim, times).
-pub fn grudges(
-    conn: &Connection,
-    guild: u64,
-    ids: &[u64],
-) -> rusqlite::Result<Vec<(u64, u64, u32)>> {
+/// Who killed whom in a server's earlier Games, among `ids`: (killer, victim, times, how
+/// the last time happened), by killer and victim.
+pub fn grudges(conn: &Connection, guild: u64, ids: &[u64]) -> rusqlite::Result<Vec<PastKills>> {
     let mut stmt = conn.prepare(
-        "SELECT k.killer_id, k.victim_id, COUNT(*)
+        "SELECT k.killer_id, k.victim_id, k.weapon, k.place_id, k.octagon
          FROM games_hunger_kills k JOIN games_hunger_games g ON g.id = k.game_id
          WHERE g.guild_id = ?1
-         GROUP BY k.killer_id, k.victim_id",
+         ORDER BY g.at, k.rowid",
     )?;
-    let all = stmt.query_map([guild], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-    let mut found = Vec::new();
-    for pair in all {
-        let (killer, victim, times): (u64, u64, u32) = pair?;
+    let rows = stmt.query_map([guild], |row| {
+        let weapon: Option<String> = row.get(2)?;
+        let blow = match weapon {
+            None => None,
+            Some(weapon) => Some(Blow {
+                weapon: (!weapon.is_empty()).then_some(weapon),
+                place: row.get(3)?,
+                octagon: row.get(4)?,
+            }),
+        };
+        Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?, blow))
+    })?;
+    // Oldest first, so the last kill of each pair is the one kept.
+    let mut pairs: std::collections::BTreeMap<(u64, u64), (u32, Option<Blow>)> =
+        std::collections::BTreeMap::new();
+    for row in rows {
+        let (killer, victim, blow) = row?;
         if ids.contains(&killer) && ids.contains(&victim) {
-            found.push((killer, victim, times));
+            let pair = pairs.entry((killer, victim)).or_default();
+            pair.0 += 1;
+            if blow.is_some() {
+                pair.1 = blow;
+            }
         }
     }
-    Ok(found)
+    Ok(pairs
+        .into_iter()
+        .map(|((killer, victim), (times, last))| (killer, victim, times, last))
+        .collect())
 }
 
 /// The member's nemesis in a server: whoever killed them most, at least twice (the most
 /// recent first in a tie), and how many times.
-fn nemesis(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<(u64, u64)>> {
+fn nemesis(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<Nemesis>> {
     conn.query_row(
-        "SELECT k.killer_id, COUNT(*)
+        "SELECT k.killer_id, COUNT(*),
+                (SELECT last.weapon
+                 FROM games_hunger_kills last JOIN games_hunger_games lg ON lg.id = last.game_id
+                 WHERE lg.guild_id = ?1 AND last.victim_id = ?2 AND last.killer_id = k.killer_id
+                 ORDER BY lg.at DESC, last.rowid DESC
+                 LIMIT 1)
          FROM games_hunger_kills k JOIN games_hunger_games g ON g.id = k.game_id
          WHERE g.guild_id = ?1 AND k.victim_id = ?2
          GROUP BY k.killer_id
@@ -186,9 +221,25 @@ fn nemesis(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<
          ORDER BY 2 DESC, MAX(g.at) DESC
          LIMIT 1",
         params![guild, user],
-        |row| Ok((row.get(0)?, row.get(1)?)),
+        |row| {
+            Ok(Nemesis {
+                killer: row.get(0)?,
+                times: row.get(1)?,
+                weapon: row.get(2)?,
+            })
+        },
     )
     .optional()
+}
+
+/// Whoever killed a member most.
+#[derive(Debug, Clone, PartialEq)]
+struct Nemesis {
+    killer: u64,
+    times: u64,
+    /// The weapon of their last kill of the member: '' for bare hands, `None` when it's
+    /// from before kills kept it.
+    weapon: Option<String>,
 }
 
 /// One line of the leaderboard.
@@ -248,7 +299,7 @@ fn most_kills(conn: &Connection, guild: u64) -> rusqlite::Result<Option<(u64, u6
 }
 
 /// One member's record in a server.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 struct Record {
     games: u64,
     wins: u64,
@@ -258,8 +309,8 @@ struct Record {
     best_place: u64,
     average_place: f64,
     most_days: u64,
-    /// Whoever killed them most, and how many times.
-    nemesis: Option<(u64, u64)>,
+    /// Whoever killed them most, at least twice.
+    nemesis: Option<Nemesis>,
 }
 
 fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<Record>> {
@@ -417,9 +468,16 @@ fn member_text(user: u64, record: Option<&Record>) -> String {
     let Some(r) = record else {
         return format!("🏆 <@{user}> hasn't finished a Hunger Games here yet.");
     };
-    let nemesis = match r.nemesis {
-        Some((killer, times)) => {
-            format!("\n😈 Nemesis: <@{killer}>, who killed them {times} times")
+    let nemesis = match &r.nemesis {
+        Some(n) => {
+            let last = match n.weapon.as_deref() {
+                None => String::new(),
+                Some(weapon) => format!(", the last time {}", ui::with_weapon(weapon)),
+            };
+            format!(
+                "\n😈 Nemesis: <@{}>, who killed them {} times{last}",
+                n.killer, n.times
+            )
         }
         None => String::new(),
     };
@@ -459,6 +517,10 @@ mod tests {
     use crate::core::db::test_connection;
     use crate::features::games::hunger_games::game::{Death, Event, Round};
 
+    fn places() -> Vec<(String, u64)> {
+        vec![("den".into(), 50)]
+    }
+
     fn round(kind: Kind, deaths: Vec<Death>) -> Round {
         Round {
             kind,
@@ -488,7 +550,10 @@ mod tests {
             victim,
             by: Some(by),
         };
-        game.apply(round(Kind::Scatter, vec![kill(1, 0)]));
+        // Moss grabs a spoon and kills Ash with it at once.
+        let mut scatter = round(Kind::Scatter, vec![kill(1, 0)]);
+        scatter.events[0].finds = vec![(0, "spoon".into())];
+        game.apply(scatter);
         game.apply(round(Kind::Day(1), vec![]));
         // Reed wins the Octagon against Moss; Fern hangs back.
         game.apply(Round {
@@ -496,9 +561,12 @@ mod tests {
             champion: Some(3),
             ..round(Kind::Octagon(1), vec![])
         });
-        game.apply(round(Kind::Night(1), vec![kill(2, 0)]));
+        let mut night = round(Kind::Night(1), vec![kill(2, 0)]);
+        night.events[0].text = "{T1} gets {T3} in #den.".into();
+        game.apply(night);
+        // Reed falls to the arena in the showdown.
         game.apply(round(
-            Kind::Finale,
+            Kind::Day(2),
             vec![Death {
                 victim: 3,
                 by: None,
@@ -517,7 +585,8 @@ mod tests {
         assert_eq!(
             summary,
             vec![
-                (1, 1, 2, 0, 1),
+                // Moss wins the showdown on day 2.
+                (1, 1, 2, 0, 2),
                 (4, 2, 0, 1, 1),
                 (3, 3, 0, 0, 1),
                 (2, 4, 0, 0, 0)
@@ -558,13 +627,13 @@ mod tests {
     #[test]
     fn ranks_wins_then_kills() {
         let mut conn = test_connection("games", MIGRATIONS);
-        record(&mut conn, 7, 1, &finished()).unwrap();
-        record(&mut conn, 7, 1, &finished()).unwrap();
+        record(&mut conn, 7, 1, &finished(), &places()).unwrap();
+        record(&mut conn, 7, 1, &finished(), &places()).unwrap();
         // Another server's game doesn't count here.
-        record(&mut conn, 8, 1, &finished()).unwrap();
+        record(&mut conn, 8, 1, &finished(), &places()).unwrap();
         // Nor does one without a victor.
         let unfinished = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
-        record(&mut conn, 7, 1, &unfinished).unwrap();
+        record(&mut conn, 7, 1, &unfinished, &places()).unwrap();
 
         let ranked = top(&conn, 7, 10).unwrap();
         assert_eq!(
@@ -584,8 +653,8 @@ mod tests {
 
         // Resetting one server leaves the other alone.
         let mut other = test_connection("games", MIGRATIONS);
-        record(&mut other, 7, 1, &finished()).unwrap();
-        record(&mut other, 8, 1, &finished()).unwrap();
+        record(&mut other, 7, 1, &finished(), &places()).unwrap();
+        record(&mut other, 8, 1, &finished(), &places()).unwrap();
         assert_eq!(reset(&mut other, 7).unwrap(), 1);
         assert!(top(&other, 7, 10).unwrap().is_empty());
         assert_eq!(games_played(&other, 8).unwrap(), 1);
@@ -605,22 +674,42 @@ mod tests {
     #[test]
     fn remembers_who_killed_whom() {
         let mut conn = test_connection("games", MIGRATIONS);
-        record(&mut conn, 7, 1, &finished()).unwrap();
+        record(&mut conn, 7, 1, &finished(), &places()).unwrap();
         // Moss killed Ash and Fern; Reed died to the arena, so nobody gets a grudge for it.
-        let mut found = grudges(&conn, 7, &[1, 2, 3, 4]).unwrap();
-        found.sort_unstable();
-        assert_eq!(found, vec![(1, 2, 1), (1, 3, 1)]);
+        // Moss grabbed the spoon in the Scatter, then kept it for Fern in #den.
+        let spoon = |place| Blow {
+            weapon: Some("spoon".into()),
+            place,
+            octagon: false,
+        };
+        assert_eq!(
+            grudges(&conn, 7, &[1, 2, 3, 4]).unwrap(),
+            vec![
+                (1, 2, 1, Some(spoon(None))),
+                (1, 3, 1, Some(spoon(Some(50))))
+            ]
+        );
         // Only pairs who are both in the coming game.
-        assert_eq!(grudges(&conn, 7, &[1, 3]).unwrap(), vec![(1, 3, 1)]);
+        assert_eq!(
+            grudges(&conn, 7, &[1, 3]).unwrap(),
+            vec![(1, 3, 1, Some(spoon(Some(50))))]
+        );
         assert!(grudges(&conn, 8, &[1, 2, 3, 4]).unwrap().is_empty());
         // One kill isn't a nemesis yet; two are.
         assert_eq!(nemesis(&conn, 7, 2).unwrap(), None);
-        record(&mut conn, 7, 1, &finished()).unwrap();
-        assert_eq!(nemesis(&conn, 7, 2).unwrap(), Some((1, 2)));
-        assert_eq!(
-            record_of(&conn, 7, 2).unwrap().unwrap().nemesis,
-            Some((1, 2))
-        );
+        record(&mut conn, 7, 1, &finished(), &places()).unwrap();
+        let moss = Nemesis {
+            killer: 1,
+            times: 2,
+            weapon: Some("spoon".into()),
+        };
+        assert_eq!(nemesis(&conn, 7, 2).unwrap(), Some(moss.clone()));
+        assert_eq!(record_of(&conn, 7, 2).unwrap().unwrap().nemesis, Some(moss));
+        // Kills saved before weapons were kept still count, with no weapon to tell.
+        conn.execute("UPDATE games_hunger_kills SET weapon = NULL", [])
+            .unwrap();
+        assert_eq!(nemesis(&conn, 7, 2).unwrap().unwrap().weapon, None);
+        assert_eq!(grudges(&conn, 7, &[1, 2]).unwrap(), vec![(1, 2, 2, None)]);
         assert_eq!(record_of(&conn, 7, 1).unwrap().unwrap().nemesis, None);
     }
 
@@ -665,12 +754,25 @@ mod tests {
         let text = member_text(5, Some(&record));
         assert!(!text.contains("Nemesis"));
         let haunted = Record {
-            nemesis: Some((9, 3)),
-            ..record
+            nemesis: Some(Nemesis {
+                killer: 9,
+                times: 3,
+                weapon: None,
+            }),
+            ..record.clone()
         };
         assert!(
             member_text(5, Some(&haunted)).ends_with("\n😈 Nemesis: <@9>, who killed them 3 times")
         );
+        let axed = Record {
+            nemesis: Some(Nemesis {
+                killer: 9,
+                times: 3,
+                weapon: Some("axe".into()),
+            }),
+            ..record
+        };
+        assert!(member_text(5, Some(&axed)).ends_with("3 times, the last time with an axe"));
         assert!(text.contains("👑 1 win in 4 games"));
         assert!(text.contains("🏟️ 1 Octagon won"));
         assert!(text.contains("Best finish: 1st · average place 2.8"));

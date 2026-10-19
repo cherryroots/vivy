@@ -10,7 +10,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::game::{Game, Kind, Reward, Round, Written, fill};
+use super::game::{Endgame, Game, Kind, Reward, Round, Written, fill};
+use super::ui;
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
 };
@@ -33,7 +34,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `allies`: two or more tributes in that event who team up (joining someone's alliance brings you into it). `leaves`: tributes in that event who walk out on their alliance. Killing an ally ends the killer's alliance by itself. Leave both out or empty otherwise.
 - `champion`: only in an Octagon round: the tag of the one who wins it, alive at the end. Otherwise null.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
-- `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
+- `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
@@ -61,6 +62,7 @@ pub fn brief(
     };
     let closed = game.closed(at);
     let closing = places(game.closing(at), true);
+    let open = places(closed.clone(), false);
     let mut text = String::new();
     if !arena.is_empty() {
         text.push_str(
@@ -117,8 +119,18 @@ pub fn brief(
         .open_grudges()
         .iter()
         .map(|g| {
+            // How the last time happened, so revenge can call back to it. Its place is
+            // left out: it may not be in this arena.
+            let last = match &g.last {
+                Some(blow) => format!(
+                    ", the last time {}{}",
+                    ui::with_weapon(blow.weapon.as_deref().unwrap_or_default()),
+                    if blow.octagon { " in the Octagon" } else { "" }
+                ),
+                None => String::new(),
+            };
             format!(
-                "- {} killed {} {}",
+                "- {} killed {} {}{last}",
                 Game::tag(g.killer),
                 Game::tag(g.victim),
                 g.how_often()
@@ -150,8 +162,16 @@ pub fn brief(
         Kind::Scatter => {
             "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Open the Games with your `gamemaker` announcement.".to_string()
         }
-        Kind::Day(day) => format!("Day {day}.{}{}", shrink(&closing), hunt(game)),
-        Kind::Night(day) => format!("Night {day}.{}{}", shrink(&closing), hunt(game)),
+        Kind::Day(_) | Kind::Night(_) => {
+            let name = title(kind);
+            match game.endgame(at) {
+                Some(Endgame::Wander) => format!("{name}.{}{}", shrink(&closing), wander(game)),
+                Some(Endgame::Showdown) => {
+                    format!("{name}.{}{}", shrink(&closing), showdown(game, &open))
+                }
+                None => format!("{name}.{}{}", shrink(&closing), hunt(game)),
+            }
+        }
         Kind::Octagon(day) => {
             let entrants: Vec<String> = game.entrants().into_iter().map(Game::tag).collect();
             let prize = match game.prize.unwrap_or(Reward::Weapon) {
@@ -164,14 +184,10 @@ pub fn brief(
                 entrants.join(", ")
             )
         }
-        Kind::Finale if game.teams() => {
-            "The final showdown: only two teams are left, and you force everyone still standing into the Octagon in the middle of the arena to settle it in the cage. Announce the final teams with your `gamemaker` line, then everyone left on one team dies and the other team wins. Write your `victory` line to the winning team, both of them by name, a fallen teammate too.".to_string()
-        }
-        Kind::Finale => {
-            "The final showdown: only two are left, and you force them into the Octagon in the middle of the arena to settle it in the cage. Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner.".to_string()
-        }
     };
-    let deaths = if min == max {
+    let deaths = if max == 0 {
+        "Nobody dies this round.".to_string()
+    } else if min == max {
         format!("Exactly {min} tribute{} must die this round.", plural(min))
     } else if min == 0 {
         format!(
@@ -187,11 +203,11 @@ pub fn brief(
     if pictures {
         text.push(' ');
         text.push_str(match kind {
+            _ if game.endgame(at) == Some(Endgame::Showdown) => "Also write a `picture`: the showdown between everyone left, in the zone where they meet, with the fire closing in. The winners get a picture of their own after it.",
             Kind::Scatter => "Also write a `picture`: everyone running out from their starting plates in a ring around the Octagon toward the zones, and where each event happens.",
             Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
-            Kind::Finale => "Also write a `picture`: the final showdown between everyone left, inside the Octagon. The winners get a picture of their own after it.",
         });
     }
     text
@@ -204,8 +220,42 @@ pub fn title(kind: Kind) -> String {
         Kind::Day(day) => format!("Day {day}"),
         Kind::Night(day) => format!("Night {day}"),
         Kind::Octagon(day) => format!("Day {day}: the Octagon"),
-        Kind::Finale => "The final showdown".to_string(),
     }
+}
+
+/// For a day or night while the last two sides wander (see [`Game::endgame`]).
+fn wander(game: &Game) -> String {
+    let (who, end) = if game.teams() {
+        (
+            "Only two teams are left",
+            "everyone left on one team dies and the other team wins: write your `victory` line to the winning team, both of them by name, a fallen teammate too",
+        )
+    } else {
+        (
+            "Only two are left",
+            "one of them dies and the other wins: write your `victory` line to the winner",
+        )
+    };
+    format!(
+        " {who}, somewhere in the shrinking arena, and the fire keeps burning closer. Nothing is forced: they may find each other this round, or not yet. One can be hunting the other, following tracks, setting a trap, or they hide, just miss each other, or have a moment that isn't a fight at all. A kill isn't needed every round. If they do meet and settle it, {end}."
+    )
+}
+
+/// For the showdown: the last two sides meet in a place still `open`.
+fn showdown(game: &Game, open: &[String]) -> String {
+    let place = match open {
+        [] => "the last corner of the arena the fire hasn't reached".to_string(),
+        [place] => format!("{place}, the last place the fire hasn't reached"),
+        _ => format!("one of the places still open ({})", open.join(", ")),
+    };
+    let ending = if game.teams() {
+        "Announce the final teams with your `gamemaker` line, then everyone left on one team dies and the other team wins. Write your `victory` line to the winning team, both of them by name, a fallen teammate too."
+    } else {
+        "Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner."
+    };
+    format!(
+        " The showdown: the fire has driven the last ones together, and they finally find each other in {place}. {ending}"
+    )
 }
 
 /// For a day or night when places close: which ones, and what that means.
@@ -252,7 +302,8 @@ fn state(game: &Game, index: usize) -> String {
         Some(weapon) => format!("armed with {weapon}"),
         None => "unarmed".to_string(),
     });
-    if game.armoured(index, game.rounds.len()) && game.next_kind() != Some(Kind::Finale) {
+    let at = game.rounds.len();
+    if game.armoured(index, at) && game.endgame(at) != Some(Endgame::Showdown) {
         parts.push("wearing golden armour from the Octagon (can't die this round)".to_string());
     }
     if let Some(partner) = t.partner {
@@ -354,6 +405,7 @@ mod tests {
 
     use super::*;
     use crate::ai::{ChatEvent, Done, GeneratedFile};
+    use crate::features::games::hunger_games::game::Blow;
 
     /// Answers with each of its texts in turn, and keeps what it was asked.
     struct Scripted {
@@ -394,11 +446,12 @@ mod tests {
             ]),
             asked: Mutex::new(Vec::new()),
         });
-        let game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        let mut game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        game.rounds.push(scatter());
         let round = write(
             provider.clone(),
             game,
-            Kind::Finale,
+            Kind::Day(1),
             Vec::new(),
             Arc::new(Vec::new()),
             false,
@@ -417,6 +470,19 @@ mod tests {
             panic!("expected text");
         };
         assert!(retry.contains("T2 isn't in any event"), "{retry}");
+    }
+
+    fn scatter() -> Round {
+        Round {
+            kind: Kind::Scatter,
+            gamemaker: None,
+            events: Vec::new(),
+            victory: None,
+            picture: None,
+            entrants: Vec::new(),
+            champion: None,
+            reward: None,
+        }
     }
 
     #[test]
@@ -450,19 +516,18 @@ mod tests {
             Some("dead, unused".into()),
             None,
         ];
+        // Two are left, and with no places to wander it's the showdown at once.
         let text = brief(
             &game,
-            Kind::Finale,
+            Kind::Day(1),
             &["general".into(), "memes".into()],
             &notes,
             false,
         );
         assert!(!text.contains("`picture`"));
+        assert!(text.contains("they finally find each other in one of the places still open (#general, #memes). Announce the final two"));
         let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
-        assert!(drawn.contains("Also write a `picture`: each event where it happens."));
-        assert!(
-            brief(&game, Kind::Finale, &[], &notes, true).contains("`picture`: the final showdown")
-        );
+        assert!(drawn.contains("Also write a `picture`: the showdown between everyone left"));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));
@@ -477,9 +542,16 @@ mod tests {
         let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
         let arena: Vec<String> = (0..8).map(|i| format!("room-{i}")).collect();
         game.places = arena.len();
-        game.remember(&[(7, 8, 3), (1, 8, 1)]);
+        let axe = Blow {
+            weapon: Some("axe".into()),
+            place: Some(5),
+            octagon: true,
+        };
+        game.remember(&[(7, 8, 3, Some(axe)), (1, 8, 1, None)]);
         let text = brief(&game, Kind::Scatter, &arena, &[], false);
-        assert!(text.contains("- T7 killed T8 3 times\n- T1 killed T8 once\n"));
+        assert!(text.contains(
+            "- T7 killed T8 3 times, the last time with an axe in the Octagon\n- T1 killed T8 once\n"
+        ));
         assert!(!text.contains("walls of fire"));
         // Five fall in the first night, so day 2 closes five places.
         for t in &mut game.tributes[..5] {
@@ -500,7 +572,9 @@ mod tests {
         assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-3, #room-4, #room-5, #room-6, #room-7\n"));
         assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-3, #room-4, #room-5, #room-6, #room-7."));
         // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
-        assert!(text.contains("- T7 killed T8 3 times\n\n"));
+        assert!(
+            text.contains("- T7 killed T8 3 times, the last time with an axe in the Octagon\n\n")
+        );
         assert!(!text.contains("T1 killed"));
     }
 
@@ -516,7 +590,23 @@ mod tests {
         assert!(text.contains("This is a team Games"));
         assert!(text.contains("- T1: P1 (alive, unarmed, teammate T2 has fallen)"));
         assert!(text.contains("- T3: P3 (alive, unarmed, teammate T4)"));
-        assert!(brief(&game, Kind::Finale, &[], &[], false).contains("only two teams are left"));
+        // P3 and P4 fall too: two teams are left, and they wander while places are open.
+        game.tributes[2].died_in = Some(0);
+        game.tributes[3].died_in = Some(0);
+        game.rounds.push(scatter());
+        game.places = 3;
+        let arena: Vec<String> = (0..3).map(|i| format!("room-{i}")).collect();
+        let text = brief(&game, Kind::Day(1), &arena, &[], false);
+        assert!(text.contains("Only two teams are left, somewhere in the shrinking arena"));
+        assert!(text.contains("Nothing is forced"));
+        assert!(
+            text.contains("At most 2 tributes may die this round, and it's fine if nobody does.")
+        );
+        game.places = 1;
+        let text = brief(&game, Kind::Day(1), &arena[..1], &[], false);
+        assert!(text.contains(
+            "in #room-0, the last place the fire hasn't reached. Announce the final teams"
+        ));
     }
 
     #[test]
