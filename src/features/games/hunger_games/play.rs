@@ -6,6 +6,7 @@
 //! and a channel never has two at once. Nothing is saved: a restart ends the game.
 
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -22,11 +23,11 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward};
+use super::game::{self, FEWEST_FOR_TEAMS, Game, Kind, Reward, Round};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
-use super::{looks, notes, stats, voice};
+use super::{areas, looks, notes, stats, voice};
 use crate::ai::ChatProvider;
 use crate::core::{BotCtx, Context, Result, user_error};
 use crate::features::games::who_said_it::sources::{self, From, Source};
@@ -338,8 +339,21 @@ async fn run(
         quote_settings,
         ids.clone(),
     ));
-    // How the tributes and the arena look in her pictures, worked out while she writes the
-    // Scatter.
+    // What each place is like, from her note about what the channels are for, worked out
+    // while her notes about the tributes are read.
+    let areas = async {
+        let channels = notes::channels(bot, guild, channel, lobby_message.id).await;
+        areas::describe(provider.clone(), arena.clone(), channels).await
+    };
+    let notes = async {
+        if extras.memories {
+            notes::about(bot, guild, channel, lobby_message.id, &ids).await
+        } else {
+            vec![None; ids.len()]
+        }
+    };
+    let (areas, notes) = tokio::join!(areas, notes);
+    // How the tributes look in her pictures, worked out while she writes the Scatter.
     // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
     let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
     let looks = drawing.then(|| {
@@ -348,14 +362,9 @@ async fn run(
             provider.clone(),
             guild,
             tributes.clone(),
-            arena.clone(),
+            areas.clone(),
         ))
     });
-    let notes = if extras.memories {
-        notes::about(bot, guild, channel, lobby_message.id, &ids).await
-    } else {
-        vec![None; ids.len()]
-    };
     // Who killed whom in this server's earlier Games, for grudges.
     let (guild_id, past_ids) = (guild.get(), ids.clone());
     let past = bot
@@ -386,6 +395,7 @@ async fn run(
         Writing {
             provider,
             arena,
+            areas: Arc::new(areas),
             links,
             notes: Arc::new(notes),
             looks,
@@ -396,8 +406,8 @@ async fn run(
     .await;
 }
 
-/// Posts each round as Vivy writes it, with its map when pictures are on, the fallen after
-/// each night, and the victor. The next round starts by itself after `auto`.
+/// Posts each round as Vivy writes it, with its map and close-ups when pictures are on, the
+/// fallen after each night, and the victor. The next round starts by itself after `auto`.
 async fn play(
     bot: &BotCtx,
     stage: Stage,
@@ -421,13 +431,14 @@ async fn play(
     };
     // Whether the channel was told why a picture is missing: once a game is enough.
     let told = Arc::new(AtomicBool::new(false));
-    // Writes a round and, with pictures on, draws its map right after, so the two are
-    // posted together. The Scatter's map is drawn once it's posted instead: nobody waits
-    // on a next round then, and people are already reading.
+    // Writes a round and, with pictures on, draws its map and close-ups right after, so
+    // they're posted together. The Scatter's are drawn once it's posted instead: nobody
+    // waits on a next round then, and people are already reading.
     let write = |game: &Game, kind: Kind| {
         let (provider, game) = (writing.provider.clone(), game.clone());
         let game_before = game.clone();
         let (arena, notes) = (writing.arena.clone(), writing.notes.clone());
+        let (areas, links) = (writing.areas.clone(), links.clone());
         let (ctx, looks) = (bot.clone(), looks.clone());
         bot.tasks.spawn(async move {
             let drawn = looks.is_some();
@@ -436,6 +447,7 @@ async fn play(
                 game,
                 kind,
                 arena.clone(),
+                areas,
                 notes,
                 drawn,
                 channel.get(),
@@ -452,6 +464,7 @@ async fn play(
             // fought with; other rounds with what everyone carries by the end of it, a
             // looted weapon only in its new hands.
             let at = game_before.rounds.len();
+            let burning = game_before.closing(at);
             let weapons = if !after.winners().is_empty() {
                 game_before.weapons()
             } else {
@@ -469,8 +482,8 @@ async fn play(
                         pictures::CAGE,
                     ),
                     _ => {
-                        let burning = game_before.closing(at);
                         let alive = game_before.alive();
+                        let burning = burning.clone();
                         (
                             looks::prompt(&arena, looks, &weapons, picture, alive, burning),
                             pictures::MAP,
@@ -497,13 +510,22 @@ async fn play(
                     .await
                     .map(Some)
             };
-            let (map, victor) = tokio::join!(map, victor);
-            let missing = map.as_ref().err().or(victor.as_ref().err()).copied();
+            // Each event up close, side by side with the map.
+            let scenes = close_ups(looks, &weapons, &round, &links, burning.clone());
+            let scenes = draw_all(&ctx, easel, scenes);
+            let (map, victor, (scenes, scene_missing)) = tokio::join!(map, victor, scenes);
+            let missing = map
+                .as_ref()
+                .err()
+                .or(victor.as_ref().err())
+                .copied()
+                .or(scene_missing);
             let (map, victor) = (map.ok().flatten(), victor.ok().flatten());
             anyhow::Ok((
                 round,
                 Pictures {
                     map,
+                    scenes,
                     victor,
                     missing,
                 },
@@ -570,16 +592,21 @@ async fn play(
         game.prize = None;
         let over = game.next_kind().is_none();
 
-        // The map goes with the round's last part.
+        // The map and the close-ups go with the round's last part.
         let parts = ui::round(&game, index, &links);
         let count = parts.len();
         for (i, part) in parts.into_iter().enumerate() {
-            let picture = if i + 1 == count {
-                drawn.map.take()
+            let pictures = if i + 1 == count {
+                drawn
+                    .map
+                    .take()
+                    .into_iter()
+                    .chain(drawn.scenes.drain(..))
+                    .collect()
             } else {
-                None
+                Vec::new()
             };
-            post(bot, channel, part, picture).await;
+            post(bot, channel, part, pictures).await;
         }
         if let Some(reason) = drawn.missing {
             no_picture(bot, channel, &told, reason).await;
@@ -589,18 +616,22 @@ async fn play(
             && let Some(prompt) = game.rounds[index].picture.clone()
         {
             let (ctx, arena, told) = (bot.clone(), places.clone(), told.clone());
+            let (round, links) = (game.rounds[index].clone(), links.clone());
             let everyone = game.tributes.len();
             let weapons = game.weapons_drawn();
             bot.tasks.spawn(async move {
                 let looks = looks.get().await;
                 let nothing = arena.len()..arena.len();
-                let prompt = looks::prompt(&arena, looks, &weapons, &prompt, everyone, nothing);
-                match pictures::draw(&ctx, easel, &prompt, pictures::MAP).await {
-                    Ok(picture) => {
-                        let caption = "🗺️ The arena as the Games begin".to_string();
-                        post(&ctx, easel.channel, caption, Some(picture)).await;
-                    }
-                    Err(reason) => no_picture(&ctx, easel.channel, &told, reason).await,
+                let map = looks::prompt(&arena, looks, &weapons, &prompt, everyone, nothing);
+                let mut all = vec![(map, pictures::MAP)];
+                all.extend(close_ups(looks, &weapons, &round, &links, 0..0));
+                let (drawn, missing) = draw_all(&ctx, easel, all).await;
+                if !drawn.is_empty() {
+                    let caption = "🗺️ The arena as the Games begin".to_string();
+                    post(&ctx, easel.channel, caption, drawn).await;
+                }
+                if let Some(reason) = missing {
+                    no_picture(&ctx, easel.channel, &told, reason).await;
                 }
             });
         }
@@ -619,7 +650,7 @@ async fn play(
                 } else {
                     None
                 };
-                post(bot, channel, part, picture).await;
+                post(bot, channel, part, picture.into_iter().collect()).await;
             }
             if let Some(line) = victory {
                 speak(line).await;
@@ -730,11 +761,74 @@ async fn prize_vote(
     Some(won)
 }
 
+/// What to draw for each close-up she picked (see [`looks::scene`]), zoomed in on the place
+/// its event's text names. The places in `burning` close off this round. In an Octagon
+/// round the fights in the cage are left out, since the round's own picture shows them:
+/// a close-up there drew everyone in the cage, even those far off in the arena (Cherry saw
+/// it).
+fn close_ups(
+    looks: &looks::Looks,
+    weapons: &[Option<String>],
+    round: &Round,
+    links: &[Place],
+    burning: Range<usize>,
+) -> Vec<(String, &'static str)> {
+    let night = matches!(round.kind, Kind::Night(_));
+    round
+        .events
+        .iter()
+        .filter_map(|event| {
+            let picture = event.picture.as_deref()?;
+            let zone = ui::first_place(&event.text, links)
+                .and_then(|id| links.iter().position(|(_, place)| *place == id));
+            let in_cage = zone.is_none()
+                && game::tags_in(&event.text)
+                    .iter()
+                    .any(|i| round.entrants.contains(i));
+            if in_cage {
+                return None;
+            }
+            let fire = zone.is_some_and(|i| burning.contains(&i));
+            let prompt = looks::scene(looks, weapons, picture, zone, fire, night);
+            Some((prompt, pictures::SCENE))
+        })
+        .collect()
+}
+
+/// Draws each prompt in its style, side by side, and returns the pictures in order, with
+/// why one couldn't be drawn, when one couldn't.
+async fn draw_all(
+    ctx: &BotCtx,
+    easel: Easel,
+    prompts: Vec<(String, &'static str)>,
+) -> (Vec<ModelImage>, Option<&'static str>) {
+    let tasks: Vec<_> = prompts
+        .into_iter()
+        .map(|(prompt, style)| {
+            let ctx = ctx.clone();
+            ctx.tasks
+                .clone()
+                .spawn(async move { pictures::draw(&ctx, easel, &prompt, style).await })
+        })
+        .collect();
+    let (mut drawn, mut missing) = (Vec::new(), None);
+    for task in tasks {
+        match task.await {
+            Ok(Ok(picture)) => drawn.push(picture),
+            Ok(Err(reason)) => missing = missing.or(Some(reason)),
+            Err(_) => missing = missing.or(Some("the drawing failed")),
+        }
+    }
+    (drawn, missing)
+}
+
 /// The pictures that go with a round, when pictures are on.
 #[derive(Default)]
 struct Pictures {
     /// The map, posted with the round.
     map: Option<ModelImage>,
+    /// Each event up close, in order, posted with the map.
+    scenes: Vec<ModelImage>,
     /// After the showdown, the victor, posted with the victor message.
     victor: Option<ModelImage>,
     /// Why a picture couldn't be drawn, when one couldn't.
@@ -747,24 +841,34 @@ async fn no_picture(bot: &BotCtx, channel: ChannelId, told: &AtomicBool, reason:
         return;
     }
     let line = format!("-# 🗺️ No picture this time: {reason}.");
-    post(bot, channel, line, None).await;
+    post(bot, channel, line, Vec::new()).await;
 }
 
-/// Posts one message of the game, with a picture when there is one. If Discord won't take
-/// the picture, the text goes on its own.
-async fn post(bot: &BotCtx, channel: ChannelId, content: String, picture: Option<ModelImage>) {
-    let mut message = text(content.clone());
-    if let Some(picture) = picture {
-        let name = pictures::file_name(&picture);
-        message = message.add_file(CreateAttachment::bytes(picture.data, name));
+/// Posts one message of the game, with its pictures. If Discord won't take them together,
+/// the text goes on its own and each picture after it, so one bad picture loses only itself.
+async fn post(bot: &BotCtx, channel: ChannelId, content: String, pictures: Vec<ModelImage>) {
+    let attach = |message: CreateMessage, n: usize, picture: &ModelImage| {
+        let name = pictures::file_name(picture, n);
+        message.add_file(CreateAttachment::bytes(picture.data.clone(), name))
+    };
+    if !pictures.is_empty() {
+        let mut message = text(content.clone());
+        for (i, picture) in pictures.iter().enumerate() {
+            message = attach(message, i + 1, picture);
+        }
         match channel.send_message(&bot.http, message).await {
             Ok(_) => return,
-            Err(err) => warn!("couldn't post a Hunger Games message with its map: {err}"),
+            Err(err) => warn!("couldn't post a Hunger Games message with its pictures: {err}"),
         }
-        message = text(content);
     }
-    if let Err(err) = channel.send_message(&bot.http, message).await {
+    if let Err(err) = channel.send_message(&bot.http, text(content)).await {
         warn!("couldn't post a Hunger Games message: {err}");
+    }
+    for (i, picture) in pictures.iter().enumerate() {
+        let message = attach(CreateMessage::new(), i + 1, picture);
+        if let Err(err) = channel.send_message(&bot.http, message).await {
+            warn!("couldn't post a Hunger Games picture: {err}");
+        }
     }
 }
 
@@ -781,6 +885,8 @@ struct Writing {
     provider: Arc<dyn ChatProvider>,
     /// The arena's places.
     arena: Vec<String>,
+    /// What each place is like (see `areas.rs`).
+    areas: Arc<Vec<Option<String>>>,
     /// The arena's places with their channel IDs, to show them as links.
     links: Vec<Place>,
     /// Her notes about each tribute, in the game's order.
@@ -1042,6 +1148,38 @@ async fn tell(bot: &BotCtx, interaction: &ComponentInteraction, text: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::games::hunger_games::game::Event;
+
+    #[test]
+    fn octagon_close_ups_leave_the_cage_out() {
+        let event = |text: &str| Event {
+            text: text.to_string(),
+            deaths: Vec::new(),
+            finds: Vec::new(),
+            allies: Vec::new(),
+            leaves: Vec::new(),
+            picture: Some("{T1} acts.".to_string()),
+        };
+        let round = Round {
+            kind: Kind::Octagon(2),
+            gamemaker: None,
+            events: vec![
+                event("{T1} beats {T2} with a trap."),
+                event("From the edge of #general, {T3} watches."),
+                event("{T4} naps."),
+            ],
+            victory: None,
+            picture: None,
+            entrants: vec![0, 1],
+            champion: Some(0),
+            reward: Some(Reward::Hunt),
+            theme: None,
+        };
+        let links = vec![("general".to_string(), 7)];
+        let drawn = close_ups(&looks::Looks::default(), &[], &round, &links, 0..0);
+        assert_eq!(drawn.len(), 2);
+        assert!(drawn.iter().all(|(_, style)| *style == pictures::SCENE));
+    }
 
     #[test]
     fn the_most_votes_win() {

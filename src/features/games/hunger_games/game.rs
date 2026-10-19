@@ -95,6 +95,8 @@ pub struct Event {
     pub allies: Vec<usize>,
     /// Who leaves their alliance in this event.
     pub leaves: Vec<usize>,
+    /// A close-up of this event alone, when pictures are on: what to draw, with tags.
+    pub picture: Option<String>,
 }
 
 /// What the champion of an Octagon wins, as the crowd votes before it opens.
@@ -205,7 +207,29 @@ pub struct Round {
     pub entrants: Vec<usize>,
     pub champion: Option<usize>,
     pub reward: Option<Reward>,
+    /// In the Scatter, the theme she picks for the game (see [`Theme`]).
+    pub theme: Option<Theme>,
 }
+
+/// The game's theme, which Vivy picks as she writes the Scatter and is reminded of every
+/// round, so her Gamemaker lines and some events tie the game together. A light theme,
+/// not a plot (Cherry's call): the code decides the deaths and the Octagon, so a planned
+/// story would keep breaking.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Theme {
+    /// The season's name, like "The Static Season".
+    pub name: String,
+    /// One quirk of this arena that everyone knows about: a storm, a sponsor, a rule.
+    #[serde(default)]
+    pub twist: String,
+    /// What she means to spring on them once, later on. The tributes don't know.
+    #[serde(default)]
+    pub surprise: String,
+}
+
+/// The longest a theme's name may be, in characters, and its twist or surprise.
+const MAX_THEME_NAME: usize = 60;
+const MAX_THEME_PART: usize = 300;
 
 /// A round as Vivy writes it: JSON, with tributes as tags.
 #[derive(Debug, Deserialize)]
@@ -219,6 +243,8 @@ pub struct Written {
     pub picture: Option<String>,
     #[serde(default)]
     pub champion: Option<String>,
+    #[serde(default)]
+    pub theme: Option<Theme>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -233,6 +259,8 @@ pub struct WrittenEvent {
     pub allies: Vec<String>,
     #[serde(default)]
     pub leaves: Vec<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,6 +280,9 @@ pub struct WrittenDeath {
 const MAX_EVENT: usize = 400;
 /// The most tributes in one event.
 const MAX_IN_EVENT: usize = 6;
+/// The most events drawn up close each round: she picks the most interesting (Cherry's
+/// call), or all of them when there are this many or fewer.
+pub const MOST_CLOSE_UPS: usize = 3;
 /// The longest a weapon's name may be, in characters.
 const MAX_WEAPON: usize = 60;
 /// The nerve it takes to step into the Octagon.
@@ -285,6 +316,8 @@ pub struct Game {
     pub places: usize,
     /// Who killed whom in earlier Games, among these tributes, most often first.
     pub grudges: Vec<Grudge>,
+    /// The theme she picked in the Scatter, once it's played.
+    pub theme: Option<Theme>,
 }
 
 impl Game {
@@ -306,6 +339,7 @@ impl Game {
                 .collect(),
             rounds: Vec::new(),
             prize: None,
+            theme: None,
             places: 0,
             grudges: Vec::new(),
         }
@@ -965,12 +999,24 @@ impl Game {
                 }
             }
             dead += deaths.len();
+            // A close-up that tags nobody would draw strangers, so it's left out rather
+            // than written again: the round's map still shows the event. So are any past
+            // the first few.
+            let drawn = events
+                .iter()
+                .filter(|e: &&Event| e.picture.is_some())
+                .count();
+            let picture = event
+                .picture
+                .map(|p| p.trim().to_string())
+                .filter(|p| !tags_in(p).is_empty() && drawn < MOST_CLOSE_UPS);
             events.push(Event {
                 text,
                 deaths,
                 finds,
                 allies,
                 leaves,
+                picture,
             });
         }
         if let Some(missing) =
@@ -1088,6 +1134,18 @@ impl Game {
             victory: clean(written.victory).filter(|_| ends),
             picture,
             reward: champion.map(|_| reward),
+            theme: written
+                .theme
+                .filter(|_| kind == Kind::Scatter)
+                .and_then(|t| {
+                    let cut = |text: String, most: usize| text.trim().chars().take(most).collect();
+                    let name: String = cut(t.name, MAX_THEME_NAME);
+                    (!name.is_empty()).then(|| Theme {
+                        name,
+                        twist: cut(t.twist, MAX_THEME_PART),
+                        surprise: cut(t.surprise, MAX_THEME_PART),
+                    })
+                }),
             entrants,
             champion,
         })
@@ -1131,6 +1189,9 @@ impl Game {
     /// weapons, and alliances form and break. Killing an ally ends the killer's alliance.
     pub fn apply(&mut self, round: Round) {
         let index = self.rounds.len();
+        if round.theme.is_some() {
+            self.theme = round.theme.clone();
+        }
         for event in &round.events {
             for death in &event.deaths {
                 self.tributes[death.victim].died_in = Some(index);
@@ -1227,7 +1288,7 @@ impl Game {
 }
 
 /// The tributes an event's text names with `{T1}`-style tags, by index.
-fn tags_in(text: &str) -> Vec<usize> {
+pub fn tags_in(text: &str) -> Vec<usize> {
     let mut found = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("{T") {
@@ -1299,6 +1360,7 @@ mod tests {
             victory: None,
             picture: None,
             champion: None,
+            theme: None,
         }
     }
 
@@ -1915,6 +1977,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn close_ups_without_tags_are_left_out() {
+        let g = game(3);
+        let mut nap = event("{T1} and {T2} nap.", &["T1", "T2"], &[]);
+        nap.picture = Some(" {T1} and {T2} snore under a tree. ".into());
+        let mut swim = event("{T3} swims.", &["T3"], &[]);
+        swim.picture = Some("P3 swims in a lake.".into());
+        let round = g.check(Kind::Scatter, written(vec![nap, swim])).unwrap();
+        assert_eq!(
+            round.events[0].picture.as_deref(),
+            Some("{T1} and {T2} snore under a tree.")
+        );
+        assert_eq!(round.events[1].picture, None);
+        // Only the first few are drawn.
+        let events = (1..=5)
+            .map(|i| {
+                let tag = format!("T{i}");
+                let mut nap = event(&format!("{{{tag}}} naps."), &[&tag], &[]);
+                nap.picture = Some(format!("{{{tag}}} naps."));
+                nap
+            })
+            .collect();
+        let round = game(5).check(Kind::Scatter, written(events)).unwrap();
+        let drawn = round.events.iter().filter(|e| e.picture.is_some()).count();
+        assert_eq!(drawn, MOST_CLOSE_UPS);
+    }
+
     fn round_with(kind: Kind, deaths: usize) -> Round {
         Round {
             kind,
@@ -1931,6 +2020,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         }
     }
 
@@ -2049,6 +2139,37 @@ mod tests {
         both.allies = vec!["T1".into(), "T2".into()];
         both.leaves = vec!["T2".into()];
         assert!(check(both).contains("both team up and leave"));
+    }
+
+    #[test]
+    fn the_scatter_picks_a_theme() {
+        let mut g = game(2);
+        let theme = |name: &str| Theme {
+            name: name.into(),
+            twist: " Acid rain at noon. ".into(),
+            surprise: "The Octagon floods.".into(),
+        };
+        let mut w = written(vec![event("{T1} and {T2} run.", &["T1", "T2"], &[])]);
+        w.theme = Some(theme("  The Static Season "));
+        let round = g.check(Kind::Scatter, w).unwrap();
+        assert_eq!(round.theme.as_ref().unwrap().name, "The Static Season");
+        assert_eq!(round.theme.as_ref().unwrap().twist, "Acid rain at noon.");
+        g.apply(round);
+        assert_eq!(g.theme.as_ref().unwrap().surprise, "The Octagon floods.");
+        // Only the Scatter picks one, and a theme with no name is dropped.
+        let mut w = written(vec![event("{T1} and {T2} nap.", &["T1", "T2"], &[])]);
+        w.theme = Some(theme("Another"));
+        let mut quiet = game(3);
+        quiet.rounds.push(round_with(Kind::Scatter, 1));
+        let mut w3 = written(vec![event(
+            "{T1}, {T2} and {T3} nap.",
+            &["T1", "T2", "T3"],
+            &[],
+        )]);
+        w3.theme = Some(theme("Another"));
+        assert_eq!(quiet.check(Kind::Day(1), w3).unwrap().theme, None);
+        w.theme = Some(theme(" "));
+        assert_eq!(game(2).check(Kind::Scatter, w).unwrap().theme, None);
     }
 
     #[test]

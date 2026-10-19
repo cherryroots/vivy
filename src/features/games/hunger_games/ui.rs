@@ -357,6 +357,14 @@ pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String>
         heading.push_str(": the showdown");
     }
     let mut blocks = vec![heading];
+    // The season's theme as the Games open; her surprise stays hers.
+    if let Some(theme) = &round.theme {
+        let mut line = format!("🎬 **{}**", escape(&theme.name));
+        if !theme.twist.is_empty() {
+            line.push_str(&format!(": {}", link_places(&theme.twist, places)));
+        }
+        blocks.push(line);
+    }
     if let Some(line) = &round.gamemaker {
         let line = shorten_at_word(&unspoken(line), 600);
         blocks.push(format!("> 🎙️ *{}*", link_places(&line, places)));
@@ -718,6 +726,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         };
         game.apply(played);
         let parts = round(&game, 0, &[]);
@@ -764,6 +773,7 @@ mod tests {
             entrants: vec![0, 2],
             champion: Some(0),
             reward: Some(Reward::Armour),
+            theme: None,
         };
         game.apply(played);
         let text = round(&game, 0, &[("general".into(), 5)]).join("");
@@ -791,6 +801,35 @@ mod tests {
     }
 
     #[test]
+    fn the_scatter_shows_the_theme_but_not_the_surprise() {
+        let mut game = Game::new(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        game.apply(Round {
+            kind: Kind::Scatter,
+            gamemaker: None,
+            events: vec![Event {
+                text: "{T1} and {T2} run.".into(),
+                ..Default::default()
+            }],
+            victory: None,
+            picture: None,
+            entrants: Vec::new(),
+            champion: None,
+            reward: None,
+            theme: Some(crate::features::games::hunger_games::game::Theme {
+                name: "The *Static* Season".into(),
+                twist: "Acid rain falls on #memes.".into(),
+                surprise: "The Octagon floods.".into(),
+            }),
+        });
+        let text = round(&game, 0, &[("memes".into(), 5)]).join("");
+        assert!(
+            text.contains("🎬 **The \\*Static\\* Season**: Acid rain falls on <#5>."),
+            "{text}"
+        );
+        assert!(!text.contains("floods"));
+    }
+
+    #[test]
     fn rounds_show_the_arena_shrinking_and_revenge() {
         let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
         let places: Vec<(String, u64)> = (0..8).map(|i| (format!("room-{i}"), 10 + i)).collect();
@@ -815,6 +854,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         };
         let dies = |victim: usize, by: Option<usize>| Event {
             text: format!("{{T{}}} falls.", victim + 1),
@@ -895,6 +935,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         };
         // Sage dies before the Octagon, so isn't a coward; Reed steps in and dies there.
         game.apply(round(Kind::Day(1), vec![death(4, None)]));

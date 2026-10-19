@@ -18,8 +18,9 @@
 //! Other features draw through the same tool (`run_tool_with_pictures`), so the monthly
 //! limits count their pictures too. They can pass arguments the chat model isn't told
 //! about: `post: false` hands the picture back (in the reply's `images`) instead of posting
-//! it, and `job: "game_art"` counts its cost on a line of its own in OpenAI's spend. The
-//! Hunger Games use them, to post each round's map with the round.
+//! it, `job: "game_art"` counts its cost on a line of its own in OpenAI's spend, and with
+//! that job `quality` picks how good it is. The Hunger Games use them, to post each round's
+//! pictures with the round.
 
 mod store;
 
@@ -385,11 +386,15 @@ fn moderation<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     }
 }
 
-/// How good a picture is: the setting, except that games draw at high quality (Cherry's
-/// call: their maps are full of small sprites).
+/// How good a picture is: the setting, except that games pick their own: `quality`
+/// "low" or "medium" in the arguments, or else high (their maps are full of small sprites).
 fn quality<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     match job(args) {
-        "game_art" => "high",
+        "game_art" => match args.get("quality").and_then(Value::as_str) {
+            Some("low") => "low",
+            Some("medium") => "medium",
+            _ => "high",
+        },
         _ => &settings.quality,
     }
 }
@@ -426,6 +431,9 @@ mod tests {
         assert_eq!(moderation(&settings, &json!({"job": "game_art"})), "low");
         assert_eq!(moderation(&settings, &json!({})), "auto");
         assert_eq!(quality(&settings, &json!({"job": "game_art"})), "high");
+        let medium = json!({"job": "game_art", "quality": "medium"});
+        assert_eq!(quality(&settings, &medium), "medium");
+        assert_eq!(quality(&settings, &json!({"quality": "low"})), "medium");
         assert_eq!(quality(&settings, &json!({})), "medium");
     }
 

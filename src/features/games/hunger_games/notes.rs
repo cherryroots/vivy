@@ -1,7 +1,9 @@
 //! What Vivy knows about the tributes: her memory notes about each one, so a round can
-//! bring in something fun about them (a favourite game, an in-joke).
+//! bring in something fun about them (a favourite game, an in-joke). And her note about
+//! what the server's channels are for, so the arena's areas fit them (`areas.rs`).
 //!
-//! The memory feature keeps her notes about a person in `/memories/users/<user id>/`. This
+//! The memory feature keeps her notes about a person in `/memories/users/<user id>/`, and
+//! about the channels in `/memories/server/channels.md`. This
 //! file doesn't import that feature: it finds whichever feature offers the `memory` chat
 //! tool and runs `view` with it, as Vivy herself, the same way a chat answer would. With
 //! memory off in the server, or no notes, a tribute simply has none.
@@ -16,6 +18,42 @@ use crate::core::{Asker, BotCtx};
 const MOST: usize = 800;
 /// The most files read per tribute.
 const MOST_FILES: usize = 6;
+/// Her note about the server's channels.
+const CHANNELS: &str = "/memories/server/channels.md";
+/// The most of that note she's given, in characters.
+const MOST_CHANNELS: usize = 4000;
+
+/// Her note about what the server's channels are for, or `None` without one (or with
+/// memory off in the server).
+pub async fn channels(
+    ctx: &BotCtx,
+    guild: GuildId,
+    channel: ChannelId,
+    message: MessageId,
+) -> Option<String> {
+    if !ctx.allows("memory", Some(guild), channel) {
+        return None;
+    }
+    let memory = ctx
+        .features
+        .iter()
+        .find(|f| f.tools().iter().any(|t| t.name == "memory"))?;
+    let herself = Asker {
+        user: ctx.bot_id,
+        guild: Some(guild),
+        channel,
+        message,
+        posted: Default::default(),
+    };
+    let args = json!({"command": "view", "path": CHANNELS});
+    match memory.run_tool(ctx, &herself, "memory", &args).await {
+        Ok(view) => file_text(&view).map(|text| crate::util::shorten_at_word(&text, MOST_CHANNELS)),
+        Err(err) => {
+            debug!("couldn't read the note about the channels: {err:#}");
+            None
+        }
+    }
+}
 
 /// Her notes about each of `tributes`, in the same order: `None` for someone she has no
 /// notes about.

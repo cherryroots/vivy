@@ -1,9 +1,14 @@
 //! Pictures during the Games, when the host turns them on in the Reaping: a map of the
-//! arena after every round, with each event where it happened. Vivy writes what happens on
-//! the map with the round (`picture` in her JSON); `looks.rs` adds the arena's layout and
-//! how each tribute looks, and [`MAP`] keeps the maps of a game looking alike. The victor's
-//! picture is made by the bot instead: the winner up close, with everyone they killed
-//! lying dead around them ([`VICTORY`]).
+//! arena after every round, with each event where it happened, and close-ups of the 3 most
+//! interesting events, zoomed in on where they happen so the sprites are big enough to
+//! read (Cherry's call: sprites on a crowded map were too small). Vivy writes what to draw with the round
+//! (`picture` in her JSON, for the round and for each event); `looks.rs` adds the arena's
+//! layout and how each tribute looks, and the styles here keep a game's pictures looking
+//! alike. The victor's picture is made by the bot instead: the winner up close, with
+//! everyone they killed lying dead around them ([`VICTORY`]).
+//!
+//! A round's pictures are drawn side by side at medium quality (12 to 14 cents each, where
+//! one high-quality map was 44); only the victor's is drawn at high.
 //!
 //! Like `voice.rs`, this doesn't import the drawing feature: it finds whichever feature
 //! offers the `draw_picture` chat tool and runs it with arguments the chat model isn't told
@@ -27,6 +32,8 @@ const TOOL: &str = "draw_picture";
 pub const MAP: &str = "Style: a clean top-down 2D map of the whole battlefield, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the players as colorful pixel-art sprites in the zones where they are, drawn a bit bigger than usual for a map so each one's colors and item are easy to make out, fights shown as sprites clashing with simple action marks. Easy to read at a glance. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters except the zone labels, written exactly as given.";
 /// Added to the Octagon rounds: the map's pixel art, zoomed in on the cage in the middle.
 pub const CAGE: &str = "Style: the same retro 16-bit pixel art as a top-down strategy game map, zoomed in close on the fighting cage in the middle so the players are large, detailed sprites mid-fight, with simple action marks. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters anywhere in the picture.";
+/// Added to each event's close-up: the map's pixel art, zoomed in on where it happens.
+pub const SCENE: &str = "Style: the same retro 16-bit pixel art as a top-down strategy game map, zoomed in close on one small spot so the players are large, detailed sprites whose colors, outfits and items are easy to make out, with simple action marks in a fight. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters anywhere in the picture.";
 /// Added to the victor's picture: the same pixel art, a full-size figure.
 pub const VICTORY: &str = "Style: a detailed retro 16-bit pixel-art scene, like the victory screen of a classic game, with the winner as a large full-body figure and everything drawn clear. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters anywhere in the picture.";
 
@@ -50,9 +57,10 @@ pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
             .any(|f| f.tools().iter().any(|t| t.name == TOOL))
 }
 
-/// Draws `prompt` (with the looks in) in `style` ([`MAP`], [`CAGE`] or [`VICTORY`]), without posting
-/// it. When it can't be drawn, why, in a few words for the channel. Takes 15 to 20 seconds
-/// or so.
+/// Draws `prompt` (with the looks in) in `style` ([`MAP`], [`CAGE`], [`SCENE`] or
+/// [`VICTORY`]), without posting it: at high quality for the victor, medium otherwise.
+/// When it can't be drawn, why, in a few words for the channel. Takes 15 to 20 seconds or
+/// so.
 pub async fn draw(
     ctx: &BotCtx,
     easel: Easel,
@@ -77,6 +85,7 @@ pub async fn draw(
         "shape": "landscape",
         "post": false,
         "job": "game_art",
+        "quality": if style == VICTORY { "high" } else { "medium" },
     });
     match drawing
         .run_tool_with_pictures(ctx, &asker, TOOL, &args)
@@ -105,10 +114,11 @@ fn why(error: &str) -> &'static str {
     }
 }
 
-/// A file name for a picture: `arena.png`, or the picture's own kind.
-pub fn file_name(picture: &ModelImage) -> String {
+/// A file name for the `n`th picture of a message: `arena-1.png`, or the picture's own
+/// kind.
+pub fn file_name(picture: &ModelImage, n: usize) -> String {
     let extension = picture.mime.strip_prefix("image/").unwrap_or("png");
-    format!("arena.{extension}")
+    format!("arena-{n}.{extension}")
 }
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::game::{Endgame, Game, Kind, Reward, Round, Written, fill};
+use super::game::{Endgame, Game, Kind, MOST_CLOSE_UPS, Reward, Round, Written, fill};
 use super::ui;
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
@@ -27,7 +27,7 @@ Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags], \"picture\": string or null}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null, \"theme\": {\"name\": string, \"twist\": string, \"surprise\": string} or null}
 - Every living tribute is in exactly one event's `tributes`, and every tribute in an event's `tributes` is tagged in its text. A living tribute is tagged only in the text of their own event, never in another one (not even a teammate thinking of them). The dead are not in any `tributes`, but their tags may appear in any text: looting their body, avenging them, mourning them.
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
@@ -36,15 +36,19 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
+- An event's `picture`: only when the round asks for them, and only for the 3 most interesting events of the round, the ones people will most want to see (all of them when there are 3 or fewer): a close-up of that event alone, for the same image model, one or two sentences: what its tributes are doing at that moment and the scenery right around them, like `{T1} swings a sword at {T4} beside a toppled arcade cabinet while {T2} hides behind it.` Tag everyone in it, and only them; the dead from earlier rounds only when the event is about their body. The bot takes the zone from the place in the event's text and adds how each tribute looks and what they carry. Same rules as the round's `picture`: tags, no names, plain words, no Hunger Games terms, the dying lying dead with a little blood. Otherwise null.
+- `theme`: only in the Scatter: the theme you pick for these Games. `name` is the season's name (a few words, like `The Static Season`), `twist` one quirk of this arena everyone knows about (a storm, a sponsor, a strange rule), and `surprise` something you mean to spring on them once, later on, that they don't know yet. Make it fit the tributes and the places. It's a mood, not a plot: the deaths and the Octagon aren't yours to plan. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
 /// The arena, the tributes, her notes about them, the story so far, and what this round
-/// is: what she's told. `notes` are in the same order as the tributes. With `pictures`,
-/// every round asks for a `picture` too.
+/// is: what she's told. `areas` describe the arena's places, in its order (see
+/// `areas.rs`); `notes` are in the same order as the tributes. With `pictures`, every
+/// round asks for a `picture` too.
 pub fn brief(
     game: &Game,
     kind: Kind,
     arena: &[String],
+    areas: &[Option<String>],
     notes: &[Option<String>],
     pictures: bool,
 ) -> String {
@@ -70,6 +74,22 @@ pub fn brief(
         );
         text.push_str(&places(closed.clone(), false).join(", "));
         text.push('\n');
+        // What each open place is like, so events and the weapons found there fit it.
+        let described: Vec<String> = arena
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !closed.contains(i))
+            .filter_map(|(i, name)| {
+                let area = areas.get(i)?.as_deref()?;
+                Some(format!("- #{name}: {area}\n"))
+            })
+            .collect();
+        if !described.is_empty() {
+            text.push_str(
+                "What each place is like (keep events and the weapons found there true to it):\n",
+            );
+            text.push_str(&described.concat());
+        }
         let shut = places(closed, true);
         if !shut.is_empty() {
             text.push_str(&format!(
@@ -144,6 +164,12 @@ pub fn brief(
         text.push_str(&grudges.join("\n"));
         text.push('\n');
     }
+    if let Some(theme) = &game.theme {
+        text.push_str(&format!(
+            "\nThis season's theme, which you picked: {}. The arena's twist: {} Your surprise, which the tributes don't know about yet: {} Let the theme colour your Gamemaker lines and some events, and spring the surprise once, when it fits (an Octagon or the last two are good moments; the story so far shows whether you already did). Don't force it into every event.\n",
+            theme.name, theme.twist, theme.surprise
+        ));
+    }
     if !game.rounds.is_empty() {
         text.push_str("\nThe story so far:\n");
         for round in &game.rounds {
@@ -160,7 +186,7 @@ pub fn brief(
     }
     let what = match kind {
         Kind::Scatter => {
-            "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Open the Games with your `gamemaker` announcement.".to_string()
+            "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Pick this season's `theme`, and open the Games with your `gamemaker` announcement, which names it.".to_string()
         }
         Kind::Day(_) | Kind::Night(_) => {
             let name = title(kind);
@@ -209,6 +235,15 @@ pub fn brief(
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
         });
+        if let Kind::Octagon(_) = kind {
+            text.push_str(&format!(
+                " The Octagon's `picture` already shows the fights in the cage, so give close-ups only to events outside it: the {MOST_CLOSE_UPS} most interesting of those get their own `picture` (all of them, when there are {MOST_CLOSE_UPS} or fewer)."
+            ));
+        } else {
+            text.push_str(&format!(
+                " And give the {MOST_CLOSE_UPS} most interesting events their own `picture`: a close-up of each (every event, when there are {MOST_CLOSE_UPS} or fewer)."
+            ));
+        }
     }
     text
 }
@@ -340,18 +375,22 @@ pub fn parse(answer: &str) -> Result<Written, String> {
 
 /// Has her write the round of `kind`, checked. Fails when every try was wrong or the
 /// model couldn't be reached.
+#[allow(clippy::too_many_arguments)]
 pub async fn write(
     provider: Arc<dyn ChatProvider>,
     game: Game,
     kind: Kind,
     arena: Vec<String>,
+    areas: Arc<Vec<Option<String>>>,
     notes: Arc<Vec<Option<String>>>,
     pictures: bool,
     channel: u64,
 ) -> anyhow::Result<Round> {
     let mut turns = vec![Turn {
         role: Role::User,
-        parts: vec![Part::Text(brief(&game, kind, &arena, &notes, pictures))],
+        parts: vec![Part::Text(brief(
+            &game, kind, &arena, &areas, &notes, pictures,
+        ))],
     }];
     for attempt in 1..=TRIES {
         let request = ChatRequest {
@@ -454,6 +493,7 @@ mod tests {
             Kind::Day(1),
             Vec::new(),
             Arc::new(Vec::new()),
+            Arc::new(Vec::new()),
             false,
             5,
         )
@@ -482,6 +522,7 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         }
     }
 
@@ -510,24 +551,34 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         });
         let notes = vec![
             Some("Plays chess".into()),
             Some("dead, unused".into()),
             None,
         ];
+        game.theme = Some(super::super::game::Theme {
+            name: "The Static Season".into(),
+            twist: "Acid rain at noon.".into(),
+            surprise: "The Octagon floods.".into(),
+        });
         // Two are left, and with no places to wander it's the showdown at once.
         let text = brief(
             &game,
             Kind::Day(1),
             &["general".into(), "memes".into()],
+            &[Some("A sunny plaza with a broken fountain.".into()), None],
             &notes,
             false,
         );
         assert!(!text.contains("`picture`"));
+        assert!(text.contains("What each place is like (keep events and the weapons found there true to it):\n- #general: A sunny plaza with a broken fountain.\n"));
+        assert!(!text.contains("- #memes"));
         assert!(text.contains("they finally find each other in one of the places still open (#general, #memes). Announce the final two"));
-        let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
+        let drawn = brief(&game, Kind::Day(1), &[], &[], &notes, true);
         assert!(drawn.contains("Also write a `picture`: the showdown between everyone left"));
+        assert!(drawn.contains("And give the 3 most interesting events their own `picture`"));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));
@@ -535,6 +586,7 @@ mod tests {
         assert!(text.contains("- T2: Cherry (dead, their cleaver lies where they fell)"));
         assert!(text.contains("- Moss bonks Cherry."));
         assert!(text.contains("Exactly 1 tribute must die"));
+        assert!(text.contains("This season's theme, which you picked: The Static Season. The arena's twist: Acid rain at noon. Your surprise, which the tributes don't know about yet: The Octagon floods."));
     }
 
     #[test]
@@ -548,7 +600,7 @@ mod tests {
             octagon: true,
         };
         game.remember(&[(7, 8, 3, Some(axe)), (1, 8, 1, None)]);
-        let text = brief(&game, Kind::Scatter, &arena, &[], false);
+        let text = brief(&game, Kind::Scatter, &arena, &[], &[], false);
         assert!(text.contains(
             "- T7 killed T8 3 times, the last time with an axe in the Octagon\n- T1 killed T8 once\n"
         ));
@@ -566,8 +618,9 @@ mod tests {
             entrants: Vec::new(),
             champion: None,
             reward: None,
+            theme: None,
         });
-        let text = brief(&game, Kind::Day(2), &arena, &[], false);
+        let text = brief(&game, Kind::Day(2), &arena, &[], &[], false);
         assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2\n"));
         assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-3, #room-4, #room-5, #room-6, #room-7\n"));
         assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-3, #room-4, #room-5, #room-6, #room-7."));
@@ -586,7 +639,7 @@ mod tests {
             game.tributes[b].partner = Some(a);
         }
         game.tributes[1].died_in = Some(0);
-        let text = brief(&game, Kind::Day(1), &[], &[], false);
+        let text = brief(&game, Kind::Day(1), &[], &[], &[], false);
         assert!(text.contains("This is a team Games"));
         assert!(text.contains("- T1: P1 (alive, unarmed, teammate T2 has fallen)"));
         assert!(text.contains("- T3: P3 (alive, unarmed, teammate T4)"));
@@ -596,14 +649,14 @@ mod tests {
         game.rounds.push(scatter());
         game.places = 3;
         let arena: Vec<String> = (0..3).map(|i| format!("room-{i}")).collect();
-        let text = brief(&game, Kind::Day(1), &arena, &[], false);
+        let text = brief(&game, Kind::Day(1), &arena, &[], &[], false);
         assert!(text.contains("Only two teams are left, somewhere in the shrinking arena"));
         assert!(text.contains("Nothing is forced"));
         assert!(
             text.contains("At most 2 tributes may die this round, and it's fine if nobody does.")
         );
         game.places = 1;
-        let text = brief(&game, Kind::Day(1), &arena[..1], &[], false);
+        let text = brief(&game, Kind::Day(1), &arena[..1], &[], &[], false);
         assert!(text.contains(
             "in #room-0, the last place the fire hasn't reached. Announce the final teams"
         ));

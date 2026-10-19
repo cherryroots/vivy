@@ -2,10 +2,11 @@
 //! map of the arena with a zone for each of its places, and each tribute as a sprite.
 //!
 //! When the Games start with pictures on, one model call gets every tribute's profile
-//! picture and the arena's places, and describes a sprite for each tribute, inspired by
-//! their picture, and the terrain of each zone. [`map`] lays the zones out around the
+//! picture and describes a sprite for each tribute, inspired by their picture. Each zone's
+//! scenery is the area's description from `areas.rs`. [`map`] lays the zones out around the
 //! Octagon in a fixed order, and [`fill`] puts each tribute's sprite, with the weapon they
 //! carry at that point in the game, in place of their tag (`{T3}`) in her picture prompt.
+//! [`scene`] zooms in on one event, and [`cage`] on the Octagon.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -44,11 +45,11 @@ const OCTAGON: &str = "the Octagon in the center: an eight-sided fighting cage w
 const SYSTEM: &str = "You design the look of a Hunger Games-style battle royale played by members of a Discord server, drawn as a top-down 2D map of the arena with the tributes as small pixel-art sprites, like a retro strategy game. \
 Each member's profile picture is shown with their tag (T1, T2...). For each tribute, describe their sprite, inspired by their profile picture: a person or character becomes a sprite of them; an animal or creature can stay one; a thing, logo or art becomes a sprite whose colors and costume clearly come from it. \
 Each sprite is one line of 10 to 25 words that reads at a tiny size: bold main colors, hair or headgear and outfit. No weapon or anything held: what they carry changes during the game and is added for each picture. Make every tribute easy to tell apart from the others by color. Nothing about real identity, health or body size, no names and no words or letters. For a tribute with no picture, invent a fitting sprite from their name. \
-The arena's zones are listed with keys (Z1, Z2...) and their names. For each zone, describe its terrain in 3 to 10 words, fitting its name when you can (a channel about games could be an arcade ruin, one about food an orchard), each zone clearly different. Terrain is scenery only: places and things, never people, characters, creatures, robots or crowds. \
-Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ..., \"Z1\": \"terrain\", ...}, with every tribute and every zone.";
+Answer with only one JSON object, no code fence: {\"T1\": \"sprite\", ...}, with every tribute.";
 
 /// How the tributes and the zones look, in the game's and the arena's order: `None` for
-/// any the answer left out, or all when the call failed.
+/// any the answer left out, or all when the call failed. The zones are the areas'
+/// descriptions (`areas.rs`).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Looks {
     pub tributes: Vec<Option<String>>,
@@ -85,13 +86,13 @@ impl Shared {
     }
 }
 
-/// Describes how the tributes and the arena's zones look.
+/// Describes how the tributes look; the zones look as `areas` describe them.
 pub async fn describe(
     bot: BotCtx,
     provider: Arc<dyn ChatProvider>,
     guild: GuildId,
     tributes: Vec<(u64, String)>,
-    arena: Vec<String>,
+    areas: Vec<Option<String>>,
 ) -> Looks {
     // The profile pictures download side by side.
     let downloads: Vec<_> = tributes
@@ -113,12 +114,6 @@ pub async fn describe(
             Err(_) => parts.push(Part::Text(format!("{tag}, named {name}: no picture."))),
         }
     }
-    let zones: Vec<String> = arena
-        .iter()
-        .enumerate()
-        .map(|(i, place)| format!("Z{}: {place}", i + 1))
-        .collect();
-    parts.push(Part::Text(format!("The zones:\n{}", zones.join("\n"))));
     let request = ChatRequest {
         system: SYSTEM.to_string(),
         input: Input::Full(vec![Turn {
@@ -131,17 +126,22 @@ pub async fn describe(
     };
     match complete(provider.as_ref(), request, &NoTools, 1).await {
         Ok(done) => {
-            let looks = parse(&done.text, tributes.len(), arena.len());
+            let looks = parse(&done.text, tributes.len(), 0);
             info!(
                 tributes = looks.tributes.iter().flatten().count(),
-                zones = looks.zones.iter().flatten().count(),
                 "described how the Hunger Games look"
             );
-            looks
+            Looks {
+                zones: areas,
+                ..looks
+            }
         }
         Err(err) => {
             warn!("couldn't describe how the Hunger Games look: {err:#}");
-            parse("", tributes.len(), arena.len())
+            Looks {
+                zones: areas,
+                ..parse("", tributes.len(), 0)
+            }
         }
     }
 }
@@ -233,19 +233,56 @@ pub fn map(arena: &[String], looks: &Looks, burning: Range<usize>) -> String {
     text
 }
 
-/// The picture of a fight in the Octagon round: zoomed
-/// in on the cage in the middle of the map, so the `fighters` are drawn big.
+/// The picture of a fight in the Octagon round, or of one bout: zoomed in on the cage in
+/// the middle of the map, so the `fighters` are drawn big.
 pub fn cage(looks: &Looks, weapons: &[Option<String>], picture: &str, fighters: usize) -> String {
-    let people = match fighters {
+    let people = in_picture(fighters);
+    format!(
+        "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere, alive or dead: no other bodies, crowds, audience, referees, guards, monsters or robots.",
+        fill(picture, looks, weapons)
+    )
+}
+
+/// A close-up of one event (her `picture` for it): zoomed in on the zone it happens in, so
+/// its tributes are drawn big. `zone` is the place's index in the arena, when the event's
+/// text names one; `burning` when that place closes off this round; `night` in a night
+/// round.
+pub fn scene(
+    looks: &Looks,
+    weapons: &[Option<String>],
+    picture: &str,
+    zone: Option<usize>,
+    burning: bool,
+    night: bool,
+) -> String {
+    let mut text = match zone.and_then(|i| looks.zones.get(i)) {
+        Some(Some(terrain)) => {
+            format!("A close, zoomed-in view of one spot of a battlefield: {terrain}.")
+        }
+        _ => "A close, zoomed-in view of one spot of a battlefield.".to_string(),
+    };
+    if night {
+        text.push_str(" It's night: dark, lit by the moon and any fire there.");
+    }
+    if burning && zone.is_some() {
+        text.push_str(" A wall of fire is closing in at the edge.");
+    }
+    format!(
+        "{text}\n\nThe scene: {}\n\n{} Nobody else is anywhere, alive or dead: no other bodies, crowds, townsfolk, guards, soldiers, enemies, monsters or robots.",
+        fill(picture, looks, weapons),
+        in_picture(game::tags_in(picture).len())
+    )
+}
+
+/// How many players a close-up shows: image models fill an empty spot with people of
+/// their own otherwise.
+fn in_picture(players: usize) -> String {
+    match players {
         1 => "Exactly 1 player is in the picture, the one described above.".to_string(),
         n => format!(
             "Exactly {n} players are in the picture, each one described above, each drawn once."
         ),
-    };
-    format!(
-        "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere: no crowds, audience, referees, guards, monsters or robots.",
-        fill(picture, looks, weapons)
-    )
+    }
 }
 
 /// A place's name as a label on the map: letters, digits, spaces, `-` and `_` only, since
@@ -437,6 +474,24 @@ mod tests {
         assert!(text.contains("Exactly 2 players are in the picture"));
         assert!(!text.contains("arcade ruin"));
         assert!(cage(&looks, &[], "{T1} wins.", 1).contains("Exactly 1 player is in the picture"));
+    }
+
+    #[test]
+    fn zooms_in_on_an_event() {
+        let looks = Looks {
+            tributes: vec![Some("a frog knight".into()), None],
+            zones: vec![Some("an arcade ruin".into())],
+        };
+        let weapons = vec![Some("a joystick flail".to_string())];
+        let text = scene(&looks, &weapons, "{T1} trips {T2}.", Some(0), true, true);
+        assert!(text.starts_with("A close, zoomed-in view of one spot of a battlefield: an arcade ruin. It's night: dark, lit by the moon and any fire there. A wall of fire is closing in at the edge."));
+        assert!(text.contains(
+            "The scene: (a frog knight, holding a joystick flail) trips a player empty-handed."
+        ));
+        assert!(text.contains("Exactly 2 players are in the picture"));
+        let text = scene(&looks, &weapons, "{T2} naps.", None, true, false);
+        assert!(text.starts_with("A close, zoomed-in view of one spot of a battlefield.\n\n"));
+        assert!(text.contains("Exactly 1 player is in the picture"));
     }
 
     #[test]
