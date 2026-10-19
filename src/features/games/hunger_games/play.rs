@@ -525,7 +525,8 @@ async fn play(
         intro.push_str("\n\n");
         intro.push_str(&grudges);
     }
-    if let Err(err) = channel.say(&bot.http, intro).await {
+    // `text`, not `say`: the teams and grudges in it name people without pinging them.
+    if let Err(err) = channel.send_message(&bot.http, text(intro)).await {
         warn!("couldn't post the Hunger Games intro: {err}");
     }
     let mut pending = None;
