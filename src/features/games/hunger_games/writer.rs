@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::game::{Endgame, Game, Kind, Reward, Round, Written, fill};
+use super::game::{Endgame, Game, Kind, MOST_CLOSE_UPS, Reward, Round, Written, fill};
 use super::ui;
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
@@ -27,7 +27,7 @@ Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
-{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null, \"theme\": {\"name\": string, \"twist\": string, \"surprise\": string} or null}
+{\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags], \"picture\": string or null}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null, \"theme\": {\"name\": string, \"twist\": string, \"surprise\": string} or null}
 - Every living tribute is in exactly one event's `tributes`, and every tribute in an event's `tributes` is tagged in its text. A living tribute is tagged only in the text of their own event, never in another one (not even a teammate thinking of them). The dead are not in any `tributes`, but their tags may appear in any text: looting their body, avenging them, mourning them.
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
@@ -36,6 +36,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
+- An event's `picture`: only when the round asks for them, and only for the 3 most interesting events of the round, the ones people will most want to see (all of them when there are 3 or fewer): a close-up of that event alone, for the same image model, one or two sentences: what its tributes are doing at that moment and the scenery right around them, like `{T1} swings a sword at {T4} beside a toppled arcade cabinet while {T2} hides behind it.` Tag everyone in it, and only them; the dead from earlier rounds only when the event is about their body. The bot takes the zone from the place in the event's text and adds how each tribute looks and what they carry. Same rules as the round's `picture`: tags, no names, plain words, no Hunger Games terms, the dying lying dead with a little blood. Otherwise null.
 - `theme`: only in the Scatter: the theme you pick for these Games. `name` is the season's name (a few words, like `The Static Season`), `twist` one quirk of this arena everyone knows about (a storm, a sponsor, a strange rule), and `surprise` something you mean to spring on them once, later on, that they don't know yet. Make it fit the tributes and the places. It's a mood, not a plot: the deaths and the Octagon aren't yours to plan. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
@@ -216,6 +217,9 @@ pub fn brief(
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
         });
+        text.push_str(&format!(
+            " And give the {MOST_CLOSE_UPS} most interesting events their own `picture`: a close-up of each (every event, when there are {MOST_CLOSE_UPS} or fewer)."
+        ));
     }
     text
 }
@@ -542,6 +546,7 @@ mod tests {
         assert!(text.contains("they finally find each other in one of the places still open (#general, #memes). Announce the final two"));
         let drawn = brief(&game, Kind::Day(1), &[], &notes, true);
         assert!(drawn.contains("Also write a `picture`: the showdown between everyone left"));
+        assert!(drawn.contains("And give the 3 most interesting events their own `picture`"));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));

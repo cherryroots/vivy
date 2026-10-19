@@ -95,6 +95,8 @@ pub struct Event {
     pub allies: Vec<usize>,
     /// Who leaves their alliance in this event.
     pub leaves: Vec<usize>,
+    /// A close-up of this event alone, when pictures are on: what to draw, with tags.
+    pub picture: Option<String>,
 }
 
 /// What the champion of an Octagon wins, as the crowd votes before it opens.
@@ -257,6 +259,8 @@ pub struct WrittenEvent {
     pub allies: Vec<String>,
     #[serde(default)]
     pub leaves: Vec<String>,
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -276,6 +280,9 @@ pub struct WrittenDeath {
 const MAX_EVENT: usize = 400;
 /// The most tributes in one event.
 const MAX_IN_EVENT: usize = 6;
+/// The most events drawn up close each round: she picks the most interesting (Cherry's
+/// call), or all of them when there are this many or fewer.
+pub const MOST_CLOSE_UPS: usize = 3;
 /// The longest a weapon's name may be, in characters.
 const MAX_WEAPON: usize = 60;
 /// The nerve it takes to step into the Octagon.
@@ -992,12 +999,24 @@ impl Game {
                 }
             }
             dead += deaths.len();
+            // A close-up that tags nobody would draw strangers, so it's left out rather
+            // than written again: the round's map still shows the event. So are any past
+            // the first few.
+            let drawn = events
+                .iter()
+                .filter(|e: &&Event| e.picture.is_some())
+                .count();
+            let picture = event
+                .picture
+                .map(|p| p.trim().to_string())
+                .filter(|p| !tags_in(p).is_empty() && drawn < MOST_CLOSE_UPS);
             events.push(Event {
                 text,
                 deaths,
                 finds,
                 allies,
                 leaves,
+                picture,
             });
         }
         if let Some(missing) =
@@ -1269,7 +1288,7 @@ impl Game {
 }
 
 /// The tributes an event's text names with `{T1}`-style tags, by index.
-fn tags_in(text: &str) -> Vec<usize> {
+pub fn tags_in(text: &str) -> Vec<usize> {
     let mut found = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("{T") {
@@ -1956,6 +1975,33 @@ mod tests {
                 .unwrap_err()
                 .contains("tags nobody")
         );
+    }
+
+    #[test]
+    fn close_ups_without_tags_are_left_out() {
+        let g = game(3);
+        let mut nap = event("{T1} and {T2} nap.", &["T1", "T2"], &[]);
+        nap.picture = Some(" {T1} and {T2} snore under a tree. ".into());
+        let mut swim = event("{T3} swims.", &["T3"], &[]);
+        swim.picture = Some("P3 swims in a lake.".into());
+        let round = g.check(Kind::Scatter, written(vec![nap, swim])).unwrap();
+        assert_eq!(
+            round.events[0].picture.as_deref(),
+            Some("{T1} and {T2} snore under a tree.")
+        );
+        assert_eq!(round.events[1].picture, None);
+        // Only the first few are drawn.
+        let events = (1..=5)
+            .map(|i| {
+                let tag = format!("T{i}");
+                let mut nap = event(&format!("{{{tag}}} naps."), &[&tag], &[]);
+                nap.picture = Some(format!("{{{tag}}} naps."));
+                nap
+            })
+            .collect();
+        let round = game(5).check(Kind::Scatter, written(events)).unwrap();
+        let drawn = round.events.iter().filter(|e| e.picture.is_some()).count();
+        assert_eq!(drawn, MOST_CLOSE_UPS);
     }
 
     fn round_with(kind: Kind, deaths: usize) -> Round {

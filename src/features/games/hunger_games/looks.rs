@@ -6,6 +6,7 @@
 //! their picture, and the terrain of each zone. [`map`] lays the zones out around the
 //! Octagon in a fixed order, and [`fill`] puts each tribute's sprite, with the weapon they
 //! carry at that point in the game, in place of their tag (`{T3}`) in her picture prompt.
+//! [`scene`] zooms in on one event, and [`cage`] on the Octagon.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -233,19 +234,56 @@ pub fn map(arena: &[String], looks: &Looks, burning: Range<usize>) -> String {
     text
 }
 
-/// The picture of a fight in the Octagon round: zoomed
-/// in on the cage in the middle of the map, so the `fighters` are drawn big.
+/// The picture of a fight in the Octagon round, or of one bout: zoomed in on the cage in
+/// the middle of the map, so the `fighters` are drawn big.
 pub fn cage(looks: &Looks, weapons: &[Option<String>], picture: &str, fighters: usize) -> String {
-    let people = match fighters {
-        1 => "Exactly 1 player is in the picture, the one described above.".to_string(),
-        n => format!(
-            "Exactly {n} players are in the picture, each one described above, each drawn once."
-        ),
-    };
+    let people = in_picture(fighters);
     format!(
         "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere: no crowds, audience, referees, guards, monsters or robots.",
         fill(picture, looks, weapons)
     )
+}
+
+/// A close-up of one event (her `picture` for it): zoomed in on the zone it happens in, so
+/// its tributes are drawn big. `zone` is the place's index in the arena, when the event's
+/// text names one; `burning` when that place closes off this round; `night` in a night
+/// round.
+pub fn scene(
+    looks: &Looks,
+    weapons: &[Option<String>],
+    picture: &str,
+    zone: Option<usize>,
+    burning: bool,
+    night: bool,
+) -> String {
+    let mut text = match zone.and_then(|i| looks.zones.get(i)) {
+        Some(Some(terrain)) => {
+            format!("A close, zoomed-in view of one spot of a battlefield: {terrain}.")
+        }
+        _ => "A close, zoomed-in view of one spot of a battlefield.".to_string(),
+    };
+    if night {
+        text.push_str(" It's night: dark, lit by the moon and any fire there.");
+    }
+    if burning && zone.is_some() {
+        text.push_str(" A wall of fire is closing in at the edge.");
+    }
+    format!(
+        "{text}\n\nThe scene: {}\n\n{} Nobody else is anywhere: no crowds, townsfolk, guards, soldiers, enemies, monsters or robots.",
+        fill(picture, looks, weapons),
+        in_picture(game::tags_in(picture).len())
+    )
+}
+
+/// How many players a close-up shows: image models fill an empty spot with people of
+/// their own otherwise.
+fn in_picture(players: usize) -> String {
+    match players {
+        1 => "Exactly 1 player is in the picture, the one described above.".to_string(),
+        n => format!(
+            "Exactly {n} players are in the picture, each one described above, each drawn once."
+        ),
+    }
 }
 
 /// A place's name as a label on the map: letters, digits, spaces, `-` and `_` only, since
@@ -437,6 +475,24 @@ mod tests {
         assert!(text.contains("Exactly 2 players are in the picture"));
         assert!(!text.contains("arcade ruin"));
         assert!(cage(&looks, &[], "{T1} wins.", 1).contains("Exactly 1 player is in the picture"));
+    }
+
+    #[test]
+    fn zooms_in_on_an_event() {
+        let looks = Looks {
+            tributes: vec![Some("a frog knight".into()), None],
+            zones: vec![Some("an arcade ruin".into())],
+        };
+        let weapons = vec![Some("a joystick flail".to_string())];
+        let text = scene(&looks, &weapons, "{T1} trips {T2}.", Some(0), true, true);
+        assert!(text.starts_with("A close, zoomed-in view of one spot of a battlefield: an arcade ruin. It's night: dark, lit by the moon and any fire there. A wall of fire is closing in at the edge."));
+        assert!(text.contains(
+            "The scene: (a frog knight, holding a joystick flail) trips a player empty-handed."
+        ));
+        assert!(text.contains("Exactly 2 players are in the picture"));
+        let text = scene(&looks, &weapons, "{T2} naps.", None, true, false);
+        assert!(text.starts_with("A close, zoomed-in view of one spot of a battlefield.\n\n"));
+        assert!(text.contains("Exactly 1 player is in the picture"));
     }
 
     #[test]
