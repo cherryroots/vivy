@@ -386,13 +386,15 @@ fn moderation<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     }
 }
 
-/// How good a picture is: the setting, except that games pick their own: `quality`
-/// "low" or "medium" in the arguments, or else high (their maps are full of small sprites).
+/// How good a picture is: the setting, except that games pick their own: `quality` in the
+/// arguments, or else high (their maps are full of small sprites).
 fn quality<'a>(settings: &'a Settings, args: &Value) -> &'a str {
     match job(args) {
         "game_art" => match args.get("quality").and_then(Value::as_str) {
             Some("low") => "low",
             Some("medium") => "medium",
+            Some("xhigh") => "xhigh",
+            Some("max") => "max",
             _ => "high",
         },
         _ => &settings.quality,

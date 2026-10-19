@@ -65,10 +65,16 @@ const UNPROMPTED_TOOLS: &[&str] = &[
     "memory",
 ];
 
-/// `[features.chat]` settings for chiming in.
+/// `[features.chat]` settings: chiming in, and some limits on answers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// The most rounds of tool calls in one answer, so a confused model can't loop forever.
+    pub max_tool_rounds: usize,
+    /// How far up a reply chain the history goes, in messages.
+    pub history_turns: usize,
+    /// The most check-ins (`schedule_follow_up`) planned with one person at a time.
+    pub follow_ups_per_person: i64,
     /// The chance, from 0 to 1, that a message makes her read along. 0 turns it off.
     pub chime_chance: f64,
     /// Of those reads, the share where she posts a line (0 to 1).
@@ -130,6 +136,9 @@ impl Settings {
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
+            max_tool_rounds: 8,
+            history_turns: 40,
+            follow_ups_per_person: 5,
             chime_chance: 0.05,
             chime_say_chance: 0.10,
             chime_react_chance: 0.40,
@@ -162,21 +171,28 @@ enum Decision {
     },
 }
 
+/// The `[features.chat]` settings, read once.
+static SETTINGS: OnceLock<Settings> = OnceLock::new();
+
+/// The `[features.chat]` settings, read the first time they're needed.
+pub(super) fn settings(ctx: &BotCtx) -> &'static Settings {
+    SETTINGS.get_or_init(|| {
+        ctx.config.feature("chat").unwrap_or_else(|err| {
+            warn!("chat uses its default settings: {err:#}");
+            Settings::default()
+        })
+    })
+}
+
 #[derive(Default)]
 pub struct Chime {
-    settings: OnceLock<Settings>,
     /// When she last considered each channel.
     last: Mutex<HashMap<ChannelId, Instant>>,
 }
 
 impl Chime {
-    pub(super) fn settings(&self, ctx: &BotCtx) -> &Settings {
-        self.settings.get_or_init(|| {
-            ctx.config.feature("chat").unwrap_or_else(|err| {
-                warn!("chime-ins use their defaults: {err:#}");
-                Settings::default()
-            })
-        })
+    pub(super) fn settings(&self, ctx: &BotCtx) -> &'static Settings {
+        settings(ctx)
     }
 
     /// Rolls the dice for a message, and reads along if it hits. A second roll decides

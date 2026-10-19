@@ -230,10 +230,6 @@ struct Setup {
     quote_settings: crate::features::games::who_said_it::Settings,
 }
 
-/// The most places an arena has: one ring of zones around the Octagon on the map (see
-/// `looks::map`). More made the map too crowded to read.
-const MOST_PLACES: usize = 8;
-
 /// A place in the arena: its channel's name and ID.
 type Place = (String, u64);
 
@@ -326,9 +322,13 @@ async fn run(
         sources,
         quote_settings,
     } = setup;
-    // One place per tribute, the same ones all game, but at most one ring of zones around
-    // the Octagon, so the map stays readable (Cherry's call).
-    links.truncate(tributes.len().min(MOST_PLACES));
+    // One place per tribute, the same ones all game, but at most `max_places` (by default
+    // one ring of zones around the Octagon, so the map stays readable: Cherry's call).
+    links.truncate(
+        tributes
+            .len()
+            .min(settings.max_places.clamp(1, MOST_TRIBUTES)),
+    );
     let arena: Vec<String> = links.iter().map(|(name, _)| name.clone()).collect();
     let ids: Vec<u64> = tributes.iter().map(|(id, _)| *id).collect();
     // Last words take a while to read, and aren't needed until the first cannons.
@@ -342,6 +342,9 @@ async fn run(
     // What each place is like, from her note about what the channels are for, worked out
     // while her notes about the tributes are read.
     let areas = async {
+        if !settings.describe_areas {
+            return vec![None; arena.len()];
+        }
         let channels = notes::channels(bot, guild, channel, lobby_message.id).await;
         areas::describe(provider.clone(), arena.clone(), channels).await
     };
@@ -378,6 +381,7 @@ async fn run(
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
     let mut game = Game::new(tributes);
     game.places = links.len();
+    game.rules = settings.rules();
     game.remember(&past);
     if extras.teams {
         game.pair_up();
@@ -386,6 +390,8 @@ async fn run(
         guild,
         channel,
         lobby: lobby_message.id,
+        quality: pictures::quality(&settings.picture_quality, "medium"),
+        victor_quality: pictures::quality(&settings.victor_picture_quality, "high"),
     };
     play(
         bot,
@@ -428,6 +434,8 @@ async fn play(
         channel,
         message: stage.lobby,
         host: running.host,
+        quality: stage.quality,
+        victor_quality: stage.victor_quality,
     };
     // Whether the channel was told why a picture is missing: once a game is enough.
     let told = Arc::new(AtomicBool::new(false));
@@ -878,6 +886,9 @@ struct Stage {
     channel: ChannelId,
     /// The Reaping message.
     lobby: MessageId,
+    /// How good the pictures are (see `pictures::Easel`).
+    quality: &'static str,
+    victor_quality: &'static str,
 }
 
 /// What Vivy gets for writing each round, besides the game.

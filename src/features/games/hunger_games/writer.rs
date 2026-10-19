@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::game::{Endgame, Game, Kind, MOST_CLOSE_UPS, Reward, Round, Written, fill};
+use super::game::{Endgame, Game, Kind, Reward, Round, Written, fill};
 use super::ui;
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
@@ -36,7 +36,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
 - `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
-- An event's `picture`: only when the round asks for them, and only for the 3 most interesting events of the round, the ones people will most want to see (all of them when there are 3 or fewer): a close-up of that event alone, for the same image model, one or two sentences: what its tributes are doing at that moment and the scenery right around them, like `{T1} swings a sword at {T4} beside a toppled arcade cabinet while {T2} hides behind it.` Tag everyone in it, and only them; the dead from earlier rounds only when the event is about their body. The bot takes the zone from the place in the event's text and adds how each tribute looks and what they carry. Same rules as the round's `picture`: tags, no names, plain words, no Hunger Games terms, the dying lying dead with a little blood. Otherwise null.
+- An event's `picture`: only for the events the round asks for, the most interesting ones that people will most want to see: a close-up of that event alone, for the same image model, one or two sentences: what its tributes are doing at that moment and the scenery right around them, like `{T1} swings a sword at {T4} beside a toppled arcade cabinet while {T2} hides behind it.` Tag everyone in it, and only them; the dead from earlier rounds only when the event is about their body. The bot takes the zone from the place in the event's text and adds how each tribute looks and what they carry. Same rules as the round's `picture`: tags, no names, plain words, no Hunger Games terms, the dying lying dead with a little blood. Otherwise null.
 - `theme`: only in the Scatter: the theme you pick for these Games. `name` is the season's name (a few words, like `The Static Season`), `twist` one quirk of this arena everyone knows about (a storm, a sponsor, a strange rule), and `surprise` something you mean to spring on them once, later on, that they don't know yet. Make it fit the tributes and the places. It's a mood, not a plot: the deaths and the Octagon aren't yours to plan. Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
@@ -235,13 +235,27 @@ pub fn brief(
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
         });
-        if let Kind::Octagon(_) = kind {
+        // Close-ups of the most interesting events, as many as the server allows.
+        let most = game.rules.close_ups;
+        let (best, all) = match most {
+            1 => (
+                "the most interesting one gets".to_string(),
+                "when there's only one".to_string(),
+            ),
+            n => (
+                format!("the {n} most interesting get"),
+                format!("when there are {n} or fewer"),
+            ),
+        };
+        if most == 0 {
+            text.push_str(" Events get no `picture` of their own.");
+        } else if let Kind::Octagon(_) = kind {
             text.push_str(&format!(
-                " The Octagon's `picture` already shows the fights in the cage, so give close-ups only to events outside it: the {MOST_CLOSE_UPS} most interesting of those get their own `picture` (all of them, when there are {MOST_CLOSE_UPS} or fewer)."
+                " The Octagon's `picture` already shows the fights in the cage, so give close-ups only to events outside it: of those, {best} their own `picture` (all of them, {all})."
             ));
         } else {
             text.push_str(&format!(
-                " And give the {MOST_CLOSE_UPS} most interesting events their own `picture`: a close-up of each (every event, when there are {MOST_CLOSE_UPS} or fewer)."
+                " And give events their own `picture`, a close-up of each: {best} one (every event, {all})."
             ));
         }
     }
@@ -578,7 +592,17 @@ mod tests {
         assert!(text.contains("they finally find each other in one of the places still open (#general, #memes). Announce the final two"));
         let drawn = brief(&game, Kind::Day(1), &[], &[], &notes, true);
         assert!(drawn.contains("Also write a `picture`: the showdown between everyone left"));
-        assert!(drawn.contains("And give the 3 most interesting events their own `picture`"));
+        assert!(drawn.contains("And give events their own `picture`, a close-up of each: the 3 most interesting get one (every event, when there are 3 or fewer)."));
+        let mut fewer = game.clone();
+        fewer.rules.close_ups = 1;
+        let drawn = brief(&fewer, Kind::Day(1), &[], &[], &notes, true);
+        assert!(
+            drawn
+                .contains("the most interesting one gets one (every event, when there's only one)")
+        );
+        fewer.rules.close_ups = 0;
+        let drawn = brief(&fewer, Kind::Day(1), &[], &[], &notes, true);
+        assert!(drawn.contains("Events get no `picture` of their own."));
         assert!(text.contains("<notes tribute=\"T1\" name=\"Moss\">\nPlays chess\n</notes>"));
         assert!(!text.contains("dead, unused"));
         assert!(text.contains("#general, #memes"));

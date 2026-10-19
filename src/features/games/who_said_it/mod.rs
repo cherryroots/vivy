@@ -27,6 +27,8 @@ pub struct Settings {
     pub rounds: usize,
     /// Seconds to answer each question (at least 5).
     pub answer_seconds: u64,
+    /// Seconds between an answer and the next question, to read who got it.
+    pub pause_seconds: u64,
     /// How far back quotes come from.
     pub lookback_days: i64,
     /// The shortest and longest messages used, in characters.
@@ -42,6 +44,7 @@ impl Default for Settings {
         Settings {
             rounds: 10,
             answer_seconds: 20,
+            pause_seconds: 5,
             lookback_days: 365,
             min_length: 20,
             max_length: 300,

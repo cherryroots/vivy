@@ -300,9 +300,10 @@ impl Chat {
             message_ids: message_ids.clone(),
         };
 
+        let turns = chime::settings(ctx).history_turns.max(1);
         let chain = ctx
             .db
-            .call(move |conn| store::chain(conn, question_id, history::MAX_TURNS))
+            .call(move |conn| store::chain(conn, question_id, turns))
             .await?;
         let mut input = history::build_input(ctx, provider, &chain).await;
         // The features' context is saved with the question the first time it's answered,

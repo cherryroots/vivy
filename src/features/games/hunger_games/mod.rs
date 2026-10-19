@@ -43,14 +43,65 @@ pub struct Settings {
     pub lobby_minutes: u64,
     /// Seconds people get to read a round before the next one is posted.
     pub auto_advance_seconds: u64,
+    /// The most places in the arena (one per tribute up to this). More than 8 adds a ring
+    /// further out on the map, which is harder to read.
+    pub max_places: usize,
+    /// Whether Vivy describes each place as the Games start (see `areas.rs`).
+    pub describe_areas: bool,
+    /// With pictures on: the most events drawn up close each round (0 for none).
+    pub close_ups: usize,
+    /// The quality of the maps and close-ups, and of the victor's picture: "low",
+    /// "medium", "high", "xhigh" or "max".
+    pub picture_quality: String,
+    pub victor_picture_quality: String,
+    /// The most who step into one Octagon (at least 2).
+    pub most_in_octagon: usize,
+    /// The most rounds the last two sides wander before they must meet.
+    pub wander_rounds: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
+        let rules = game::Rules::default();
         Settings {
             max_tributes: 24,
             lobby_minutes: 10,
             auto_advance_seconds: 45,
+            max_places: 8,
+            describe_areas: true,
+            close_ups: rules.close_ups,
+            picture_quality: "medium".to_string(),
+            victor_picture_quality: "high".to_string(),
+            most_in_octagon: rules.most_in_octagon,
+            wander_rounds: rules.wander_rounds,
         }
+    }
+}
+
+impl Settings {
+    /// The game rules these settings tune, within what the game can handle.
+    fn rules(&self) -> game::Rules {
+        game::Rules {
+            close_ups: self.close_ups.min(pictures::MOST_CLOSE_UPS),
+            most_in_octagon: self.most_in_octagon.max(2),
+            wander_rounds: self.wander_rounds,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_tune_the_rules() {
+        assert_eq!(Settings::default().rules(), game::Rules::default());
+        let settings: Settings =
+            toml::from_str("close_ups = 20\nmost_in_octagon = 1\nwander_rounds = 0").unwrap();
+        let rules = settings.rules();
+        assert_eq!(rules.close_ups, pictures::MOST_CLOSE_UPS);
+        assert_eq!(rules.most_in_octagon, 2);
+        assert_eq!(rules.wander_rounds, 0);
+        assert_eq!(settings.picture_quality, "medium");
     }
 }
