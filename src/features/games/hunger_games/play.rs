@@ -633,10 +633,10 @@ async fn play(
                 .collect();
             info!(?winners, rounds = game.rounds.len(), "Hunger Games ended");
             // For `/games leaderboard`.
-            let (guild, finished) = (stage.guild.get(), game.clone());
+            let (guild, finished, places) = (stage.guild.get(), game.clone(), links.clone());
             let saved = bot
                 .db
-                .call(move |conn| stats::record(conn, guild, channel.get(), &finished))
+                .call(move |conn| stats::record(conn, guild, channel.get(), &finished, &places))
                 .await;
             if let Err(err) = saved {
                 warn!("couldn't save the Hunger Games stats: {err:#}");

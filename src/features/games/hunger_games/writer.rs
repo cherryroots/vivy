@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use tracing::{info, warn};
 
 use super::game::{Game, Kind, Reward, Round, Written, fill};
+use super::ui;
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
 };
@@ -117,8 +118,18 @@ pub fn brief(
         .open_grudges()
         .iter()
         .map(|g| {
+            // How the last time happened, so revenge can call back to it. Its place is
+            // left out: it may not be in this arena.
+            let last = match &g.last {
+                Some(blow) => format!(
+                    ", the last time {}{}",
+                    ui::with_weapon(blow.weapon.as_deref().unwrap_or_default()),
+                    if blow.octagon { " in the Octagon" } else { "" }
+                ),
+                None => String::new(),
+            };
             format!(
-                "- {} killed {} {}",
+                "- {} killed {} {}{last}",
                 Game::tag(g.killer),
                 Game::tag(g.victim),
                 g.how_often()
@@ -354,6 +365,7 @@ mod tests {
 
     use super::*;
     use crate::ai::{ChatEvent, Done, GeneratedFile};
+    use crate::features::games::hunger_games::game::Blow;
 
     /// Answers with each of its texts in turn, and keeps what it was asked.
     struct Scripted {
@@ -477,9 +489,16 @@ mod tests {
         let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
         let arena: Vec<String> = (0..8).map(|i| format!("room-{i}")).collect();
         game.places = arena.len();
-        game.remember(&[(7, 8, 3), (1, 8, 1)]);
+        let axe = Blow {
+            weapon: Some("axe".into()),
+            place: Some(5),
+            octagon: true,
+        };
+        game.remember(&[(7, 8, 3, Some(axe)), (1, 8, 1, None)]);
         let text = brief(&game, Kind::Scatter, &arena, &[], false);
-        assert!(text.contains("- T7 killed T8 3 times\n- T1 killed T8 once\n"));
+        assert!(text.contains(
+            "- T7 killed T8 3 times, the last time with an axe in the Octagon\n- T1 killed T8 once\n"
+        ));
         assert!(!text.contains("walls of fire"));
         // Five fall in the first night, so day 2 closes five places.
         for t in &mut game.tributes[..5] {
@@ -500,7 +519,9 @@ mod tests {
         assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-3, #room-4, #room-5, #room-6, #room-7\n"));
         assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-3, #room-4, #room-5, #room-6, #room-7."));
         // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
-        assert!(text.contains("- T7 killed T8 3 times\n\n"));
+        assert!(
+            text.contains("- T7 killed T8 3 times, the last time with an axe in the Octagon\n\n")
+        );
         assert!(!text.contains("T1 killed"));
     }
 

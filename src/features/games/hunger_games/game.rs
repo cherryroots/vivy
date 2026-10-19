@@ -138,6 +138,30 @@ pub struct Grudge {
     pub killer: usize,
     pub victim: usize,
     pub times: u32,
+    /// How the last of those kills happened, or `None` when it's from before kills kept it.
+    pub last: Option<Blow>,
+}
+
+/// How a kill happened, as remembered for grudges: so revenge can call back to it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Blow {
+    /// The killer's weapon, or `None` for their bare hands (or a trap, a rock).
+    pub weapon: Option<String>,
+    /// The channel it happened in, when the event names one of the arena's places.
+    pub place: Option<u64>,
+    /// Whether it happened in the Octagon: one of its rounds or the final showdown.
+    pub octagon: bool,
+}
+
+/// A kill in a game, for saving: indexes into its tributes, and where it is in the rounds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Kill {
+    pub killer: usize,
+    pub victim: usize,
+    pub round: usize,
+    pub event: usize,
+    /// What the killer carried coming into the event, or else what they found in it.
+    pub weapon: Option<String>,
 }
 
 impl Grudge {
@@ -270,16 +294,18 @@ impl Game {
     }
 
     /// Takes in who killed whom in earlier Games, as (killer's user ID, victim's user ID,
-    /// times). Only pairs where both are in this game count, the most often first.
-    pub fn remember(&mut self, past: &[(u64, u64, u32)]) {
+    /// times, how the last time happened). Only pairs where both are in this game count,
+    /// the most often first.
+    pub fn remember(&mut self, past: &[(u64, u64, u32, Option<Blow>)]) {
         let index = |id: u64| self.tributes.iter().position(|t| t.id == id);
         let mut grudges: Vec<Grudge> = past
             .iter()
-            .filter_map(|&(killer, victim, times)| {
+            .filter_map(|(killer, victim, times, last)| {
                 Some(Grudge {
-                    killer: index(killer)?,
-                    victim: index(victim)?,
-                    times,
+                    killer: index(*killer)?,
+                    victim: index(*victim)?,
+                    times: *times,
+                    last: last.clone(),
                 })
             })
             .filter(|g| g.killer != g.victim && g.times > 0)
@@ -297,11 +323,12 @@ impl Game {
             .collect()
     }
 
-    /// Whether `killer` killing `victim` is revenge: `victim` killed them in earlier Games.
-    pub fn revenge(&self, killer: usize, victim: usize) -> bool {
+    /// The grudge `killer` settles by killing `victim`, if it's revenge: `victim` killed them
+    /// in earlier Games.
+    pub fn revenge(&self, killer: usize, victim: usize) -> Option<&Grudge> {
         self.grudges
             .iter()
-            .any(|g| g.killer == victim && g.victim == killer)
+            .find(|g| g.killer == victim && g.victim == killer)
     }
 
     /// How many are still alive.
@@ -1069,6 +1096,36 @@ impl Game {
         self.rounds.push(round);
     }
 
+    /// Every kill so far, in order. The weapon is what the killer carried coming into the
+    /// event, or else what they found in it (grabbed in the Scatter and swung at once).
+    pub fn kills(&self) -> Vec<Kill> {
+        let mut carried: Vec<Option<String>> = vec![None; self.tributes.len()];
+        let mut kills = Vec::new();
+        for (round, played) in self.rounds.iter().enumerate() {
+            for (index, event) in played.events.iter().enumerate() {
+                for death in &event.deaths {
+                    let Some(killer) = death.by else { continue };
+                    let found = event
+                        .finds
+                        .iter()
+                        .find(|(who, _)| *who == killer)
+                        .map(|(_, weapon)| weapon.clone());
+                    kills.push(Kill {
+                        killer,
+                        victim: death.victim,
+                        round,
+                        event: index,
+                        weapon: carried[killer].clone().or(found),
+                    });
+                }
+                for (who, weapon) in &event.finds {
+                    carried[*who] = Some(weapon.clone());
+                }
+            }
+        }
+        kills
+    }
+
     /// Who died in the rounds from `from` on, in the order they died.
     pub fn fallen_since(&self, from: usize) -> Vec<&Tribute> {
         self.rounds
@@ -1492,26 +1549,37 @@ mod tests {
     fn grudges_come_from_earlier_games() {
         let mut g = game(4);
         // P1 killed P2 twice and P3 once; someone not here killed P4.
-        g.remember(&[(1, 3, 1), (1, 2, 2), (99, 4, 5), (2, 2, 1)]);
+        let spoon = Blow {
+            weapon: Some("spoon".into()),
+            ..Default::default()
+        };
+        g.remember(&[
+            (1, 3, 1, None),
+            (1, 2, 2, Some(spoon.clone())),
+            (99, 4, 5, None),
+            (2, 2, 1, None),
+        ]);
         assert_eq!(
             g.grudges,
             vec![
                 Grudge {
                     killer: 0,
                     victim: 1,
-                    times: 2
+                    times: 2,
+                    last: Some(spoon),
                 },
                 Grudge {
                     killer: 0,
                     victim: 2,
-                    times: 1
+                    times: 1,
+                    last: None,
                 },
             ]
         );
         assert_eq!(g.grudges[0].how_often(), "twice");
         // P2 killing P1 now is revenge; the other way round isn't.
-        assert!(g.revenge(1, 0));
-        assert!(!g.revenge(0, 1));
+        assert!(g.revenge(1, 0).is_some());
+        assert!(g.revenge(0, 1).is_none());
         // Once either is dead, the grudge can't play out anymore.
         g.tributes[2].died_in = Some(0);
         assert_eq!(g.open_grudges().len(), 1);

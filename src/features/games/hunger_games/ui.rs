@@ -7,7 +7,7 @@ use serenity::all::{
     CreateSelectMenuKind, ReactionType, UserId,
 };
 
-use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
+use super::game::{Blow, FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
@@ -281,21 +281,13 @@ pub fn mention(id: u64) -> String {
 /// first, so `#memes-2` isn't read as `#memes`, and a name only counts when it isn't the
 /// start of a longer word.
 pub fn link_places(text: &str, places: &[(String, u64)]) -> String {
-    let mut places: Vec<&(String, u64)> = places.iter().filter(|(n, _)| !n.is_empty()).collect();
-    places.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    let places = longest_first(places);
     let mut out = String::new();
     let mut rest = text;
     while let Some(at) = rest.find('#') {
         out.push_str(&rest[..at]);
         let after = &rest[at + 1..];
-        let found = places.iter().find(|(name, _)| {
-            after.starts_with(name.as_str())
-                && !after[name.len()..]
-                    .chars()
-                    .next()
-                    .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        });
-        match found {
+        match place_at(after, &places) {
             Some((name, id)) => {
                 out.push_str(&format!("<#{id}>"));
                 rest = &after[name.len()..];
@@ -308,6 +300,34 @@ pub fn link_places(text: &str, places: &[(String, u64)]) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The channel ID of the first place `text` names as `#name`, if any (see
+/// [`link_places`]).
+pub fn first_place(text: &str, places: &[(String, u64)]) -> Option<u64> {
+    let places = longest_first(places);
+    text.match_indices('#')
+        .find_map(|(at, _)| place_at(&text[at + 1..], &places))
+        .map(|(_, id)| *id)
+}
+
+/// The places with names, longest first, so `#memes-2` isn't read as `#memes`.
+fn longest_first(places: &[(String, u64)]) -> Vec<&(String, u64)> {
+    let mut places: Vec<&(String, u64)> = places.iter().filter(|(n, _)| !n.is_empty()).collect();
+    places.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    places
+}
+
+/// The place whose name `after` (the text after a `#`) starts with, when the name isn't
+/// the start of a longer word.
+fn place_at<'a>(after: &str, places: &[&'a (String, u64)]) -> Option<&'a (String, u64)> {
+    places.iter().copied().find(|(name, _)| {
+        after.starts_with(name.as_str())
+            && !after[name.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    })
 }
 
 /// The round at `index` as played: her Gamemaker line, the places that close, who steps
@@ -366,11 +386,17 @@ pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String>
         let mut block = format!("{skull} {line}");
         // A grudge from earlier Games, settled.
         for death in &event.deaths {
-            if let Some(by) = death.by.filter(|&by| game.revenge(by, death.victim)) {
+            if let Some(grudge) = death.by.and_then(|by| game.revenge(by, death.victim)) {
+                let how = how(grudge.last.as_ref());
+                let how = if how.is_empty() {
+                    how
+                } else {
+                    format!(",{how}")
+                };
                 block.push_str(&format!(
-                    "\n-# 😈 Revenge: {} killed {} in an earlier Games.",
-                    name(death.victim),
-                    name(by)
+                    "\n-# 😈 Revenge: {} killed {} in an earlier Games{how}.",
+                    name(grudge.killer),
+                    name(grudge.victim)
                 ));
             }
         }
@@ -532,8 +558,14 @@ pub fn grudges(game: &Game) -> Option<String> {
         .open_grudges()
         .iter()
         .map(|g| {
+            let last = how(g.last.as_ref());
+            let last = if last.is_empty() {
+                last
+            } else {
+                format!(", the last time{last}")
+            };
             format!(
-                "😈 {} has killed {} {} before.",
+                "😈 {} has killed {} {} before{last}.",
                 mention(game.tributes[g.killer].id),
                 mention(game.tributes[g.victim].id),
                 g.how_often()
@@ -541,6 +573,47 @@ pub fn grudges(game: &Game) -> Option<String> {
         })
         .collect();
     (!lines.is_empty()).then(|| format!("**Old grudges:**\n{}", lines.join("\n")))
+}
+
+/// How a weapon reads after a kill: "with a spoon", "with an axe", "with Excalibur",
+/// "with Moss's spoon", or "with their bare hands" for none.
+pub fn with_weapon(weapon: &str) -> String {
+    let weapon = weapon.trim();
+    if weapon.is_empty() {
+        return "with their bare hands".to_string();
+    }
+    let first = weapon.split_whitespace().next().unwrap_or_default();
+    let named = ["a", "an", "the", "their", "his", "her", "its"]
+        .contains(&first.to_lowercase().as_str())
+        || first.contains(['\'', '’'])
+        || first.starts_with(char::is_uppercase);
+    if named {
+        return format!("with {weapon}");
+    }
+    let article = if weapon.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
+    format!("with {article} {weapon}")
+}
+
+/// How a kill from earlier Games happened, like " with a spoon in <#5>" (with a leading
+/// space), or "" when it's from before kills kept it.
+fn how(blow: Option<&Blow>) -> String {
+    let Some(blow) = blow else {
+        return String::new();
+    };
+    let mut text = format!(
+        " {}",
+        with_weapon(blow.weapon.as_deref().unwrap_or_default())
+    );
+    if blow.octagon {
+        text.push_str(" in the Octagon");
+    } else if let Some(place) = blow.place {
+        text.push_str(&format!(" in <#{place}>"));
+    }
+    text
 }
 
 /// `a`, `a and b`, or `a, b and c`.
@@ -694,15 +767,37 @@ mod tests {
     }
 
     #[test]
+    fn weapons_read_naturally() {
+        assert_eq!(with_weapon("spoon"), "with a spoon");
+        assert_eq!(with_weapon("axe"), "with an axe");
+        assert_eq!(with_weapon("Excalibur"), "with Excalibur");
+        assert_eq!(with_weapon("Moss's spoon"), "with Moss's spoon");
+        assert_eq!(with_weapon("the ban hammer"), "with the ban hammer");
+        assert_eq!(with_weapon(" "), "with their bare hands");
+        let cage = Blow {
+            weapon: None,
+            place: Some(5),
+            octagon: true,
+        };
+        assert_eq!(how(Some(&cage)), " with their bare hands in the Octagon");
+        assert_eq!(how(None), "");
+    }
+
+    #[test]
     fn rounds_show_the_arena_shrinking_and_revenge() {
         let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
         let places: Vec<(String, u64)> = (0..8).map(|i| (format!("room-{i}"), 10 + i)).collect();
         game.places = places.len();
-        // P7 killed P6 in an earlier Games.
-        game.remember(&[(7, 6, 1)]);
+        // P7 killed P6 in an earlier Games, with a pushpin spike in #room-2.
+        let pushpin = Blow {
+            weapon: Some("pushpin spike".into()),
+            place: Some(12),
+            octagon: false,
+        };
+        game.remember(&[(7, 6, 1, Some(pushpin))]);
         assert_eq!(
             grudges(&game).unwrap(),
-            "**Old grudges:**\n😈 <@7> has killed <@6> once before."
+            "**Old grudges:**\n😈 <@7> has killed <@6> once before, the last time with a pushpin spike in <#12>."
         );
         let day = |kind: Kind, events: Vec<Event>| Round {
             kind,
@@ -737,7 +832,7 @@ mod tests {
             "🔥 The arena shrinks: walls of fire close off <#13>, <#14>, <#15>, <#16> and <#17>."
         ));
         assert!(text.contains(
-            "💀 <@6> gets <@7> back.\n-# 😈 Revenge: <@7> killed <@6> in an earlier Games."
+            "💀 <@6> gets <@7> back.\n-# 😈 Revenge: <@7> killed <@6> in an earlier Games, with a pushpin spike in <#12>."
         ));
         // Nothing closed the night before.
         assert!(!round(&game, 0, &places).join("").contains("🔥"));
