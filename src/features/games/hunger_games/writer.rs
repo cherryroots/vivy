@@ -49,14 +49,33 @@ pub fn brief(
 ) -> String {
     let alive = game.alive();
     let (min, max) = game.deaths_range(kind);
+    let at = game.rounds.len();
+    // The places whose index is (or isn't) in a range, as `#name`.
+    let places = |range: std::ops::Range<usize>, inside: bool| -> Vec<String> {
+        arena
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| range.contains(i) == inside)
+            .map(|(_, n)| format!("#{n}"))
+            .collect()
+    };
+    let closed = game.closed(at);
+    let closing = places(game.closing(at), true);
     let mut text = String::new();
     if !arena.is_empty() {
         text.push_str(
             "The arena's places for this game (some of the server's channels, picked at random; spread the tributes around, and don't keep sending people to the same place): ",
         );
-        let names: Vec<String> = arena.iter().map(|n| format!("#{n}")).collect();
-        text.push_str(&names.join(", "));
-        text.push_str("\n\n");
+        text.push_str(&places(closed.clone(), false).join(", "));
+        text.push('\n');
+        let shut = places(closed, true);
+        if !shut.is_empty() {
+            text.push_str(&format!(
+                "The arena is shrinking to drive the survivors together. Closed off by walls of fire, so nobody can be there anymore: {}\n",
+                shut.join(", ")
+            ));
+        }
+        text.push('\n');
     }
     text.push_str("The tributes:\n");
     for (i, t) in game.tributes.iter().enumerate() {
@@ -89,6 +108,25 @@ pub fn brief(
         text.push_str(&known.join("\n"));
         text.push('\n');
     }
+    let grudges: Vec<String> = game
+        .open_grudges()
+        .iter()
+        .map(|g| {
+            format!(
+                "- {} killed {} {}",
+                Game::tag(g.killer),
+                Game::tag(g.victim),
+                g.how_often()
+            )
+        })
+        .collect();
+    if !grudges.is_empty() {
+        text.push_str(
+            "\nGrudges from earlier Games in this server, among the living (who killed whom before). Bring one up now and then: a taunt, a hunt for revenge, a rematch, someone fleeing their old killer. It's a story hook, not a script: revenge can fail, and it doesn't decide who wins:\n",
+        );
+        text.push_str(&grudges.join("\n"));
+        text.push('\n');
+    }
     if !game.rounds.is_empty() {
         text.push_str("\nThe story so far:\n");
         for round in &game.rounds {
@@ -107,8 +145,8 @@ pub fn brief(
         Kind::Scatter => {
             "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Open the Games with your `gamemaker` announcement.".to_string()
         }
-        Kind::Day(day) => format!("Day {day}.{}", hunt(game)),
-        Kind::Night(day) => format!("Night {day}.{}", hunt(game)),
+        Kind::Day(day) => format!("Day {day}.{}{}", shrink(&closing), hunt(game)),
+        Kind::Night(day) => format!("Night {day}.{}{}", shrink(&closing), hunt(game)),
         Kind::Octagon(day) => {
             let entrants: Vec<String> = game.entrants().into_iter().map(Game::tag).collect();
             let prize = match game.prize.unwrap_or(Reward::Weapon) {
@@ -160,6 +198,17 @@ pub fn title(kind: Kind) -> String {
         Kind::Octagon(day) => format!("Day {day}: the Octagon"),
         Kind::Finale => "The final showdown".to_string(),
     }
+}
+
+/// For a day or night when places close: which ones, and what that means.
+fn shrink(closing: &[String]) -> String {
+    if closing.is_empty() {
+        return String::new();
+    }
+    format!(
+        " The arena shrinks as this round begins: walls of fire close off {}. Anyone there flees to the places still open, or the fire gets them (a death by the arena).",
+        closing.join(", ")
+    )
 }
 
 /// For a day or night after an Octagon won with the hunt: who must make a kill.
@@ -406,6 +455,38 @@ mod tests {
         assert!(text.contains("- T2: Cherry (dead, their cleaver lies where they fell)"));
         assert!(text.contains("- Moss bonks Cherry."));
         assert!(text.contains("Exactly 1 tribute must die"));
+    }
+
+    #[test]
+    fn the_brief_has_the_shrinking_arena_and_grudges() {
+        let mut game = Game::new((1..=8).map(|id| (id, format!("P{id}"))).collect());
+        let arena: Vec<String> = (0..8).map(|i| format!("room-{i}")).collect();
+        game.places = arena.len();
+        game.remember(&[(7, 8, 3), (1, 8, 1)]);
+        let text = brief(&game, Kind::Scatter, &arena, &[], false);
+        assert!(text.contains("- T7 killed T8 3 times\n- T1 killed T8 once\n"));
+        assert!(!text.contains("walls of fire"));
+        // Five fall in the first night, so day 2 closes three places.
+        for t in &mut game.tributes[..5] {
+            t.died_in = Some(0);
+        }
+        game.rounds.push(Round {
+            kind: Kind::Night(1),
+            gamemaker: None,
+            events: Vec::new(),
+            victory: None,
+            picture: None,
+            entrants: Vec::new(),
+            champion: None,
+            reward: None,
+        });
+        let text = brief(&game, Kind::Day(2), &arena, &[], false);
+        assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2, #room-3, #room-4\n"));
+        assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-5, #room-6, #room-7\n"));
+        assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-5, #room-6, #room-7."));
+        // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
+        assert!(text.contains("- T7 killed T8 3 times\n\n"));
+        assert!(!text.contains("T1 killed"));
     }
 
     #[test]

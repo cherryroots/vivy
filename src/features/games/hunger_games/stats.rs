@@ -2,6 +2,9 @@
 //! place, kills, Octagons won and days lived through, and `/games leaderboard` shows the server's best,
 //! or one member's record.
 //!
+//! Who killed whom is saved too, so the next Games can bring up old grudges and a member's
+//! record names their nemesis.
+//!
 //! Games that are cancelled or called off aren't saved, so only finished games count.
 
 use anyhow::Context as _;
@@ -37,6 +40,13 @@ pub const MIGRATIONS: &[&str] = &[
     );",
     // 2
     "ALTER TABLE games_hunger_tributes ADD COLUMN octagons INTEGER NOT NULL DEFAULT 0;",
+    // 3: who killed whom, for grudges and nemeses. One row per kill.
+    "CREATE TABLE games_hunger_kills (
+        game_id INTEGER NOT NULL REFERENCES games_hunger_games (id) ON DELETE CASCADE,
+        killer_id INTEGER NOT NULL,
+        victim_id INTEGER NOT NULL
+    );
+    CREATE INDEX games_hunger_kills_game ON games_hunger_kills (game_id);",
 ];
 
 /// How many people the leaderboard shows.
@@ -111,8 +121,64 @@ pub fn record(conn: &mut Connection, guild: u64, channel: u64, game: &Game) -> R
             params![id, p.user, p.place, p.kills, p.octagons, p.days],
         )?;
     }
+    for (killer, victim) in kills(game) {
+        tx.execute(
+            "INSERT INTO games_hunger_kills (game_id, killer_id, victim_id) VALUES (?1, ?2, ?3)",
+            params![id, killer, victim],
+        )?;
+    }
     tx.commit()?;
     Ok(())
+}
+
+/// Every kill in a game, as (killer's user ID, victim's user ID).
+fn kills(game: &Game) -> Vec<(u64, u64)> {
+    game.rounds
+        .iter()
+        .flat_map(|r| &r.events)
+        .flat_map(|e| &e.deaths)
+        .filter_map(|d| Some((game.tributes[d.by?].id, game.tributes[d.victim].id)))
+        .collect()
+}
+
+/// Who killed whom in a server's earlier Games, among `ids`: (killer, victim, times).
+pub fn grudges(
+    conn: &Connection,
+    guild: u64,
+    ids: &[u64],
+) -> rusqlite::Result<Vec<(u64, u64, u32)>> {
+    let mut stmt = conn.prepare(
+        "SELECT k.killer_id, k.victim_id, COUNT(*)
+         FROM games_hunger_kills k JOIN games_hunger_games g ON g.id = k.game_id
+         WHERE g.guild_id = ?1
+         GROUP BY k.killer_id, k.victim_id",
+    )?;
+    let all = stmt.query_map([guild], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let mut found = Vec::new();
+    for pair in all {
+        let (killer, victim, times): (u64, u64, u32) = pair?;
+        if ids.contains(&killer) && ids.contains(&victim) {
+            found.push((killer, victim, times));
+        }
+    }
+    Ok(found)
+}
+
+/// The member's nemesis in a server: whoever killed them most, at least twice (the most
+/// recent first in a tie), and how many times.
+fn nemesis(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<(u64, u64)>> {
+    conn.query_row(
+        "SELECT k.killer_id, COUNT(*)
+         FROM games_hunger_kills k JOIN games_hunger_games g ON g.id = k.game_id
+         WHERE g.guild_id = ?1 AND k.victim_id = ?2
+         GROUP BY k.killer_id
+         HAVING COUNT(*) >= 2
+         ORDER BY 2 DESC, MAX(g.at) DESC
+         LIMIT 1",
+        params![guild, user],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
 }
 
 /// One line of the leaderboard.
@@ -182,6 +248,8 @@ struct Record {
     best_place: u64,
     average_place: f64,
     most_days: u64,
+    /// Whoever killed them most, and how many times.
+    nemesis: Option<(u64, u64)>,
 }
 
 fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Option<Record>> {
@@ -205,9 +273,17 @@ fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Optio
                 average_place: row.get(5)?,
                 most_days: row.get(6)?,
                 octagons: row.get(7)?,
+                nemesis: None,
             }))
         },
-    )
+    )?
+    .map(|record| {
+        Ok(Record {
+            nemesis: nemesis(conn, guild, user)?,
+            ..record
+        })
+    })
+    .transpose()
 }
 
 /// Hunger Games wins, kills and Octagons won in this server
@@ -331,13 +407,19 @@ fn member_text(user: u64, record: Option<&Record>) -> String {
     let Some(r) = record else {
         return format!("🏆 <@{user}> hasn't finished a Hunger Games here yet.");
     };
+    let nemesis = match r.nemesis {
+        Some((killer, times)) => {
+            format!("\n😈 Nemesis: <@{killer}>, who killed them {times} times")
+        }
+        None => String::new(),
+    };
     format!(
         "## 🏆 <@{user}> in the Hunger Games\n\
          👑 {} in {}\n\
          🗡️ {} (most in one game: {})\n\
          🏟️ {} won\n\
          🥇 Best finish: {} · average place {:.1}\n\
-         📅 Longest run: {}",
+         📅 Longest run: {}{nemesis}",
         count(r.wins as usize, "win"),
         count(r.games as usize, "game"),
         count(r.kills as usize, "kill"),
@@ -488,6 +570,9 @@ mod tests {
         assert!(top(&other, 7, 10).unwrap().is_empty());
         assert_eq!(games_played(&other, 8).unwrap(), 1);
         assert_eq!(top(&other, 8, 10).unwrap().len(), 4);
+        // The reset server's kills go with its games.
+        assert!(grudges(&other, 7, &[1, 2, 3, 4]).unwrap().is_empty());
+        assert_eq!(grudges(&other, 8, &[1, 2, 3, 4]).unwrap().len(), 2);
 
         let reed = record_of(&conn, 7, 4).unwrap().unwrap();
         assert_eq!(
@@ -495,6 +580,28 @@ mod tests {
             (2, 0, 2, 2)
         );
         assert_eq!(record_of(&conn, 7, 99).unwrap(), None);
+    }
+
+    #[test]
+    fn remembers_who_killed_whom() {
+        let mut conn = test_connection("games", MIGRATIONS);
+        record(&mut conn, 7, 1, &finished()).unwrap();
+        // Moss killed Ash and Fern; Reed died to the arena, so nobody gets a grudge for it.
+        let mut found = grudges(&conn, 7, &[1, 2, 3, 4]).unwrap();
+        found.sort_unstable();
+        assert_eq!(found, vec![(1, 2, 1), (1, 3, 1)]);
+        // Only pairs who are both in the coming game.
+        assert_eq!(grudges(&conn, 7, &[1, 3]).unwrap(), vec![(1, 3, 1)]);
+        assert!(grudges(&conn, 8, &[1, 2, 3, 4]).unwrap().is_empty());
+        // One kill isn't a nemesis yet; two are.
+        assert_eq!(nemesis(&conn, 7, 2).unwrap(), None);
+        record(&mut conn, 7, 1, &finished()).unwrap();
+        assert_eq!(nemesis(&conn, 7, 2).unwrap(), Some((1, 2)));
+        assert_eq!(
+            record_of(&conn, 7, 2).unwrap().unwrap().nemesis,
+            Some((1, 2))
+        );
+        assert_eq!(record_of(&conn, 7, 1).unwrap().unwrap().nemesis, None);
     }
 
     #[test]
@@ -533,8 +640,17 @@ mod tests {
             best_place: 1,
             average_place: 2.75,
             most_days: 4,
+            nemesis: None,
         };
         let text = member_text(5, Some(&record));
+        assert!(!text.contains("Nemesis"));
+        let haunted = Record {
+            nemesis: Some((9, 3)),
+            ..record
+        };
+        assert!(
+            member_text(5, Some(&haunted)).ends_with("\n😈 Nemesis: <@9>, who killed them 3 times")
+        );
         assert!(text.contains("👑 1 win in 4 games"));
         assert!(text.contains("🏟️ 1 Octagon won"));
         assert!(text.contains("Best finish: 1st · average place 2.8"));

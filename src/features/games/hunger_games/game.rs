@@ -10,6 +10,8 @@
 //! name can't be misspelled or mixed up. `{T3}` in an event's text becomes the name when
 //! it's shown.
 
+use std::ops::Range;
+
 use serde::Deserialize;
 
 /// Someone in the arena.
@@ -126,6 +128,26 @@ impl Reward {
 /// How many rounds after the Octagon its golden armour lasts.
 const ARMOUR_ROUNDS: usize = 2;
 
+/// A grudge from earlier Games in this server: `killer` killed `victim` `times` times
+/// before. Both are indexes into this game's tributes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grudge {
+    pub killer: usize,
+    pub victim: usize,
+    pub times: u32,
+}
+
+impl Grudge {
+    /// "once", "twice" or "3 times".
+    pub fn how_often(&self) -> String {
+        match self.times {
+            1 => "once".to_string(),
+            2 => "twice".to_string(),
+            n => format!("{n} times"),
+        }
+    }
+}
+
 /// A round as it's played.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Round {
@@ -198,6 +220,10 @@ const KILL_NERVE: u32 = 15;
 const MOST_IN_OCTAGON: usize = 4;
 /// The fewest alive for the Octagon to open: two to fight and someone to watch.
 const OCTAGON_ALIVE: usize = 4;
+/// The most grudges from earlier Games she's told about, so the brief stays short.
+const MOST_GRUDGES: usize = 8;
+/// How many of the arena's places stay open to the end, however small it gets.
+const ALWAYS_OPEN: usize = 2;
 
 /// The whole game: the tributes and the rounds played so far.
 #[derive(Debug, Clone)]
@@ -207,6 +233,10 @@ pub struct Game {
     /// The prize for the coming Octagon, once the crowd has voted. A legendary weapon
     /// when there was no vote.
     pub prize: Option<Reward>,
+    /// How many places the arena has (see [`Game::closed`]). 0 means it never shrinks.
+    pub places: usize,
+    /// Who killed whom in earlier Games, among these tributes, most often first.
+    pub grudges: Vec<Grudge>,
 }
 
 impl Game {
@@ -227,7 +257,44 @@ impl Game {
                 .collect(),
             rounds: Vec::new(),
             prize: None,
+            places: 0,
+            grudges: Vec::new(),
         }
+    }
+
+    /// Takes in who killed whom in earlier Games, as (killer's user ID, victim's user ID,
+    /// times). Only pairs where both are in this game count, the most often first.
+    pub fn remember(&mut self, past: &[(u64, u64, u32)]) {
+        let index = |id: u64| self.tributes.iter().position(|t| t.id == id);
+        let mut grudges: Vec<Grudge> = past
+            .iter()
+            .filter_map(|&(killer, victim, times)| {
+                Some(Grudge {
+                    killer: index(killer)?,
+                    victim: index(victim)?,
+                    times,
+                })
+            })
+            .filter(|g| g.killer != g.victim && g.times > 0)
+            .collect();
+        grudges.sort_by_key(|g| (std::cmp::Reverse(g.times), g.killer, g.victim));
+        grudges.truncate(MOST_GRUDGES);
+        self.grudges = grudges;
+    }
+
+    /// The grudges that can still play out: both of them are alive.
+    pub fn open_grudges(&self) -> Vec<&Grudge> {
+        self.grudges
+            .iter()
+            .filter(|g| self.tributes[g.killer].alive() && self.tributes[g.victim].alive())
+            .collect()
+    }
+
+    /// Whether `killer` killing `victim` is revenge: `victim` killed them in earlier Games.
+    pub fn revenge(&self, killer: usize, victim: usize) -> bool {
+        self.grudges
+            .iter()
+            .any(|g| g.killer == victim && g.victim == killer)
     }
 
     /// How many are still alive.
@@ -347,6 +414,62 @@ impl Game {
                 i != index && self.tributes[i].alive() && self.tributes[i].team == Some(team)
             })
             .collect()
+    }
+
+    /// The places (indexes into the arena's places) closed off in the round at `at` (an
+    /// index into the rounds, or the next round's). The arena shrinks once half the
+    /// tributes have fallen: from then on, places close as more fall, the last ones first,
+    /// until only two are left open for the final two. Places only close when a day or
+    /// night begins, so an Octagon or the final showdown keeps the arena as it was.
+    pub fn closed(&self, at: usize) -> Range<usize> {
+        let count = (0..=at)
+            .rev()
+            .find(|&j| matches!(self.kind_at(j), Some(Kind::Day(_) | Kind::Night(_))))
+            .map_or(0, |j| self.closed_after(self.fallen_before(j)));
+        self.places - count..self.places
+    }
+
+    /// The places that close as the round at `at` begins: closed now, but not in the round
+    /// before.
+    pub fn closing(&self, at: usize) -> Range<usize> {
+        let now = self.closed(at);
+        let before = match at.checked_sub(1) {
+            Some(last) => self.closed(last),
+            None => self.places..self.places,
+        };
+        now.start..before.start
+    }
+
+    /// How many places are closed once `fallen` tributes have fallen. Nothing closes until
+    /// half have, then it's an even share of the rest per death, so the last two alive have
+    /// only [`ALWAYS_OPEN`] places left.
+    fn closed_after(&self, fallen: usize) -> usize {
+        let total = self.tributes.len();
+        let half = total / 2;
+        // Deaths from half fallen to the final two.
+        let span = total.saturating_sub(2 + half);
+        let closable = self.places.saturating_sub(ALWAYS_OPEN);
+        if fallen <= half || span == 0 {
+            return 0;
+        }
+        ((fallen - half) * closable / span).min(closable)
+    }
+
+    /// How many fell before the round at `at`.
+    fn fallen_before(&self, at: usize) -> usize {
+        self.tributes
+            .iter()
+            .filter(|t| t.died_in.is_some_and(|died| died < at))
+            .count()
+    }
+
+    /// The kind of the round at `at`: one played, or the next one.
+    fn kind_at(&self, at: usize) -> Option<Kind> {
+        match self.rounds.get(at) {
+            Some(round) => Some(round.kind),
+            None if at == self.rounds.len() => self.next_kind(),
+            None => None,
+        }
     }
 
     /// The round to play next, or `None` when the game is over.
@@ -1093,6 +1216,78 @@ mod tests {
     }
 
     /// A round in which `deaths` tributes died, for the pacing tests.
+    #[test]
+    fn the_arena_shrinks_after_half_have_fallen() {
+        // 14 tributes in 14 places, after night 1: with `dead` fallen, how many places
+        // are closed as day 2 begins.
+        let closed = |dead: usize| {
+            let mut g = game(14);
+            g.places = 14;
+            g.apply(round_with(Kind::Night(1), dead));
+            g.closed(1)
+        };
+        assert_eq!(closed(7), 14..14);
+        // Then 12 places close over the 5 deaths to the final two, the last places first.
+        assert_eq!(closed(8), 12..14);
+        assert_eq!(closed(10), 7..14);
+        assert_eq!(closed(11), 5..14);
+        // An arena with no places never shrinks.
+        let mut g = game(14);
+        g.apply(round_with(Kind::Night(1), 11));
+        assert!(g.closed(1).is_empty());
+    }
+
+    #[test]
+    fn places_close_only_as_days_and_nights_begin() {
+        let mut g = game(14);
+        g.places = 14;
+        g.apply(round_with(Kind::Night(1), 8));
+        // Day 2 closes two places.
+        assert_eq!(g.closing(1), 12..14);
+        g.apply(round_with(Kind::Day(2), 0));
+        g.tributes[8].died_in = Some(1);
+        // The Octagon that follows keeps the arena as it was, though one more fell.
+        assert_eq!(g.next_kind(), Some(Kind::Octagon(2)));
+        assert_eq!(g.closed(2), 12..14);
+        assert!(g.closing(2).is_empty());
+        g.apply(round_with(Kind::Octagon(2), 0));
+        // Night 2 closes the next ones.
+        assert_eq!(g.next_kind(), Some(Kind::Night(2)));
+        assert_eq!(g.closed(3), 10..14);
+        assert_eq!(g.closing(3), 10..12);
+        // The first rounds close nothing.
+        assert!(g.closing(0).is_empty());
+    }
+
+    #[test]
+    fn grudges_come_from_earlier_games() {
+        let mut g = game(4);
+        // P1 killed P2 twice and P3 once; someone not here killed P4.
+        g.remember(&[(1, 3, 1), (1, 2, 2), (99, 4, 5), (2, 2, 1)]);
+        assert_eq!(
+            g.grudges,
+            vec![
+                Grudge {
+                    killer: 0,
+                    victim: 1,
+                    times: 2
+                },
+                Grudge {
+                    killer: 0,
+                    victim: 2,
+                    times: 1
+                },
+            ]
+        );
+        assert_eq!(g.grudges[0].how_often(), "twice");
+        // P2 killing P1 now is revenge; the other way round isn't.
+        assert!(g.revenge(1, 0));
+        assert!(!g.revenge(0, 1));
+        // Once either is dead, the grudge can't play out anymore.
+        g.tributes[2].died_in = Some(0);
+        assert_eq!(g.open_grudges().len(), 1);
+    }
+
     fn round_with(kind: Kind, deaths: usize) -> Round {
         Round {
             kind,
