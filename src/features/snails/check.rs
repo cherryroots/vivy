@@ -21,7 +21,8 @@ const MAX_LISTED: usize = 10;
 /// Only messages posted this recently are counted as snails. Edits, late pictures and the
 /// catch-up can reach much older messages (a picture from the backfill that loaded on retry,
 /// an old message Discord sends again with refreshed previews); reposting is about now.
-const COUNT_WITHIN_SECS: i64 = 7 * 24 * 60 * 60;
+/// `count_within_days` in the settings, a week by default.
+const DAY_SECS: i64 = 24 * 60 * 60;
 
 /// Check whether this was posted here before
 #[poise::command(context_menu_command = "Check Snail", guild_only, ephemeral)]
@@ -106,7 +107,7 @@ pub async fn on_retried_picture(
 
 /// Counts `msg` as caught if any of `links` or `pictures` (what's new in it) was posted
 /// before. Only what's new is checked: the rest was checked when it arrived. A message is
-/// counted once, and only if it was posted in the last week (`COUNT_WITHIN_SECS`).
+/// counted once, and only if it was posted in the last `count_within_days`.
 async fn count_if_snail(
     ctx: &BotCtx,
     guild: GuildId,
@@ -118,7 +119,8 @@ async fn count_if_snail(
         return Ok(());
     }
     let at = msg.timestamp.unix_timestamp();
-    if !recent(at, Utc::now().timestamp()) {
+    let within = super::settings(ctx).count_within_days.max(1) * DAY_SECS;
+    if !recent(at, Utc::now().timestamp(), within) {
         return Ok(());
     }
     let id = msg.id.get();
@@ -146,9 +148,10 @@ async fn count_if_snail(
         .await
 }
 
-/// Whether a message posted at `at` is new enough to count as a snail at `now`.
-fn recent(at: i64, now: i64) -> bool {
-    now - at <= COUNT_WITHIN_SECS
+/// Whether a message posted at `at` is new enough to count as a snail at `now`: no more
+/// than `within` seconds old.
+fn recent(at: i64, now: i64, within: i64) -> bool {
+    now - at <= within
 }
 
 /// Earlier posts of the same links or pictures, oldest first. Each one is checked before it
@@ -372,11 +375,12 @@ mod tests {
 
     #[test]
     fn only_recent_messages_count() {
-        let now = 1_800_000_000;
-        assert!(recent(now, now));
-        assert!(recent(now - 3 * 86_400, now));
-        assert!(!recent(now - 8 * 86_400, now));
+        let (now, week) = (1_800_000_000, 7 * DAY_SECS);
+        assert!(recent(now, now, week));
+        assert!(recent(now - 3 * 86_400, now, week));
+        assert!(!recent(now - 8 * 86_400, now, week));
+        assert!(recent(now - 8 * 86_400, now, 30 * DAY_SECS));
         // A message from 2023 that an edit or a retry brings back.
-        assert!(!recent(1_685_302_717, now));
+        assert!(!recent(1_685_302_717, now, week));
     }
 }

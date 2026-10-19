@@ -21,9 +21,6 @@ use super::sources::{self, From};
 use super::{quotes, ui};
 use crate::core::{BotCtx, Context, Result, user_error};
 
-/// The pause between an answer and the next question, to read who got it.
-const BETWEEN: Duration = Duration::from_secs(5);
-
 /// A game being played.
 struct Running {
     /// Tells this game's buttons from an older game's in the same channel.
@@ -156,15 +153,23 @@ pub async fn who_said_it(
     GAMES.lock().unwrap().insert(channel, Some(running.clone()));
     info!("Who said it? started with {count} questions");
     let answer_for = Duration::from_secs(settings.answer_seconds.max(5));
+    let between = Duration::from_secs(settings.pause_seconds);
     bot.tasks.clone().spawn(async move {
-        play(&bot, channel, &running, answer_for).await;
+        play(&bot, channel, &running, answer_for, between).await;
         drop(leave);
     });
     Ok(())
 }
 
-/// Posts each question, waits, shows its answer, and at the end posts the scores.
-async fn play(bot: &BotCtx, channel: ChannelId, running: &Running, answer_for: Duration) {
+/// Posts each question, waits `answer_for`, shows its answer, pauses `between`, and at the
+/// end posts the scores.
+async fn play(
+    bot: &BotCtx,
+    channel: ChannelId,
+    running: &Running,
+    answer_for: Duration,
+    between: Duration,
+) {
     // Rounds in a row that nobody answered. Two and the game stops.
     let mut unanswered = 0;
     loop {
@@ -220,7 +225,7 @@ async fn play(bot: &BotCtx, channel: ChannelId, running: &Running, answer_for: D
         }
         tokio::select! {
             () = bot.shutdown.cancelled() => break,
-            () = tokio::time::sleep(BETWEEN) => {}
+            () = tokio::time::sleep(between) => {}
         }
     }
 

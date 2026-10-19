@@ -23,8 +23,6 @@ use super::store::{self, FollowUp};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
 
-/// Check-ins planned with one person at a time, at most.
-const MAX_PER_PERSON: i64 = 5;
 /// The latest a check-in can be, in hours (60 days).
 const MAX_HOURS: f64 = 60.0 * 24.0;
 
@@ -76,11 +74,12 @@ pub async fn schedule(ctx: &BotCtx, asker: &Asker, args: &Value, wake: &Notify) 
         due_at: now + (hours * 3600.0) as i64,
     };
     let due_at = follow_up.due_at;
+    let most = chime::settings(ctx).follow_ups_per_person;
     ctx.db
         .call(move |conn| {
-            if store::pending_follow_ups(conn, user)? >= MAX_PER_PERSON {
+            if store::pending_follow_ups(conn, user)? >= most {
                 return Err(user_error(format!(
-                    "You already have {MAX_PER_PERSON} check-ins planned with them."
+                    "You already have {most} check-ins planned with them."
                 )));
             }
             Ok(store::add_follow_up(conn, &follow_up, now)?)

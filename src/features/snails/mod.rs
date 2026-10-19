@@ -33,11 +33,12 @@ mod retry;
 mod store;
 
 use std::collections::HashSet;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use chrono::Utc;
+use serde::Deserialize;
 use serenity::all::{ChannelId, GuildId, Message, MessageId, MessageUpdateEvent};
 use tracing::{debug, warn};
 
@@ -49,6 +50,34 @@ const PREVIEW_RECHECK: Duration = Duration::from_secs(12);
 /// How long the link and picture totals on the status picture are reused before they're
 /// counted again. Counting reads both whole tables; the graphs only sample every 15 minutes.
 const TOTALS_FOR: Duration = Duration::from_secs(15 * 60);
+
+/// `[features.snails]` settings.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    /// How old a message may be and still count as a snail, in days. The backfill and its
+    /// catch-up reach old messages, and reposting is about now.
+    pub count_within_days: i64,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            count_within_days: 7,
+        }
+    }
+}
+
+/// The settings, read the first time they're needed.
+fn settings(ctx: &BotCtx) -> &'static Settings {
+    static SETTINGS: OnceLock<Settings> = OnceLock::new();
+    SETTINGS.get_or_init(|| {
+        ctx.config.feature("snails").unwrap_or_else(|err| {
+            warn!("snails use their default settings: {err:#}");
+            Settings::default()
+        })
+    })
+}
 
 /// (links, pictures, crawl channels finished, crawl channels), from `store::stats`.
 type Totals = (u64, u64, u64, u64);

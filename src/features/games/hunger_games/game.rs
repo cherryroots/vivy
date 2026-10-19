@@ -280,29 +280,45 @@ pub struct WrittenDeath {
 const MAX_EVENT: usize = 400;
 /// The most tributes in one event.
 const MAX_IN_EVENT: usize = 6;
-/// The most events drawn up close each round: she picks the most interesting (Cherry's
-/// call), or all of them when there are this many or fewer.
-pub const MOST_CLOSE_UPS: usize = 3;
 /// The longest a weapon's name may be, in characters.
 const MAX_WEAPON: usize = 60;
 /// The nerve it takes to step into the Octagon.
 const BRAVE: u32 = 60;
 /// How much nerve each kill adds.
 const KILL_NERVE: u32 = 15;
-/// The most who fight in one Octagon, so its round stays readable.
-const MOST_IN_OCTAGON: usize = 4;
 /// The fewest alive for the Octagon to open: two to fight and someone to watch.
 const OCTAGON_ALIVE: usize = 4;
 /// The most grudges from earlier Games she's told about, so the brief stays short.
 const MOST_GRUDGES: usize = 8;
-/// The most rounds the last two sides wander before they meet, whatever is still open.
-const MOST_WANDERING: usize = 2;
 /// How many of the arena's places stay open until the last two sides are left, however
 /// small it gets.
 const ALWAYS_OPEN: usize = 2;
 /// The fewest tributes for a team Games: three teams of two, so there's a game before the
 /// final showdown.
 pub const FEWEST_FOR_TEAMS: usize = 6;
+
+/// What a server can tune about its Games (`[features.games.hunger_games]`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rules {
+    /// The most events drawn up close each round, when pictures are on: she picks the
+    /// most interesting (Cherry's call), or all of them when there are this many or fewer.
+    /// 0 for none.
+    pub close_ups: usize,
+    /// The most who fight in one Octagon, so its round stays readable (at least 2).
+    pub most_in_octagon: usize,
+    /// The most rounds the last two sides wander before they meet, whatever is still open.
+    pub wander_rounds: usize,
+}
+
+impl Default for Rules {
+    fn default() -> Self {
+        Rules {
+            close_ups: 3,
+            most_in_octagon: 4,
+            wander_rounds: 2,
+        }
+    }
+}
 
 /// The whole game: the tributes and the rounds played so far.
 #[derive(Debug, Clone)]
@@ -318,6 +334,7 @@ pub struct Game {
     pub grudges: Vec<Grudge>,
     /// The theme she picked in the Scatter, once it's played.
     pub theme: Option<Theme>,
+    pub rules: Rules,
 }
 
 impl Game {
@@ -342,6 +359,7 @@ impl Game {
             theme: None,
             places: 0,
             grudges: Vec::new(),
+            rules: Rules::default(),
         }
     }
 
@@ -598,11 +616,11 @@ impl Game {
     /// Where the last two sides are in the round at `at`, or `None` before that (or in a
     /// Scatter or an Octagon). They wander while more than one place is open, one more
     /// burning each round, and may meet then too; they must meet once one is left or
-    /// they've wandered [`MOST_WANDERING`] rounds.
+    /// they've wandered [`Rules::wander_rounds`] rounds.
     pub fn endgame(&self, at: usize) -> Option<Endgame> {
         let from = self.endgame_from(at)?;
         let open = self.places - self.closed(at).len();
-        if open <= 1 || at - from >= MOST_WANDERING {
+        if open <= 1 || at - from >= self.rules.wander_rounds {
             Some(Endgame::Showdown)
         } else {
             Some(Endgame::Wander)
@@ -745,7 +763,9 @@ impl Game {
             first
         });
         let brave = living.iter().filter(|(nerve, _)| *nerve >= BRAVE).count();
-        let count = brave.clamp(2, MOST_IN_OCTAGON).min(living.len());
+        let count = brave
+            .clamp(2, self.rules.most_in_octagon.max(2))
+            .min(living.len());
         let mut entrants: Vec<usize> = living[..count].iter().map(|&(_, i)| i).collect();
         entrants.sort_unstable();
         entrants
@@ -1009,7 +1029,7 @@ impl Game {
             let picture = event
                 .picture
                 .map(|p| p.trim().to_string())
-                .filter(|p| !tags_in(p).is_empty() && drawn < MOST_CLOSE_UPS);
+                .filter(|p| !tags_in(p).is_empty() && drawn < self.rules.close_ups);
             events.push(Event {
                 text,
                 deaths,
@@ -2001,7 +2021,7 @@ mod tests {
             .collect();
         let round = game(5).check(Kind::Scatter, written(events)).unwrap();
         let drawn = round.events.iter().filter(|e| e.picture.is_some()).count();
-        assert_eq!(drawn, MOST_CLOSE_UPS);
+        assert_eq!(drawn, Rules::default().close_ups);
     }
 
     fn round_with(kind: Kind, deaths: usize) -> Round {

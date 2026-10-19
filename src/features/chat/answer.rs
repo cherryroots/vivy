@@ -35,8 +35,6 @@ const STATUS_ROOM: usize = 300;
 /// The most characters of the status line, and of the progress note.
 const STATUS_LENGTH: usize = 95;
 const NOTE_LENGTH: usize = 190;
-/// Most rounds of tool calls in one answer, so a confused model can't loop forever.
-const MAX_ROUNDS: usize = 8;
 /// Discord allows 10 files per message.
 const MAX_FILES: usize = 10;
 /// Shown when the model answered with tools or files only.
@@ -323,7 +321,9 @@ async fn stream_answer(
     let mut files = Vec::new();
     screen.show(ctx).await?;
 
-    for _round in 0..MAX_ROUNDS {
+    // At least one round, or she could never answer.
+    let max_rounds = super::chime::settings(ctx).max_tool_rounds.max(1);
+    for _round in 0..max_rounds {
         let request = ChatRequest {
             system: SYSTEM_PROMPT.to_string(),
             input: input.clone(),
@@ -407,7 +407,7 @@ async fn stream_answer(
         });
     }
     Err(anyhow!(
-        "the model kept calling tools ({MAX_ROUNDS} rounds)"
+        "the model kept calling tools ({max_rounds} rounds)"
     ))
 }
 

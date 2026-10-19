@@ -28,8 +28,6 @@ const MAX_FILE_BYTES: usize = 50 * 1024 * 1024;
 const MEDIA_TURNS: usize = 4;
 /// At most this many YouTube videos go in one request (Gemini's limit).
 const MAX_YOUTUBE_VIDEOS: usize = 10;
-/// How far up a reply chain the history goes.
-pub const MAX_TURNS: usize = 40;
 
 /// The name the model sees for a message's author: server nickname, display name or
 /// username.

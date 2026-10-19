@@ -7,8 +7,9 @@
 //! alike. The victor's picture is made by the bot instead: the winner up close, with
 //! everyone they killed lying dead around them ([`VICTORY`]).
 //!
-//! A round's pictures are drawn side by side at medium quality (12 to 14 cents each, where
-//! one high-quality map was 44); only the victor's is drawn at high.
+//! A round's pictures are drawn side by side at medium quality by default (12 to 14 cents
+//! each, where one high-quality map was 44); only the victor's is drawn at high. Both are
+//! settings (`picture_quality`, `victor_picture_quality`).
 //!
 //! Like `voice.rs`, this doesn't import the drawing feature: it finds whichever feature
 //! offers the `draw_picture` chat tool and runs it with arguments the chat model isn't told
@@ -28,6 +29,9 @@ use crate::util::media::ModelImage;
 
 /// The drawing feature's tool.
 const TOOL: &str = "draw_picture";
+/// The most close-ups a round can have: Discord takes 10 files in a message, and one is
+/// the map.
+pub const MOST_CLOSE_UPS: usize = 9;
 /// Added to each round's map, so a game's maps share one style.
 pub const MAP: &str = "Style: a clean top-down 2D map of the whole battlefield, like a retro 16-bit strategy game: every zone clearly bordered and labelled, the players as colorful pixel-art sprites in the zones where they are, drawn a bit bigger than usual for a map so each one's colors and item are easy to make out, fights shown as sprites clashing with simple action marks. Easy to read at a glance. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters except the zone labels, written exactly as given.";
 /// Added to the Octagon rounds: the map's pixel art, zoomed in on the cage in the middle.
@@ -38,13 +42,28 @@ pub const SCENE: &str = "Style: the same retro 16-bit pixel art as a top-down st
 pub const VICTORY: &str = "Style: a detailed retro 16-bit pixel-art scene, like the victory screen of a classic game, with the winner as a large full-body figure and everything drawn clear. Deaths are shown plainly: the fallen lie dead with some pixel-art blood, nothing more graphic than that. No words or letters anywhere in the picture.";
 
 /// Where a game's pictures are drawn: its server and channel, the Reaping message, and the
-/// host, who asks for them.
+/// host, who asks for them. And how good they are: `quality` for the maps and close-ups,
+/// `victor_quality` for the victor (see [`quality`]).
 #[derive(Clone, Copy)]
 pub struct Easel {
     pub guild: GuildId,
     pub channel: ChannelId,
     pub message: MessageId,
     pub host: UserId,
+    pub quality: &'static str,
+    pub victor_quality: &'static str,
+}
+
+/// A quality setting as the drawing tool takes it, or `fallback` when it isn't one.
+pub fn quality(setting: &str, fallback: &'static str) -> &'static str {
+    match setting.trim() {
+        "low" => "low",
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        "max" => "max",
+        _ => fallback,
+    }
 }
 
 /// Whether pictures can be drawn in `channel`: drawing is on there, and its tool is
@@ -58,7 +77,7 @@ pub fn can_draw(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool {
 }
 
 /// Draws `prompt` (with the looks in) in `style` ([`MAP`], [`CAGE`], [`SCENE`] or
-/// [`VICTORY`]), without posting it: at high quality for the victor, medium otherwise.
+/// [`VICTORY`]), without posting it, at the easel's quality for its kind.
 /// When it can't be drawn, why, in a few words for the channel. Takes 15 to 20 seconds or
 /// so.
 pub async fn draw(
@@ -85,7 +104,7 @@ pub async fn draw(
         "shape": "landscape",
         "post": false,
         "job": "game_art",
-        "quality": if style == VICTORY { "high" } else { "medium" },
+        "quality": if style == VICTORY { easel.victor_quality } else { easel.quality },
     });
     match drawing
         .run_tool_with_pictures(ctx, &asker, TOOL, &args)
@@ -124,6 +143,12 @@ pub fn file_name(picture: &ModelImage, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_quality_settings() {
+        assert_eq!(quality(" xhigh ", "medium"), "xhigh");
+        assert_eq!(quality("ultra", "medium"), "medium");
+    }
 
     #[test]
     fn says_why_a_picture_is_missing() {
