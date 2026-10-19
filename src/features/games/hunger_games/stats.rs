@@ -339,6 +339,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         }
     }
 

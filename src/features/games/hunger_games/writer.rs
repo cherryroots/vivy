@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tracing::{info, warn};
 
-use super::game::{Game, Kind, Round, Written, fill};
+use super::game::{Game, Kind, Reward, Round, Written, fill};
 use crate::ai::{
     ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
 };
@@ -21,7 +21,7 @@ const TRIES: usize = 3;
 const SYSTEM: &str = "You are Vivy, a Discord bot, and right now you're the Gamemaker of a Hunger Games-style battle royale played in your Discord server. The tributes are real members of the server, and everyone is watching the arena in the channel, so it's a show: dark, brutal and dramatic, and the violence is where the comedy is: over-the-top, creative, absurd kills told deadpan, with plenty of personality. You decide everything that happens in the arena. \
 Each round you get the tributes, the arena, the story so far and what kind of round it is, and you write what happens to every living tribute this round. \
 Write events like a battle royale simulator: one or two short sentences each, in the past tense, about one to six tributes. Mix it up: kills, ambushes, traps, accidents, desperate last stands. About half the events each round are quiet ones with no deaths: camping, foraging, hunting, building traps, sharing food, forming alliances or breaking them, arguing, napping, talking to the cameras, someone doing something stupid. Say how each kill happens, plainly. Let the story build: grudges, alliances and kill streaks from earlier rounds can come back, and an alliance can end in betrayal. \
-Everyone starts unarmed. Weapons are found in the arena's places, which are the server's channels, and each weapon is themed to the place it's found in: be creative (a channel about music might hide a razor-edged vinyl record or a mic-stand spear, one about cooking a cast-iron skillet or a cleaver, one about games a controller swung on its cable), but every weapon must be able to kill. Each tribute carries one weapon at a time, and keeps it until they find, steal or loot a better one. The unarmed fight with fists, rocks, sticks and traps, and usually lose to the armed. An Octagon prize is the deadliest weapon in the arena: whoever carries one wins nearly every fight, and only an ambush, a trap, being outnumbered or the arena itself can take them down; whoever kills them can loot it. \
+Everyone starts unarmed. Weapons are found in the arena's places, which are the server's channels, and each weapon is themed to the place it's found in: be creative (a channel about music might hide a razor-edged vinyl record or a mic-stand spear, one about cooking a cast-iron skillet or a cleaver, one about games a controller swung on its cable), but every weapon must be able to kill. Each tribute carries one weapon at a time, and keeps it until they find, steal or loot a better one. The unarmed fight with fists, rocks, sticks and traps, and usually lose to the armed. A legendary weapon won in the Octagon is the deadliest in the arena: whoever carries one wins nearly every fight, and only an ambush, a trap, being outnumbered or the arena itself can take them down; whoever kills them can loot it. \
 Death and blood are fine, but skip drawn-out torture and lingering gore. Nothing sexual, nothing hateful, and no jokes about anyone's real body, health, identity or private life. Fair play too: don't pick favourites or settle scores, and anyone can win. \
 Write each tribute as their tag in braces, like {T3}, never their name; the bot fills in the names. Write each place as its name with a # in front, exactly as it's listed, like #memes; the bot turns it into a link. Write in English.";
 
@@ -107,12 +107,17 @@ pub fn brief(
         Kind::Scatter => {
             "The Scatter: the Games begin. Every tribute stands on a metal starting plate in a ring around the Octagon, an empty eight-sided fighting cage in the middle of the arena. The gong sounds and everyone runs for the arena's places, unarmed; some find their first weapon there, and most just try to get away. Open the Games with your `gamemaker` announcement.".to_string()
         }
-        Kind::Day(day) => format!("Day {day}."),
-        Kind::Night(day) => format!("Night {day}."),
+        Kind::Day(day) => format!("Day {day}.{}", hunt(game)),
+        Kind::Night(day) => format!("Night {day}.{}", hunt(game)),
         Kind::Octagon(day) => {
             let entrants: Vec<String> = game.entrants().into_iter().map(Game::tag).collect();
+            let prize = match game.prize.unwrap_or(Reward::Weapon) {
+                Reward::Weapon => "a legendary weapon, the deadliest in the arena, which goes in the champion's `finds` (name it so it sounds legendary)",
+                Reward::Armour => "a suit of golden armour: whoever wins it can't die in the next two rounds",
+                Reward::Hunt => "the hunt: whoever wins it tracks someone down and kills them in the next round",
+            };
             format!(
-                "Day {day}: the Octagon. The cage in the middle of the arena opens, and you put up a prize for whoever wins it: a legendary weapon, the deadliest in the arena, which goes in the champion's `finds` (name it so it sounds legendary). Announce the Octagon and its prize with your `gamemaker` line. The bold step in: {}, and nobody else. They fight one-on-one bouts, one after another, until one champion is left; put each bout in its own event. A loser either dies or yields and limps out of the cage to the crowd's boos, alive. Write the winner's tag as `champion`. Everyone else sits it out: watching from the shadows, using the distraction, or too scared to come near, and nobody else dies.",
+                "Day {day}: the Octagon. The cage in the middle of the arena opens, and the crowd voted for the prize the winner takes: {prize}. Announce the Octagon and its prize with your `gamemaker` line. The bold step in: {}, and nobody else. They fight one-on-one bouts, one after another, until one champion is left; put each bout in its own event. A loser either dies or yields and limps out of the cage to the crowd's boos, alive. Write the winner's tag as `champion`. Everyone else sits it out: watching from the shadows, using the distraction, or too scared to come near, and nobody else dies.",
                 entrants.join(", ")
             )
         }
@@ -157,6 +162,17 @@ pub fn title(kind: Kind) -> String {
     }
 }
 
+/// For a day or night after an Octagon won with the hunt: who must make a kill.
+fn hunt(game: &Game) -> String {
+    match game.hunter(game.rounds.len()) {
+        Some(hunter) => format!(
+            " {} won the hunt in the Octagon: this round they track someone down and kill them.",
+            Game::tag(hunter)
+        ),
+        None => String::new(),
+    }
+}
+
 /// How a tribute stands, for her: alive or dead, kills, weapon and allies.
 fn state(game: &Game, index: usize) -> String {
     let t = &game.tributes[index];
@@ -179,6 +195,9 @@ fn state(game: &Game, index: usize) -> String {
         Some(weapon) => format!("armed with {weapon}"),
         None => "unarmed".to_string(),
     });
+    if game.armoured(index, game.rounds.len()) && game.next_kind() != Some(Kind::Finale) {
+        parts.push("wearing golden armour from the Octagon (can't die this round)".to_string());
+    }
     let allies: Vec<String> = game.allies_of(index).into_iter().map(Game::tag).collect();
     if !allies.is_empty() {
         parts.push(format!("allied with {}", allies.join(", ")));
@@ -360,6 +379,7 @@ mod tests {
             picture: None,
             entrants: Vec::new(),
             champion: None,
+            reward: None,
         });
         let notes = vec![
             Some("Plays chess".into()),
