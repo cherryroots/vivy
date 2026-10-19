@@ -439,7 +439,14 @@ async fn play(
             // The game once this round is played: who carries what by the end of it.
             let mut after = game_before.clone();
             after.apply(round.clone());
-            let weapons = after.weapons();
+            // The final showdown and the victor are drawn with what everyone fought with:
+            // a winner who loots the loser's weapon would hold it while it also lies by the
+            // body (Cherry saw it).
+            let weapons = if kind == Kind::Finale {
+                game_before.weapons()
+            } else {
+                after.weapons()
+            };
             // Fights in the Octagon (its rounds and the final showdown) are zoomed in on the
             // cage; other rounds show the whole map.
             let map = async {
