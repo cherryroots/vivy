@@ -748,10 +748,16 @@ impl Game {
                     ));
                 }
             }
-            if let Some(stray) = tagged.iter().find(|i| !members.contains(i)) {
+            // The dead can be named anywhere (looted, avenged, mourned), but someone alive
+            // only in their own event, so they aren't in two places at once. Retries for this
+            // were common (Cherry saw four in one game), mostly over the dead.
+            let stray = tagged.iter().find(|&&i| {
+                !members.contains(&i) && self.tributes.get(i).is_none_or(Tribute::alive)
+            });
+            if let Some(&stray) = stray {
                 return Err(format!(
-                    "An event's text names {{{}}}, who isn't in its tributes.",
-                    Game::tag(*stray)
+                    "An event's text names {{{0}}}, who isn't in its tributes. Tag a living tribute only in their own event's text (only the dead can be named anywhere); write around {0} here or move this into their event.",
+                    Game::tag(stray)
                 ));
             }
             let mut deaths: Vec<Death> = Vec::new();
@@ -1826,6 +1832,26 @@ mod tests {
             written(vec![event("{T9} appears.", &["T9"], &[])]),
         );
         assert_eq!(unknown.unwrap_err(), "T9 isn't one of the tributes.");
+        // The dead can be named in any event: T3 is dead now.
+        let looted = g.check(
+            Kind::Finale,
+            written(vec![event(
+                "{T1} loots {T3}'s body, then beats {T2}.",
+                &["T1", "T2"],
+                &[("T2", Some("T1"))],
+            )]),
+        );
+        assert!(looted.is_ok(), "{looted:?}");
+        // A stray tag past the tributes is still refused.
+        let stray = g.check(
+            Kind::Finale,
+            written(vec![event(
+                "{T1} beats {T2} for {T9}.",
+                &["T1", "T2"],
+                &[("T2", Some("T1"))],
+            )]),
+        );
+        assert!(stray.unwrap_err().contains("{T9}"));
     }
 
     #[test]

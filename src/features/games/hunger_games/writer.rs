@@ -27,7 +27,7 @@ Write each tribute as their tag in braces, like {T3}, never their name; the bot 
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
 {\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null}
-- Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
+- Every living tribute is in exactly one event's `tributes`, and every tribute in an event's `tributes` is tagged in its text. A living tribute is tagged only in the text of their own event, never in another one (not even a teammate thinking of them). The dead are not in any `tributes`, but their tags may appear in any text: looting their body, avenging them, mourning them.
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
 - `allies`: two or more tributes in that event who team up (joining someone's alliance brings you into it). `leaves`: tributes in that event who walk out on their alliance. Killing an ally ends the killer's alliance by itself. Leave both out or empty otherwise.

@@ -50,7 +50,7 @@ All under `src/features/games/hunger_games/`.
 Vivy writes everything: which events happen, who meets whom, who dies and who kills them. The code only checks that what she wrote can happen, and sets the pace:
 
 - every living tribute is in exactly one event, and nobody dead or unknown is;
-- each event names its tributes in the text, and only them;
+- each event names its tributes in the text, and no other living tribute (the dead can be named anywhere: looted, avenged, mourned; refusing those caused most retries);
 - a death is of someone in that event, and a killer is another tribute in it (or nobody, for an accident or the arena);
 - a weapon find (`finds`) is by someone in that event who lives through it, with a name of 1 to 60 characters; alliances (`allies`, at least two) and walkouts (`leaves`) are by people in that event;
 - in an Octagon round, `champion` is one of the entrants and lives, gets the prize (a weapon in their `finds`), and only entrants die;
