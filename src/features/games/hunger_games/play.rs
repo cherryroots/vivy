@@ -752,8 +752,10 @@ async fn prize_vote(
 }
 
 /// What to draw for each close-up she picked (see [`looks::scene`]), zoomed in on the place
-/// its event's text names, or on the cage in an Octagon round. The places in `burning`
-/// close off this round.
+/// its event's text names. The places in `burning` close off this round. In an Octagon
+/// round the fights in the cage are left out, since the round's own picture shows them:
+/// a close-up there drew everyone in the cage, even those far off in the arena (Cherry saw
+/// it).
 fn close_ups(
     looks: &looks::Looks,
     weapons: &[Option<String>],
@@ -767,13 +769,15 @@ fn close_ups(
         .iter()
         .filter_map(|event| {
             let picture = event.picture.as_deref()?;
-            if let Kind::Octagon(_) = round.kind {
-                let fighters = game::tags_in(picture).len();
-                let prompt = looks::cage(looks, weapons, picture, fighters);
-                return Some((prompt, pictures::CAGE));
-            }
             let zone = ui::first_place(&event.text, links)
                 .and_then(|id| links.iter().position(|(_, place)| *place == id));
+            let in_cage = zone.is_none()
+                && game::tags_in(&event.text)
+                    .iter()
+                    .any(|i| round.entrants.contains(i));
+            if in_cage {
+                return None;
+            }
             let fire = zone.is_some_and(|i| burning.contains(&i));
             let prompt = looks::scene(looks, weapons, picture, zone, fire, night);
             Some((prompt, pictures::SCENE))
@@ -1132,6 +1136,38 @@ async fn tell(bot: &BotCtx, interaction: &ComponentInteraction, text: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::games::hunger_games::game::Event;
+
+    #[test]
+    fn octagon_close_ups_leave_the_cage_out() {
+        let event = |text: &str| Event {
+            text: text.to_string(),
+            deaths: Vec::new(),
+            finds: Vec::new(),
+            allies: Vec::new(),
+            leaves: Vec::new(),
+            picture: Some("{T1} acts.".to_string()),
+        };
+        let round = Round {
+            kind: Kind::Octagon(2),
+            gamemaker: None,
+            events: vec![
+                event("{T1} beats {T2} with a trap."),
+                event("From the edge of #general, {T3} watches."),
+                event("{T4} naps."),
+            ],
+            victory: None,
+            picture: None,
+            entrants: vec![0, 1],
+            champion: Some(0),
+            reward: Some(Reward::Hunt),
+            theme: None,
+        };
+        let links = vec![("general".to_string(), 7)];
+        let drawn = close_ups(&looks::Looks::default(), &[], &round, &links, 0..0);
+        assert_eq!(drawn.len(), 2);
+        assert!(drawn.iter().all(|(_, style)| *style == pictures::SCENE));
+    }
 
     #[test]
     fn the_most_votes_win() {

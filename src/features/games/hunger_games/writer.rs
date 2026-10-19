@@ -217,9 +217,15 @@ pub fn brief(
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
         });
-        text.push_str(&format!(
-            " And give the {MOST_CLOSE_UPS} most interesting events their own `picture`: a close-up of each (every event, when there are {MOST_CLOSE_UPS} or fewer)."
-        ));
+        if let Kind::Octagon(_) = kind {
+            text.push_str(&format!(
+                " The Octagon's `picture` already shows the fights in the cage, so give close-ups only to events outside it: the {MOST_CLOSE_UPS} most interesting of those get their own `picture` (all of them, when there are {MOST_CLOSE_UPS} or fewer)."
+            ));
+        } else {
+            text.push_str(&format!(
+                " And give the {MOST_CLOSE_UPS} most interesting events their own `picture`: a close-up of each (every event, when there are {MOST_CLOSE_UPS} or fewer)."
+            ));
+        }
     }
     text
 }

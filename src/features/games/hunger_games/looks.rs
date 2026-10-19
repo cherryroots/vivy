@@ -239,7 +239,7 @@ pub fn map(arena: &[String], looks: &Looks, burning: Range<usize>) -> String {
 pub fn cage(looks: &Looks, weapons: &[Option<String>], picture: &str, fighters: usize) -> String {
     let people = in_picture(fighters);
     format!(
-        "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere: no crowds, audience, referees, guards, monsters or robots.",
+        "A close, zoomed-in view of just the middle of the battlefield map: {OCTAGON}. The fight inside it fills the picture.\n\nThe fight: {}\n\n{people} Nobody else is anywhere, alive or dead: no other bodies, crowds, audience, referees, guards, monsters or robots.",
         fill(picture, looks, weapons)
     )
 }
@@ -269,7 +269,7 @@ pub fn scene(
         text.push_str(" A wall of fire is closing in at the edge.");
     }
     format!(
-        "{text}\n\nThe scene: {}\n\n{} Nobody else is anywhere: no crowds, townsfolk, guards, soldiers, enemies, monsters or robots.",
+        "{text}\n\nThe scene: {}\n\n{} Nobody else is anywhere, alive or dead: no other bodies, crowds, townsfolk, guards, soldiers, enemies, monsters or robots.",
         fill(picture, looks, weapons),
         in_picture(game::tags_in(picture).len())
     )
