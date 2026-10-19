@@ -697,12 +697,45 @@ impl Game {
             .then(|| number - 1)
     }
 
+    /// Adds a living tribute to an event's `tributes` when she forgot to list them: they
+    /// are tagged in its text or named in its deaths, finds or alliances, and listed in no
+    /// event. She sometimes wrote a kill with the victim only in the text and `deaths`,
+    /// which cost a retry (Cherry saw one with Noon as T3).
+    fn fill_in_tributes(&self, events: &mut [WrittenEvent]) {
+        let mut listed: Vec<usize> = events
+            .iter()
+            .flat_map(|event| &event.tributes)
+            .filter_map(|tag| self.index_of(tag))
+            .collect();
+        for event in events.iter_mut() {
+            let named = event
+                .deaths
+                .iter()
+                .flat_map(|death| std::iter::once(&death.tribute).chain(death.by.as_ref()))
+                .chain(event.finds.iter().map(|find| &find.tribute))
+                .chain(&event.allies)
+                .chain(&event.leaves)
+                .filter_map(|tag| self.index_of(tag));
+            let mut missing: Vec<usize> = tags_in(&event.text).into_iter().chain(named).collect();
+            missing.retain(|&i| {
+                !listed.contains(&i) && self.tributes.get(i).is_some_and(Tribute::alive)
+            });
+            for index in missing {
+                if !listed.contains(&index) {
+                    listed.push(index);
+                    event.tributes.push(Game::tag(index));
+                }
+            }
+        }
+    }
+
     /// Checks a round Vivy wrote for `kind`. `Err` says what's wrong in a sentence she can
     /// fix it from.
-    pub fn check(&self, kind: Kind, written: Written) -> Result<Round, String> {
+    pub fn check(&self, kind: Kind, mut written: Written) -> Result<Round, String> {
         if written.events.is_empty() {
             return Err("There are no events.".to_string());
         }
+        self.fill_in_tributes(&mut written.events);
         let mut seen = vec![false; self.tributes.len()];
         let mut events = Vec::new();
         let mut dead = 0;
@@ -1879,6 +1912,22 @@ mod tests {
             nobody.unwrap_err(),
             "0 died, but this round exactly 1 should die."
         );
+    }
+
+    #[test]
+    fn forgotten_tributes_are_filled_in() {
+        let g = game(3);
+        // T3 dies in the text and in deaths but isn't listed, and in no other event.
+        let round = g
+            .check(
+                Kind::Day(1),
+                written(vec![
+                    event("{T1} runs {T3} through.", &["T1"], &[("T3", Some("T1"))]),
+                    event("{T2} polishes a trophy.", &["T2"], &[]),
+                ]),
+            )
+            .unwrap();
+        assert_eq!(round.events[0].deaths[0].victim, 2);
     }
 
     #[test]
