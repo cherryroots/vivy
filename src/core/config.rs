@@ -548,10 +548,7 @@ mod tests {
         assert_eq!(default.ai.provider, Provider::Openai);
         let claude = Config::parse("[ai]\nprovider = \"claude\"").unwrap();
         assert_eq!(claude.ai.provider, Provider::Claude);
-        let gemini = Config::parse("[ai]\nprovider = \"gemini\"").unwrap();
-        assert_eq!(gemini.ai.provider, Provider::Gemini);
-        assert_eq!(gemini.ai.gemini.model, "gemini-4-argon");
-        assert!(Config::parse("[ai]\nprovider = \"mistral\"").is_err());
+        assert!(Config::parse("[ai]\nprovider = \"gemini\"").is_err());
     }
 
     #[test]

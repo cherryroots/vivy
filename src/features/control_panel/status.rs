@@ -408,10 +408,6 @@ async fn spend_view(ctx: &BotCtx, spend: &Spend) -> std::result::Result<SpendVie
             let config = &ctx.config.ai.claude;
             (config.show_cache_hits, config.show_job_costs)
         }
-        "gemini" => {
-            let config = &ctx.config.ai.gemini;
-            (config.show_cache_hits, config.show_job_costs)
-        }
         _ => {
             let config = &ctx.config.ai.openai;
             (config.show_cache_hits, config.show_job_costs)

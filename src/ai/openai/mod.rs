@@ -375,8 +375,6 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                 })),
                 // OpenAI remembers its own answers; the turn's text is enough.
                 (Part::Native { .. }, _) => {}
-                // OpenAI reads videos as frame grids; these are only made for Gemini.
-                (Part::Video(_) | Part::YouTube(_), _) => {}
             }
         }
         if !content.is_empty() {

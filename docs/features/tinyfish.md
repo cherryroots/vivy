@@ -1,6 +1,6 @@
 # TinyFish
 
-Vivy can search the web and read whole pages with [TinyFish](https://www.tinyfish.ai)'s Search and Fetch APIs. They're chat tools, so they work the same with Claude, OpenAI and Gemini, next to each provider's own built-in web tools. The point is reach: Claude's web search and fetch can't get into Reddit, and TinyFish can (its fetch opens pages in a real browser when they need one).
+Vivy can search the web and read whole pages with [TinyFish](https://www.tinyfish.ai)'s Search and Fetch APIs. They're chat tools, so they work the same with Claude and OpenAI, next to each provider's own built-in web tools. The point is reach: Claude's web search and fetch can't get into Reddit, and TinyFish can (its fetch opens pages in a real browser when they need one).
 
 Both are free per key: 12,000 searches a day (30 a minute) and 1,000 fetched pages a day (150 a minute), reset at 00:00 UTC. Past that they need a TinyFish wallet balance.
 

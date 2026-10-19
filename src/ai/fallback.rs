@@ -224,10 +224,6 @@ impl ChatProvider for Watched {
         self.inner.sends_full_history()
     }
 
-    fn watches_video(&self) -> bool {
-        self.inner.watches_video()
-    }
-
     async fn stream(
         &self,
         request: ChatRequest,
