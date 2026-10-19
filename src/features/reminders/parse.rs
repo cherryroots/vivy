@@ -9,8 +9,7 @@
 //! the input forward past what it read, and returns what it found.
 
 use chrono::{
-    DateTime, Datelike, Days, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Timelike, Utc,
-    Weekday,
+    DateTime, Datelike, Days, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
 };
 use chrono_tz::Tz;
 use winnow::ModalResult;
@@ -426,17 +425,6 @@ fn weekday_name(day: Weekday) -> &'static str {
         Weekday::Sat => "saturday",
         Weekday::Sun => "sunday",
     }
-}
-
-/// When "Snooze until tomorrow" means: 09:00 the next morning in `zone`. Before 04:00 the
-/// night isn't over yet, so "tomorrow" is this morning's 09:00.
-pub fn tomorrow_morning(now: DateTime<Utc>, zone: Tz) -> Result<DateTime<Utc>, String> {
-    let local = now.with_timezone(&zone);
-    let mut date = local.date_naive();
-    if local.hour() >= 4 {
-        date = date.succ_opt().ok_or("That's too far in the future.")?;
-    }
-    to_utc(zone, date, NINE_AM)
 }
 
 /// Looks up a timezone by IANA name ("Europe/Oslo") or a common abbreviation ("CET").
@@ -1526,26 +1514,6 @@ mod tests {
             assert_eq!(describe_repeat(&back, Tz::UTC), saved, "{text}");
         }
         assert_eq!(parse_repeat("in 2h"), None);
-    }
-
-    #[test]
-    fn snooze_until_tomorrow() {
-        // 12:00 on Sunday: Monday 09:00.
-        assert_eq!(
-            tomorrow_morning(now(), Tz::UTC).unwrap(),
-            utc(2026, 2, 23, 9, 0)
-        );
-        // 02:00 is still the night: this morning's 09:00.
-        let night = utc(2026, 2, 22, 2, 0);
-        assert_eq!(
-            tomorrow_morning(night, Tz::UTC).unwrap(),
-            utc(2026, 2, 22, 9, 0)
-        );
-        // In the user's zone: 12:00 UTC is 21:00 in Tokyo, so 09:00 Tokyo the next day.
-        assert_eq!(
-            tomorrow_morning(now(), Tz::Asia__Tokyo).unwrap(),
-            utc(2026, 2, 23, 0, 0)
-        );
     }
 
     #[test]

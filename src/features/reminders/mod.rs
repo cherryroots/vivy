@@ -213,16 +213,6 @@ impl Feature for Reminders {
                     .await?;
                 Ok(())
             }
-            Some(Action::Tomorrow { id }) => {
-                let zone = settings::timezone(&ctx.db, i.user.id).await?;
-                let until = parse::tomorrow_morning(Utc::now(), zone.unwrap_or(Tz::UTC))
-                    .map_err(user_error)?
-                    .timestamp();
-                self.snooze(ctx, i.user.id, id, until).await?;
-                i.create_response(&ctx.http, snoozed_update(&i.message.content, until))
-                    .await?;
-                Ok(())
-            }
             Some(Action::AskSnooze { id }) => {
                 // Checked before the modal opens, so nobody types a time for nothing.
                 self.snoozable(ctx, i.user.id, id).await?;
