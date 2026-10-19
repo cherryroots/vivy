@@ -189,12 +189,22 @@ impl Feature for Chat {
             Some(referenced) => Some(history::turn_for_reference(ctx, referenced).await?),
             None => None,
         };
+        let asker = Asker {
+            user: msg.author.id,
+            guild: msg.guild_id,
+            channel: msg.channel_id,
+            message: msg.id,
+            posted: Default::default(),
+        };
+        let mut parts = history::read_message(ctx, &msg, rest, false).await;
+        // Messages the question links to come with it, so she reads them without asking.
+        parts.extend(history::linked_messages(ctx, &asker, rest).await);
         let question = NewTurn {
             parent_id,
             role: Role::User,
             author_id: msg.author.id.get(),
             channel_id: msg.channel_id.get(),
-            parts: history::read_message(ctx, &msg, rest, false).await,
+            parts,
             written: None,
             started_at: None,
             error: None,
@@ -207,13 +217,6 @@ impl Feature for Chat {
             .await
             .context("saving the question")?;
 
-        let asker = Asker {
-            user: msg.author.id,
-            guild: msg.guild_id,
-            channel: msg.channel_id,
-            message: msg.id,
-            posted: Default::default(),
-        };
         self.answer(ctx, provider.as_ref(), asker, question_id, reply)
             .await?;
         Ok(Mention::Handled)

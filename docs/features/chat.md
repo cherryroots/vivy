@@ -25,16 +25,16 @@ All under `src/features/chat/`, in a good reading order:
 | `mod.rs` | The `Chat` struct and its `Feature` impl: `on_mention`, reactions (❌ / 🔁), the list of running answers, saving the question and answer turns |
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
-| `history.rs` | Turning a Discord message into stored parts (`read_message`), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
+| `history.rs` | Turning a Discord message into stored parts (`read_message`, and `linked_messages` for the messages it links to), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
 | `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
-| `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `can_read`) |
+| `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `find_message_links`, `linked_message`, `can_read`) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels the asker can read |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
 | `emoji.rs` | The `list_server_emoji` tool and the task that describes each custom emoji once |
-| `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid); what each tool is for and when to use it is in the tool's own description, so the two can't disagree |
+| `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid, how messages and linked messages are tagged); what each tool is for and when to use it is in the tool's own description, so the two can't disagree. The exceptions are which web tool to pick (TinyFish) and that Discord message links are hers to open: without that line she tried her web tools on them, failed, and said she can't open Discord links |
 
 Chat also leans on a few helpers in `src/util/` (described in [architecture](../architecture.md)): `util::reply::LiveReply` (a reply that spans several messages and is edited in place), `util::split::split_message` (Discord-sized parts that keep code blocks intact), `util::media` (finding and loading pictures, GIFs, videos and files) and `util::text` (attachment and embed text).
 
@@ -46,7 +46,7 @@ Chat also leans on a few helpers in `src/util/` (described in [architecture](../
 2. `Chat::on_mention` (`mod.rs`) takes a provider with `ctx.ai.chat()`. With no AI key it returns a user error: "Chat is turned off: the bot has no AI key." It then sends the reply right away as `-# 💭 Thinking…` (`answer::placeholder`), before the slow steps below, so a question with a few phone photos doesn't sit there in silence while they download.
 3. `media::with_previews` waits two seconds and reads the message again if it has links but no embeds yet, since Discord adds link previews (and the GIF of a GIF link) a moment later. Links written as `<link>` never get a preview, so a message with only those (or with previews turned off) isn't waited for.
 4. If the message is a reply, `history::turn_for_reference` finds the replied-to message's turn, or saves that message as a new turn without a parent.
-5. The question is saved as a turn (`store::add_turn`), with the message's text and links to its media and files (`history::read_message`).
+5. The question is saved as a turn (`store::add_turn`), with the message's text and links to its media and files (`history::read_message`). Up to 3 Discord message links in it are opened too (`history::linked_messages`): a `<linked_messages>` part with each message's author, time, whole text, text attachments and embeds, then that message's pictures and files, so "@Vivy check this out <link>" needs no tool call. Each one is read as the asker (`tools::linked_message`, with the same `can_read` check as `get_message`); for one they can't read, or a deleted one, the part says why instead. A linked message's text can't fake a `<user>` tag, like a message's own text.
 6. `Chat::answer` registers the answer as running (for ❌), loads the chain of turns up to 40 long (`store::chain`), and builds the model input (`history::build_input`).
 7. The first time a question is answered, chat asks every enabled feature for its `chat_context` (memory's file list and mood, for example) and saves the result on the question as `Context` parts. Later requests (🔁, or the rest of the conversation) send the question exactly as before, which keeps the prompt cache valid.
 8. `answer::run` streams the answer into Discord, runs tools, and attaches files (see below).
@@ -164,7 +164,7 @@ Chat's own tools:
 | `get_bot_owner` | `tools.rs` | Who her owner is: the people who own the bot's Discord application, with names and IDs, and whether the asker is one of them |
 | `look_at_profile_picture` | `avatar.rs` | Shows the model someone's profile picture as a picture: their picture for this server if they set one, otherwise their main one (Discord's default when they have none). `me` is Vivy herself, so in a server it's her current face. Downloaded as a 512 px PNG (an animated one gives its first frame). Only the text stays in the history |
 | `read_recent_messages` | `tools.rs` | The messages just before the one being answered, 1 to 50 (default 20), oldest first |
-| `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel |
+| `get_message` | `tools.rs` | One message from a Discord message link, if the asker can read that channel, with its whole text. For links that weren't in the question, like ones in an earlier message or a search result. Its description says her web tools can't open Discord links and this one can |
 | `search_messages` | `search.rs` | Discord's server-wide search with every filter the API has: words (and how far apart they may be), authors and author types, channels, mentions of people, roles or @everyone, replies to people or messages, pinned, has (each can be negated, like `-link`), embed types and providers, link sites, attachment names and extensions, dates, sort, limit and offset for paging. Starts with how many match. Filtered to channels the asker can read, with message links; age-restricted channels only when asked in one. Waits and tries again while Discord is indexing or rate-limiting |
 | `get_pinned_messages` | `tools.rs` | The current channel's pins (at most 25), newest first, with links |
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |

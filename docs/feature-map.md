@@ -193,6 +193,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #81 | | Hunger Games: a light theme each Games: Vivy picks a season name, a twist everyone knows and a surprise she springs once later, as she writes the Scatter; every later brief reminds her, and the Scatter's message shows the name and twist. Pictures: a medium map each round plus medium close-ups of the 3 most interesting events, drawn side by side; the victor stays high; Octagon close-ups only outside the cage; each area described at the start from her channel notes |
 | #82 | | Settings to tune things that were fixed in code: Hunger Games `close_ups`, `picture_quality`, `victor_picture_quality`, `max_places`, `describe_areas`, `most_in_octagon`, `wander_rounds`; chat `max_tool_rounds`, `history_turns`, `follow_ups_per_person`; snails `count_within_days`; who said it `pause_seconds` |
 | #83 | | Reminders: the "Tomorrow 9:00" snooze button is removed; 10 min, 1 hour and Pick a time… stay |
+| #84 | | Chat: Discord message links in a question are opened for her (up to 3, as the asker, only channels they can read): author, time, whole text, text attachments, embeds and pictures come with the question as `<linked_messages>`; the prompt and `get_message`'s description say Discord links are hers to open and her web tools can't, so she stops saying she can't open them |
 
 ## Not built yet
 
