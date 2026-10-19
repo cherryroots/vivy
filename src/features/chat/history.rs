@@ -8,10 +8,11 @@ use serenity::all::{Message, UserId, content_safe};
 use serenity::futures::future::join_all;
 use tracing::warn;
 
-use super::channels;
 use super::store::{self, StoredPart, Turn};
+use super::{channels, tools};
 use crate::ai::{self, ChatProvider, Input, ModelFile, NativeRound, Part, Role};
-use crate::core::{BotCtx, settings};
+use crate::core::errors::{is_user_error, user_message};
+use crate::core::{Asker, BotCtx, settings};
 use crate::util::media::{self, Media, MediaKind};
 use crate::util::text::{attachment_text, embed_text};
 
@@ -128,40 +129,95 @@ pub async fn read_message(
 
     let mut parts = vec![StoredPart::Text { text }];
     if !from_bot {
-        let media = media::find_media(msg);
-        let files = media::find_files(msg);
-        // The model is told what it doesn't get, so it doesn't answer as if it saw it all.
-        let left_out = [
-            (
-                media.len().saturating_sub(MAX_MEDIA_PER_MESSAGE),
-                "pictures",
-            ),
-            (files.len().saturating_sub(MAX_FILES_PER_MESSAGE), "files"),
-        ]
-        .into_iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, what)| format!("{n} more {what}"))
-        .collect::<Vec<_>>();
-        if !left_out.is_empty() {
-            parts.push(StoredPart::Text {
-                text: format!("[{} in this message were left out]", left_out.join(" and ")),
-            });
-        }
-        for found in media.into_iter().take(MAX_MEDIA_PER_MESSAGE) {
-            parts.push(StoredPart::Media {
-                url: found.url,
-                kind: found.kind.into(),
-                mime: found.mime.to_string(),
-            });
-        }
-        for found in files.into_iter().take(MAX_FILES_PER_MESSAGE) {
-            parts.push(StoredPart::File {
-                url: found.url,
-                name: found.name,
-                mime: found.mime,
-            });
-        }
+        parts.extend(media_parts(msg));
     }
+    parts
+}
+
+/// A message's pictures, videos and other files, up to the limits per message, with a
+/// note when some were left out.
+fn media_parts(msg: &Message) -> Vec<StoredPart> {
+    let mut parts = Vec::new();
+    let media = media::find_media(msg);
+    let files = media::find_files(msg);
+    // The model is told what it doesn't get, so it doesn't answer as if it saw it all.
+    let left_out = [
+        (
+            media.len().saturating_sub(MAX_MEDIA_PER_MESSAGE),
+            "pictures",
+        ),
+        (files.len().saturating_sub(MAX_FILES_PER_MESSAGE), "files"),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} more {what}"))
+    .collect::<Vec<_>>();
+    if !left_out.is_empty() {
+        parts.push(StoredPart::Text {
+            text: format!("[{} in this message were left out]", left_out.join(" and ")),
+        });
+    }
+    for found in media.into_iter().take(MAX_MEDIA_PER_MESSAGE) {
+        parts.push(StoredPart::Media {
+            url: found.url,
+            kind: found.kind.into(),
+            mime: found.mime.to_string(),
+        });
+    }
+    for found in files.into_iter().take(MAX_FILES_PER_MESSAGE) {
+        parts.push(StoredPart::File {
+            url: found.url,
+            name: found.name,
+            mime: found.mime,
+        });
+    }
+    parts
+}
+
+/// At most this many linked messages are read into one question.
+const MAX_LINKED: usize = 3;
+
+/// The messages that Discord message links in `text` point to, read like attachments: one
+/// `<linked_messages>` part with who wrote each one and what it says, then their pictures
+/// and files. Only messages in places the asker can read; for the others the model reads
+/// why not. Empty when `text` has no message links.
+pub async fn linked_messages(ctx: &BotCtx, asker: &Asker, text: &str) -> Vec<StoredPart> {
+    let links = tools::find_message_links(text);
+    if links.is_empty() {
+        return Vec::new();
+    }
+    let mut blocks = Vec::new();
+    let mut media = Vec::new();
+    for link in links.into_iter().take(MAX_LINKED) {
+        let inside = match tools::linked_message(ctx, asker, &link).await {
+            Ok(msg) => {
+                media.extend(media_parts(&msg));
+                format!(
+                    "{}{}{}",
+                    attachment_text(&msg).await,
+                    embed_text(&msg),
+                    tools::format_linked(ctx, asker, &msg).await
+                )
+            }
+            Err(err) => {
+                if !is_user_error(&err) {
+                    warn!("couldn't open the linked message {link}: {err:#}");
+                }
+                format!("Couldn't open it: {}", user_message(&err))
+            }
+        };
+        // The linked message is someone's text too, so it can't fake a `<user>` tag.
+        blocks.push(format!(
+            "<linked_message link=\"{link}\">\n{}\n</linked_message>",
+            break_user_tags(&inside)
+        ));
+    }
+    let text = format!(
+        "<linked_messages>\n{}\n</linked_messages>",
+        blocks.join("\n")
+    );
+    let mut parts = vec![StoredPart::Text { text }];
+    parts.extend(media);
     parts
 }
 

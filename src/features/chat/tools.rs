@@ -22,6 +22,9 @@ use crate::util::shorten;
 const MAX_RECENT: u64 = 50;
 /// Each message is cut to this many characters in tool results.
 const MAX_MESSAGE_CHARS: usize = 600;
+/// A linked message is cut to this many characters: the longest a Discord message can be,
+/// since someone linked it for its text.
+const MAX_LINKED_CHARS: usize = 4000;
 /// Most pinned messages `get_pinned_messages` returns.
 const MAX_PINS: usize = 25;
 
@@ -74,7 +77,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_message",
-            description: "One Discord message from its link (https://discord.com/channels/...). Use it when someone links a message.",
+            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
             parameters: json!({
                 "type": "object",
                 "properties": {"link": {"type": "string"}},
@@ -445,6 +448,11 @@ async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<Stri
 
 /// "[2026-10-09 14:02] Cherry: text (2 attachments)"
 pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
+    format_message_up_to(ctx, msg, zone, MAX_MESSAGE_CHARS).await
+}
+
+/// [`format_message`] with the text cut to `max_chars` characters.
+async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: usize) -> String {
     let time = DateTime::from_timestamp(msg.timestamp.unix_timestamp(), 0)
         .unwrap_or_default()
         .with_timezone(&zone)
@@ -461,7 +469,7 @@ pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> Str
         &msg.mentions,
     );
     let text = channels::name_channels(ctx, &text).await;
-    let mut line = format!("[{time}] {name}: {}", shorten(&text, MAX_MESSAGE_CHARS));
+    let mut line = format!("[{time}] {name}: {}", shorten(&text, max_chars));
     if !msg.attachments.is_empty() {
         line.push_str(&format!(" ({} attachments)", msg.attachments.len()));
     }
@@ -531,7 +539,33 @@ pub(super) fn parse_link(link: &str) -> Option<(Option<u64>, u64, u64)> {
     Some((guild, channel, message))
 }
 
-async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<String> {
+/// The Discord message links in `text`, in order, each once. Finds them bare, as `<link>`
+/// and as `[text](link)`, and writes each the plain way (`https://discord.com/channels/...`),
+/// so nothing else that was in the link comes along.
+pub(super) fn find_message_links(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    let words =
+        text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '[' | ']'));
+    for word in words {
+        // "look at https://discord.com/channels/1/2/3!" ends a sentence with the link.
+        let word = word.trim_end_matches(['.', ',', '!', '?', ':', ';']);
+        let Some((guild, channel, message)) = parse_link(word) else {
+            continue;
+        };
+        let link = message_link(
+            guild.map(GuildId::new),
+            ChannelId::new(channel),
+            MessageId::new(message),
+        );
+        if !found.contains(&link) {
+            found.push(link);
+        }
+    }
+    found
+}
+
+/// The message `link` points to, if the asker can read the place it's in.
+pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<Message> {
     let (guild, channel, message) =
         parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
     let channel = ChannelId::new(channel);
@@ -540,12 +574,21 @@ async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<St
             "That message is in a place the asker can't read.",
         ));
     }
-    let msg = channel
+    channel
         .message(&ctx.http, MessageId::new(message))
         .await
-        .map_err(|_| user_error("I couldn't load that message. It may be deleted."))?;
+        .map_err(|_| user_error("I couldn't load that message. It may be deleted."))
+}
+
+/// A linked message as the model reads it: [`format_message`] with its whole text.
+pub(super) async fn format_linked(ctx: &BotCtx, asker: &Asker, msg: &Message) -> String {
     let zone = home_zone(ctx, asker.user).await;
-    Ok(format_message(ctx, &msg, zone).await)
+    format_message_up_to(ctx, msg, zone, MAX_LINKED_CHARS).await
+}
+
+async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<String> {
+    let msg = linked_message(ctx, asker, link).await?;
+    Ok(format_linked(ctx, asker, &msg).await)
 }
 
 /// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
@@ -766,6 +809,22 @@ Category Voice:
         assert_eq!(parse_link("https://example.com/channels/1/2/3"), None);
         assert_eq!(parse_link("https://discord.com/channels/1/2"), None);
         assert_eq!(parse_link("https://discord.com/channels/1/0/0"), None);
+    }
+
+    #[test]
+    fn finds_message_links() {
+        let text = "look https://discord.com/channels/1/2/3 and <https://discord.com/channels/1/2/4>, \
+                    [this](https://ptb.discord.com/channels/@me/5/6?x=\"y) https://discord.com/channels/1/2/3. \
+                    but not https://discord.com/channels/1/2 or https://example.com/channels/1/2/3";
+        assert_eq!(
+            find_message_links(text),
+            [
+                "https://discord.com/channels/1/2/3",
+                "https://discord.com/channels/1/2/4",
+                "https://discord.com/channels/@me/5/6",
+            ]
+        );
+        assert!(find_message_links("no links here").is_empty());
     }
 
     #[test]
