@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use super::game::{Endgame, FEWEST_FOR_TEAMS, Game, Kind, Reward};
+use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
@@ -448,17 +448,17 @@ async fn play(
             // The game once this round is played: who carries what by the end of it.
             let mut after = game_before.clone();
             after.apply(round.clone());
-            // The showdown and the victor are drawn with what everyone fought with; other
-            // rounds with what everyone carries by the end of it, a looted weapon only in its
-            // new hands.
+            // The round that ends the Games and the victor are drawn with what everyone
+            // fought with; other rounds with what everyone carries by the end of it, a
+            // looted weapon only in its new hands.
             let at = game_before.rounds.len();
-            let weapons = if game_before.endgame(at) == Some(Endgame::Showdown) {
+            let weapons = if !after.winners().is_empty() {
                 game_before.weapons()
             } else {
                 after.weapons_drawn()
             };
             // Fights in the Octagon are zoomed in on the cage; other rounds show the whole
-            // map, the showdown too, which by then is little more than its last place.
+            // map, the last two's too, with little more than the places still open.
             let map = async {
                 let Some(picture) = round.picture.as_deref() else {
                     return Ok(None);

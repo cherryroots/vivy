@@ -34,7 +34,7 @@ const FORMAT: &str = "Answer with only one JSON object, no code fence and nothin
 - `allies`: two or more tributes in that event who team up (joining someone's alliance brings you into it). `leaves`: tributes in that event who walk out on their alliance. Killing an ally ends the killer's alliance by itself. Leave both out or empty otherwise.
 - `champion`: only in an Octagon round: the tag of the one who wins it, alive at the end. Otherwise null.
 - `gamemaker`: your announcement as the Gamemaker before this round, one to three sentences, spoken out loud to everyone watching (no tags, use names there). Only when the round asks for one; otherwise null.
-- `victory`: only in the final showdown: what you say to the winner, one to three sentences, by name. Otherwise null.
+- `victory`: only when this round ends the Games (one side is left): what you say to the winner, one to three sentences, by name. Otherwise null.
 - `picture`: only when the round asks for one: what to show on the map of the arena this round, for an image model, in English. Go through every event: which zone it happens in (a place's name without the #, or the Octagon in the middle) and what its tributes are doing there, like `In memes, {T1} swings a sword at {T4} while {T2} hides in a bush.` Show someone who dies this round lying dead where they fell, with a little blood. Write each tribute as their tag; the bot adds the map, the zones, how each tribute looks and what they carry, so don't describe those, and use no names. The image model doesn't know the Hunger Games, so use plain words and no Hunger Games terms (Cornucopia, tribute, Bloodbath, Feast, Gamemaker, district). Otherwise null.
 - `gamemaker` and `victory` are also spoken out loud, as voice messages in your Gamemaker voice. Steer how they're said with audio tags in square brackets before the words they're for, in plain English: [booming], [dramatic pause], [chuckles], [whispers], [menacing]. Tags are spoken, never shown. Keep each line under 300 characters.";
 
@@ -225,13 +225,19 @@ pub fn title(kind: Kind) -> String {
 
 /// For a day or night while the last two sides wander (see [`Game::endgame`]).
 fn wander(game: &Game) -> String {
-    let who = if game.teams() {
-        "Only two teams are left"
+    let (who, end) = if game.teams() {
+        (
+            "Only two teams are left",
+            "everyone left on one team dies and the other team wins: write your `victory` line to the winning team, both of them by name, a fallen teammate too",
+        )
     } else {
-        "Only two are left"
+        (
+            "Only two are left",
+            "one of them dies and the other wins: write your `victory` line to the winner",
+        )
     };
     format!(
-        " {who}, somewhere in the shrinking arena, and they don't find each other yet: they hunt for each other, follow tracks, hide, just miss each other, or flee the fire as it burns closer."
+        " {who}, somewhere in the shrinking arena, and the fire keeps burning closer. Nothing is forced: they may find each other this round, or not yet. One can be hunting the other, following tracks, setting a trap, or they hide, just miss each other, or have a moment that isn't a fight at all. A kill isn't needed every round. If they do meet and settle it, {end}."
     )
 }
 
@@ -592,7 +598,10 @@ mod tests {
         let arena: Vec<String> = (0..3).map(|i| format!("room-{i}")).collect();
         let text = brief(&game, Kind::Day(1), &arena, &[], false);
         assert!(text.contains("Only two teams are left, somewhere in the shrinking arena"));
-        assert!(text.contains("Nobody dies this round."));
+        assert!(text.contains("Nothing is forced"));
+        assert!(
+            text.contains("At most 2 tributes may die this round, and it's fine if nobody does.")
+        );
         game.places = 1;
         let text = brief(&game, Kind::Day(1), &arena[..1], &[], false);
         assert!(text.contains(

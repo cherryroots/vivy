@@ -337,7 +337,9 @@ fn place_at<'a>(after: &str, places: &[&'a (String, u64)]) -> Option<&'a (String
 /// each stands on its own. Long rounds come in several parts.
 pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String> {
     let round = &game.rounds[index];
-    let showdown = game.endgame(index) == Some(Endgame::Showdown);
+    // The showdown, or the round before it where the last two met and settled it.
+    let ended = index + 1 == game.rounds.len() && !game.winners().is_empty();
+    let showdown = ended || game.endgame(index) == Some(Endgame::Showdown);
     let emoji = match round.kind {
         _ if showdown => "⚔️",
         Kind::Scatter => "🏃",
