@@ -279,22 +279,31 @@ pub fn prompt(
     )
 }
 
-/// The victor's picture: the winner alone, up close, with everyone they killed lying
-/// dead around them.
+/// The victor's picture: the winner alone (or a winning team's survivors, side by side),
+/// up close, with everyone they killed lying dead around them.
 pub fn victor(
     looks: &Looks,
     weapons: &[Option<String>],
-    winner: usize,
+    winners: &[usize],
     victims: &[usize],
 ) -> String {
     let look = |i: usize| match looks.tributes.get(i) {
         Some(Some(look)) => format!("({look})"),
         _ => "a player".to_string(),
     };
-    let mut text = format!(
-        "A full-body picture of the winner of the battle, large and filling most of the frame: {} standing victorious, the only one standing, arms raised high, on a ruined battlefield at sunset.",
-        sprite(looks, weapons, winner)
-    );
+    let mut text = match winners {
+        [winner] => format!(
+            "A full-body picture of the winner of the battle, large and filling most of the frame: {} standing victorious, the only one standing, arms raised high, on a ruined battlefield at sunset.",
+            sprite(looks, weapons, *winner)
+        ),
+        _ => {
+            let team: Vec<String> = winners.iter().map(|&i| sprite(looks, weapons, i)).collect();
+            format!(
+                "A full-body picture of the winning team of the battle, large and filling most of the frame: {} standing victorious side by side, the only ones standing, arms raised high, on a ruined battlefield at sunset.",
+                team.join(" and ")
+            )
+        }
+    };
     if victims.is_empty() {
         text.push_str(" Nobody lies around them: they won without defeating anyone, so only scattered gear lies about.");
     } else {
@@ -374,12 +383,15 @@ mod tests {
             zones: Vec::new(),
         };
         let weapons = vec![Some("a cleaver".to_string())];
-        let text = victor(&looks, &weapons, 0, &[2, 1]);
+        let text = victor(&looks, &weapons, &[0], &[2, 1]);
         assert!(text.contains("(a frog knight, holding a cleaver) standing victorious"));
         assert!(
             text.contains("lie the bodies of the 2 players they killed, dead where they fell, with some blood, and nobody else: (a cat); a player.")
         );
-        assert!(victor(&looks, &weapons, 2, &[]).contains("Nobody lies around them"));
+        assert!(victor(&looks, &weapons, &[2], &[]).contains("Nobody lies around them"));
+        assert!(victor(&looks, &weapons, &[0, 2], &[1]).contains(
+            "the winning team of the battle, large and filling most of the frame: (a frog knight, holding a cleaver) and (a cat, empty-handed) standing victorious side by side"
+        ));
     }
 
     #[test]

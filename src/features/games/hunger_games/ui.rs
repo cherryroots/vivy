@@ -7,7 +7,7 @@ use serenity::all::{
     CreateSelectMenuKind, ReactionType, UserId,
 };
 
-use super::game::{Game, Kind, Reward, fill};
+use super::game::{FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
@@ -26,6 +26,8 @@ pub enum Action {
     Memories,
     /// The host turns the pictures she draws during the game on or off.
     Pictures,
+    /// The host turns a team Games (pairs who win together) on or off.
+    Teams,
     /// A vote for the prize of the coming Octagon.
     Prize(Reward),
 }
@@ -40,6 +42,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Cancel => "cancel".to_string(),
         Action::Memories => "memories".to_string(),
         Action::Pictures => "pictures".to_string(),
+        Action::Teams => "teams".to_string(),
         Action::Prize(reward) => format!("prize-{}", reward_key(reward)),
     };
     format!("games:hunger:{game}:{action}")
@@ -57,6 +60,7 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "cancel" => Action::Cancel,
         "memories" => Action::Memories,
         "pictures" => Action::Pictures,
+        "teams" => Action::Teams,
         _ => Action::Prize(
             Reward::ALL
                 .into_iter()
@@ -133,13 +137,15 @@ fn count_votes(n: usize) -> String {
     }
 }
 
-/// What the host turned on in the Reaping. Both start off.
+/// What the host turned on in the Reaping. All start off.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Extras {
     /// Vivy may use her memory notes about the tributes.
     pub memories: bool,
     /// She draws pictures during the game.
     pub pictures: bool,
+    /// The tributes fight in random pairs and win together.
+    pub teams: bool,
 }
 
 /// The Reaping: who's in so far, the host's menu and the buttons. `closes_at` is a Unix
@@ -180,6 +186,13 @@ pub fn lobby(
     } else {
         "🎨 Pictures **off**: the Games are told in words only.".to_string()
     });
+    lines.push(if extras.teams {
+        format!(
+            "👥 Teams **on**: the tributes fight in random pairs, and a pair wins together (with {FEWEST_FOR_TEAMS} or more tributes)."
+        )
+    } else {
+        "👥 Teams **off**: every tribute for themselves.".to_string()
+    });
     lines.push(format!("The Reaping closes <t:{closes_at}:R>."));
     let menu = CreateSelectMenu::new(
         custom_id(game, Action::Pick),
@@ -190,6 +203,8 @@ pub fn lobby(
     .placeholder("Host: pick the tributes")
     .min_values(0)
     .max_values(max.clamp(1, 25) as u8);
+    // Discord fits five buttons in a row: entering and starting in one, the host's
+    // toggles in the next.
     let buttons = vec![
         CreateButton::new(custom_id(game, Action::Volunteer))
             .label("Volunteer")
@@ -198,6 +213,11 @@ pub fn lobby(
         CreateButton::new(custom_id(game, Action::Start))
             .label("Start")
             .style(ButtonStyle::Success),
+        CreateButton::new(custom_id(game, Action::Cancel))
+            .label("Cancel")
+            .style(ButtonStyle::Danger),
+    ];
+    let toggles = vec![
         CreateButton::new(custom_id(game, Action::Memories))
             .label(if extras.memories {
                 "Memories: on"
@@ -214,9 +234,14 @@ pub fn lobby(
             })
             .emoji('🎨')
             .style(ButtonStyle::Secondary),
-        CreateButton::new(custom_id(game, Action::Cancel))
-            .label("Cancel")
-            .style(ButtonStyle::Danger),
+        CreateButton::new(custom_id(game, Action::Teams))
+            .label(if extras.teams {
+                "Teams: on"
+            } else {
+                "Teams: off"
+            })
+            .emoji('👥')
+            .style(ButtonStyle::Secondary),
     ];
     let embed = CreateEmbed::new()
         .title("🏹 The Hunger Games: the Reaping")
@@ -227,6 +252,7 @@ pub fn lobby(
         vec![
             CreateActionRow::SelectMenu(menu),
             CreateActionRow::Buttons(buttons),
+            CreateActionRow::Buttons(toggles),
         ],
     )
 }
@@ -361,11 +387,18 @@ pub fn round(game: &Game, index: usize, places: &[(String, u64)]) -> Vec<String>
         ));
     }
     let left = game.alive();
-    blocks.push(if left == 1 {
+    let mut count = if left == 1 {
         "-# 1 tribute left".to_string()
     } else {
         format!("-# {left} tributes left")
-    });
+    };
+    if game.teams() {
+        count.push_str(&match game.sides() {
+            1 => " (1 team)".to_string(),
+            n => format!(" ({n} teams)"),
+        });
+    }
+    blocks.push(count);
     split_message(&blocks.join("\n\n"), DISCORD_LIMIT)
 }
 
@@ -417,33 +450,41 @@ pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String 
     text
 }
 
-/// The end: the winner, her line to them, everyone's placing (with kills and Octagons
-/// won), and the cowards who never stepped into an Octagon that opened.
+/// The end: the winners (one, or a team of two), her line to them, everyone's placing
+/// (with kills and Octagons won), and the cowards who never stepped into an Octagon that
+/// opened.
 pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
-    let placings = game.placings();
-    let mut text = "# 👑 The Hunger Games have a victor!\n".to_string();
+    let winners = game.winners();
+    let mut text = if winners.len() > 1 {
+        "# 👑 The Hunger Games have a winning team!\n".to_string()
+    } else {
+        "# 👑 The Hunger Games have a victor!\n".to_string()
+    };
     if let Some(line) = victory {
         let line = shorten_at_word(&unspoken(line), 600);
         text.push_str(&format!("> 🎙️ *{line}*\n\n"));
     }
-    for (i, t) in placings.iter().enumerate() {
-        let place = if i == 0 {
+    for (place, i) in game.placings().into_iter().enumerate() {
+        let t = &game.tributes[i];
+        let won = winners.contains(&i);
+        let place = if won {
             "👑".to_string()
         } else {
-            format!("{}.", i + 1)
+            format!("{}.", place + 1)
         };
-        let octagons = game
-            .tributes
-            .iter()
-            .position(|other| other.id == t.id)
-            .map_or(0, |i| game.octagon_wins(i));
-        let octagons = match octagons {
+        let octagons = match game.octagon_wins(i) {
             0 => String::new(),
             1 => ", 🏟️ won the Octagon".to_string(),
             n => format!(", 🏟️ won {n} Octagons"),
         };
+        // A winner whose teammate carried the team home.
+        let fell = if won && !t.alive() {
+            ", fell on the way"
+        } else {
+            ""
+        };
         text.push_str(&format!(
-            "{place} {}{}{octagons}\n",
+            "{place} {}{}{octagons}{fell}\n",
             mention(t.id),
             kills(t.kills)
         ));
@@ -461,6 +502,27 @@ pub fn victor(game: &Game, victory: Option<&str>) -> Vec<String> {
     }
     text.push_str("-# Wins, kills and Octagons won are counted on `/games leaderboard`.");
     split_message(&text, DISCORD_LIMIT)
+}
+
+/// The teams as the Games begin, like "👥 <@1> & <@2>", with the odd one out on their
+/// own, or `None` in a solo Games.
+pub fn teams(game: &Game) -> Option<String> {
+    if !game.teams() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    for (i, t) in game.tributes.iter().enumerate() {
+        match t.partner {
+            Some(p) if p > i => lines.push(format!(
+                "👥 {} & {}",
+                mention(t.id),
+                mention(game.tributes[p].id)
+            )),
+            Some(_) => {}
+            None => lines.push(format!("👤 {} fights alone", mention(t.id))),
+        }
+    }
+    Some(format!("**The teams:**\n{}", lines.join("\n")))
 }
 
 /// The grudges from earlier Games as the Games begin, like "😈 <@1> has killed <@2> twice
@@ -513,6 +575,7 @@ mod tests {
             Action::Cancel,
             Action::Memories,
             Action::Pictures,
+            Action::Teams,
             Action::Prize(Reward::Weapon),
             Action::Prize(Reward::Armour),
             Action::Prize(Reward::Hunt),
@@ -657,7 +720,7 @@ mod tests {
             ..Default::default()
         };
         game.apply(day(Kind::Night(1), (0..5).map(|i| dies(i, None)).collect()));
-        // Now P6 gets their revenge, as day 2 closes four places.
+        // Now P6 gets their revenge, as day 2 closes five places.
         game.apply(day(
             Kind::Day(2),
             vec![Event {
@@ -671,7 +734,7 @@ mod tests {
         ));
         let text = round(&game, 1, &places).join("");
         assert!(text.contains(
-            "🔥 The arena shrinks: walls of fire close off <#14>, <#15>, <#16> and <#17>."
+            "🔥 The arena shrinks: walls of fire close off <#13>, <#14>, <#15>, <#16> and <#17>."
         ));
         assert!(text.contains(
             "💀 <@6> gets <@7> back.\n-# 😈 Revenge: <@7> killed <@6> in an earlier Games."
@@ -680,6 +743,31 @@ mod tests {
         assert!(!round(&game, 0, &places).join("").contains("🔥"));
         // The grudge is settled, so it's no longer brought up.
         assert_eq!(grudges(&game), None);
+    }
+
+    #[test]
+    fn a_team_wins_together() {
+        let mut game = Game::new((1..=7).map(|id| (id, format!("P{id}"))).collect());
+        for (a, b) in [(0, 1), (2, 3), (4, 5)] {
+            game.tributes[a].partner = Some(b);
+            game.tributes[b].partner = Some(a);
+        }
+        assert_eq!(
+            teams(&game).unwrap(),
+            "**The teams:**\n👥 <@1> & <@2>\n👥 <@3> & <@4>\n👥 <@5> & <@6>\n👤 <@7> fights alone"
+        );
+        // P1 and P2 win; P2 fell on the way.
+        for (i, round) in [(1, 0), (2, 0), (3, 1), (4, 1), (5, 2), (6, 2)] {
+            game.tributes[i].died_in = Some(round);
+        }
+        let text = victor(&game, None).join("");
+        assert!(
+            text.starts_with(
+                "# 👑 The Hunger Games have a winning team!\n👑 <@1>\n👑 <@2>, fell on the way\n3. <@6>"
+            ),
+            "{text}"
+        );
+        assert_eq!(teams(&Game::new(vec![(1, "P1".into())])), None);
     }
 
     #[test]

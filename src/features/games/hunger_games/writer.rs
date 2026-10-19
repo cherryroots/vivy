@@ -27,7 +27,7 @@ Write each tribute as their tag in braces, like {T3}, never their name; the bot 
 
 const FORMAT: &str = "Answer with only one JSON object, no code fence and nothing before or after it:
 {\"gamemaker\": string or null, \"events\": [{\"text\": string, \"tributes\": [tags], \"deaths\": [{\"tribute\": tag, \"by\": tag or null}], \"finds\": [{\"tribute\": tag, \"weapon\": string}], \"allies\": [tags], \"leaves\": [tags]}], \"champion\": tag or null, \"victory\": string or null, \"picture\": string or null}
-- Every living tribute is in exactly one event's `tributes`, and every tag in an event's text is in its `tributes` (and the other way round).
+- Every living tribute is in exactly one event's `tributes`, and every tribute in an event's `tributes` is tagged in its text. A living tribute is tagged only in the text of their own event, never in another one (not even a teammate thinking of them). The dead are not in any `tributes`, but their tags may appear in any text: looting their body, avenging them, mourning them.
 - `deaths` lists who dies in that event, with `by` the tribute who killed them, or null for an accident, the arena or themselves. A killer must be another tribute in the same event.
 - `finds` lists every weapon a tribute in that event finds, steals or loots from the dead, with a short name (under 60 characters, like `razor-edged vinyl record`). It replaces what they carried. Someone who dies in the event finds nothing. Leave it out or empty when nobody gets a weapon.
 - `allies`: two or more tributes in that event who team up (joining someone's alliance brings you into it). `leaves`: tributes in that event who walk out on their alliance. Killing an ally ends the killer's alliance by itself. Leave both out or empty otherwise.
@@ -76,6 +76,11 @@ pub fn brief(
             ));
         }
         text.push('\n');
+    }
+    if game.teams() {
+        text.push_str(
+            "This is a team Games: the tributes fight in pairs, and each one's teammate is in their state below. Teammates look out for each other and never hurt each other, but they can get split up, and one can fall while the other fights on for both. A team wins together: the Games end when only one team has anyone left alive, and a fallen teammate shares the win. Anyone without a teammate fights alone. Alliances between teams can still form and break.\n\n",
+        );
     }
     text.push_str("The tributes:\n");
     for (i, t) in game.tributes.iter().enumerate() {
@@ -159,6 +164,9 @@ pub fn brief(
                 entrants.join(", ")
             )
         }
+        Kind::Finale if game.teams() => {
+            "The final showdown: only two teams are left, and you force everyone still standing into the Octagon in the middle of the arena to settle it in the cage. Announce the final teams with your `gamemaker` line, then everyone left on one team dies and the other team wins. Write your `victory` line to the winning team, both of them by name, a fallen teammate too.".to_string()
+        }
         Kind::Finale => {
             "The final showdown: only two are left, and you force them into the Octagon in the middle of the arena to settle it in the cage. Announce the final two with your `gamemaker` line, then exactly one of them dies and the other wins. Write your `victory` line to the winner.".to_string()
         }
@@ -183,7 +191,7 @@ pub fn brief(
             Kind::Night(_) => "Also write a `picture`: the map at night, with each event where it happens (campfires, hiding spots, ambushes in the dark).",
             Kind::Octagon(_) => "Also write a `picture`: a close view inside the Octagon with only those who stepped in: the champion standing with the prize after the last bout, and each loser where their bout ended, dead or limping out of the cage. Leave out everyone who sat it out.",
             Kind::Day(_) => "Also write a `picture`: each event where it happens.",
-            Kind::Finale => "Also write a `picture`: the final showdown between the last two inside the Octagon. The winner gets a picture of their own after it.",
+            Kind::Finale => "Also write a `picture`: the final showdown between everyone left, inside the Octagon. The winners get a picture of their own after it.",
         });
     }
     text
@@ -246,6 +254,13 @@ fn state(game: &Game, index: usize) -> String {
     });
     if game.armoured(index, game.rounds.len()) && game.next_kind() != Some(Kind::Finale) {
         parts.push("wearing golden armour from the Octagon (can't die this round)".to_string());
+    }
+    if let Some(partner) = t.partner {
+        parts.push(if game.tributes[partner].alive() {
+            format!("teammate {}", Game::tag(partner))
+        } else {
+            format!("teammate {} has fallen", Game::tag(partner))
+        });
     }
     let allies: Vec<String> = game.allies_of(index).into_iter().map(Game::tag).collect();
     if !allies.is_empty() {
@@ -466,7 +481,7 @@ mod tests {
         let text = brief(&game, Kind::Scatter, &arena, &[], false);
         assert!(text.contains("- T7 killed T8 3 times\n- T1 killed T8 once\n"));
         assert!(!text.contains("walls of fire"));
-        // Five fall in the first night, so day 2 closes four places.
+        // Five fall in the first night, so day 2 closes five places.
         for t in &mut game.tributes[..5] {
             t.died_in = Some(0);
         }
@@ -481,12 +496,27 @@ mod tests {
             reward: None,
         });
         let text = brief(&game, Kind::Day(2), &arena, &[], false);
-        assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2, #room-3\n"));
-        assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-4, #room-5, #room-6, #room-7\n"));
-        assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-4, #room-5, #room-6, #room-7."));
+        assert!(text.contains("spread the tributes around, and don't keep sending people to the same place): #room-0, #room-1, #room-2\n"));
+        assert!(text.contains("Closed off by walls of fire, so nobody can be there anymore: #room-3, #room-4, #room-5, #room-6, #room-7\n"));
+        assert!(text.contains("This round: Day 2. The arena shrinks as this round begins: walls of fire close off #room-3, #room-4, #room-5, #room-6, #room-7."));
         // P1's victim, P8, is still alive, but P1 isn't: only living grudges are told.
         assert!(text.contains("- T7 killed T8 3 times\n\n"));
         assert!(!text.contains("T1 killed"));
+    }
+
+    #[test]
+    fn a_team_brief_names_teammates() {
+        let mut game = Game::new((1..=6).map(|id| (id, format!("P{id}"))).collect());
+        for (a, b) in [(0, 1), (2, 3), (4, 5)] {
+            game.tributes[a].partner = Some(b);
+            game.tributes[b].partner = Some(a);
+        }
+        game.tributes[1].died_in = Some(0);
+        let text = brief(&game, Kind::Day(1), &[], &[], false);
+        assert!(text.contains("This is a team Games"));
+        assert!(text.contains("- T1: P1 (alive, unarmed, teammate T2 has fallen)"));
+        assert!(text.contains("- T3: P3 (alive, unarmed, teammate T4)"));
+        assert!(brief(&game, Kind::Finale, &[], &[], false).contains("only two teams are left"));
     }
 
     #[test]
