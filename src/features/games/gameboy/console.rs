@@ -131,6 +131,11 @@ pub fn console() -> &'static Console {
 
 impl Console {
     fn start() -> Console {
+        // The emulator prints warnings instead of logging them, a line every time Pokémon
+        // Red touches a cartridge address it doesn't know. (Tests keep stdout: the test
+        // runner reports on it.)
+        #[cfg(not(test))]
+        crate::core::logging::drop_prints();
         let (jobs, inbox) = mpsc::channel::<Job>();
         std::thread::Builder::new()
             .name("gameboy".to_string())

@@ -13,6 +13,7 @@ chrono-tz = { version = "0.10.4", features = ["case-insensitive"] }
 dotenvy = "0.15.7"
 fastrand = "2.5.0"
 gif = "0.14"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 image_hasher = "3.1"
 poise = "0.7.0"
