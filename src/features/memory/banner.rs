@@ -5,9 +5,9 @@
 
 use std::path::PathBuf;
 
+use crate::util::discord::GuildId;
 use chrono::{Timelike as _, Utc};
 use serde::Deserialize;
-use serenity::all::GuildId;
 use tracing::warn;
 
 use super::face::{self, Slot};

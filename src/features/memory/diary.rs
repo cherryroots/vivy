@@ -9,9 +9,11 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use crate::util::discord::{
+    ChannelId, Draft, GuildId, error_code, error_status, get_channel, no_pings,
+};
 use chrono::Utc;
 use serde::Deserialize;
-use serenity::all::{ChannelId, CreateAllowedMentions, CreateMessage, GuildId, HttpError};
 use tracing::{info, warn};
 
 use super::folder::{self, Command};
@@ -184,9 +186,10 @@ fn should_warn(warned: &mut BTreeMap<u64, i64>, channel: u64, now: i64) -> bool 
 
 /// The server a channel or thread is in.
 async fn server_of(ctx: &BotCtx, channel: ChannelId) -> Result<GuildId> {
-    let channel = channel.to_channel(&ctx.http).await?;
-    let guild = channel.guild().map(|c| c.guild_id);
-    guild.ok_or_else(|| anyhow::anyhow!("not a server channel"))
+    let channel = get_channel(&ctx.http, channel).await?;
+    channel
+        .guild_id
+        .ok_or_else(|| anyhow::anyhow!("not a server channel"))
 }
 
 /// When the diary was last posted to any of `channels`.
@@ -323,23 +326,15 @@ async fn post(ctx: &BotCtx, channels: &[ChannelId], entry: &str) -> Posted {
 /// Whether Discord refused because the bot can't see or post in the channel: 403, or
 /// Missing Access (50001) / Missing Permissions (50013).
 fn is_no_access(err: &anyhow::Error) -> bool {
-    match err.downcast_ref::<serenity::Error>() {
-        Some(serenity::Error::Http(HttpError::UnsuccessfulRequest(response))) => {
-            response.status_code.as_u16() == 403 || matches!(response.error.code, 50001 | 50013)
-        }
-        _ => false,
-    }
+    error_status(err) == Some(403) || matches!(error_code(err), Some(50001 | 50013))
 }
 
 async fn send(ctx: &BotCtx, channel: ChannelId, entry: &str) -> Result<()> {
     for part in split_message(entry, 2000) {
-        channel
-            .send_message(
-                &ctx.http,
-                CreateMessage::new()
-                    .content(part)
-                    .allowed_mentions(CreateAllowedMentions::new()),
-            )
+        Draft::new()
+            .content(part)
+            .allowed_mentions(no_pings())
+            .send(&ctx.http, channel)
             .await?;
     }
     Ok(())

@@ -11,13 +11,13 @@ use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use serenity::all::{GuildId, UserId};
 use tokio::task::JoinSet;
 use tracing::warn;
 
 use super::store;
 use super::ui::Names;
 use crate::core::BotCtx;
+use crate::util::discord::{GuildId, UserId, display_name, get_user};
 
 /// After this a name is looked up again, in the background.
 const FRESH: Duration = Duration::from_secs(10 * 60);
@@ -94,12 +94,12 @@ async fn fetch_all(ctx: &BotCtx, guild: GuildId, users: Vec<u64>) -> Names {
 async fn fetch(ctx: &BotCtx, guild: GuildId, user: u64) -> String {
     let id = UserId::new(user);
     // Checks the cache first, then asks Discord.
-    if let Ok(member) = guild.member((&ctx.cache, ctx.http.as_ref()), id).await {
-        return member.display_name().to_string();
+    if let Some(name) = ctx.member_name(guild, id).await {
+        return name;
     }
     // Someone who left the server.
-    match ctx.http.get_user(id).await {
-        Ok(user) => user.display_name().to_string(),
+    match get_user(&ctx.http, id).await {
+        Ok(user) => display_name(&user).to_string(),
         Err(_) => format!("Unknown ({user})"),
     }
 }

@@ -136,7 +136,7 @@ One short call with no tools: Vivy gets the local time in `timezone` (like "It's
 
 1. `memory_pictures` keeps the name shown in each server and slot. If the name is the same, nothing is sent (Cherry's rule: only a switch to another face changes it, so a restart, a new crop or a new picture file never sends the same face again).
 2. A slot changed less than 10 minutes ago is left alone, so a lively conversation can't run into Discord's limits. For faces and nicknames, `retry_later` starts one waiting task per server that tries again when the time is up, with the mood as it is then.
-3. Otherwise the picture is read, cut to a closer square when `face_zoom` is above 1 (centered across, `face_center` of the way down), scaled down to at most 512 px, and sent as a `data:` URL with serenity's `edit_member_me` (`PATCH /guilds/{id}/members/@me`). Reading the picture runs in `spawn_blocking`, Tokio's way to run slow synchronous work without stalling the async threads.
+3. Otherwise the picture is read, cut to a closer square when `face_zoom` is above 1 (centered across, `face_center` of the way down), scaled down to at most 512 px, and sent as a `data:` URL with Twilight's `update_current_member` (`PATCH /guilds/{id}/members/@me`). Reading the picture runs in `spawn_blocking`, Tokio's way to run slow synchronous work without stalling the async threads.
 
 At start, `face::sync_all` brings each server's face and nickname in step with its mood file (for a face picked before the pictures existed, or a nickname just turned on). The control panel face uses the same crop at 128 px, cached until the face changes.
 

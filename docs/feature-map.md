@@ -81,7 +81,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 
 | Topic | Decision |
 |---|---|
-| Discord library | `serenity` for events and the REST API, `poise` for slash commands |
+| Discord library | Twilight: `twilight-gateway` for events, `twilight-http` for the REST API, `twilight-cache-inmemory`, and `twilight-interactions` for slash commands |
 | Structure | One crate, plain modules. Features never import each other; they work together through chat tools, chat context, bot events and the status picture. Each declares everything it adds in its `Feature` impl. A Cargo workspace with a crate per feature would let the compiler enforce that, but isn't worth the build setup yet. |
 | AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Gemini (Interactions API) can be picked as either, and watches videos and YouTube links itself. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
 | Prompt caching | The system prompt and tool list never change. Anything that changes (the time, memory's file list, Vivy's mood) comes from tools or goes after the newest question. |

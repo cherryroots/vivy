@@ -11,19 +11,24 @@ boytacean = "=0.13.2"
 chrono = "0.4.45"
 chrono-tz = { version = "0.10.4", features = ["case-insensitive"] }
 dotenvy = "0.15.7"
+futures = "0.3.31"
 fastrand = "2.5.0"
 gif = "0.14"
 libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 image_hasher = "3.1"
-poise = "0.7.0"
+twilight-cache-inmemory = { version = "0.17.1", features = ["permission-calculator"] }
+twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots", "zstd", "twilight-http"] }
+twilight-http = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots", "decompression"] }
+twilight-interactions = "0.17.1"
+twilight-model = "0.17.1"
+twilight-util = { version = "0.17.0", features = ["builder", "snowflake", "permission-calculator"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 resvg = "0.48"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_ignored = "0.1.14"
 serde_json = "1.0.151"
-serenity = "0.12.5"
 skrifa = "0.44"
 sysinfo = "0.39.6"
 tempfile = "3.27.0"
@@ -36,3 +41,6 @@ tracing = "0.1.44"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 winnow = "1.0.4"
+
+[dev-dependencies]
+twilight-validate = "0.17.0"

@@ -7,10 +7,10 @@
 
 use std::collections::HashMap;
 
+use crate::util::discord::{GuildId, created_at};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
-use serenity::all::GuildId;
 use tracing::{info, warn};
 
 use super::{face, reflect, store, tool};
@@ -67,20 +67,11 @@ const QUIET_SECS: i64 = 24 * 60 * 60;
 /// Whether anyone wrote in `guild` (in a channel or thread the bot sees) after `since`, from
 /// the newest message ID Discord's cache keeps per channel.
 fn talked_lately(ctx: &BotCtx, guild: GuildId, since: i64) -> bool {
-    let Some(guild) = ctx.cache.guild(guild) else {
-        return false;
-    };
-    let newest = guild
-        .channels
-        .values()
+    let newest = ctx
+        .guild_channels(guild)
+        .iter()
         .filter_map(|channel| channel.last_message_id)
-        .chain(
-            guild
-                .threads
-                .iter()
-                .filter_map(|thread| thread.last_message_id),
-        )
-        .map(|id| id.created_at().unix_timestamp())
+        .map(|id| created_at(id).timestamp())
         .max();
     newest.is_some_and(|at| at > since)
 }

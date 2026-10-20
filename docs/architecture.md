@@ -35,8 +35,8 @@ All of this is in `src/main.rs`, top to bottom:
 3. **Features.** `features::all()` builds the list of every feature.
 4. **Database.** `Db::open` opens the SQLite file. Migrations run for the core, for Claude's upload table, then for every feature. If voltgpt's `old.db` is there, its reminders and wheel game are imported (see "Importing from voltgpt" below).
 5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`. With `ANTHROPIC_ADMIN_KEY`, a task starts that reads Anthropic's bill hourly.
-6. **Commands.** Every feature's slash commands are collected. Each gets its feature's name as its poise `category`, so the gate check knows whose command it is.
-7. **Connect.** serenity connects to Discord. When Discord says the bot is ready, poise runs `setup` once: it builds the `BotCtx`, starts posting to the log channel, registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
+6. **Commands.** Every feature's slash commands are collected, each tagged with its feature's name (`FeatureCommand`), so the gate check knows whose command it is.
+7. **Connect.** Twilight's `Http` client asks Discord who the bot is and who owns it. The gateway connections ("shards", one per 2500 servers, so one for Vivy) are made with the intents the bot needs; Message Content and Presences are privileged and must be turned on in the Developer Portal (without them Discord closes the connection with code 4014). The `BotCtx` is built and the log channel poster starts. Then one task per shard reads its events (`run_shard`): the cache sees each event first, then the dispatcher. On the first Ready, `on_first_ready` registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
 8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels the `shutdown` token. Background tasks see it and stop, and the bot waits up to 10 seconds for them and for event handlers still running (the control panel uses that time to show OFFLINE).
 
 ## The `Feature` trait
@@ -50,7 +50,7 @@ pub trait Feature: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     // Declarations, read once at startup.
-    fn commands(&self) -> Vec<Command>;                          // slash commands (poise)
+    fn commands(&self) -> Vec<Command>;                          // slash commands
     fn migrations(&self) -> &'static [&'static str];             // its tables
     fn mention_prefixes(&self) -> &'static [&'static str];       // "remind me", ...
     fn legacy_import(&self) -> Option<LegacyImport>;             // voltgpt's data
@@ -123,7 +123,7 @@ Which feature uses which hook:
 
 ## How events reach features
 
-The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise and hands it to the features that are allowed where it happened (see "Config and gating").
+The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from the shard tasks in `main.rs` and hands it to the features that are allowed where it happened (see "Config and gating").
 
 | Event | Who gets it |
 |---|---|
@@ -133,12 +133,44 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | An edit (or a link preview Discord adds later) | Every feature's `on_message_edit`, except edits of bot messages. |
 | A deleted message, or many at once | Every feature's `on_messages_deleted`. |
 | A button, select menu or modal | IDs look like `reminders:snooze:12:10`. The part before the first `:` picks the feature, and it gets the rest (`snooze:12:10`) as `action`. An ID matching no feature (an old voltgpt button) gets "This button is from an older version of the bot". |
-| A slash command | poise runs it. `command_check` refuses it where its feature is turned off. |
+| A slash command | The feature that declared it runs it, only where that feature is allowed (elsewhere the user is told it's turned off). An autocomplete request goes to the command's suggester. |
 | A `BotEvent` | Every enabled feature's `on_bot_event` (see "How features talk to each other"). |
 
 **Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot. The tasks are spawned on `ctx.tasks`, so at shutdown the bot waits for them (within the same 10 seconds) instead of cutting off an answer or a database write halfway.
 
 **Errors.** Handlers return `anyhow::Result`. When one fails, the dispatcher logs the error with its whole chain of causes and tells the user something: a reply for a message, a private (ephemeral) message for a button or command. Most errors become "Something went wrong. The error was logged." An error made with `user_error("...")` (`src/core/errors.rs`) is meant for the user and is shown as written, without an error in the log.
+
+## Commands, buttons and modals
+
+`src/core/interaction.rs` is the layer between Discord's interactions and the features. A command's options are a struct (or an enum of subcommands) that derives `CommandModel` and `CreateCommand` from the `twilight-interactions` crate. The same type tells Discord what the command looks like and reads the options back, and its doc comments become the descriptions Discord shows:
+
+```rust
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "timezone", desc = "Set your timezone")]
+pub struct TimezoneCommand {
+    /// A zone like Europe/Oslo. Leave empty to see yours.
+    #[command(autocomplete = true)]
+    zone: Option<String>,
+}
+
+pub fn timezone() -> Command {
+    Command::slash::<TimezoneCommand>(|ctx| Box::pin(set_timezone(ctx)))
+        .autocomplete(|_, typed| Box::pin(autocomplete_zone(typed)))
+}
+
+async fn set_timezone(ctx: CommandCtx) -> Result<()> {
+    let ctx = ctx.ephemeral();                    // answers only the user sees
+    let TimezoneCommand { zone } = ctx.parse()?;  // the options, typed
+    ctx.say("Saved.").await?;
+    Ok(())
+}
+```
+
+An enum deriving the same traits is a command with subcommands (`/memory show`, `/memory forget`), and an enum inside it is a group (`/games gameboy play`). `Command::message` makes a right-click "Apps" command on a message (Check Snail), and `.guild_only()` hides a command in DMs. `CommandCtx` has `say`, `send(Draft)`, `defer` and `parse`. A test in `features/mod.rs` checks every command against Discord's rules (`twilight-validate`), so a description that's too long fails `cargo test`, not the start.
+
+Buttons and menus come to `on_component` as a `ComponentInteraction`, modals to `on_modal` as a `ModalInteraction`. Both answer through the `Respond` trait: `create_response(ctx, Response::...)` with a new message, an update of the message the button is on, a modal, or an acknowledgement; or `defer` / `defer_ephemeral` first and `edit_response` after.
+
+Messages are built with `Draft` (`util/discord.rs`): `Draft::new().content(..).embed(..).components(..).file(..).reply_to(..)`, then `.send(http, channel)` or `.edit(...)`. `Draft::flags` sets message flags, like `IS_COMPONENTS_V2` for the new layout components. For a payload `Draft` can't express, `send_raw` posts hand-written JSON with files (voice messages use it).
 
 ## `BotCtx`: what every handler gets
 
@@ -146,9 +178,10 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 
 | Field | What it is |
 |---|---|
-| `http` | Discord's REST API: send, edit, delete, respond to interactions |
-| `cache` | What the gateway told us about servers, channels, users |
-| `shard_manager` | The gateway connections (latency on the status picture, the bot's custom status) |
+| `http` | Discord's REST API (`twilight-http`): send, edit, delete, respond to interactions |
+| `cache` | What the gateway told us about servers, channels, roles, members, emoji and presences (`twilight-cache-inmemory`). Messages aren't kept. |
+| `gateway` | The gateway connections (`core/gateway.rs`): latency on the status picture, and the bot's custom status |
+| `application_id`, `commands` | The bot's application, and every feature's commands (for the dispatcher) |
 | `db` | The SQLite database (see below) |
 | `config` | `config.toml` |
 | `ai` | The AI providers. `ctx.ai.chat()` gives the one to use for this answer (the fallback while the main one is down). Any feature can use it, not just chat. |
@@ -158,9 +191,9 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from poise an
 | `tasks` | A `TaskTracker`: tasks spawned on it are waited for at shutdown |
 | `timers` | The background loops' timers, shown on the status picture |
 | `features` | Every feature, in the order of `features::all()` |
-| `bot_id`, `started_at` | The bot's own user ID, and when it started |
+| `bot_id`, `bot_name`, `app_owners`, `started_at` | The bot's own user ID and name, who owns its Discord application, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.guild_ids()`, `ctx.guild_channels(guild)` and `ctx.guild_roles(guild)` (from the cache), `ctx.permissions_in(guild, user, roles, channel)` (what someone may do in a channel, worked out from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 
@@ -235,7 +268,8 @@ Since features never import each other, the core gives them four ways to work to
 | `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `preview_links` (the links Discord may preview: not `<link>` ones) and `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network; `png_link` turns a Discord profile picture link into a PNG of a given size |
 | `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames. At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. A GIF ffmpeg can't read falls back to its first frame, decoded by `media.rs`. |
 | `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in, plus the parts both pictures draw, like the rounded `pill` label. The wheel and the status picture use it. |
-| `search.rs` | `search`: Discord's message search (`GET /guilds/{id}/messages/search`, which serenity doesn't have yet) with every filter of the API in `Search` (content and slop, channels, authors and author types, mentions, roles, @everyone, replies, pinned, has, embed types and providers, link sites, attachment names and extensions, min/max ID, sort, limit, offset, NSFW). It waits and tries again on 202 (still indexing) and 429 (too fast). `snowflake_at` turns a time into a message ID. The results cover everything the bot can read, so callers filter them. Chat's `search_messages` and the Hunger Games' last words use it. |
+| `discord.rs` | The Discord helpers every feature uses: `Draft` (see above), `send_raw`, `get_messages` with `Page::Newest`/`Before`/`After`, `get_message`, `get_member`, `get_channel`, `react` (takes `"👍"` or `"<:name:id>"`), `start_typing` (keeps typing until dropped), buttons, menus, modals, `message_link`, `created_at` (an ID's time), `error_code`/`error_status` (Discord's error code or HTTP status from an error), and `test_message` for tests |
+| `search.rs` | `search`: Discord's message search (`GET /guilds/{id}/messages/search`, which Twilight doesn't have yet) with every filter of the API in `Search` (content and slop, channels, authors and author types, mentions, roles, @everyone, replies, pinned, has, embed types and providers, link sites, attachment names and extensions, min/max ID, sort, limit, offset, NSFW). It waits and tries again on 202 (still indexing) and 429 (too fast). `snowflake_at` turns a time into a message ID. The results cover everything the bot can read, so callers filter them. Chat's `search_messages` and the Hunger Games' last words use it. |
 | `http.rs` | `client_builder`: the user agent and timeouts every HTTP client starts from |
 | `text.rs` | Text from text-file attachments and embeds, for chat |
 | `mod.rs` | `shorten`: cut text to a number of characters, ending in "…"; `env_key`: a key from `.env`, `None` when missing or empty; `month_start`: where this month's limits start counting |
@@ -254,9 +288,8 @@ Say a feature called `quotes`:
 
    ```rust
    use async_trait::async_trait;
-   use serenity::all::Message;
-
    use crate::core::{BotCtx, Feature, Mention, Result};
+   use crate::util::discord::{Draft, Message};
 
    pub struct Quotes;
 
@@ -271,7 +304,11 @@ Say a feature called `quotes`:
        }
 
        async fn on_mention(&self, ctx: &BotCtx, msg: &Message, rest: &str) -> Result<Mention> {
-           msg.reply(&ctx.http, format!("Saved: {rest}")).await?;
+           Draft::new()
+               .content(format!("Saved: {rest}"))
+               .reply_to(msg.id)
+               .send(&ctx.http, msg.channel_id)
+               .await?;
            Ok(Mention::Handled)
        }
    }
@@ -304,7 +341,11 @@ A path through the code for learning it, from small to large:
 
 | Crate | Used for |
 |---|---|
-| `serenity`, `poise` | Discord: serenity for the gateway and REST API, poise for slash commands |
+| `twilight-gateway`, `twilight-http`, `twilight-model` | Discord: the gateway connections, the REST API, and the types of everything Discord sends |
+| `twilight-cache-inmemory` | Remembering servers, channels, roles, members and presences from the gateway, and working out permissions |
+| `twilight-interactions` | Slash commands as Rust types: one struct both describes a command and reads its options |
+| `twilight-util` | Builders for embeds, buttons and menus, and ID timestamps |
+| `twilight-validate` (tests only) | Checking every command against Discord's rules |
 | `tokio`, `tokio-util` | The async runtime; `CancellationToken` and `TaskTracker` |
 | `rusqlite`, `tokio-rusqlite` | SQLite, on its own thread |
 | `reqwest` | HTTP: the AI APIs, ElevenLabs, downloads |
@@ -322,3 +363,5 @@ A path through the code for learning it, from small to large:
 | `tempfile` | Temporary files for ffmpeg |
 | `boytacean` | The Game Boy emulator (pinned to one version, since save states may not survive an upgrade) |
 | `gif` | Writing GIFs of the Game Boy's screen with an exact palette |
+
+Twilight has more crates we don't use yet. `twilight-standby` waits for a specific event ("the next message from this user in this channel", "the next press of this button") as a future, which would suit games that wait for players' answers.

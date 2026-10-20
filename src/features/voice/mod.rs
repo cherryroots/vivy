@@ -29,11 +29,11 @@ use base64::prelude::BASE64_STANDARD;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::all::CreateAttachment;
 use tracing::info;
 
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
+use crate::util::discord::send_raw;
 use crate::util::{env_key, month_start};
 
 const KEY_VAR: &str = "ELEVENLABS_API_KEY";
@@ -186,10 +186,8 @@ The voice message is your whole answer, so usually write no text with it.",
                 "fail_if_not_exists": false,
             });
         }
-        let file = CreateAttachment::bytes(clip.ogg, "voice-message.ogg");
-        let message = ctx
-            .http
-            .send_message(asker.channel, vec![file], &payload)
+        let file = ("voice-message.ogg".to_string(), clip.ogg);
+        let message = send_raw(&ctx.http, asker.channel, &payload, &[file])
             .await
             .context("sending the voice message")?;
         info!(channel = %asker.channel, seconds = clip.seconds, characters, "sent a voice message");

@@ -12,9 +12,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::util::discord::{ChannelId, GuildId, MessageId, UserId};
 use chrono::Utc;
 use serde_json::{Value, json};
-use serenity::all::{ChannelId, GuildId, MessageId, UserId};
 use tokio::sync::Notify;
 use tracing::{Instrument as _, error, info, info_span, warn};
 

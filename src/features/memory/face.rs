@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
+use crate::util::discord::GuildId;
 use anyhow::Context as _;
 use base64::Engine as _;
 use base64::prelude::BASE64_STANDARD;
 use chrono::Utc;
 use image::imageops::FilterType;
 use serde::Deserialize;
-use serenity::all::GuildId;
 use tracing::{info, warn};
 
 use super::{name, reflect, store};
@@ -300,9 +300,11 @@ pub async fn set_picture(
     let png = tokio::task::spawn_blocking(move || load(&path, slot.size(), crop)).await??;
     let print = fingerprint(&png);
     let data = format!("data:image/png;base64,{}", BASE64_STANDARD.encode(&png));
-    let mut body = serde_json::Map::new();
-    body.insert(slot.field().into(), data.into());
-    ctx.http.edit_member_me(guild, &body, None).await?;
+    let request = ctx.http.update_current_member(guild);
+    match slot {
+        Slot::Avatar => request.avatar(Some(&data)).await?,
+        Slot::Banner => request.banner(Some(&data)).await?,
+    };
     info!(%guild, name, "changed her {}", slot.field());
 
     let (name, now) = (name.to_string(), Utc::now().timestamp());

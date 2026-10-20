@@ -225,7 +225,7 @@ impl Gemini {
             .collect();
         let mut uploads = Vec::new();
         for group in to_upload.chunks(4) {
-            let results = serenity::futures::future::join_all(
+            let results = futures::future::join_all(
                 group
                     .iter()
                     .map(|file| self.files.upload(&file.name, &file.mime, &file.data)),

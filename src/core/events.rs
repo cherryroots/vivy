@@ -9,7 +9,7 @@
 //! nothing. The events are kept so the next feature that needs to react to them can just
 //! implement `on_bot_event`, without touching reminders or the wheel.
 
-use serenity::all::{ChannelId, GuildId, UserId};
+use crate::util::discord::{ChannelId, GuildId, UserId};
 
 #[derive(Debug, Clone)]
 #[allow(dead_code, reason = "no feature listens yet")]

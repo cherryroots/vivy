@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
-use serenity::all::{GuildId, UserId};
+use crate::util::discord::{GuildId, UserId, avatar_url, get_member, member_avatar_url};
 use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
@@ -148,8 +148,9 @@ pub async fn describe(
 
 /// Someone's profile picture in this server (or their main one) as a PNG.
 async fn face(bot: BotCtx, guild: GuildId, user: UserId) -> anyhow::Result<ModelImage> {
-    let member = guild.member(&bot.http, user).await?;
-    let url = member.avatar_url().unwrap_or_else(|| member.user.face());
+    let member = get_member(&bot.http, guild, user).await?;
+    let url =
+        member_avatar_url(guild, user, member.avatar).unwrap_or_else(|| avatar_url(&member.user));
     let data = media::download(&media::png_link(&url, FACE_SIZE), 4 * 1024 * 1024).await?;
     Ok(ModelImage {
         mime: "image/png",

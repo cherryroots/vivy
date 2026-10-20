@@ -8,14 +8,15 @@
 
 use anyhow::Context as _;
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{CreateAllowedMentions, CreateEmbed};
 use tracing::info;
+use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_util::builder::embed::EmbedBuilder;
 
-use super::backfill::snail_backfill;
+use super::backfill::{SnailsBackfill, snail_backfill};
 use super::store::{self, RecentCatch};
-use crate::core::{Context, Result, user_error};
+use crate::core::{Command, CommandCtx, Result, user_error};
 use crate::util::count;
+use crate::util::discord::{Draft, no_pings};
 
 /// How many people each list shows.
 const TOP: usize = 10;
@@ -23,27 +24,49 @@ const TOP: usize = 10;
 const RECENT: usize = 10;
 const WEEK_SECS: i64 = 7 * 24 * 60 * 60;
 
-/// Reposted links and pictures
-#[poise::command(
-    slash_command,
-    guild_only,
-    subcommands("top", "recent", "reset", "snail_backfill"),
-    subcommand_required
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "snails",
+    desc = "Reposted links and pictures",
+    contexts = "guild"
 )]
-pub async fn snails(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
+pub enum SnailsCommand {
+    #[command(name = "top")]
+    Top(SnailsTop),
+    #[command(name = "recent")]
+    Recent(SnailsRecent),
+    #[command(name = "reset")]
+    Reset(SnailsReset),
+    #[command(name = "backfill")]
+    Backfill(SnailsBackfill),
 }
 
-/// Who reposts the most in this server
-#[poise::command(slash_command, guild_only)]
-pub async fn top(ctx: Context<'_>) -> Result<()> {
+pub fn snails() -> Command {
+    Command::slash::<SnailsCommand>(|ctx| Box::pin(run(ctx)))
+}
+
+async fn run(ctx: CommandCtx) -> Result<()> {
     let guild = ctx
         .guild_id()
-        .context("guild_only command without a server")?
+        .context("server-only command without a server")?
         .get();
+    match ctx.parse::<SnailsCommand>()? {
+        SnailsCommand::Top(_) => top(ctx, guild).await,
+        SnailsCommand::Recent(_) => recent(ctx, guild).await,
+        // The admin commands answer privately.
+        SnailsCommand::Reset(_) => reset(ctx.ephemeral(), guild).await,
+        SnailsCommand::Backfill(args) => snail_backfill(ctx.ephemeral(), args).await,
+    }
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "top", desc = "Who reposts the most in this server")]
+pub struct SnailsTop;
+
+async fn top(ctx: CommandCtx, guild: u64) -> Result<()> {
     let week_ago = Utc::now().timestamp() - WEEK_SECS;
     let (week, all_time) = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| {
             Ok((
@@ -54,23 +77,24 @@ pub async fn top(ctx: Context<'_>) -> Result<()> {
         .await?;
     // Mentions show names without pinging anyone.
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(board(&week, &all_time))
-            .allowed_mentions(CreateAllowedMentions::new()),
+            .allowed_mentions(no_pings()),
     )
     .await?;
     Ok(())
 }
 
-/// The last snails caught in this server, with links
-#[poise::command(slash_command, guild_only)]
-pub async fn recent(ctx: Context<'_>) -> Result<()> {
-    let guild = ctx
-        .guild_id()
-        .context("guild_only command without a server")?
-        .get();
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "recent",
+    desc = "The last snails caught in this server, with links"
+)]
+pub struct SnailsRecent;
+
+async fn recent(ctx: CommandCtx, guild: u64) -> Result<()> {
     let catches = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| Ok(store::recent_caught(conn, guild, RECENT)?))
         .await?;
@@ -80,25 +104,24 @@ pub async fn recent(ctx: Context<'_>) -> Result<()> {
     }
     // An embed: ten lines of links are too long for a plain message (2000 characters), and
     // mentions in an embed never ping anyone.
-    let embed = CreateEmbed::new()
+    let embed = EmbedBuilder::new()
         .title(format!("🐌 Last {}", count(catches.len(), "snail")))
-        .description(recent_list(guild, &catches));
-    ctx.send(CreateReply::default().embed(embed)).await?;
+        .description(recent_list(guild, &catches))
+        .build();
+    ctx.send(Draft::new().embed(embed)).await?;
     Ok(())
 }
 
-/// Start the leaderboard over (admins)
-#[poise::command(slash_command, guild_only, ephemeral)]
-pub async fn reset(ctx: Context<'_>) -> Result<()> {
-    if !ctx.data().is_admin(ctx.author().id) {
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "reset", desc = "Start the leaderboard over (admins)")]
+pub struct SnailsReset;
+
+async fn reset(ctx: CommandCtx, guild: u64) -> Result<()> {
+    if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error("Only admins can use this command."));
     }
-    let guild = ctx
-        .guild_id()
-        .context("guild_only command without a server")?
-        .get();
     let cleared = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| Ok(store::reset_caught(conn, guild)?))
         .await?;
@@ -182,8 +205,8 @@ mod tests {
 
     #[test]
     fn subcommands_have_short_names() {
-        let snails = snails();
-        let names: Vec<&str> = snails.subcommands.iter().map(|c| c.name.as_ref()).collect();
+        let snails = snails().definition;
+        let names: Vec<&str> = snails.options.iter().map(|c| c.name.as_ref()).collect();
         assert_eq!(snails.name, "snails");
         assert_eq!(names, ["top", "recent", "reset", "backfill"]);
     }
