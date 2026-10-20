@@ -10,6 +10,8 @@
 //!   screen and the last steps (Pokémon Red and Blue only, for now)
 //! - `walk`: walk to a step on the map, with code finding the way, or to the nearest
 //!   step not seen yet
+//! - `task`: a cheap model (the supervisor) carries out one short task by itself, like
+//!   "go downstairs, until you're on the floor below"
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
 //! - `off`: take the ROM out
 
@@ -21,6 +23,8 @@ use serenity::all::{AutocompleteChoice, CreateAttachment, CreateAutocompleteResp
 
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
+use super::player::OnConsole;
+use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
 use super::{Settings, files, pictures, presses};
@@ -36,12 +40,17 @@ const MAP_RADIUS: i32 = 12;
 /// Steps one `walk` takes at most.
 const WALK_MOST: u32 = 60;
 
+/// Actions one `task` takes, unless told otherwise.
+const TASK_ACTIONS: u32 = 30;
+/// Lines of what the supervisor did shown after a task.
+const TASK_LINES: usize = 6;
+
 /// Play the Game Boy by hand (admins)
 #[poise::command(
     slash_command,
     rename = "gameboy",
     subcommands(
-        "load", "press", "wait", "screen", "gif", "look", "walk", "save", "restore", "off"
+        "load", "press", "wait", "screen", "gif", "look", "walk", "task", "save", "restore", "off"
     ),
     subcommand_required
 )]
@@ -273,6 +282,94 @@ async fn walk(
     )
     .await?;
     Ok(())
+}
+
+/// Have her carry out a short task by herself, with a cheap model choosing each action
+#[poise::command(slash_command)]
+async fn task(
+    ctx: Context<'_>,
+    #[description = "What to do, ending with \"until\" and what the screen shows when it's done"]
+    task: String,
+    #[description = "Actions she may take (30)"]
+    #[min = 1]
+    #[max = 60]
+    actions: Option<u32>,
+) -> Result<()> {
+    admin(ctx)?;
+    let provider = ctx
+        .data()
+        .ai
+        .chat()
+        .ok_or_else(|| user_error("Tasks need a model: the bot has no AI key."))?;
+    ctx.defer().await?;
+    let (game, mark) = on_machine(|m| {
+        game_look(m)?;
+        Ok((game_name(&m.emulator.info().title), m.recorded()))
+    })
+    .await?;
+    let most = actions.unwrap_or(TASK_ACTIONS);
+    let episode = run_task(provider.as_ref(), &mut OnConsole, &game, &task, None, most).await?;
+    let (now, gif) = on_machine(move |m| {
+        let look = game_look(m)?;
+        let mut world = std::mem::take(&mut m.world);
+        let view = look(&mut world, m);
+        m.world = world;
+        let gif = pictures::gif(&m.screens_since(mark), RECORD_EVERY, GIF_SCALE)?;
+        Ok((describe(m, &view), gif))
+    })
+    .await?;
+    let head = match &episode.finished {
+        Some((true, summary)) => format!("✅ She says it's done: {summary}"),
+        Some((false, summary)) => format!("❌ She stopped: {summary}"),
+        None => format!("⏱️ She used all {most} actions."),
+    };
+    let skipped = episode.log.len().saturating_sub(TASK_LINES);
+    let mut lines = vec![
+        head,
+        format!(
+            "-# {} actions, {} model calls",
+            episode.actions, episode.requests
+        ),
+    ];
+    if skipped > 0 {
+        lines.push(format!("… {skipped} earlier actions"));
+    }
+    lines.extend(episode.log[skipped..].iter().map(|line| {
+        let line: String = line.chars().take(160).collect();
+        format!("- {line}")
+    }));
+    let mut text = format!("{}\n\n{now}", lines.join("\n"));
+    if text.chars().count() > 1990 {
+        text = text.chars().take(1990).collect::<String>() + "…";
+    }
+    ctx.send(
+        CreateReply::default()
+            .content(text)
+            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
+    )
+    .await?;
+    Ok(())
+}
+
+/// A ROM's title as a game's name: `POKEMON RED` is Pokémon Red.
+fn game_name(title: &str) -> String {
+    let words: Vec<String> = title
+        .split_whitespace()
+        .map(|word| match word {
+            "POKEMON" => "Pokémon".to_string(),
+            _ => {
+                let mut chars = word.chars();
+                chars.next().map_or(String::new(), |first| {
+                    first.to_string() + &chars.as_str().to_lowercase()
+                })
+            }
+        })
+        .collect();
+    if words.is_empty() {
+        "an unnamed game".to_string()
+    } else {
+        words.join(" ")
+    }
 }
 
 /// How code looks at this game, or a friendly no.

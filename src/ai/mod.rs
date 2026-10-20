@@ -210,7 +210,9 @@ impl Job {
     /// - "reflection", "diary": her own model and effort (they're her judgement and her
     ///   voice), with the web for looking things up, but no code;
     /// - "hunger_games": a Hunger Games round, in her own model at low effort so the next
-    ///   round is ready while people read this one, with no web or code.
+    ///   round is ready while people read this one, with no web or code;
+    /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
+    ///   with no web or code.
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
@@ -228,6 +230,12 @@ impl Job {
             },
             "hunger_games" => Job {
                 model: None,
+                effort: Some("low".to_string()),
+                web: off,
+                code: off,
+            },
+            "game_play" => Job {
+                model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
                 web: off,
                 code: off,

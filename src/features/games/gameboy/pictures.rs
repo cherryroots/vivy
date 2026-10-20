@@ -17,12 +17,18 @@ pub const SCALE: u32 = 3;
 
 /// A screen (3 bytes a pixel, from `Emulator::screen`) as a PNG, `SCALE` times bigger.
 pub fn png(screen: &[u8]) -> Result<Vec<u8>> {
+    png_at(screen, SCALE)
+}
+
+/// A screen as a PNG, `scale` times bigger. Models get small ones: at 2×, a screen costs
+/// Claude about 120 tokens.
+pub fn png_at(screen: &[u8], scale: u32) -> Result<Vec<u8>> {
     let image = RgbImage::from_raw(WIDTH as u32, HEIGHT as u32, screen.to_vec())
         .context("a screen of the wrong size")?;
     let big = image::imageops::resize(
         &image,
-        WIDTH as u32 * SCALE,
-        HEIGHT as u32 * SCALE,
+        WIDTH as u32 * scale,
+        HEIGHT as u32 * scale,
         FilterType::Nearest,
     );
     let mut out = std::io::Cursor::new(Vec::new());

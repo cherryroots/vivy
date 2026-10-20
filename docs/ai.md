@@ -61,7 +61,7 @@ pub struct ChatRequest {
     pub input: Input,
     pub tools: Vec<ToolDef>,  // the bot's own tools, always in the same order
     pub cache_key: String,    // requests with the same key share a cache ("discord:<channel>")
-    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games"; picks the job's settings
+    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games", "game_play"; picks the job's settings
 }
 ```
 
@@ -146,6 +146,8 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
+| `game_play` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | The Game Boy supervisor choosing its next action (`games/gameboy/supervisor.rs`, which runs its own loop since each tool result carries a screen). Many small calls, so the cheap model. |
+| `game_plan` | main | main | no | no | The Game Boy strategist (OpenAI only, `OpenAi::structured`); the gate sets its model. |
 
 On Claude, a request whose job has no bot tools (emoji, mood, hunger_games) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
 
@@ -197,6 +199,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - The body has `instructions` (the system prompt), `input`, the built-in `web_search` and `code_interpreter` tools (as the job allows, see [Jobs](#jobs)), then the bot's tools as `function` tools, plus the job's model and `reasoning.effort`, `text.verbosity`, `service_tier` (chat answers only; other jobs use the account's default), `"store": true`, `"truncation": "auto"` and `prompt_cache_key`. OpenAI caches automatically. Answers and chime-ins all use the key `vivy:chat`, since every channel starts with the same instructions and tools, so a quiet channel reads what a busy one cached; other jobs use their `cache_key`.
 - OpenAI stores every response, so `Done.continuation` is the response ID. The next request sends `previous_response_id` and only what's new. That already carries the earlier reasoning, so OpenAI ignores `Part::Native`.
 - Pictures are sent inline as base64 data URLs.
+- `OpenAi::structured` is a second, simpler call for planning jobs whose answer code reads (the Game Boy strategist): no tools, not streamed, nothing stored, and `text.format` a strict JSON schema, so the answer always parses. It adds its cost to `Spend` like the rest and returns the JSON and the tokens used, for counting the free daily tokens.
 - Attached files are uploaded first (`POST /v1/files`, kept 30 days so stored responses that point at them still work). PDFs and Office files are also given to the model to read as `input_file` (at most 50 MB per request). Types the code interpreter takes go into its container. Other files get a note saying they're attached but can't be opened.
 - Files the code interpreter made come from `container_file_citation` annotations; `download_file` reads them from `/v1/containers/{container}/files/{file}/content`.
 - 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds (or a longer `Retry-After`/`retry-after-ms`, up to 60 seconds). Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).

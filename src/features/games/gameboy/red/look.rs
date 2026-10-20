@@ -53,7 +53,13 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         area,
         at,
         can_walk,
-        text: words_of(&text_rows(&tiles)),
+        // Words are only in boxes; anything else is tiles that happen to share the font's
+        // numbers (the swirl into a battle).
+        text: if text_box {
+            words_of(&text_rows(&tiles))
+        } else {
+            String::new()
+        },
         facts,
     }
 }

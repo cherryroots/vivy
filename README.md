@@ -68,7 +68,7 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 ### Game Boy
 
-Vivy is learning to play Game Boy games. For now admins play by hand: `/games gameboy load` puts in a ROM from the `roms` folder (your own copies), `/games gameboy press buttons:a a up*3 start` presses buttons and posts a GIF of what happened, and `screen`, `wait`, `gif`, `save` and `restore` do what they say. In Pokémon Red, `/games gameboy look` shows what code reads from the game (where she is, her party, the map so far, the words on screen) and `/games gameboy walk x:5 y:3` walks her there. Later stages let her play by herself and tell the server how it's going ([docs/features/gameboy.md](docs/features/gameboy.md)).
+Vivy is learning to play Game Boy games. For now admins play by hand: `/games gameboy load` puts in a ROM from the `roms` folder (your own copies), `/games gameboy press buttons:a a up*3 start` presses buttons and posts a GIF of what happened, and `screen`, `wait`, `gif`, `save` and `restore` do what they say. In Pokémon Red, `/games gameboy look` shows what code reads from the game (where she is, her party, the map so far, the words on screen) and `/games gameboy walk x:5 y:3` walks her there. `/games gameboy task` has a cheap model carry out one short task by itself, like `go down the stairs, until you're on the floor below`. Later stages let her play by herself and tell the server how it's going ([docs/features/gameboy.md](docs/features/gameboy.md)).
 
 ### Control panel
 
