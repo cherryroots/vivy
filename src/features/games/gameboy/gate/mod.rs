@@ -825,17 +825,22 @@ Start: {}. Goal: {}.
         } else {
             &start
         },
-        journal.goal
+        journal.goal.trim_end_matches('.')
     );
     match &result {
         Ok(s) => writeln!(
             out,
-            "Ended: {} {} episodes in {:.0} minutes. New areas: {}. {} checkpoints, {}              rollbacks, {} cheap plans. Paid models ${:.2}; {} free tokens; today's              counter {} tokens.
-",
+            "Ended: {} {} episodes in {:.0} minutes. New areas: {}. {} checkpoints, {} \
+             rollbacks, {} cheap plans. Paid models ${:.2}; {} free tokens; today's \
+             counter {} tokens.\n",
             s.ended.line(),
             s.episodes,
             started.elapsed().as_secs_f64() / 60.0,
-            if s.new_areas.is_empty() { "none".to_string() } else { s.new_areas.join(", ") },
+            if s.new_areas.is_empty() {
+                "none".to_string()
+            } else {
+                s.new_areas.join(", ")
+            },
             s.checkpoints,
             s.rollbacks,
             s.cheap_plans,
@@ -844,8 +849,12 @@ Start: {}. Goal: {}.
             today.free_tokens
         )
         .unwrap(),
-        Err(err) => writeln!(out, "The session broke off: {err:#}
-").unwrap(),
+        Err(err) => writeln!(
+            out,
+            "The session broke off: {err:#}
+"
+        )
+        .unwrap(),
     }
     writeln!(
         out,

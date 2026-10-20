@@ -4,7 +4,9 @@
 //!
 //! Progress is what code sees, never what she claims: a new area, at least
 //! [`STEPS_FOR_PROGRESS`] new steps on the maps, or words on screen never read before.
-//! Episodes in a row without any climb the stuck ladder ([`Rung`]).
+//! Episodes in a row without any climb the stuck ladder ([`Rung`]). The first finished
+//! episode after progress is let off, since walking back out of a building she just went
+//! into finds nothing new by nature.
 
 use std::collections::BTreeSet;
 
@@ -41,6 +43,9 @@ pub struct Journal {
     pub log: Vec<String>,
     /// Episodes in a row without progress.
     pub stuck: u32,
+    /// Whether a finished episode with nothing new has been let off since the last
+    /// progress.
+    pub let_off: bool,
     /// Rollbacks since the last progress: each goes one checkpoint further back.
     pub rollbacks: u32,
     /// What the last task did, for the next plan (also after a restart).
@@ -113,8 +118,8 @@ impl Journal {
     }
 
     /// Counts what's new since the last call, from the maps and the words she read, and
-    /// moves the stuck count.
-    pub fn found(&mut self, world: &World, words: &[String]) -> Found {
+    /// moves the stuck count. `done` is whether she finished the task.
+    pub fn found(&mut self, world: &World, words: &[String], done: bool) -> Found {
         let mut found = Found::default();
         let mut areas: Vec<&String> = world.areas.keys().collect();
         areas.sort();
@@ -134,6 +139,9 @@ impl Journal {
         if found.progress() {
             self.stuck = 0;
             self.rollbacks = 0;
+            self.let_off = false;
+        } else if done && self.stuck == 0 && !self.let_off {
+            self.let_off = true;
         } else {
             self.stuck += 1;
         }
@@ -194,7 +202,7 @@ mod tests {
     fn new_areas_steps_and_words_are_progress() {
         let mut journal = Journal::new("win");
         let words = vec!["Hello there!".to_string()];
-        let found = journal.found(&world(&[("Town", 20)]), &words);
+        let found = journal.found(&world(&[("Town", 20)]), &words, false);
         assert_eq!(found.areas, vec!["Town"]);
         assert_eq!((found.steps, found.texts), (20, 1));
         assert_eq!(found.line(), "new: Town, 20 steps, 1 text");
@@ -202,12 +210,12 @@ mod tests {
 
         // The same words with other line breaks and case aren't new.
         let again = vec!["hello\nTHERE!".to_string()];
-        let found = journal.found(&world(&[("Town", 25)]), &again);
+        let found = journal.found(&world(&[("Town", 25)]), &again, false);
         assert!(!found.progress(), "5 steps and no new words: {found:?}");
         assert_eq!(found.line(), "new: 5 steps");
         assert_eq!(journal.stuck, 1);
 
-        let found = journal.found(&world(&[("Town", 25)]), &["Bye".to_string()]);
+        let found = journal.found(&world(&[("Town", 25)]), &["Bye".to_string()], false);
         assert!(found.progress());
         assert_eq!(journal.stuck, 0);
         assert_eq!(
@@ -215,6 +223,27 @@ mod tests {
             "nothing new",
             "an episode with nothing"
         );
+    }
+
+    #[test]
+    fn one_finished_episode_after_progress_is_let_off() {
+        let mut journal = Journal::new("win");
+        let town = world(&[("Town", 20)]);
+        journal.found(&town, &[], false);
+        // Out of the building she just went into: done, nothing new, let off.
+        assert!(!journal.found(&town, &[], true).progress());
+        assert_eq!(journal.stuck, 0);
+        // The next one counts, done or not.
+        journal.found(&town, &[], true);
+        assert_eq!(journal.stuck, 1);
+        // Progress lets the next one off again.
+        journal.found(&world(&[("Town", 20), ("Hall", 9)]), &[], false);
+        journal.found(&town, &[], true);
+        assert_eq!(journal.stuck, 0);
+        // A task not done always counts.
+        journal.found(&world(&[("Town", 20), ("Hall", 18)]), &[], false);
+        journal.found(&town, &[], false);
+        assert_eq!(journal.stuck, 1);
     }
 
     #[test]
@@ -244,7 +273,7 @@ mod tests {
         }
         assert_eq!(journal.log.len(), LOG_MOST);
         assert_eq!(journal.recent(2), ["#201", "#202"]);
-        journal.found(&world(&[("Town", 3)]), &["Hi".to_string()]);
+        journal.found(&world(&[("Town", 3)]), &["Hi".to_string()], false);
         let json = serde_json::to_string(&journal).unwrap();
         assert_eq!(serde_json::from_str::<Journal>(&json).unwrap(), journal);
         // Fields added later read as empty.

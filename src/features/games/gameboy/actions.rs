@@ -93,7 +93,8 @@ pub fn tools() -> Vec<ToolDef> {
                 when you can walk (unless stop_when_free is false), when any of stop_words \
                 is on screen, after most rounds (default 30, at most 50), when no rule fits, \
                 or when nothing changes 3 rounds running (stop words only count after its \
-                first press). The same name replaces a skill: fix one that didn't work \
+                first press). Stop words are words, never numbers: HP, levels and money \
+                change. The same name replaces a skill: fix one that didn't work \
                 rather than writing another beside it.",
             parameters: json!({
                 "type": "object",

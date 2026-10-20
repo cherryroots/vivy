@@ -417,7 +417,8 @@ pub async fn play<G: Game>(
         journal.episodes += 1;
         summary.episodes += 1;
         let world = game.world().await?;
-        let found = journal.found(&world, &episode.words);
+        let done = !stopped && !failed && matches!(episode.finished, Some((true, _)));
+        let found = journal.found(&world, &episode.words, done);
         journal.digest = episode.digest();
         let outcome = match (&episode.finished, stopped) {
             (_, true) => "stopped partway".to_string(),
@@ -951,12 +952,14 @@ mod tests {
         assert!(line(0).contains("skills: rewrote talk"), "{}", line(0));
         assert_eq!(line(1), "📍 **Checkpoint 1** · Room 1");
         assert_eq!(sent[1].picture.as_deref(), Some(&[1, 2, 3][..]));
+        // (Episode 3, done with nothing new right after progress, is let off.)
+        assert!(line(4).contains("nothing new") && !line(4).contains("stuck"));
         assert!(
-            line(7).contains("Nothing new for 3 episodes"),
+            line(8).contains("Nothing new for 3 episodes"),
             "{}",
-            line(7)
+            line(8)
         );
-        assert!(line(14).starts_with("Rolled back to checkpoint 2 in Room 2"));
+        assert!(line(15).starts_with("Rolled back to checkpoint 2 in Room 2"));
         assert!(sent.iter().filter(|r| r.picture.is_some()).count() == 2);
 
         // The dashboard's last view of it.
@@ -972,7 +975,7 @@ mod tests {
         assert_eq!(now.notes, vec!["note 13"]);
         assert_eq!(now.episodes.len(), EPISODES_SHOWN);
         assert!(now.episodes[2].starts_with("#13 "));
-        assert_eq!((now.stuck, now.checkpoints, now.skills), (2, 2, 1));
+        assert_eq!((now.stuck, now.checkpoints, now.skills), (1, 2, 1));
         assert_eq!(now.newest_skill.as_deref(), Some("talk"));
         assert!(now.started > 0);
 
@@ -980,10 +983,10 @@ mod tests {
         // after the rollback, what happened instead of the last task.
         {
             let plans = provider.plans.lock().unwrap();
-            assert!(!plans[4].contains("Nothing new for"));
-            assert!(plans[5].contains("Nothing new for 3 episodes"));
-            assert!(plans[11].contains("Went back to a checkpoint in Room 2"));
-            assert!(!plans[11].contains("Nothing new for"));
+            assert!(!plans[5].contains("Nothing new for"));
+            assert!(plans[6].contains("Nothing new for 3 episodes"));
+            assert!(plans[12].contains("Went back to a checkpoint in Room 2"));
+            assert!(!plans[12].contains("Nothing new for"));
         }
 
         // Everything a restart needs is on disk.
@@ -994,7 +997,7 @@ mod tests {
         assert_eq!(journal.goal, "reach the end");
         assert_eq!(journal.episodes, 13);
         assert_eq!(journal.notes, vec!["note 13"]);
-        assert_eq!((journal.stuck, journal.rollbacks), (2, 1));
+        assert_eq!((journal.stuck, journal.rollbacks), (1, 1));
         let skills: Vec<Skill> = read_json(&files::skills_path(dir.path(), "test.gb"))
             .await
             .unwrap()
@@ -1035,8 +1038,8 @@ mod tests {
         let summary = play(&session, &mut game, None).await.unwrap();
         assert_eq!(summary.ended, Ended::Stuck);
         assert_eq!((summary.checkpoints, summary.rollbacks), (3, 3));
-        // 3 that found something, then 4 times 9 without.
-        assert_eq!(summary.episodes, 3 + 4 * 9);
+        // 3 that found something, one let off, then 4 times 9 without.
+        assert_eq!(summary.episodes, 3 + 1 + 4 * 9);
         let journal: Journal = read_json(&files::journal_path(dir.path(), "test.gb"))
             .await
             .unwrap()

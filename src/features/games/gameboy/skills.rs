@@ -118,6 +118,15 @@ impl Skill {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(number) = stop_words
+            .iter()
+            .find(|w| w.contains(|c: char| c.is_ascii_digit()))
+        {
+            return Err(format!(
+                "Stop words can't have numbers in them (\"{number}\"): HP, levels and money \
+                 change, so it would stop at the wrong time."
+            ));
+        }
         let too_long = std::iter::once(&use_when)
             .chain(stop_words.iter())
             .chain(rules.iter().map(|r| &r.if_words))
@@ -468,6 +477,9 @@ mod tests {
         assert!(
             !bad(json!({"name": "x", "use_when": "x", "rules": [{"press": "jump"}]})).is_empty()
         );
+        let numbers = json!({"name": "x", "use_when": "x", "rules": [{"press": "a"}],
+            "stop_words": ["fainted", "9/ 31"]});
+        assert!(bad(numbers).contains("numbers in them (\"9/ 31\")"));
         let most = Skill::from_args(&json!({
             "name": "x", "use_when": "x", "rules": [{"press": "a"}], "most": 500
         }))

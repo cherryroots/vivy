@@ -29,7 +29,11 @@ and where the player is now. Facts read from the game's memory beat your notes.
 
 The next task:
 - one thing, a few steps at most, described by what's on screen, never by buttons or counts;
-- ends with \"until\" and what the screen will show when it's done;
+- in one area, or from it into the next: the executor has 30 actions, and wild battles \
+use them up;
+- ends with \"until\" and what the screen will show when it's done; to reach an area, \
+\"until you're in\" and its name as the game shows it, like \"until you're in Route 1\" \
+(code checks it);
 - different from a task that just failed, unless you can name what will go differently.
 
 Notes: facts that make sense on their own (name the people, places and things), at most \
@@ -40,7 +44,8 @@ action. Each round of a routine, the first rule whose if_words are on screen (an
 empty fits any screen) presses its buttons (1 to 5, spaced, like \"down right a\"). It \
 stops when the player can walk (unless stop_when_free is false), on a stop word once it \
 has pressed something, after most rounds (at most 50), when no rule fits, or when 3 \
-rounds change nothing. Each skill shows how its last use ended. Review them: rewrite one \
+rounds change nothing. Stop words are words, never numbers: HP, levels and money change. \
+Each skill shows how its last use ended. Review them: rewrite one \
 whose last use went wrong, merge near-copies into one and delete the rest, delete one \
 that never helped, add one when the last task repeated a job no skill covers. Rules \
 match words that are really on screen in the text read. Change nothing that works: an \

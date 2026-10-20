@@ -120,6 +120,10 @@ pub async fn run_task(
     // Whether text is still up, and whether she has been told to read it before finishing.
     let mut text_up = !start.view.can_walk && !start.view.text.is_empty();
     let mut told_to_read = false;
+    // A task to reach an area ends there: once per task she's told she isn't there yet.
+    let until = until_area(task);
+    let mut area = start.view.area.clone();
+    let mut told_where = false;
 
     while episode.actions < most {
         let request = ChatRequest {
@@ -159,11 +163,31 @@ pub async fn run_task(
                     });
                     continue;
                 }
+                if let Some(until) = until.as_deref().filter(|u| !same_area(u, &area))
+                    && finished
+                    && !told_where
+                {
+                    told_where = true;
+                    results.push(ToolOutput {
+                        call_id: call.id.clone(),
+                        output: format!(
+                            "You're in {area}, not {until} yet. Keep going until you're in \
+                             {until}, then finish."
+                        ),
+                        images: vec![png(player.screen().await?)],
+                    });
+                    continue;
+                }
                 episode.finished = Some((finished, summary));
+                return Ok(episode);
+            }
+            // Several actions in one answer stop at the limit too.
+            if episode.actions >= most {
                 return Ok(episode);
             }
             let acted = player.act(&call.name, &call.args).await?;
             text_up = !acted.view.can_walk && !acted.view.text.is_empty();
+            area.clone_from(&acted.view.area);
             episode.actions += 1;
             keep_words(&mut episode.words, &acted.words);
             episode.log.push(format!(
@@ -211,6 +235,32 @@ fn keep_words(all: &mut Vec<String>, new: &[String]) {
 }
 
 /// The arguments as they'd be typed: `(5, 3)` or `"up a"`.
+/// The area a task ends in, when it says "until you're in Route 1".
+fn until_area(task: &str) -> Option<String> {
+    let lower = task.to_ascii_lowercase();
+    let start = ["until you're in ", "until you are in "]
+        .iter()
+        .find_map(|said| lower.find(said).map(|at| at + said.len()))?;
+    let rest = &task[start..];
+    let lower = &lower[start..];
+    let end = [",", ";", ".", "(", " and ", " then "]
+        .iter()
+        .filter_map(|stop| lower.find(stop))
+        .min()
+        .unwrap_or(rest.len());
+    let area = rest[..end].trim().trim_start_matches("the ").trim();
+    (!area.is_empty()).then(|| area.to_string())
+}
+
+/// Whether two names are the same area, whatever the case or a leading "the".
+fn same_area(a: &str, b: &str) -> bool {
+    let name = |s: &str| {
+        let s = s.trim().to_lowercase();
+        s.strip_prefix("the ").unwrap_or(&s).to_string()
+    };
+    name(a) == name(b)
+}
+
 pub(super) fn args_text(args: &Value) -> String {
     if let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) {
         return format!("({x}, {y})");
@@ -380,6 +430,55 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn a_task_to_reach_an_area_names_it() {
+        let until = |task: &str| until_area(task);
+        assert_eq!(
+            until("Walk north until you're in Route 1, past the grass").as_deref(),
+            Some("Route 1")
+        );
+        assert_eq!(
+            until("Go in until you are in the Viridian Mart.").as_deref(),
+            Some("Viridian Mart")
+        );
+        assert_eq!(
+            until("Head out until you're in Pallet Town and talk to Oak").as_deref(),
+            Some("Pallet Town")
+        );
+        assert_eq!(until("Talk to Mom until the text closes"), None);
+        assert!(same_area("the viridian mart", "Viridian Mart"));
+        assert!(!same_area("Route 1", "Route 11"));
+    }
+
+    #[tokio::test]
+    async fn done_in_the_wrong_area_is_sent_back_once() {
+        let finish = || {
+            Some((
+                "finish",
+                serde_json::json!({"done": true, "summary": "there"}),
+            ))
+        };
+        let provider = Scripted {
+            answers: Mutex::new(vec![finish(), finish(), finish()]),
+            asked: Mutex::new(Vec::new()),
+        };
+        let episode = run_task(
+            &provider,
+            &mut Still,
+            "Test Game",
+            "Walk until you're in the Hall.",
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+        // Told to read the text up first, then where she is, then believed.
+        assert_eq!(episode.finished, Some((true, "there".to_string())));
+        assert_eq!(episode.requests, 3);
+        let asked = provider.asked.lock().unwrap();
+        assert!(texts(&asked[2]).contains("You're in Room, not Hall yet."));
     }
 
     #[tokio::test]
