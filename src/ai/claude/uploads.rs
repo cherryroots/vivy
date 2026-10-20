@@ -31,6 +31,10 @@ pub const MIGRATIONS: &[&str] = &[
         file_id TEXT NOT NULL,
         expires_at INTEGER NOT NULL
     );",
+    // 2: pictures are named by their bytes now (they were all image.png), and that name is
+    // what they're called in the code execution container. Forget the old uploads so
+    // they're uploaded again under the new names.
+    "DELETE FROM claude_uploads;",
 ];
 
 /// An upload isn't reused in the last day before it expires, so it can't expire halfway

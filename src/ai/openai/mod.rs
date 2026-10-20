@@ -6,8 +6,9 @@
 //! what's new plus `previous_response_id`.
 //!
 //! Attached files are uploaded first (`POST /v1/files`). Files the code interpreter takes
-//! go into its sandbox; PDFs, Office files and spreadsheets are also given to the model to
-//! read (`input_file`). Small text files are already in the message text.
+//! go into its sandbox, and so do pictures; PDFs, Office files and spreadsheets are also
+//! given to the model to read (`input_file`). Small text files are already in the message
+//! text.
 //!
 //! What each response cost is added to [`Spend`] (see `price.rs`). `billing.rs` reads the
 //! real bill with an Admin key, and `images.rs` draws pictures with the Image API.
@@ -165,8 +166,8 @@ impl OpenAi {
         }
     }
 
-    /// The JSON body of a request. `uploads` has the file ID of each attached file in the
-    /// order they appear (see [`OpenAi::upload_files`]).
+    /// The JSON body of a request. `uploads` has the file ID of each attached file and
+    /// picture in the order they appear (see [`OpenAi::upload_files`]).
     fn request_body(&self, request: &ChatRequest, uploads: &[Option<String>]) -> Value {
         let turns = match &request.input {
             Input::Full(turns) => turns,
@@ -178,14 +179,18 @@ impl OpenAi {
             Input::After { continuation, .. } => Some(continuation),
         };
 
-        // Files the code interpreter takes are copied into its sandbox.
-        let files = turns.iter().flat_map(|t| &t.parts).filter_map(|p| match p {
-            Part::File(file) => Some(file),
-            _ => None,
-        });
-        let file_ids: Vec<&String> = files
+        // Files the code interpreter takes are copied into its sandbox, and so are pictures
+        // (only uploaded when it takes them).
+        let files_and_pictures = turns
+            .iter()
+            .flat_map(|t| &t.parts)
+            .filter(|p| matches!(p, Part::File(_) | Part::Image(_)));
+        let file_ids: Vec<&String> = files_and_pictures
             .zip(uploads)
-            .filter(|(file, _)| fits_sandbox(file))
+            .filter(|(part, _)| match part {
+                Part::File(file) => fits_sandbox(file),
+                _ => true,
+            })
             .filter_map(|(_, id)| id.as_ref())
             .collect();
         let mut container = json!({"type": "auto"});
@@ -348,29 +353,54 @@ impl OpenAi {
     }
 
     /// Uploads every file in the request that the model or the code interpreter can use,
-    /// one at a time, in order. Other files, and files that fail to upload, are `None`.
+    /// and, when the job has the code interpreter, every picture it takes, one at a time,
+    /// in order. Other files and pictures, and ones that fail to upload, are `None`.
     async fn upload_files(&self, request: &ChatRequest) -> Vec<Option<String>> {
         let turns = match &request.input {
             Input::Full(turns) => turns,
             Input::After { new, .. } => new,
         };
+        let code = job_settings(&self.config.jobs, request.job, None)
+            .code
+            .unwrap_or(true);
         let mut uploads = Vec::new();
         for part in turns.iter().flat_map(|t| &t.parts) {
-            let Part::File(file) = part else { continue };
-            if !is_readable(file) && !fits_sandbox(file) {
-                uploads.push(None);
-                continue;
-            }
-            match self.upload(file).await {
-                Ok(id) => uploads.push(Some(id)),
-                Err(err) => {
-                    warn!("couldn't upload {} to OpenAI: {err:#}", file.name);
-                    uploads.push(None);
+            let upload = match part {
+                Part::File(file) if is_readable(file) || fits_sandbox(file) => {
+                    self.try_upload(file).await
                 }
-            }
+                Part::Image(image) if code => match picture_file(image) {
+                    Some(file) => self.try_upload(&file).await,
+                    None => None,
+                },
+                Part::File(_) | Part::Image(_) => None,
+                _ => continue,
+            };
+            uploads.push(upload);
         }
         uploads
     }
+
+    /// [`OpenAi::upload`], with a failure logged.
+    async fn try_upload(&self, file: &ModelFile) -> Option<String> {
+        match self.upload(file).await {
+            Ok(id) => Some(id),
+            Err(err) => {
+                warn!("couldn't upload {} to OpenAI: {err:#}", file.name);
+                None
+            }
+        }
+    }
+}
+
+/// A picture as a file for the code interpreter's sandbox, when the sandbox takes its type.
+fn picture_file(image: &ModelImage) -> Option<ModelFile> {
+    let file = ModelFile {
+        name: image.file_name(),
+        mime: image.mime.to_string(),
+        data: image.data.clone(),
+    };
+    fits_sandbox(&file).then_some(file)
 }
 
 /// How one attached file is sent: the file to read, and a note saying where it is.
@@ -415,11 +445,22 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                 (Part::Text(text), Role::Assistant) => {
                     content.push(json!({"type": "output_text", "text": text}));
                 }
-                (Part::Image(image), _) => content.push(json!({
-                    "type": "input_image",
-                    "image_url": image.data_url(),
-                    "detail": "auto",
-                })),
+                (Part::Image(image), _) => {
+                    content.push(json!({
+                        "type": "input_image",
+                        "image_url": image.data_url(),
+                        "detail": "auto",
+                    }));
+                    if let Some(Some(_)) = uploads.next() {
+                        content.push(json!({
+                            "type": "input_text",
+                            "text": format!(
+                                "[The picture above is in the code interpreter's /mnt/data folder as {}]",
+                                image.file_name()
+                            ),
+                        }));
+                    }
+                }
                 (Part::File(file), _) => {
                     let upload = uploads.next().and_then(|id| id.as_deref());
                     content.extend(file_content(file, upload, &mut readable_bytes));
@@ -807,17 +848,25 @@ mod tests {
                 data: b"data".to_vec(),
             })
         };
+        let picture = |mime| ModelImage {
+            mime,
+            data: vec![1],
+        };
+        // The sandbox doesn't take WebP pictures; they're only looked at.
+        assert!(picture_file(&picture("image/webp")).is_none());
         let request = ChatRequest {
             system: String::new(),
             input: Input::Full(vec![Turn {
                 role: Role::User,
                 parts: vec![
                     Part::Text("what's in these?".into()),
+                    Part::Image(picture("image/png")),
                     file("report.pdf", "application/pdf"),
                     file("slides.odt", "application/vnd.oasis.opendocument.text"),
                     file("data.zip", "application/zip"),
                     file("song.mp3", "audio/mpeg"),
                     file("broken.pdf", "application/pdf"),
+                    Part::Image(picture("image/webp")),
                 ],
             }]),
             tools: Vec::new(),
@@ -825,9 +874,11 @@ mod tests {
             job: "chat",
         };
         let uploads = [
+            Some("file-0".to_string()),
             Some("file-1".to_string()),
             Some("file-2".to_string()),
             Some("file-3".to_string()),
+            None,
             None,
             None,
         ];
@@ -837,18 +888,21 @@ mod tests {
             body["input"][0]["content"],
             json!([
                 text("what's in these?"),
+                {"type": "input_image", "image_url": "data:image/png;base64,AQ==", "detail": "auto"},
+                text("[The picture above is in the code interpreter's /mnt/data folder as image-040c5b8c.png]"),
                 {"type": "input_file", "file_id": "file-1"},
                 text("[report.pdf is in the code interpreter's /mnt/data folder]"),
                 {"type": "input_file", "file_id": "file-2"},
                 text("[data.zip is in the code interpreter's /mnt/data folder]"),
                 text("[song.mp3 is attached, but you can't open this kind of file here]"),
                 text("[broken.pdf is attached, but it couldn't be uploaded]"),
+                {"type": "input_image", "image_url": "data:image/webp;base64,AQ==", "detail": "auto"},
             ])
         );
         // The .odt is read, but the code interpreter doesn't take it.
         assert_eq!(
             body["tools"][1]["container"],
-            json!({"type": "auto", "file_ids": ["file-1", "file-3"]})
+            json!({"type": "auto", "file_ids": ["file-0", "file-1", "file-3"]})
         );
     }
 

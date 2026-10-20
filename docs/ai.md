@@ -174,7 +174,7 @@ When the request has bot tools (chat, chime-ins, reflection, diary), `thinking.d
 
 Beta headers: `thinking-binding-controls-2026-08-01`, `thinking-display-updates-2026-08-18`, and `server-side-fallback-2026-07-01` when `fallbacks` is on.
 
-**Building the messages** (`messages::to_messages`): text, pictures and tool results become content blocks. An assistant turn with a `Part::Native` written by `"claude"` with the same model is replaced by its rounds, exactly as stored. Any other assistant turn sends only its text. A file becomes a note naming it, a `document` block for PDFs (so Claude reads them), and a `container_upload` block when code execution is on (so code can open it). If a chain starts with one of the bot's messages, a short user message is put first, since Claude requires the user to speak first.
+**Building the messages** (`messages::to_messages`): text, pictures and tool results become content blocks. An assistant turn with a `Part::Native` written by `"claude"` with the same model is replaced by its rounds, exactly as stored. Any other assistant turn sends only its text. A file becomes a note naming it, a `document` block for PDFs (so Claude reads them), and a `container_upload` block when code execution is on (so code can open it). A picture that's uploaded also gets a `container_upload` block when code execution is on, after a note saying its name in the container (`image_name`: `image-1a2b3c4d.png`, from `ModelImage::file_name`, a 32-bit FNV-1a hash of the bytes, so pasted screenshots that Discord all calls `image.png` don't overwrite each other; `.jpeg` when it's made smaller first). That covers pictures on the message she answers and on every earlier message in the request, like the one it replies to. If a chain starts with one of the bot's messages, a short user message is put first, since Claude requires the user to speak first.
 
 **Uploads**: pictures and files go through the Files API: uploaded once, then sent by `file_id` (see "Uploads" below). Up to 4 are uploaded at once. Pictures over 2000 pixels a side or 5 MB are made smaller first (`shrink_image`), because Claude rejects big ones once a request has more than 20 pictures. A picture that fails to upload is sent inline as base64.
 
@@ -201,6 +201,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - Pictures are sent inline as base64 data URLs.
 - `OpenAi::structured` is a second, simpler call for planning jobs whose answer code reads (the Game Boy strategist): no tools, not streamed, nothing stored, and `text.format` a strict JSON schema, so the answer always parses. It adds its cost to `Spend` like the rest and returns the JSON and the tokens used, for counting the free daily tokens.
 - Attached files are uploaded first (`POST /v1/files`, kept 30 days so stored responses that point at them still work). PDFs and Office files are also given to the model to read as `input_file` (at most 50 MB per request). Types the code interpreter takes go into its container. Other files get a note saying they're attached but can't be opened.
+- When the job has the code interpreter, pictures (PNG, JPEG and GIF, the types it takes) are uploaded too, named like on Claude (`ModelImage::file_name`), and go into its container, with a note after the picture saying where (`/mnt/data/image-1a2b3c4d.png`).
 - Files the code interpreter made come from `container_file_citation` annotations; `download_file` reads them from `/v1/containers/{container}/files/{file}/content`.
 - 429, 500, 502 and 503 are retried twice, after 2 and 6 seconds (or a longer `Retry-After`/`retry-after-ms`, up to 60 seconds). Stream errors become an `ApiError` (500 for `server_error`, 429 for rate limits and `insufficient_quota`, 400 otherwise).
 - When the stream ends with `response.completed` (or `response.incomplete`), `add_spend` prices the response's `usage` with `price::chat_cost` and adds it to OpenAI's `Spend` (see below).
@@ -256,6 +257,7 @@ Thinking is never shown in Discord, apart from Claude's progress notes between t
 - An ID is not reused in its last day, so it can't expire halfway through an answer.
 - `Uploads` keeps the IDs it has seen in memory too, so most lookups don't touch the database.
 - One that Claude reports as gone is dropped (`Uploads::forget`) and uploaded again.
+- Migration 2 empties the table once: pictures used to all be uploaded as `image.png`, and their upload name is their name in the code execution container, so they're uploaded again under `image-<hash>` names. That costs one re-upload and one prompt cache miss per channel.
 
 The upload is found by the original's bytes, even when a smaller copy was uploaded, so a big picture is shrunk once.
 
