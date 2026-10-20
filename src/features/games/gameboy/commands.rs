@@ -298,7 +298,8 @@ fn describe(m: &Machine, view: &View) -> String {
             }
             radius -= 2;
         };
-        parts.push(format!("```\n{drawn}```-# {LEGEND}"));
+        // Subtext (`-#`) only works at the start of a line.
+        parts.push(format!("```\n{drawn}```\n-# {LEGEND}"));
     }
     if !view.text.is_empty() {
         parts.push(format!("On screen: {}", view.text.replace('\n', " / ")));
@@ -319,6 +320,14 @@ fn describe(m: &Machine, view: &View) -> String {
     let recent = m.world.recent(5);
     if !recent.is_empty() {
         parts.push(format!("Last steps:\n{}", recent.join("\n")));
+    }
+    if parts.is_empty() {
+        // The title screen, a menu before the game starts: nothing code can read.
+        parts.push(
+            "Code can't see her on a map and there are no words on screen (the title screen, \
+             or a menu?). `/games gameboy screen` shows what's there."
+                .to_string(),
+        );
     }
     let mut text = parts.join("\n");
     if text.chars().count() > 1900 {
@@ -495,6 +504,28 @@ mod tests {
         assert_eq!(play_time(0), "0 s");
         assert_eq!(play_time(600), "10 s");
         assert_eq!(play_time(60 * 200), "3 min 21 s");
+    }
+
+    #[test]
+    fn a_look_at_nothing_still_says_something_and_the_legend_is_subtext() {
+        let mut m = Machine::new(
+            "test.gb",
+            &crate::features::games::gameboy::test_rom::build(),
+        )
+        .unwrap();
+        let mut view = View {
+            area: "map 0".to_string(),
+            at: (0, 0),
+            can_walk: false,
+            text: String::new(),
+            facts: String::new(),
+        };
+        assert!(describe(&m, &view).starts_with("Code can't see her on a map"));
+
+        m.world.area("Room").walked((1, 1));
+        view.area = "Room".to_string();
+        let text = describe(&m, &view);
+        assert!(text.contains("```\n-# @ you"), "{text}");
     }
 
     #[test]
