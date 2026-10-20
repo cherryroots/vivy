@@ -12,6 +12,7 @@
 //!   step not seen yet
 //! - `task`: a cheap model (the supervisor) carries out one short task by itself, like
 //!   "go downstairs, until you're on the floor below"
+//! - `skills`: the skills she has written for this game, and forgetting one
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
 //! - `off`: take the ROM out
 
@@ -27,7 +28,7 @@ use super::player::OnConsole;
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
-use super::{Settings, files, pictures, presses};
+use super::{Settings, files, pictures, presses, skills};
 use crate::core::{Context, Result, user_error};
 
 /// Pictures in GIFs are this many times the screen's size (320×288). Smaller than PNGs,
@@ -50,7 +51,8 @@ const TASK_LINES: usize = 6;
     slash_command,
     rename = "gameboy",
     subcommands(
-        "load", "press", "wait", "screen", "gif", "look", "walk", "task", "save", "restore", "off"
+        "load", "press", "wait", "screen", "gif", "look", "walk", "task", "skills", "save",
+        "restore", "off"
     ),
     subcommand_required
 )]
@@ -73,10 +75,12 @@ async fn load(
     let bytes = tokio::fs::read(&path)
         .await
         .with_context(|| format!("reading {}", path.display()))?;
+    let known = read_skills(&settings, &rom).await?;
     let name = rom.clone();
     let (title, gif) = console()
         .with(move |machine| -> Result<_> {
             let mut m = Machine::new(&name, &bytes).map_err(|e| user_error(format!("{e:#}")))?;
+            m.world.skills = known;
             // The boot logo and the first moments of the game.
             m.run(4 * 60);
             let gif = pictures::gif(&m.screens_since(0), RECORD_EVERY, GIF_SCALE)?;
@@ -295,20 +299,31 @@ async fn task(
     #[max = 60]
     actions: Option<u32>,
 ) -> Result<()> {
-    admin(ctx)?;
+    let settings = admin(ctx)?;
     let provider = ctx
         .data()
         .ai
         .chat()
         .ok_or_else(|| user_error("Tasks need a model: the bot has no AI key."))?;
     ctx.defer().await?;
-    let (game, mark) = on_machine(|m| {
+    let (game, mark, rom, known) = on_machine(|m| {
         game_look(m)?;
-        Ok((game_name(&m.emulator.info().title), m.recorded()))
+        Ok((
+            game_name(&m.emulator.info().title),
+            m.recorded(),
+            m.rom.clone(),
+            m.world.skills.clone(),
+        ))
     })
     .await?;
     let most = actions.unwrap_or(TASK_ACTIONS);
-    let episode = run_task(provider.as_ref(), &mut OnConsole, &game, &task, None, most).await?;
+    let episode = run_task(provider.as_ref(), &mut OnConsole, &game, &task, None, most).await;
+    // What she wrote down is kept even when the task fails partway.
+    let now_known = on_machine(|m| Ok(m.world.skills.clone())).await?;
+    if now_known != known {
+        write_skills(&settings, &rom, &now_known).await?;
+    }
+    let episode = episode?;
     let (now, gif) = on_machine(move |m| {
         let look = game_look(m)?;
         let mut world = std::mem::take(&mut m.world);
@@ -349,6 +364,54 @@ async fn task(
     )
     .await?;
     Ok(())
+}
+
+/// Show the skills she has written for this game
+#[poise::command(slash_command)]
+async fn skills(
+    ctx: Context<'_>,
+    #[description = "A skill to forget, by its name"] forget: Option<String>,
+) -> Result<()> {
+    let settings = admin(ctx)?;
+    let (rom, forgot, list) = on_machine(move |m| {
+        let forgot = forget.map(|name| skills::forget(&mut m.world.skills, &name).ok_or(name));
+        Ok((m.rom.clone(), forgot, m.world.skills.clone()))
+    })
+    .await?;
+    let mut text = match forgot {
+        Some(Ok(skill)) => {
+            write_skills(&settings, &rom, &list).await?;
+            format!("🗑️ Forgot **{}**.\n\n", skill.name)
+        }
+        Some(Err(name)) => return Err(user_error(format!("She has no skill called `{name}`."))),
+        None => String::new(),
+    };
+    if list.is_empty() {
+        text.push_str("She hasn't written any skills for this game yet.");
+    } else {
+        let written: Vec<String> = list.iter().map(skills::Skill::written).collect();
+        text.push_str(&written.join("\n\n"));
+    }
+    if text.chars().count() > 1990 {
+        text = text.chars().take(1990).collect::<String>() + "…";
+    }
+    ctx.say(text).await?;
+    Ok(())
+}
+
+/// Her skills for `rom`, from their file (none when there isn't one yet).
+async fn read_skills(settings: &Settings, rom: &str) -> Result<Vec<skills::Skill>> {
+    let path = files::skills_path(&settings.saves_dir(), rom);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(json) => Ok(skills::from_json(&json)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", path.display()))),
+    }
+}
+
+async fn write_skills(settings: &Settings, rom: &str, list: &[skills::Skill]) -> Result<()> {
+    let path = files::skills_path(&settings.saves_dir(), rom);
+    write_file(&path, serde_json::to_string_pretty(list)?.as_bytes()).await
 }
 
 /// A ROM's title as a game's name: `POKEMON RED` is Pokémon Red.

@@ -30,6 +30,9 @@ screen.
 - Text boxes: use read_text. Choices and menus: move the cursor with press, then press a.
 - To talk to someone or read a sign, stand next to it, face it (press that direction), \
 then press a.
+- When you catch yourself pressing the same things again and again (battles, menus), write \
+a skill for it with write_skill, then run it with use_skill. Skills stay for this game. \
+After using one, check how it went, and rewrite it if it didn't do what you meant.
 - Judge the screen, not your own claims. When nothing changes, check which way you're \
 facing and try something different.
 - When the screen shows the task is done, call finish with done: true. If it can't be done \
@@ -194,9 +197,10 @@ fn args_text(args: &Value) -> String {
     if let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) {
         return format!("({x}, {y})");
     }
-    match args["buttons"].as_str() {
-        Some(buttons) => format!("\"{buttons}\""),
-        None => String::new(),
+    match (args["buttons"].as_str(), args["name"].as_str()) {
+        (Some(buttons), _) => format!("\"{buttons}\""),
+        (None, Some(name)) => format!("\"{name}\""),
+        _ => String::new(),
     }
 }
 

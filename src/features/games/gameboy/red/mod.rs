@@ -48,6 +48,18 @@ mod address {
     pub const GRASS_TILE: u16 = 0xd535; // wGrassTile
     pub const EVENT_FLAGS: u16 = 0xd747; // wEventFlags
     pub const JOY_IGNORE: u16 = 0xcd6b; // wJoyIgnore, buttons the game ignores
+    pub const ENEMY_SPECIES: u16 = 0xcfe5; // wEnemyMonSpecies
+    pub const ENEMY_HP: u16 = 0xcfe6; // wEnemyMonHP
+    pub const ENEMY_STATUS: u16 = 0xcfe9; // wEnemyMonStatus
+    pub const ENEMY_LEVEL: u16 = 0xcff3; // wEnemyMonLevel
+    pub const ENEMY_MAX_HP: u16 = 0xcff4; // wEnemyMonMaxHP
+    pub const BATTLE_SPECIES: u16 = 0xd014; // wBattleMonSpecies
+    pub const BATTLE_HP: u16 = 0xd015; // wBattleMonHP
+    pub const BATTLE_STATUS: u16 = 0xd018; // wBattleMonStatus
+    pub const BATTLE_MOVES: u16 = 0xd01c; // wBattleMonMoves
+    pub const BATTLE_LEVEL: u16 = 0xd022; // wBattleMonLevel
+    pub const BATTLE_MAX_HP: u16 = 0xd023; // wBattleMonMaxHP
+    pub const BATTLE_PP: u16 = 0xd02d; // wBattleMonPP
     pub const STATUS_FLAGS_5: u16 = 0xd730; // wStatusFlags5
 }
 
@@ -79,6 +91,17 @@ pub struct Mon {
     pub max_hp: u16,
     /// Asleep, poisoned, burned, frozen or paralysed, if any.
     pub status: Option<&'static str>,
+}
+
+impl Mon {
+    /// Like `Pidgey Lv3, 12/12 HP, asleep`.
+    pub fn short(&self) -> String {
+        let status = self.status.map(|s| format!(", {s}")).unwrap_or_default();
+        format!(
+            "{} Lv{}, {}/{} HP{status}",
+            self.species, self.level, self.hp, self.max_hp
+        )
+    }
 }
 
 /// A door or staircase on this map: where it is, and the map it leads to.
@@ -123,6 +146,18 @@ pub struct State {
     pub grass_tile: u8,
     /// The story flags of [`STORY`] that are set, by name.
     pub story: Vec<&'static str>,
+    /// The battle going on, if there is one.
+    pub fight: Option<Fight>,
+}
+
+/// Both sides of a battle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fight {
+    /// Her Pokémon out now.
+    pub ours: Mon,
+    /// Its moves and the PP left on each.
+    pub moves: Vec<(String, u8)>,
+    pub theirs: Mon,
 }
 
 impl State {
@@ -191,6 +226,11 @@ impl State {
             passable: passable_tiles(emu),
             grass_tile: r(emu, GRASS_TILE),
             story,
+            // Until both Pokémon are out, the battle copies hold the last battle's.
+            fight: (matches!(r(emu, IN_BATTLE), 1 | 2)
+                && r(emu, BATTLE_SPECIES) != 0
+                && r(emu, ENEMY_SPECIES) != 0)
+                .then(|| read_fight(emu)),
         }
     }
 
@@ -266,7 +306,25 @@ impl State {
         if !self.story.is_empty() {
             lines.push(format!("Story so far: {}", self.story_lines().join("; ")));
         }
-        if self.battle != 0 {
+        if let Some(fight) = &self.fight {
+            let against = if self.battle == 1 {
+                "a wild"
+            } else {
+                "a trainer's"
+            };
+            let moves: Vec<String> = fight
+                .moves
+                .iter()
+                .enumerate()
+                .map(|(i, (name, pp))| format!("{} {name} (PP {pp})", i + 1))
+                .collect();
+            lines.push(format!(
+                "In a battle with {against} {}. Out now: {}. Moves: {}",
+                fight.theirs.short(),
+                fight.ours.short(),
+                moves.join(", ")
+            ));
+        } else if self.battle != 0 {
             lines.push(
                 match self.battle {
                     1 => "In a battle with a wild Pokémon",
@@ -288,6 +346,40 @@ impl State {
     }
 }
 
+/// A battle's two Pokémon, from the game's battle copies of them (they can differ from the
+/// party's, like a stat lowered by Growl).
+fn read_fight(emu: &mut Emulator) -> Fight {
+    use address::*;
+    let word = |emu: &mut Emulator, at: u16| u16::from_be_bytes([emu.read(at), emu.read(at + 1)]);
+    let ours = Mon {
+        species: species_name(emu.read(BATTLE_SPECIES)),
+        level: emu.read(BATTLE_LEVEL),
+        hp: word(emu, BATTLE_HP),
+        max_hp: word(emu, BATTLE_MAX_HP),
+        status: status_name(emu.read(BATTLE_STATUS)),
+    };
+    let theirs = Mon {
+        species: species_name(emu.read(ENEMY_SPECIES)),
+        level: emu.read(ENEMY_LEVEL),
+        hp: word(emu, ENEMY_HP),
+        max_hp: word(emu, ENEMY_MAX_HP),
+        status: status_name(emu.read(ENEMY_STATUS)),
+    };
+    let moves = (0..4)
+        .filter_map(|i| {
+            let id = emu.read(BATTLE_MOVES + i);
+            // The low 6 bits are the PP left; the top 2 count PP Ups.
+            let pp = emu.read(BATTLE_PP + i) & 0x3f;
+            (id != 0).then(|| (move_name(id), pp))
+        })
+        .collect();
+    Fight {
+        ours,
+        moves,
+        theirs,
+    }
+}
+
 fn read_mon(emu: &mut Emulator, at: u16) -> Mon {
     let species = emu.read(at);
     let hp = u16::from_be_bytes([emu.read(at + 1), emu.read(at + 2)]);
@@ -295,21 +387,35 @@ fn read_mon(emu: &mut Emulator, at: u16) -> Mon {
     let level = emu.read(at + 0x21);
     let max_hp = u16::from_be_bytes([emu.read(at + 0x22), emu.read(at + 0x23)]);
     Mon {
-        species: names::SPECIES[species as usize]
-            .map(str::to_string)
-            .unwrap_or_else(|| format!("Pokémon #{species}")),
+        species: species_name(species),
         level,
         hp,
         max_hp,
-        status: match status {
-            0 => None,
-            s if s & 0x07 != 0 => Some("asleep"),
-            s if s & 0x08 != 0 => Some("poisoned"),
-            s if s & 0x10 != 0 => Some("burned"),
-            s if s & 0x20 != 0 => Some("frozen"),
-            s if s & 0x40 != 0 => Some("paralysed"),
-            _ => None,
-        },
+        status: status_name(status),
+    }
+}
+
+fn species_name(species: u8) -> String {
+    names::SPECIES[species as usize]
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Pokémon #{species}"))
+}
+
+fn move_name(id: u8) -> String {
+    names::MOVES[id as usize]
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("move #{id}"))
+}
+
+fn status_name(status: u8) -> Option<&'static str> {
+    match status {
+        0 => None,
+        s if s & 0x07 != 0 => Some("asleep"),
+        s if s & 0x08 != 0 => Some("poisoned"),
+        s if s & 0x10 != 0 => Some("burned"),
+        s if s & 0x20 != 0 => Some("frozen"),
+        s if s & 0x40 != 0 => Some("paralysed"),
+        _ => None,
     }
 }
 

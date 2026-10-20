@@ -16,6 +16,9 @@
 //!   an OpenAI model that writes a hint before each task
 //! - `gate_strategists`: the long goal with each strategist in `VIVY_GB_STRATEGISTS`
 //!   (`gpt-6-astra,gpt-6.1-sol`), asked in one call and in two
+//! - `gate_learning`: stage 4's question, whether she gets better by writing skills. The
+//!   tasks in `VIVY_GB_LEARN` (the rival battle, then up Route 1), `VIVY_GB_RUNS` times
+//!   (5) in a row, with the skills she writes kept from one run to the next
 //!
 //! They only run with `VIVY_GB_GATE=1`, so `cargo test gameboy -- --ignored` (the ROM
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
@@ -535,6 +538,108 @@ async fn gate_strategists() {
     println!("{report}\nResults in {}", folder.display());
 }
 
+/// The tasks `gate_learning` plays in turn: battles, where writing a skill should pay.
+const LEARN_TASKS: &str = "rival battle,up Route 1";
+
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and the model keys; spends money"]
+async fn gate_learning() {
+    if !gate_on() {
+        return;
+    }
+    let http = http();
+    let db = spend_db().await;
+    let model = setting("VIVY_GB_PLAYER", "claude-haiku-5-5");
+    let (provider, _) = player_model(&http, &db, &model);
+    let runs: u32 = setting("VIVY_GB_RUNS", "5").parse().unwrap();
+    let cap: f64 = setting("VIVY_GB_GATE_USD", "15").parse().unwrap();
+    let names = setting("VIVY_GB_LEARN", LEARN_TASKS);
+    let folder = results(&format!("learning-{}", file_name(&model)));
+    let mut log = String::new();
+    let mut report = format!(
+        "# Stage 4 learning: {model}\n\nEach run starts from the same state, with the skills \
+         written in the runs before it.\n\n\
+         | Run | Task | Done | Actions | Skills written | Skills used | Cost |\n\
+         |---|---|---|---|---|---|---|\n"
+    );
+    let mut known: Vec<super::skills::Skill> = Vec::new();
+    let count = |episode: &Episode, action: &str| {
+        episode
+            .log
+            .iter()
+            .filter(|line| line.starts_with(action))
+            .count()
+    };
+
+    'runs: for run in 1..=runs {
+        for name in names.split(',').map(str::trim) {
+            let task = TASKS.iter().find(|t| t.name == name).expect("a gate task");
+            if spent(&db).await >= cap {
+                report.push_str("\nStopped early: the spending cap was reached.\n");
+                break 'runs;
+            }
+            let before = spent(&db).await;
+            let mut local = Local::new(load(task.state));
+            local.world.skills = known.clone();
+            let episode = run_task(
+                provider.as_ref(),
+                &mut local,
+                GAME,
+                task.text,
+                None,
+                task.most,
+            )
+            .await
+            .unwrap_or_else(|err| Episode {
+                log: vec![format!("The model call failed: {err:#}")],
+                ..Episode::default()
+            });
+            known = local.world.skills.clone();
+            let after = local.state();
+            let done = (task.done)(&Check {
+                after: &after,
+                words: &episode.words,
+            });
+            let mark = if done { "done" } else { "NOT done" };
+            writeln!(
+                report,
+                "| {run} | {name} | {mark} | {} | {} | {} | ${:.3} |",
+                episode.actions,
+                count(&episode, "write_skill"),
+                count(&episode, "use_skill"),
+                spent(&db).await - before
+            )
+            .unwrap();
+            writeln!(log, "## Run {run}, {name}: {mark}\n\n{}", episode.digest()).unwrap();
+            save_screen(
+                &mut local,
+                folder.join(format!("{run}-{}.png", file_name(name))),
+            );
+            println!("{run} {name}: {mark}, {} actions", episode.actions);
+        }
+    }
+    let written: Vec<String> = known.iter().map(super::skills::Skill::written).collect();
+    writeln!(
+        report,
+        "\nSpent ${:.2} at list prices.\n\n## Her skills at the end\n\n{}",
+        spent(&db).await,
+        if written.is_empty() {
+            "None.".to_string()
+        } else {
+            written.join("\n\n")
+        }
+    )
+    .unwrap();
+    std::fs::write(folder.join("report.md"), &report).unwrap();
+    std::fs::write(folder.join("log.md"), &log).unwrap();
+    std::fs::write(
+        folder.join("skills.json"),
+        serde_json::to_string_pretty(&known).unwrap(),
+    )
+    .unwrap();
+    println!("{report}\nResults in {}", folder.display());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +771,116 @@ mod tests {
         ];
         let (mut local, words) = play("parcel", &save).await;
         assert!(passes("save the game", &mut local, &words), "{words:?}");
+    }
+
+    /// Skills as she might write them, run on the real game: one that presses A through the
+    /// rival's battle, then on Route 1 one that runs from a wild Pokémon and one that fights.
+    /// Code only follows the rules; nothing in it knows what a battle is.
+    #[tokio::test]
+    #[ignore = "needs a ROM in VIVY_GB_ROM and the task states"]
+    async fn skills_she_writes_carry_out_battles() {
+        async fn act(
+            local: &mut Local,
+            name: &str,
+            args: Value,
+        ) -> crate::features::games::gameboy::actions::Acted {
+            let acted = local.act(name, &args).await.unwrap();
+            println!("{name}: {}", acted.outcome);
+            acted
+        }
+        let mash = json!({
+            "name": "battle",
+            "use_when": "a battle starts",
+            "rules": [{"press": "a a"}],
+            "most": 50
+        });
+        let run_away = json!({
+            "name": "run away",
+            "use_when": "a wild Pokémon I don't want to fight",
+            "rules": [{"if_words": "FIGHT", "press": "down right a"}, {"press": "a"}],
+            "stop_words": ["Can't escape"]
+        });
+        let fight = json!({
+            "name": "fight",
+            "use_when": "a wild Pokémon to beat",
+            "rules": [{"if_words": "FIGHT", "press": "up left a"}, {"press": "a"}],
+            "stop_words": ["learn", "which"],
+            "most": 50
+        });
+
+        let mut local = Local::new(load("starter"));
+        act(&mut local, "walk_to", json!({"x": 5, "y": 11})).await;
+        act(&mut local, "write_skill", mash).await;
+        let acted = act(&mut local, "use_skill", json!({"name": "Battle"})).await;
+        assert!(local.state().story.contains(&"BATTLED_RIVAL_IN_OAKS_LAB"));
+        assert!(acted.view.can_walk && acted.outcome.contains("you can walk"));
+        assert!(
+            acted.words.iter().any(|w| w.contains("defeated")),
+            "{:?}",
+            acted.words
+        );
+        assert_eq!(local.world.skills[0].uses, 1);
+
+        // Pace back and forth on two steps of grass until a wild Pokémon shows up.
+        async fn meet_one(local: &mut Local) {
+            use crate::features::games::gameboy::map::Kind;
+            let grass = |local: &Local, (x, y): (i32, i32)| {
+                local.world.areas["Route 1"].kind((x, y)) == Some(Kind::Grass)
+            };
+            let mut patch = None;
+            for _ in 0..3 {
+                let at = local.look().await.unwrap().view.at;
+                patch = (0..40)
+                    .flat_map(|y| (0..20).map(move |x| (x, y)))
+                    .filter(|&(x, y)| grass(local, (x, y)) && grass(local, (x + 1, y)))
+                    .min_by_key(|&(x, y)| (x - at.0).abs() + (y - at.1).abs());
+                if patch.is_some() {
+                    break;
+                }
+                act(local, "explore", json!({})).await;
+            }
+            let (x, y) = patch.expect("no grass seen");
+            act(local, "walk_to", json!({"x": x, "y": y})).await;
+            for i in 0..200 {
+                let way = if i % 2 == 0 { "right" } else { "left" };
+                act(local, "press", json!({"buttons": way})).await;
+                if local.state().battle == 1 {
+                    return;
+                }
+            }
+            panic!("never met one");
+        }
+        let mut local = Local::new(load("route1"));
+        act(&mut local, "write_skill", run_away).await;
+        act(&mut local, "write_skill", fight).await;
+        meet_one(&mut local).await;
+        // What code reads of the battle is only facts for her prompt, once both are out.
+        let facts = local.look().await.unwrap().view.facts;
+        assert!(facts.contains("In a battle with a wild"), "{facts}");
+        assert!(!facts.contains("#0"), "{facts}");
+        let acted = act(&mut local, "use_skill", json!({"name": "run away"})).await;
+        println!("{:?}", acted.words);
+        assert!(acted.view.can_walk, "{:?}", acted.view);
+        assert!(acted.words.iter().any(|w| w.contains("Got away")));
+
+        meet_one(&mut local).await;
+        let facts = act(&mut local, "read_text", json!({})).await.view.facts;
+        assert!(facts.contains("Out now: Charmander Lv6"), "{facts}");
+        assert!(facts.contains("Moves: 1 Scratch (PP "), "{facts}");
+        let level = local.state().party[0].level;
+        let acted = act(&mut local, "use_skill", json!({"name": "fight"})).await;
+        println!("{:?}", acted.words);
+        assert!(acted.view.can_walk, "{:?}", acted.view);
+        assert!(
+            acted
+                .words
+                .iter()
+                .any(|w| w.contains("fainted") || w.contains("EXP"))
+        );
+        println!("level {level} -> {}", local.state().party[0].level);
+        let listed = local.describe(&acted).await.unwrap();
+        println!("{listed}");
+        assert!(listed.contains("- fight: a wild Pokémon to beat (used once"));
     }
 
     #[test]

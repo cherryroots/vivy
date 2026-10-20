@@ -3,7 +3,8 @@
 //!
 //! A game's own module fills it in (`red/look.rs` for Pokémon Red): after every look it
 //! marks what's on screen on the area's map, and after every step it logs where she was,
-//! which way she went and where she ended up. The models read it; they never write it.
+//! which way she went and where she ended up. The models read it; they never write it,
+//! except for her own skills (`skills.rs`).
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
 use super::red::Trust;
+use super::skills::Skill;
 
 /// Steps kept in the movement log.
 pub const LOG_MOST: usize = 100;
@@ -27,6 +29,8 @@ pub struct World {
     /// Whether the game's memory has agreed with the screen so far.
     #[serde(skip)]
     pub trust: Trust,
+    /// The routines she has written for this game.
+    pub skills: Vec<Skill>,
 }
 
 /// One step in the movement log.
