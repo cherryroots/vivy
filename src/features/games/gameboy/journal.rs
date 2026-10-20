@@ -85,7 +85,8 @@ impl Found {
             parts.push(self.areas.join(", "));
         }
         if self.steps > 0 {
-            parts.push(format!("{} steps", self.steps));
+            let s = if self.steps == 1 { "" } else { "s" };
+            parts.push(format!("{} step{s}", self.steps));
         }
         if self.texts > 0 {
             let s = if self.texts == 1 { "" } else { "s" };

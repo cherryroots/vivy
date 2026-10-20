@@ -43,8 +43,8 @@ where it came from: \"seen\" (on screen, in the text read or the facts), \"tried
 showed it), \"hint from\" and the name (from someone watching), or \"guess\". Code checks \
 the notes it can against its maps: [code checked: ...] means they agree, [code found it \
 WRONG: ...] means fix or drop it. A note about where something is (a door, a person, a \
-way on) names its area and spot as the facts write it, like \"Viridian Mart's door is at \
-x 29, y 19 in Viridian City\", so code can check it. Don't note what the facts show (HP, levels, money, where \
+way on) names its area and spot as the facts write it, like \"<the place>'s door is at \
+x <n>, y <n> in <area>\", so code can check it. Don't note what the facts show (HP, levels, money, where \
 the player stands): they change by themselves.
 
 Milestones: up to 8 story steps toward the goal, next first, each bigger than a task (a \
