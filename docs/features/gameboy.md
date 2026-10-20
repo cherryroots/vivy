@@ -124,23 +124,23 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 `gate_session` plays one whole session the way the bot does, with the real models: Haiku acting and `VIVY_GB_REVIEWER` (`gpt-6-astra`) planning, from a new game in her bedroom or the task state `VIVY_GB_START`, for `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40), with `VIVY_GB_GATE_USD` (3) as the day's cap. Its report has every episode's line, her notes and skills at the end, and the saves folder with the journal and checkpoints.
 
-**The dashboard** (`dashboard.rs`) is one Components V2 message: a panel with a coloured edge (teal while she plays, grey once it's over) and dividers between its parts, in the normal font size (unlike an embed). It's edited every `live_seconds` (10) while anything changed:
+**The dashboard** (`dashboard.rs`) is one Components V2 message: a panel with a coloured edge (teal while she plays, grey once it's over) and dividers between its parts, in the normal font size (unlike an embed). It's edited every `live_seconds` (5) while anything changed:
 
 - a header with the session's number, its minutes so far, the episode and the area
-- the last 10 seconds of play as a GIF, swapped only when the game moved
+- a GIF of her play since the last edit, so each one carries on from the last (sped up to fit when more happened). It then stays on her screen as it is for a minute, longer than the next edit takes, so Discord's looping never starts it over. When nothing moved, it's that screen alone
 - her goal, the task she's on, how many of its 30 actions she has used, and how long she has been stuck
-- the facts from the game's memory, where it has a memory map (Pokémon Red: where she is, badges, money, party)
-- her last 6 actions, her last 3 episode lines, the strategist's notes and her skills (a V2 message holds 4000 characters of text; past 3800 the notes go first, then skills, episodes and actions)
+- the facts from the game's memory, one per line with the name in bold, where it has a memory map (Pokémon Red: where she is, badges, money, party, the story so far)
+- her last 6 actions, her last 3 episode lines (how each went in bold; only the task is shortened), the strategist's notes and her skills (a V2 message holds 4000 characters of text; past 3800 the notes go first, then skills, episodes and actions)
 - what playing used today, the checkpoints, and a link to the log
 - buttons: Stop, Skills (her skills, for whoever pressed it) and Open log (admins only)
 
-When the session ends, it says how it went and keeps the last GIF. A V2 message has no text of its own, only components, and its GIF is an attachment the panel's gallery points to (`attachment://live.gif`), so each edit uploads the GIF again. An old dashboard that moved, and the "Moving the dashboard here…" placeholder, are V2 messages too, since a message can't switch back.
+When the session ends it gets short: how it went and her goal beside a small still of her last screen (a thumbnail), today's use and the Open log button. The episodes, notes and skills are in the log and `status`; `/games gameboy dashboard` shows the same short panel while she isn't playing. A V2 message has no text of its own, only components, and its GIF is an attachment the panel's gallery points to (`attachment://live.gif`), so each edit uploads a GIF again. An old dashboard that moved, and the "Moving the dashboard here…" placeholder, are V2 messages too, since a message can't switch back.
 
 Still to come in stage 4: notes that record their source and whether play confirmed them, walkthrough milestones checked by code, the puzzle helper, and the checkpoint ladder (how many episodes and dollars from one milestone to the next).
 
 ## Settings
 
-Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (10). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
+Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (5). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
 
 ## Files
 

@@ -40,6 +40,12 @@ pub fn png_at(screen: &[u8], scale: u32) -> Result<Vec<u8>> {
 /// were taken every `every` frames. A screen the same as the one before it isn't repeated;
 /// the one before just stays up longer. Plays once (Discord loops GIFs anyway).
 pub fn gif(screens: &[Vec<u8>], every: u32, scale: u32) -> Result<Vec<u8>> {
+    gif_held(screens, every, scale, 0)
+}
+
+/// [`gif`], with the last screen kept up `hold` frames longer, so a short GIF Discord
+/// loops stays on its last screen instead of starting over.
+pub fn gif_held(screens: &[Vec<u8>], every: u32, scale: u32, hold: u32) -> Result<Vec<u8>> {
     anyhow::ensure!(!screens.is_empty(), "no screens for a GIF");
     let (width, height) = (WIDTH as u32 * scale, HEIGHT as u32 * scale);
 
@@ -73,6 +79,9 @@ pub fn gif(screens: &[Vec<u8>], every: u32, scale: u32) -> Result<Vec<u8>> {
             Some((last, shown)) if *last == pixels => *shown += every,
             _ => frames.push((pixels, every)),
         }
+    }
+    if let Some((_, shown)) = frames.last_mut() {
+        *shown += hold;
     }
 
     let flat: Vec<u8> = palette.iter().flatten().copied().collect();
@@ -169,6 +178,21 @@ mod tests {
         let last = &seen[2].1;
         assert_eq!(&last[0..4], &[0, 0, 0, 255]);
         assert_eq!(&last[8..12], &[155, 188, 15, 255]);
+    }
+
+    #[test]
+    fn a_held_gif_stays_on_its_last_screen() {
+        let screens = vec![screen([255, 255, 255], (0, 0)), screen([0, 0, 0], (1, 1))];
+        let bytes = gif_held(&screens, 3, 1, 60 * 60).unwrap();
+        let mut decoder = gif::DecodeOptions::new()
+            .read_info(bytes.as_slice())
+            .unwrap();
+        let mut delays = Vec::new();
+        while let Some(frame) = decoder.read_next_frame().unwrap() {
+            delays.push(frame.delay);
+        }
+        // 3 frames is 5 hundredths; the last also has a minute (3603 frames) more.
+        assert_eq!(delays, vec![5, 6032]);
     }
 
     #[test]

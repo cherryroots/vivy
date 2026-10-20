@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use twilight_model::channel::message::MessageFlags;
 use twilight_model::channel::message::component::{
-    Button, ButtonStyle, Component, Container, MediaGallery, MediaGalleryItem, Separator,
-    SeparatorSpacingSize, TextDisplay, UnfurledMediaItem,
+    Button, ButtonStyle, Component, Container, MediaGallery, MediaGalleryItem, Section, Separator,
+    SeparatorSpacingSize, TextDisplay, Thumbnail, UnfurledMediaItem,
 };
 use twilight_util::builder::message::ButtonBuilder;
 
@@ -36,8 +36,12 @@ pub const SKILLS: &str = "games:gameboy:skills";
 const FASTEST: u64 = 5;
 /// Under Discord's 4000 characters for a whole Components V2 message.
 const MOST_CHARS: usize = 3800;
-/// The GIF's file name on the message.
+/// The pictures' file names on the message: the GIF while she plays, the still after.
 const GIF_NAME: &str = "live.gif";
+const STILL_NAME: &str = "last.png";
+/// How long a live GIF stays on its last screen, in seconds: longer than the dashboard
+/// takes to bring the next one, so it never starts over.
+const HOLD_SECONDS: u32 = 60;
 /// The panel's edge: teal like her hair while she plays, grey once it's over.
 const LIVE_COLOUR: u32 = 0x2BB3A3;
 const OVER_COLOUR: u32 = 0x80848E;
@@ -118,12 +122,14 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
             now.actions
         ));
     }
-    let facts: Vec<&str> = now.facts.lines().filter(|l| !l.trim().is_empty()).collect();
-    if !facts.is_empty() {
-        about.push(format!("-# {}", short(&facts.join(" · "), 300)));
+    // Once it's over the panel is short: how it went, her goal and today's use. The rest
+    // is in the log and `/games gameboy status`.
+    let live = board.over.is_none();
+    if live {
+        about.extend(now.facts.lines().filter_map(fact));
     }
 
-    let actions = (board.over.is_none() && !now.last_actions.is_empty()).then(|| {
+    let actions = (live && !now.last_actions.is_empty()).then(|| {
         // Nothing she did can close the code block.
         let lines: Vec<String> = now
             .last_actions
@@ -132,9 +138,12 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
             .collect();
         format!("**Last actions**\n```\n{}\n```", lines.join("\n"))
     });
-    let episodes = (!now.episodes.is_empty()).then(|| list("Recent episodes", &now.episodes));
-    let notes = (!now.notes.is_empty()).then(|| list("Her notes", &now.notes));
-    let skills = (now.skills > 0).then(|| {
+    let episodes = (live && !now.episodes.is_empty()).then(|| {
+        let lines: Vec<String> = now.episodes.iter().map(|e| episode_line(e)).collect();
+        format!("**Recent episodes**\n{}", lines.join("\n"))
+    });
+    let notes = (live && !now.notes.is_empty()).then(|| list("Her notes", &now.notes));
+    let skills = (live && now.skills > 0).then(|| {
         let newest = now
             .newest_skill
             .as_deref()
@@ -173,6 +182,43 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
     parts
 }
 
+/// A fact from the game's memory, like `Money: ¥3175`, as a line of its own with the
+/// name in bold.
+fn fact(line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    Some(match line.split_once(": ") {
+        Some((name, value)) => format!("**{name}:** {}", short(value, 200)),
+        None => short(line, 200),
+    })
+}
+
+/// An episode's journal line, like `#7 10-20 21:10 Oak's Lab: task → done, 8 actions, …`,
+/// with how it went in bold. Only the task is shortened, so how it went always shows.
+fn episode_line(line: &str) -> String {
+    let Some((task, after)) = line.rsplit_once(" → ") else {
+        return format!("- {}", short(line, 160));
+    };
+    // How it went is up to the first comma outside brackets: `not done (why, …)`.
+    let mut depth = 0;
+    let mut end = after.len();
+    for (i, c) in after.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth -= 1,
+            ',' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (how, rest) = after.split_at(end);
+    format!("- {} → **{how}**{rest}", short(task, 110))
+}
+
 /// A bold title over a line per item.
 fn list(title: &str, items: &[String]) -> String {
     let lines: Vec<String> = items
@@ -184,25 +230,37 @@ fn list(title: &str, items: &[String]) -> String {
 
 /// The dashboard as a panel: the top, the GIF (when there is one), her goal and task, then
 /// the middle and the foot between dividers, and the buttons. `log` is a link to the log.
-pub fn panel(parts: &Parts, gif: bool, log: Option<String>, over: bool) -> Vec<Component> {
-    let mut inside = vec![text(&parts.top)];
-    if gif {
-        inside.push(Component::MediaGallery(MediaGallery {
+///
+/// Once it's `over`, the picture is a small still of her last screen beside the text.
+pub fn panel(parts: &Parts, picture: bool, log: Option<String>, over: bool) -> Vec<Component> {
+    let mut inside = Vec::new();
+    match (over, picture) {
+        (true, true) => inside.push(Component::Section(Section {
             id: None,
-            items: vec![MediaGalleryItem {
-                media: UnfurledMediaItem {
-                    url: format!("attachment://{GIF_NAME}"),
-                    proxy_url: None,
-                    height: None,
-                    width: None,
-                    content_type: None,
-                },
-                description: Some("The last seconds of her play".to_string()),
+            components: vec![text(&parts.top), text(&parts.about)],
+            accessory: Box::new(Component::Thumbnail(Thumbnail {
+                id: None,
+                media: attached(STILL_NAME),
+                description: Some(Some("Her last screen".to_string())),
                 spoiler: None,
-            }],
-        }));
+            })),
+        })),
+        (true, false) => inside.extend([text(&parts.top), text(&parts.about)]),
+        (false, _) => {
+            inside.push(text(&parts.top));
+            if picture {
+                inside.push(Component::MediaGallery(MediaGallery {
+                    id: None,
+                    items: vec![MediaGalleryItem {
+                        media: attached(GIF_NAME),
+                        description: Some("Her play since the last update".to_string()),
+                        spoiler: None,
+                    }],
+                }));
+            }
+            inside.push(text(&parts.about));
+        }
     }
-    inside.push(text(&parts.about));
     if !parts.middle.is_empty() {
         inside.push(divider());
         inside.push(text(&parts.middle.join("\n\n")));
@@ -221,22 +279,36 @@ pub fn panel(parts: &Parts, gif: bool, log: Option<String>, over: bool) -> Vec<C
     })]
 }
 
-/// A message that's a panel, with the GIF if there is one. Used to edit, it replaces the
-/// message's files (or removes them, without a GIF).
-fn draft(components: Vec<Component>, gif: Option<Vec<u8>>) -> Draft {
+/// A file on the message, for a gallery or thumbnail.
+fn attached(name: &str) -> UnfurledMediaItem {
+    UnfurledMediaItem {
+        url: format!("attachment://{name}"),
+        proxy_url: None,
+        height: None,
+        width: None,
+        content_type: None,
+    }
+}
+
+/// A message that's a panel, with its picture if there is one. Used to edit, it replaces
+/// the message's files (or removes them, without a picture).
+fn draft(components: Vec<Component>, picture: Option<(&str, Vec<u8>)>) -> Draft {
     let draft = Draft::new()
         .components(components)
         .flags(MessageFlags::IS_COMPONENTS_V2)
         .allowed_mentions(no_pings());
-    match gif {
-        Some(gif) => draft.file(GIF_NAME, gif),
+    match picture {
+        Some((name, bytes)) => draft.file(name, bytes),
         None => draft.remove_all_files(),
     }
 }
 
-/// The dashboard as a message to send or edit with: the panel, and the GIF in it.
-pub fn message(parts: &Parts, gif: Option<Vec<u8>>, log: Option<String>, over: bool) -> Draft {
-    draft(panel(parts, gif.is_some(), log, over), gif)
+/// The dashboard as a message to send or edit with. `picture` is a GIF ([`clip`]) while
+/// she plays, and a PNG ([`last_screen`]) once it's `over`.
+pub fn message(parts: &Parts, picture: Option<Vec<u8>>, log: Option<String>, over: bool) -> Draft {
+    let name = if over { STILL_NAME } else { GIF_NAME };
+    let components = panel(parts, picture.is_some(), log, over);
+    draft(components, picture.map(|bytes| (name, bytes)))
 }
 
 /// A short Components V2 message, like what an old dashboard says once it has moved.
@@ -299,14 +371,14 @@ pub struct Live {
 }
 
 impl Live {
-    /// Edits `message` into the dashboard, with `gif` as its picture (none without one).
+    /// Edits `message` into the dashboard, with `picture` in it (see [`message`]).
     /// `message` becomes the edited message.
     pub async fn show(
         &self,
         message: &mut Message,
         now: &Now,
         over: Option<&str>,
-        gif: Option<Vec<u8>>,
+        picture: Option<Vec<u8>>,
     ) {
         let board = Board {
             game: &self.game,
@@ -319,7 +391,7 @@ impl Live {
         };
         let parts = parts(&board, Utc::now().timestamp());
         let log = Some(channel_link(self.guild, self.log));
-        let edit = self::message(&parts, gif, log, over.is_some());
+        let edit = self::message(&parts, picture, log, over.is_some());
         match edit
             .edit(&self.bot.http, message.channel_id, message.id)
             .await
@@ -342,8 +414,6 @@ impl Live {
     ) -> Message {
         let mut shown_mark = None;
         let mut shown_now = None;
-        // Each edit sends the GIF again: a message's files can't be pointed to otherwise.
-        let mut shown_gif = None;
         loop {
             let tick = async {
                 if every == 0 {
@@ -366,22 +436,98 @@ impl Live {
                 () = ended.cancelled() => return message,
             }
             let current = now.borrow().clone();
-            let gif = last_seconds().await;
-            let mark = gif.as_ref().map(|(mark, _)| *mark);
-            let new_gif = mark.is_some() && mark != shown_mark;
+            let moved = recorded()
+                .await
+                .is_some_and(|mark| Some(mark) != shown_mark);
             // Nothing moved and nothing changed (she's thinking): leave it.
-            if !new_gif && shown_now.as_ref() == Some(&current) {
+            if !moved && shown_now.as_ref() == Some(&current) {
                 continue;
             }
-            if let Some((_, gif)) = gif.filter(|_| new_gif) {
-                shown_gif = Some(gif);
-            }
-            self.show(&mut message, &current, None, shown_gif.clone())
+            // Each edit sends a GIF again, since a message's files can't be kept otherwise:
+            // what she played since the last one, or her screen as it is if nothing moved.
+            let clip = clip(shown_mark, every.max(FASTEST)).await;
+            let mark = clip.as_ref().map(|(mark, _)| *mark);
+            self.show(&mut message, &current, None, clip.map(|(_, gif)| gif))
                 .await;
             shown_mark = mark.or(shown_mark);
             shown_now = Some(current);
         }
     }
+}
+
+/// How many screens the Game Boy has recorded, if it's on.
+async fn recorded() -> Option<u64> {
+    console()
+        .with(|machine| machine.as_ref().map(|m| m.recorded()))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// What she played since `mark` (from [`recorded`]; `None`: the last seconds), as a GIF for
+/// the live dashboard, with how many screens had been recorded. It plays in `seconds` at
+/// most, sped up when more happened, so each one carries on from the last without
+/// skipping. Then it stays on her screen as it is now for a minute, so it doesn't start
+/// over before the next one comes. When nothing moved, it's that screen alone.
+pub async fn clip(mark: Option<u64>, seconds: u64) -> Option<(u64, Vec<u8>)> {
+    let (recorded, screens) = console()
+        .with(move |machine| {
+            let m = machine.as_ref()?;
+            let since = mark.unwrap_or_else(|| m.recorded().saturating_sub(recent_screens()));
+            let mut screens = m.screens_since(since);
+            if screens.is_empty() {
+                screens = m.screens_since(m.recorded().saturating_sub(1));
+            }
+            (!screens.is_empty()).then(|| (m.recorded(), screens))
+        })
+        .await
+        .ok()
+        .flatten()?;
+    let most = (seconds * 60 / u64::from(RECORD_EVERY)).max(1) as usize;
+    let screens = fit(screens, most);
+    let gif = tokio::task::spawn_blocking(move || {
+        pictures::gif_held(&screens, RECORD_EVERY, GIF_SCALE, HOLD_SECONDS * 60)
+    })
+    .await
+    .ok()?
+    .ok()?;
+    Some((recorded, gif))
+}
+
+/// At most `most` of `screens`: every nth one, ending on the newest.
+fn fit<T>(screens: Vec<T>, most: usize) -> Vec<T> {
+    if screens.len() <= most {
+        return screens;
+    }
+    let step = screens.len().div_ceil(most);
+    let newest = screens.len() - 1;
+    screens
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| (newest - i).is_multiple_of(step))
+        .map(|(_, screen)| screen)
+        .collect()
+}
+
+/// Her screen as it is, as a PNG, if the Game Boy is on: the ended dashboard's still.
+pub async fn last_screen() -> Option<Vec<u8>> {
+    let screen = console()
+        .with(|machine| {
+            let m = machine.as_ref()?;
+            m.screens_since(m.recorded().saturating_sub(1)).pop()
+        })
+        .await
+        .ok()
+        .flatten()?;
+    tokio::task::spawn_blocking(move || pictures::png(&screen))
+        .await
+        .ok()?
+        .ok()
+}
+
+/// Screens recorded in [`RECENT_SECONDS`].
+fn recent_screens() -> u64 {
+    u64::from(RECENT_SECONDS) * 60 / u64::from(RECORD_EVERY)
 }
 
 /// The last seconds of play as a GIF, if the Game Boy is on, with how many screens it had
@@ -391,8 +537,7 @@ pub async fn last_seconds() -> Option<(u64, Vec<u8>)> {
     let (mark, screens) = console()
         .with(|machine| {
             let m = machine.as_ref()?;
-            let screens = u64::from(RECENT_SECONDS) * 60 / u64::from(RECORD_EVERY);
-            let shown = m.screens_since(m.recorded().saturating_sub(screens));
+            let shown = m.screens_since(m.recorded().saturating_sub(recent_screens()));
             (!shown.is_empty()).then(|| (m.recorded(), shown))
         })
         .await
@@ -433,7 +578,9 @@ mod tests {
             facts: "Location: Route 1 at x 5, y 20\nParty: CHARMANDER Lv6 17/21 HP".to_string(),
             goal: "Bring Oak his parcel.".to_string(),
             notes: vec!["The Mart is in Viridian City.".to_string()],
-            episodes: vec!["#13 10-20 14:36 Route 1: keep north → done".to_string()],
+            episodes: vec![
+                "#13 10-20 14:36 Route 1: keep north → done, 12 actions, a new area".to_string(),
+            ],
             stuck: 0,
             checkpoints: 5,
             skills: 7,
@@ -465,10 +612,12 @@ mod tests {
              **Goal:** Bring Oak his parcel.\n\
              **Now:** Win the wild battle, then keep north to Viridian City.\n\
              -# Action 18 of 30\n\
-             -# Location: Route 1 at x 5, y 20 · Party: CHARMANDER Lv6 17/21 HP\n\n\
+             **Location:** Route 1 at x 5, y 20\n\
+             **Party:** CHARMANDER Lv6 17/21 HP\n\n\
              **Last actions**\n```\npress \"a\": The text moved on.\n\
              use_skill \"win a 'wild' battle\": Done.\n```\n\n\
-             **Recent episodes**\n- #13 10-20 14:36 Route 1: keep north → done\n\n\
+             **Recent episodes**\n\
+             - #13 10-20 14:36 Route 1: keep north → **done**, 12 actions, a new area\n\n\
              **Her notes**\n- The Mart is in Viridian City.\n\n\
              **Skills:** 7 · newest: `win a wild battle`\n\n\
              -# Today $0.38 of $1.50 · 212k of 1000k free tokens · 5 checkpoints · log: <#42>"
@@ -487,8 +636,17 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(!text.contains("**Now:**") && !text.contains("Last actions"));
-        assert!(text.contains("Recent episodes"));
+        // Short: the rest is in the log and in `status`.
+        for gone in [
+            "**Now:**",
+            "Last actions",
+            "Recent episodes",
+            "Her notes",
+            "Location",
+        ] {
+            assert!(!text.contains(gone), "{gone}: {text}");
+        }
+        assert!(text.ends_with("log: <#42>"));
     }
 
     #[test]
@@ -502,6 +660,28 @@ mod tests {
         assert!(text.contains("Last actions") && text.contains("Skills"));
         assert!(text.contains("· nothing new for 3 episodes"));
         assert!(text.ends_with("log: <#42>"), "the footer stays");
+    }
+
+    #[test]
+    fn a_long_clip_is_sped_up_to_end_on_the_newest_screen() {
+        assert_eq!(fit((0..5).collect(), 10), vec![0, 1, 2, 3, 4]);
+        assert_eq!(fit((0..10).collect(), 4), vec![0, 3, 6, 9]);
+        assert_eq!(fit((0..9).collect(), 3), vec![2, 5, 8]);
+    }
+
+    #[test]
+    fn how_an_episode_went_is_bold_and_never_cut() {
+        let long = "x".repeat(300);
+        let line = episode_line(&format!(
+            "#7 10-20 21:10 Oak's Lab: {long} → not done (Blue won, again), 30 actions, nothing new"
+        ));
+        assert!(
+            line.ends_with("… → **not done (Blue won, again)**, 30 actions, nothing new"),
+            "{line}"
+        );
+        assert_eq!(episode_line("no arrow"), "- no arrow");
+        assert_eq!(fact("Money: ¥3175").as_deref(), Some("**Money:** ¥3175"));
+        assert_eq!(fact("  "), None);
     }
 
     #[test]
@@ -521,10 +701,16 @@ mod tests {
         assert!(json.contains("attachment://live.gif"));
         assert!(json.contains(STOP) && json.contains(SKILLS) && json.contains("Open log"));
 
-        let over = message(&parts, None, log, true);
-        assert!(over.files.is_empty() && over.keep_files == Some(Vec::new()));
+        let over = message(&parts, Some(vec![4, 5]), log.clone(), true);
+        assert_eq!(over.files.len(), 1);
         let json = serde_json::to_string(&over.components).unwrap();
-        assert!(!json.contains(STOP) && !json.contains("attachment://"));
-        assert!(json.contains("Open log"));
+        assert!(!json.contains(STOP) && json.contains("Open log"));
+        assert!(json.contains(r#""type":11"#), "a thumbnail: {json}");
+        assert!(json.contains("attachment://last.png") && !json.contains("live.gif"));
+
+        let bare = message(&parts, None, log, true);
+        assert!(bare.files.is_empty() && bare.keep_files == Some(Vec::new()));
+        let json = serde_json::to_string(&bare.components).unwrap();
+        assert!(!json.contains("attachment://"));
     }
 }

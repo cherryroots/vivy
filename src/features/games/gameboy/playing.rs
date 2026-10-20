@@ -16,7 +16,7 @@ use twilight_model::channel::thread::AutoArchiveDuration;
 
 use super::budget::Today;
 use super::commands::{admin, game_look, game_name, on_machine};
-use super::dashboard::{self, Board, Live, Parts, last_seconds};
+use super::dashboard::{self, Board, Live, Parts, last_screen, last_seconds};
 use super::journal::{DEFAULT_GOAL, Journal};
 use super::player::OnConsole;
 use super::session::{self, Limits, Now, Report, Session, Summary};
@@ -222,8 +222,8 @@ pub async fn dashboard(ctx: &CommandCtx) -> Result<()> {
     Ok(())
 }
 
-/// The dashboard while she isn't playing, from her files, with the last seconds of play
-/// if the Game Boy is on.
+/// The dashboard while she isn't playing, from her files, with her screen if the Game Boy
+/// is on.
 async fn resting(settings: &Settings) -> Result<(Parts, Option<Vec<u8>>)> {
     let (rom, game, skills) = on_machine(|m| {
         Ok((
@@ -253,7 +253,7 @@ async fn resting(settings: &Settings) -> Result<(Parts, Option<Vec<u8>>)> {
         over: Some(RESTING),
     };
     let parts = dashboard::parts(&board, chrono::Utc::now().timestamp());
-    Ok((parts, last_seconds().await.map(|(_, gif)| gif)))
+    Ok((parts, last_screen().await))
 }
 
 /// The dashboard's buttons: Stop, and Skills (her skills, for the one who pressed).
@@ -453,7 +453,8 @@ async fn run(
         warn!("couldn't post the Game Boy session's summary: {err:#}");
     }
     let over = text.trim_start_matches("⏹️ ");
-    live.show(&mut message, &last, Some(over), gif).await;
+    live.show(&mut message, &last, Some(over), last_screen().await)
+        .await;
 }
 
 /// A thread under the dashboard, for the log.
