@@ -20,6 +20,7 @@
 //! - `session.rs`: playing by herself until a cap, with checkpoints and the stuck ladder
 //! - `playing.rs`, `dashboard.rs`: `/games gameboy play` and the rest, and the dashboard
 //!   message that shows her playing
+//! - `narrate.rs`: what she says in the channel while she plays, in her own voice
 //! - `gate/`: the measurements (tests only)
 //! - `commands.rs`: `/games gameboy ...`
 //!
@@ -38,6 +39,7 @@ mod gate;
 mod journal;
 mod map;
 mod moves;
+mod narrate;
 mod pictures;
 mod player;
 mod playing;
@@ -82,6 +84,9 @@ pub struct Settings {
     /// While she plays, the dashboard (a GIF of her play since the last update, and what
     /// she's doing) is updated this often, in seconds (at least 5; 0: only at the end).
     pub live_seconds: u64,
+    /// While she plays, she says something in the channel at most this often, in minutes,
+    /// besides hello and a recap (0: she doesn't). See `narrate.rs`.
+    pub narrate_minutes: u64,
 }
 
 impl Default for Settings {
@@ -93,6 +98,7 @@ impl Default for Settings {
             daily_usd: 1.5,
             free_tokens: 1_000_000,
             live_seconds: 5,
+            narrate_minutes: 10,
         }
     }
 }

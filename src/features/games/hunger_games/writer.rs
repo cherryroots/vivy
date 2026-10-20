@@ -7,14 +7,11 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use tracing::{info, warn};
 
 use super::game::{Endgame, Game, Kind, Reward, Round, Written, fill};
 use super::ui;
-use crate::ai::{
-    ChatProvider, ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete,
-};
+use crate::ai::{ChatProvider, ChatRequest, Input, Part, Role, Turn, complete};
 
 /// How many times she may write a round before the game gives up.
 const TRIES: usize = 3;
@@ -440,20 +437,13 @@ pub async fn write(
     anyhow::bail!("Vivy's round didn't pass the rules {TRIES} times")
 }
 
-/// For a call with no tools: any call is answered with an error.
-pub(super) struct NoTools;
-
-#[async_trait]
-impl ToolRunner for NoTools {
-    async fn run(&self, call: &ToolCall) -> String {
-        format!("Error: there is no tool named {}.", call.name)
-    }
-}
+pub(super) use crate::features::games::herself::NoTools;
 
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
+    use async_trait::async_trait;
     use tokio::sync::mpsc;
 
     use super::*;

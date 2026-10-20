@@ -136,11 +136,21 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 When the session ends it gets short: how it went and her goal beside a small still of her last screen (a thumbnail), today's use and the Open log button. The episodes, notes and skills are in the log and `status`; `/games gameboy dashboard` shows the same short panel while she isn't playing. A V2 message has no text of its own, only components, and its GIF is an attachment the panel's gallery points to (`attachment://live.gif`), so each edit uploads a GIF again. An old dashboard that moved, and the "Moving the dashboard here…" placeholder, are V2 messages too, since a message can't switch back.
 
+**Her commentary** (stage 5, `narrate.rs`): while she plays, Vivy herself talks to the channel the dashboard is in, like a streamer: in her own model (Opus, the `game_narrate` job at low effort) and her own voice, with her personality and mood notes from memory. The dashboard says what's happening; she says how she feels about it. The pace is set for a couple of hours of play a day, about 300 episodes, so about a dozen messages a session:
+
+- hello once the first episode starts, and a wrap-up once the session is over
+- in between, at most every `narrate_minutes` (10), and only after she has played since: she's told what happened since she last spoke (the episode lines, places reached for the first time, being stuck or sent back to a checkpoint) and her last 3 messages, so she doesn't repeat herself
+- a new place or being stuck means she speaks; otherwise she may answer `PASS` if nothing was worth saying, but not three times in a row
+- each message is plain text (no pings) with a GIF of her last seconds of play
+- she's told never to talk about the bookkeeping (models, tasks, episodes, coordinates, money): "I got lost in the forest", not "episode 23 ran out of actions"
+
+Her calls cost about a cent each at list prices (8 cost $0.09 on a real session's report), so about $0.15 for two hours. They show on the spend card as `game_narrate` and don't count toward `daily_usd`, which is for playing. `gate_narrate` (ignored, needs the Claude key) replays her commentary over a session's report (`VIVY_GB_REPORT`) every `VIVY_GB_NARRATE_MINUTES` (3) of its clock times and writes `narrate.md` next to it. Voice messages in her voice are left for later, since they spend ElevenLabs characters.
+
 Still to come in stage 4: notes that record their source and whether play confirmed them, walkthrough milestones checked by code, the puzzle helper, and the checkpoint ladder (how many episodes and dollars from one milestone to the next).
 
 ## Settings
 
-Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (5). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
+Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (5), `narrate_minutes` (10; 0: she doesn't talk). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
 
 ## Files
 
@@ -176,6 +186,7 @@ All under `src/features/games/gameboy/`.
 | `commands.rs` | `/games gameboy ...` |
 | `playing.rs` | `/games gameboy play`, `stop`, `status` and `dashboard`, the dashboard's buttons, and the log thread |
 | `dashboard.rs` | The dashboard: its text from `Now` (pure), its buttons, and keeping it up to date while she plays |
+| `narrate.rs` | Her commentary in the channel: when she speaks (pure), what she's told, and posting it |
 | `gate/mod.rs` | The gate (tests only): the key check, the task runs, the strategist runs, the learning runs, their reports |
 | `gate/tasks.rs` | The task states, made by playing Red by script; the 15 tasks and their checks; the long goal |
 | `gate/player.rs` | The gate's own Game Boy for the supervisor |
@@ -205,6 +216,6 @@ The stage 2 ones play Red's opening first (mashing A, picking the names RED and 
 | 2 | Reading the game in code: screen changes and fades, the tile grid from video memory, text from the font, a log of every step, a map of each area that fills in, walking to a spot by pathfinding, exploring, and Pokémon Red's memory map (area, position, story flags, badges, party) checked against the screen. Red's own walkable-tile list sorts its tiles exactly, so sorting tiles with a model (for games with no memory map) moved to stage 7 |
 | 3 | Short tasks played by a cheap model (Haiku) through a few actions, measured on 15 tasks from Red, each 3 times, and the strategist's call measured on a longer goal (Astra and 6.1 Sol, one call and two). A gate: if Haiku stays under half, the fallbacks in the plan are tried first. `/games gameboy task` tries a task by hand |
 | 4 (under way) | Skills she writes herself, know-how and routines code runs as one action, kept per game, instead of a coded battle action (the gate's one weak spot), with a gate that measures whether later runs get better (#90). Playing by herself: `/games gameboy play`, `stop` and `status`, the strategist on OpenAI's free daily tokens counted by code (Haiku once they're used), her journal, checkpoints, the stuck ladder, the caps (#91). Still to come: notes with sources, walkthrough milestones, the puzzle helper, the checkpoint ladder |
-| 5 | Discord: a thread per game, Opus narrating as a voice message in her voice with one GIF and a short line (so posts stay compact), hints from replies starting `hint:` |
+| 5 (under way) | Discord: her commentary in the channel, in her own voice with a GIF, paced for a couple of hours of play a day (#98). Still to come: hints, voice messages |
 | 6 | Learning a new game by herself: fast exploration, an insights file she confirms in play, replaying what worked, and reading a game's memory without a hand-written map: code compares memory before and after her actions ("what changed when I stepped right", "which byte is the 19 HP on screen"), she names what she finds, and code keeps checking it, measured on whether she finds Red's own addresses |
 | 7 | Other games: tiles sorted by a model once per new tile, letters labelled the same way, memory maps for games that have one, side-view games, then the Game Boy Advance |

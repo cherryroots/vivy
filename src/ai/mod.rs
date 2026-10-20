@@ -214,6 +214,8 @@ impl Job {
     ///   voice), with the web for looking things up, but no code;
     /// - "hunger_games": a Hunger Games round, in her own model at low effort so the next
     ///   round is ready while people read this one, with no web or code;
+    /// - "game_narrate": what she says in the channel while she plays a Game Boy game,
+    ///   the same (it's her voice, and short);
     /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
     ///   with no web or code;
     /// - "game_plan": the Game Boy strategist (OpenAI only), on GPT-6 Astra, which shares
@@ -235,7 +237,7 @@ impl Job {
                 web: off,
                 code: off,
             },
-            "hunger_games" => Job {
+            "hunger_games" | "game_narrate" => Job {
                 model: None,
                 effort: Some("low".to_string()),
                 web: off,

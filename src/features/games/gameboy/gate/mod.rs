@@ -1197,3 +1197,149 @@ mod tests {
         assert_eq!(file_name("talk to Mom"), "talk-to-Mom");
     }
 }
+
+/// Her commentary over a real session, from its report (`VIVY_GB_REPORT`, a `report.md`
+/// that `gate_session` wrote): she's told what happened every `VIVY_GB_NARRATE_MINUTES`
+/// (3, since a test session is short) of the episodes' clock times, the way the bot would,
+/// and what she says goes in `narrate.md` next to the report. Her own model
+/// (`VIVY_GB_NARRATOR`, Opus) at the job's effort.
+#[tokio::test]
+#[ignore = "needs the Claude key and a session's report; spends money"]
+async fn gate_narrate() {
+    use super::narrate::{Moment, Since, brief, due, message, say};
+    use super::session::{Now, Report, Reported};
+    use std::time::Duration;
+    if !gate_on() {
+        return;
+    }
+    let path = PathBuf::from(setting("VIVY_GB_REPORT", ""));
+    let report = std::fs::read_to_string(&path).expect("VIVY_GB_REPORT: a session's report.md");
+    let every: u64 = setting("VIVY_GB_NARRATE_MINUTES", "3").parse().unwrap();
+    let http = http();
+    let db = spend_db().await;
+    let spend = Spend::new(db.clone(), "claude", 0.0);
+    let model = setting("VIVY_GB_NARRATOR", "claude-opus-5-5");
+    let config = ClaudeConfig {
+        model,
+        keep_cache_warm_minutes: 0,
+        ..ClaudeConfig::default()
+    };
+    let key = key(&["VIVY_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"]);
+    let claude = Claude::new(http.clone(), key, config, Some(spend.clone()));
+
+    let goal = report
+        .lines()
+        .find_map(|l| l.split_once("Goal: ").map(|(_, g)| g.trim().to_string()))
+        .unwrap_or_default();
+    let notes: Vec<String> = report
+        .split("## Her notes at the end")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .map(|notes| {
+            notes
+                .lines()
+                .filter_map(|l| l.strip_prefix("- ").map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let ended = report
+        .lines()
+        .find_map(|l| l.strip_prefix("Ended: ").map(str::to_string))
+        .unwrap_or_default();
+    // "- #12 10-20 22:16 Viridian City: ..." and "- 📍 **Checkpoint 5** · Viridian City"
+    let mut said: Vec<String> = Vec::new();
+    let mut out = String::from("# Her commentary\n\n");
+    let mut now = Now {
+        session: 1,
+        goal,
+        notes,
+        ..Now::default()
+    };
+    let mut since = Since::default();
+    let (mut spoke, mut passes, mut first) = (None::<u32>, 0, true);
+    let minute = |line: &str| -> Option<u32> {
+        let time = line.split_whitespace().nth(2)?;
+        let (h, m) = time.split_once(':')?;
+        Some(h.parse::<u32>().ok()? * 60 + m.parse::<u32>().ok()?)
+    };
+    let speak = async |moment: Moment, now: &Now, since: &Since, said: &mut Vec<String>| {
+        let text = say(
+            &claude,
+            brief(&moment, "Pokémon Red", now, since, said, &[]),
+            0,
+        )
+        .await
+        .unwrap();
+        let posted = message(&text);
+        println!("{moment:?}: {text}");
+        if let Some(posted) = &posted {
+            said.push(posted.clone());
+            if said.len() > 3 {
+                said.remove(0);
+            }
+        }
+        posted
+    };
+    for line in report.lines() {
+        let Some(line) = line.strip_prefix("- ") else {
+            continue;
+        };
+        let kind = if line.starts_with("📍") {
+            Reported::Checkpoint
+        } else if line.starts_with('#') {
+            Reported::Episode
+        } else {
+            continue;
+        };
+        if kind == Reported::Episode
+            && let Some(at) = minute(line)
+        {
+            now.area = line
+                .splitn(4, ' ')
+                .nth(3)
+                .and_then(|rest| rest.split(':').next())
+                .unwrap_or_default()
+                .to_string();
+            if first {
+                first = false;
+                now.started = chrono::Utc::now().timestamp();
+                let text = speak(Moment::Start, &now, &since, &mut said).await;
+                out.push_str(&format!(
+                    "**Start** ({})\n> {}\n\n",
+                    now.area,
+                    text.unwrap_or_default()
+                ));
+                spoke = Some(at);
+            }
+            let waited = Duration::from_secs(u64::from(at - spoke.unwrap_or(at)) * 60);
+            if let Some(may_pass) = due(&since, waited, Duration::from_secs(every * 60), passes) {
+                let moment = Moment::Check { may_pass };
+                let text = speak(moment.clone(), &now, &since, &mut said).await;
+                out.push_str(&format!(
+                    "**{moment:?}** after {} episodes, new: {:?}\n> {}\n\n",
+                    since.episodes.len(),
+                    since.areas,
+                    text.as_deref().unwrap_or("(passed)")
+                ));
+                passes = if text.is_some() { 0 } else { passes + 1 };
+                since = Since::default();
+                spoke = Some(at);
+            }
+        }
+        since.add(&Report {
+            kind,
+            line: line.to_string(),
+            picture: None,
+        });
+    }
+    let text = speak(Moment::End { how: ended.clone() }, &now, &since, &mut said).await;
+    out.push_str(&format!(
+        "**End** ({ended})\n> {}\n",
+        text.unwrap_or_default()
+    ));
+    let usd = spend.this_month().await.map(|m| m.usd).unwrap_or(0.0);
+    out.push_str(&format!("\nSpent ${usd:.3} at list prices.\n"));
+    let written = path.with_file_name("narrate.md");
+    std::fs::write(&written, &out).unwrap();
+    println!("{out}\nWritten to {}", written.display());
+}

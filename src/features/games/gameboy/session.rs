@@ -154,14 +154,29 @@ pub struct Summary {
 /// A line for the log, with a picture of the screen for a checkpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
+    pub kind: Reported,
     pub line: String,
     /// A PNG.
     pub picture: Option<Vec<u8>>,
 }
 
+/// What a [`Report`] is about, for her commentary (`narrate.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reported {
+    /// An episode's line.
+    Episode,
+    /// A checkpoint: she reached an area for the first time.
+    Checkpoint,
+    /// Stuck: the ladder's warning, or going back to a checkpoint.
+    Stuck,
+    /// Anything else, like a planning failure.
+    Other,
+}
+
 impl Report {
-    fn line(line: String) -> Report {
+    fn line(kind: Reported, line: String) -> Report {
         Report {
+            kind,
             line,
             picture: None,
         }
@@ -331,6 +346,7 @@ pub async fn play<G: Game>(
         if rung == Rung::Rollback && roll_back(session, game, &mut journal).await? {
             summary.rollbacks += 1;
             let _ = session.report.send(Report::line(
+                Reported::Stuck,
                 journal.log.last().cloned().unwrap_or_default(),
             ));
             rung = journal.rung();
@@ -339,10 +355,13 @@ pub async fn play<G: Game>(
             timer.running();
         }
         if rung == Rung::Change && journal.stuck == CHANGE_AT {
-            let _ = session.report.send(Report::line(format!(
-                "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
+            let _ = session.report.send(Report::line(
+                Reported::Stuck,
+                format!(
+                    "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
                  of task, exploring first."
-            )));
+                ),
+            ));
         }
 
         let plan = match plan(session, game, &journal, &mut today, rung).await {
@@ -355,7 +374,7 @@ pub async fn play<G: Game>(
                 failures += 1;
                 let line = format!("Planning failed: {err:#}");
                 journal.log(line.clone());
-                let _ = session.report.send(Report::line(line));
+                let _ = session.report.send(Report::line(Reported::Other, line));
                 if failures >= FAILURES_MOST {
                     break Ended::Failing(format!("{err:#}"));
                 }
@@ -451,6 +470,7 @@ pub async fn play<G: Game>(
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
             pictured = Some(Report {
+                kind: Reported::Checkpoint,
                 line: format!("📍 **Checkpoint {}** · {at}", journal.checkpoints),
                 picture: game.screen().await.ok(),
             });
@@ -459,7 +479,7 @@ pub async fn play<G: Game>(
         let usd = (now_paid - paid).max(0.0);
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
         keep(session, game, &journal, &world, &today).await?;
-        let _ = session.report.send(Report::line(line));
+        let _ = session.report.send(Report::line(Reported::Episode, line));
         if let Some(pictured) = pictured {
             let _ = session.report.send(pictured);
         }
@@ -676,7 +696,9 @@ async fn paid_so_far(spends: &[Spend]) -> f64 {
         for (job, cost) in month.jobs {
             let free =
                 spend.provider() == "openai" && matches!(job.as_str(), "game_plan" | "game_review");
-            if job == "game_play" || (job.starts_with("game_") && job != "game_art" && !free) {
+            // Her commentary isn't playing: it's her voice, like a chat answer.
+            let talk = matches!(job.as_str(), "game_art" | super::narrate::JOB);
+            if job == "game_play" || (job.starts_with("game_") && !talk && !free) {
                 usd += cost;
             }
         }

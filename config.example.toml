@@ -351,6 +351,10 @@ free_tokens = 1000000
 # doing) is updated this often, in seconds (at least 5; 0: only at the end). The log goes in
 # a thread under it.
 live_seconds = 5
+# While she plays, she talks to the channel in her own voice, like a streamer: hello when
+# a session starts, a recap when it ends, and in between at most this often, in minutes
+# (her own model, at low effort; not counted in daily_usd). 0: she doesn't.
+narrate_minutes = 10
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.
