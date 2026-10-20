@@ -7,10 +7,13 @@ edition = "2024"
 anyhow = "1.0.104"
 async-trait = "0.1.92"
 base64 = "0.22"
+boytacean = "=0.13.2"
 chrono = "0.4.45"
 chrono-tz = { version = "0.10.4", features = ["case-insensitive"] }
 dotenvy = "0.15.7"
 fastrand = "2.5.0"
+gif = "0.14"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 image_hasher = "3.1"
 poise = "0.7.0"

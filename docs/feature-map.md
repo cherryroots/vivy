@@ -22,6 +22,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/tinyfish.md](features/tinyfish.md) | Web search and reading pages with TinyFish |
 | [features/who-said-it.md](features/who-said-it.md) | Who said it?: the game, where quotes come from, why it isn't an Activity |
 | [features/hunger-games.md](features/hunger-games.md) | The Hunger Games: the Reaping, rounds Vivy writes, the rules that check them |
+| [features/gameboy.md](features/gameboy.md) | The Game Boy: the emulator, playing it by hand, and the stages to Vivy playing by herself |
 
 ## Features
 
@@ -38,7 +39,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
-| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; and the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, their buttons |
+| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker; and a Game Boy emulator (`gameboy/`) that admins play by hand for now, until Vivy learns to play it | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, `/games gameboy ...`, their buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -194,6 +195,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #82 | | Settings to tune things that were fixed in code: Hunger Games `close_ups`, `picture_quality`, `victor_picture_quality`, `max_places`, `describe_areas`, `most_in_octagon`, `wander_rounds`; chat `max_tool_rounds`, `history_turns`, `follow_ups_per_person`; snails `count_within_days`; who said it `pause_seconds` |
 | #83 | | Reminders: the "Tomorrow 9:00" snooze button is removed; 10 min, 1 hour and Pick a time… stay |
 | #84 | | Chat: Discord message links in a question are opened for her (up to 3, as the asker, only channels they can read): author, time, whole text, text attachments, embeds and pictures come with the question as `<linked_messages>`; the prompt and `get_message`'s description say Discord links are hers to open and her web tools can't, so she stops saying she can't open them |
+| #87 | | Game Boy (stage 1): `/games gameboy load`, `press`, `wait`, `screen`, `gif`, `save`, `restore` and `off` (admins) play a Game Boy or Game Boy Color ROM from `roms_dir` by hand, with GIFs of what happened; the `boytacean` emulator on its own thread, a frame at a time, save states in `saves_dir` |
 
 ## Not built yet
 

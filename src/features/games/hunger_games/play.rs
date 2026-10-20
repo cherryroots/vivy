@@ -155,6 +155,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     let crate::features::games::Settings {
         who_said_it: quote_settings,
         hunger_games: settings,
+        ..
     } = bot.config.feature("games")?;
     let provider = bot.ai.chat().ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")

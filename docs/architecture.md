@@ -222,7 +222,7 @@ Since features never import each other, the core gives them four ways to work to
 
 `tracing` everywhere: `info!`, `warn!`, `error!`. Because the dispatcher opens a span per handler, every line inside one already says which feature, server, channel and message it came from.
 
-- **stdout** gets short readable lines (or JSON with `LOG_FORMAT=json`). `RUST_LOG` picks the level, for example `RUST_LOG=info,vivy::features::chat=debug`. Under systemd, `journalctl -u vivy -f` shows them.
+- **stdout** gets short readable lines (or JSON with `LOG_FORMAT=json`). `RUST_LOG` picks the level, for example `RUST_LOG=info,vivy::features::chat=debug`. Under systemd, `journalctl -u vivy -f` shows them. They're written to a copy of stdout taken at start, so `logging::drop_prints` can silence crates that `println!` instead of logging (the Game Boy emulator) without losing log lines.
 - **The log channel** (`[logging]` in config.toml) gets warnings and errors (or the level in `log_level`), with a link to the message that triggered them, posted every 5 seconds. The same line repeated is grouped as "×12". Lines with the target `"lifecycle"` (🟢 Started, 🔴 Shutting down, 🔌 Reconnected) are always posted. This is part of the core, so it works with the control panel turned off.
 - **Errors keep their cause.** Add `.context("what we were doing")` where an error happens, and the log reads "sending reminder 12: Missing Access" instead of only "Missing Access".
 
@@ -320,3 +320,5 @@ A path through the code for learning it, from small to large:
 | `dotenvy` | Loading `.env` |
 | `fastrand` | Dice rolls, like whether Vivy chimes in |
 | `tempfile` | Temporary files for ffmpeg |
+| `boytacean` | The Game Boy emulator (pinned to one version, since save states may not survive an upgrade) |
+| `gif` | Writing GIFs of the Game Boy's screen with an exact palette |

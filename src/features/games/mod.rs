@@ -5,11 +5,14 @@
 //! - `who_said_it/`: `/games whosaidit`, guessing who wrote old messages from the server
 //! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes,
 //!   and `/games leaderboard`, its wins and kills
+//! - `gameboy/`: `/games gameboy ...`, a Game Boy emulator Vivy will learn to play (for now
+//!   admins play it by hand)
 //!
 //! Each game's buttons start with `games:<game>:`, and `on_component` hands a press to its
 //! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
 //! words and the arena.
 
+mod gameboy;
 mod hunger_games;
 mod who_said_it;
 
@@ -27,6 +30,8 @@ pub struct Settings {
     pub who_said_it: who_said_it::Settings,
     /// `[features.games.hunger_games]`
     pub hunger_games: hunger_games::Settings,
+    /// `[features.games.gameboy]`
+    pub gameboy: gameboy::Settings,
 }
 
 pub struct Games;
@@ -69,7 +74,8 @@ impl Feature for Games {
         "who_said_it::who_said_it",
         "hunger_games::hunger_games",
         "hunger_games::leaderboard",
-        "hunger_games::reset_leaderboard"
+        "hunger_games::reset_leaderboard",
+        "gameboy::gameboy"
     ),
     subcommand_required
 )]
@@ -83,7 +89,7 @@ mod tests {
     use crate::core::config::Config;
 
     #[test]
-    fn the_example_config_sets_both_games() {
+    fn the_example_config_sets_every_game() {
         let config = Config::parse(include_str!("../../../config.example.toml")).unwrap();
         let settings: Settings = config.feature("games").unwrap();
         assert_eq!(settings.who_said_it.rounds, 10);
@@ -91,5 +97,7 @@ mod tests {
         assert_eq!(settings.hunger_games.max_tributes, 24);
         assert_eq!(settings.hunger_games.auto_advance_seconds, 45);
         assert_eq!(settings.hunger_games.lobby_minutes, 10);
+        assert_eq!(settings.gameboy.roms_dir, "roms");
+        assert_eq!(settings.gameboy.saves_dir, "gameboy");
     }
 }
