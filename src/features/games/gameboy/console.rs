@@ -14,6 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 
 use super::emulator::{Button, Emulator, FPS};
 use super::presses::Press;
+use super::world::World;
 
 /// A screen is kept for GIFs every this many frames: 20 a second.
 pub const RECORD_EVERY: u32 = 3;
@@ -47,6 +48,8 @@ pub struct Machine {
     /// Screens recorded since the ROM was put in, so a caller can ask for the ones after
     /// some point.
     recorded: u64,
+    /// What code has learned about the game's world: area maps and the movement log.
+    pub world: World,
 }
 
 impl Machine {
@@ -56,6 +59,7 @@ impl Machine {
             rom: rom.to_string(),
             recent: VecDeque::with_capacity(RECENT_SCREENS),
             recorded: 0,
+            world: World::default(),
         })
     }
 

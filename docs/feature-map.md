@@ -39,7 +39,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
-| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker; and a Game Boy emulator (`gameboy/`) that admins play by hand for now, until Vivy learns to play it | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, `/games gameboy ...`, their buttons |
+| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker; and a Game Boy emulator (`gameboy/`) that admins play by hand for now, with code that reads Pokémon Red and walks her anywhere on a map, until Vivy learns to play it | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, `/games gameboy ...` (with `look` and `walk`), their buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -196,6 +196,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #83 | | Reminders: the "Tomorrow 9:00" snooze button is removed; 10 min, 1 hour and Pick a time… stay |
 | #84 | | Chat: Discord message links in a question are opened for her (up to 3, as the asker, only channels they can read): author, time, whole text, text attachments, embeds and pictures come with the question as `<linked_messages>`; the prompt and `get_message`'s description say Discord links are hers to open and her web tools can't, so she stops saying she can't open them |
 | #87 | | Game Boy (stage 1): `/games gameboy load`, `press`, `wait`, `screen`, `gif`, `save`, `restore` and `off` (admins) play a Game Boy or Game Boy Color ROM from `roms_dir` by hand, with GIFs of what happened; the `boytacean` emulator on its own thread, a frame at a time, save states in `saves_dir` |
+| #88 | | Game Boy (stage 2): code reads Pokémon Red (tile grid and sprites from video memory, dark screens, text from the font, the game's memory map checked against the screen), keeps a map of each area that fills in, and walks her to any step by pathfinding; `/games gameboy look` and `walk` (admins) |
 
 ## Not built yet
 

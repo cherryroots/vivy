@@ -6,6 +6,10 @@
 //! - `wait`: let it run with nothing pressed
 //! - `screen`: the screen as it is now
 //! - `gif`: the last few seconds as a GIF
+//! - `look`: what code reads from the game: where she is, the map so far, the words on
+//!   screen and the last steps (Pokémon Red and Blue only, for now)
+//! - `walk`: walk to a step on the map, with code finding the way, or to the nearest
+//!   step not seen yet
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
 //! - `off`: take the ROM out
 
@@ -16,6 +20,9 @@ use poise::CreateReply;
 use serenity::all::{AutocompleteChoice, CreateAttachment, CreateAutocompleteResponse};
 
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
+use super::map::LEGEND;
+use super::walk::{Look, Walked, explore, look_for, walk_to};
+use super::world::View;
 use super::{Settings, files, pictures, presses};
 use crate::core::{Context, Result, user_error};
 
@@ -23,11 +30,19 @@ use crate::core::{Context, Result, user_error};
 /// since a GIF has many of them.
 const GIF_SCALE: u32 = 2;
 
+/// Steps shown each way around her on the map.
+const MAP_RADIUS: i32 = 12;
+
+/// Steps one `walk` takes at most.
+const WALK_MOST: u32 = 60;
+
 /// Play the Game Boy by hand (admins)
 #[poise::command(
     slash_command,
     rename = "gameboy",
-    subcommands("load", "press", "wait", "screen", "gif", "save", "restore", "off"),
+    subcommands(
+        "load", "press", "wait", "screen", "gif", "look", "walk", "save", "restore", "off"
+    ),
     subcommand_required
 )]
 pub async fn gameboy(_ctx: Context<'_>) -> Result<()> {
@@ -192,6 +207,133 @@ async fn gif(
     ctx.send(CreateReply::default().attachment(CreateAttachment::bytes(gif, "gameboy.gif")))
         .await?;
     Ok(())
+}
+
+/// What code reads from the game: where she is, the map so far, the words on screen
+#[poise::command(slash_command)]
+async fn look(ctx: Context<'_>) -> Result<()> {
+    admin(ctx)?;
+    let text = on_machine(|m| {
+        let look = game_look(m)?;
+        let mut world = std::mem::take(&mut m.world);
+        let view = look(&mut world, m);
+        m.world = world;
+        Ok(describe(m, &view))
+    })
+    .await?;
+    ctx.say(text).await?;
+    Ok(())
+}
+
+/// Walk to a step on the map (code finds the way), or explore without one
+#[poise::command(slash_command)]
+async fn walk(
+    ctx: Context<'_>,
+    #[description = "The step's x, as `look` shows it (leave both out to explore)"] x: Option<i32>,
+    #[description = "The step's y, as `look` shows it"] y: Option<i32>,
+) -> Result<()> {
+    admin(ctx)?;
+    ctx.defer().await?;
+    let (text, gif) = on_machine(move |m| {
+        let look = game_look(m)?;
+        let mark = m.recorded();
+        let mut world = std::mem::take(&mut m.world);
+        let walk = match (x, y) {
+            (Some(x), Some(y)) => walk_to(&mut world, m, look, (x, y), WALK_MOST),
+            (None, None) => explore(&mut world, m, look, WALK_MOST),
+            _ => {
+                m.world = world;
+                return Err(user_error("Give both x and y, or neither to explore."));
+            }
+        };
+        m.world = world;
+        let result = match &walk.result {
+            Walked::Arrived => "Got there".to_string(),
+            Walked::NewArea(area) => format!("Walked into {area}"),
+            Walked::Interrupted(words) if words.is_empty() => "Something stopped her".to_string(),
+            Walked::Interrupted(words) => format!("Stopped by: {}", words.replace('\n', " ")),
+            Walked::NoWay if x.is_none() => "Everything she can reach here is seen".to_string(),
+            Walked::NoWay => "The map knows no way there".to_string(),
+            Walked::Stuck => "Couldn't get there".to_string(),
+        };
+        let steps = if walk.steps == 1 { "step" } else { "steps" };
+        let text = format!(
+            "🚶 {result} ({} {steps}).\n{}",
+            walk.steps,
+            describe(m, &walk.view)
+        );
+        let gif = pictures::gif(&m.screens_since(mark), RECORD_EVERY, GIF_SCALE)?;
+        Ok((text, gif))
+    })
+    .await?;
+    ctx.send(
+        CreateReply::default()
+            .content(text)
+            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
+    )
+    .await?;
+    Ok(())
+}
+
+/// How code looks at this game, or a friendly no.
+fn game_look(m: &Machine) -> Result<Look> {
+    look_for(m.emulator.info()).ok_or_else(|| {
+        user_error("Code can only read Pokémon Red and Blue so far. Other games come later.")
+    })
+}
+
+/// A look as a message: the facts, the map around her, the words on screen, the last
+/// steps. Kept under Discord's 2000 characters.
+fn describe(m: &Machine, view: &View) -> String {
+    let mut parts = Vec::new();
+    if !view.facts.is_empty() {
+        parts.push(view.facts.clone());
+    }
+    if let Some(map) = m.world.areas.get(&view.area) {
+        let mut radius = MAP_RADIUS;
+        let drawn = loop {
+            let drawn = map.draw(view.at, radius);
+            if drawn.len() < 900 || radius <= 4 {
+                break drawn;
+            }
+            radius -= 2;
+        };
+        // Subtext (`-#`) only works at the start of a line.
+        parts.push(format!("```\n{drawn}```\n-# {LEGEND}"));
+    }
+    if !view.text.is_empty() {
+        parts.push(format!("On screen: {}", view.text.replace('\n', " / ")));
+    }
+    let trust = m.world.trust;
+    if trust.disagreed > 0 {
+        parts.push(format!(
+            "⚠️ The game's memory disagreed with the screen {} times, so its facts are left out.",
+            trust.disagreed
+        ));
+    } else if !view.facts.is_empty() && !trust.trusted() {
+        parts.push(format!(
+            "-# Memory checked against the screen on {} of {} steps so far.",
+            trust.agreed,
+            super::red::Trust::NEEDED
+        ));
+    }
+    let recent = m.world.recent(5);
+    if !recent.is_empty() {
+        parts.push(format!("Last steps:\n{}", recent.join("\n")));
+    }
+    if parts.is_empty() {
+        // The title screen, a menu before the game starts: nothing code can read.
+        parts.push(
+            "Code can't see her on a map and there are no words on screen (the title screen, \
+             or a menu?). `/games gameboy screen` shows what's there."
+                .to_string(),
+        );
+    }
+    let mut text = parts.join("\n");
+    if text.chars().count() > 1900 {
+        text = text.chars().take(1900).collect::<String>() + "…";
+    }
+    text
 }
 
 /// Save the game exactly as it is now
@@ -362,5 +504,54 @@ mod tests {
         assert_eq!(play_time(0), "0 s");
         assert_eq!(play_time(600), "10 s");
         assert_eq!(play_time(60 * 200), "3 min 21 s");
+    }
+
+    #[test]
+    fn a_look_at_nothing_still_says_something_and_the_legend_is_subtext() {
+        let mut m = Machine::new(
+            "test.gb",
+            &crate::features::games::gameboy::test_rom::build(),
+        )
+        .unwrap();
+        let mut view = View {
+            area: "map 0".to_string(),
+            at: (0, 0),
+            can_walk: false,
+            text: String::new(),
+            facts: String::new(),
+        };
+        assert!(describe(&m, &view).starts_with("Code can't see her on a map"));
+
+        m.world.area("Room").walked((1, 1));
+        view.area = "Room".to_string();
+        let text = describe(&m, &view);
+        assert!(text.contains("```\n-# @ you"), "{text}");
+    }
+
+    #[test]
+    #[ignore = "needs a ROM in VIVY_GB_ROM"]
+    fn look_and_walk_read_well_on_a_real_game() {
+        let mut m = crate::features::games::gameboy::red::tests::new_game();
+        let look = game_look(&m).unwrap();
+        let mut world = std::mem::take(&mut m.world);
+        let view = look(&mut world, &mut m);
+        m.world = world;
+        let first = describe(&m, &view);
+        println!("{first}\n---");
+        assert!(first.contains("Red's House 2F") && first.chars().count() < 2000);
+
+        let mark = m.recorded();
+        let mut world = std::mem::take(&mut m.world);
+        let walk = walk_to(&mut world, &mut m, look, (7, 1), WALK_MOST);
+        m.world = world;
+        assert_eq!(walk.result, Walked::NewArea("Red's House 1F".to_string()));
+        let after = describe(&m, &walk.view);
+        println!("{after}");
+        assert!(after.contains("Last steps:") && after.chars().count() < 2000);
+        let gif = pictures::gif(&m.screens_since(mark), RECORD_EVERY, GIF_SCALE).unwrap();
+        if let Ok(out) = std::env::var("VIVY_GB_OUT") {
+            std::fs::write(format!("{out}/walk.gif"), &gif).unwrap();
+            std::fs::write(format!("{out}/look.txt"), format!("{first}\n\n{after}\n")).unwrap();
+        }
     }
 }
