@@ -18,6 +18,8 @@
 //! - `journal.rs`, `budget.rs`: her notes and episode log, and what playing used today
 //!   (pure)
 //! - `session.rs`: playing by herself until a cap, with checkpoints and the stuck ladder
+//! - `playing.rs`, `dashboard.rs`: `/games gameboy play` and the rest, and the dashboard
+//!   message that shows her playing
 //! - `gate/`: the measurements (tests only)
 //! - `commands.rs`: `/games gameboy ...`
 //!
@@ -28,6 +30,7 @@ mod budget;
 mod change;
 mod commands;
 mod console;
+mod dashboard;
 mod emulator;
 mod files;
 #[cfg(test)]
@@ -59,6 +62,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub use commands::gameboy;
+pub use playing::on_component;
 
 /// `[features.games.gameboy]` settings.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,8 +79,8 @@ pub struct Settings {
     pub daily_usd: f64,
     /// OpenAI's free tokens a day for the strategist (the data-sharing tokens).
     pub free_tokens: u64,
-    /// While she plays, the GIF of the last seconds in the live message is replaced this
-    /// often, in seconds (0: only at the end).
+    /// While she plays, the dashboard (the last seconds of play as a GIF, and what she's
+    /// doing) is updated this often, in seconds (0: only at the end).
     pub live_seconds: u64,
 }
 

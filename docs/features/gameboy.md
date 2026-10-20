@@ -19,9 +19,10 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy walk x: y:` | Walks to that step of the map (code finds the way and takes it), with a GIF and the `look` after. Leave out `x` and `y` to walk to the nearest step not seen yet. Stops early when she walks into another area or something takes over the screen, like a text box. |
 | `/games gameboy task task: actions:` | A cheap model (the supervisor, below) carries out one short task by itself, like `go down the stairs, until you're on the floor below`, taking at most `actions:` actions (default 30). Posts whether it says it's done, its last actions, a GIF of the last seconds and the `look` after. Pokémon Red and Blue only for now. |
 | `/games gameboy skills forget:` | The skills she has written for the game that's in (below), each with when it's for, its notes, its rules and how its last use went. `forget:` deletes one by name. |
-| `/games gameboy play minutes: goal: episodes:` | She plays by herself from where the game is, in the background, for up to `minutes:` (default `session_minutes`, 60) or `episodes:` short tasks (200), until the day's money for playing is spent, or until she's stuck for good (below). `goal:` replaces her goal for this game and is kept (default: play through to the credits). The reply is the live message: a GIF of the last 10 seconds of play, replaced every `live_seconds` (10) while the game moves, with the episode she's on and its task, so you can watch. A thread under it gets a message per episode and the summary at the end, so it reads in order afterwards (in a thread already, or without permission to start one, they go in the channel). |
+| `/games gameboy play minutes: goal: episodes:` | She plays by herself from where the game is, in the background, for up to `minutes:` (default `session_minutes`, 60) or `episodes:` short tasks (200), until the day's money for playing is spent, or until she's stuck for good (below). `goal:` replaces her goal for this game and is kept (default: play through to the credits). The reply is the dashboard (below), kept up to date while she plays. A thread under it is the log: a message per episode, a picture at each checkpoint, a warning when she's stuck, and the summary with a GIF of the last seconds at the end, so it reads in order afterwards (in a thread already, or without permission to start one, they go in the channel). |
 | `/games gameboy stop` | Stops her playing, at once; the summary follows. |
 | `/games gameboy status` | Her goal, notes and last episodes for the game that's in, whether she's playing, and what playing used today (paid dollars and free tokens). |
+| `/games gameboy dashboard` | Posts the dashboard here. While she plays, it moves: the old one then links to the new one. Otherwise it shows how her last session left things. |
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
 | `/games gameboy restore name:` | Goes back to a save of the ROM that's in. |
 | `/games gameboy off` | Takes the ROM out. |
@@ -122,6 +123,18 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 `gate_session` plays one whole session the way the bot does, with the real models: Haiku acting and `VIVY_GB_REVIEWER` (`gpt-6-astra`) planning, from a new game in her bedroom or the task state `VIVY_GB_START`, for `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40), with `VIVY_GB_GATE_USD` (3) as the day's cap. Its report has every episode's line, her notes and skills at the end, and the saves folder with the journal and checkpoints.
 
+**The dashboard** (`dashboard.rs`) is one plain message (normal font size, unlike an embed), edited every `live_seconds` (10) while anything changed:
+
+- a header with the session's number, its minutes so far, the episode and the area
+- the last 10 seconds of play as a GIF, swapped only when the game moved
+- her goal, the task she's on, how many of its 30 actions she has used, and how long she has been stuck
+- the facts from the game's memory, where it has a memory map (Pokémon Red: where she is, badges, money, party)
+- her last 6 actions, her last 3 episode lines, the strategist's notes and her skills (when it's too long for one message the notes go first, then skills, episodes and actions)
+- what playing used today, the checkpoints, and a link to the log
+- buttons: Stop, Skills (her skills, for whoever pressed it) and Open log (admins only)
+
+When the session ends, it says how it went and keeps the last GIF. Discord's newer message layout (Components V2) would look more like a panel, but serenity 0.12 can't read those messages back, so every edit would log an error.
+
 Still to come in stage 4: notes that record their source and whether play confirmed them, walkthrough milestones checked by code, the puzzle helper, and the checkpoint ladder (how many episodes and dollars from one milestone to the next).
 
 ## Settings
@@ -158,9 +171,10 @@ All under `src/features/games/gameboy/`.
 | `strategist.rs` | The strategist's call: the next task, notes and changes to her skills, as JSON in a strict schema; the cheap model's plan through a tool once the free tokens are used |
 | `journal.rs` | Her journal: goal, notes, a line per episode, what counts as progress, the stuck ladder (pure) |
 | `budget.rs` | What playing used today: the free tokens, and whether the next strategist call fits; the paid dollars (pure) |
-| `session.rs` | Playing by herself until a cap: planning, episodes, checkpoints, rollbacks, writing everything after each episode; the `Game` trait |
+| `session.rs` | Playing by herself until a cap: planning, episodes, checkpoints, rollbacks, writing everything after each episode; the `Game` trait; `Report` and `Now` for the log and the dashboard |
 | `commands.rs` | `/games gameboy ...` |
-| `playing.rs` | `/games gameboy play`, `stop` and `status`, and the messages that follow a session |
+| `playing.rs` | `/games gameboy play`, `stop`, `status` and `dashboard`, the dashboard's buttons, and the log thread |
+| `dashboard.rs` | The dashboard: its text from `Now` (pure), its buttons, and keeping it up to date while she plays |
 | `gate/mod.rs` | The gate (tests only): the key check, the task runs, the strategist runs, the learning runs, their reports |
 | `gate/tasks.rs` | The task states, made by playing Red by script; the 15 tasks and their checks; the long goal |
 | `gate/player.rs` | The gate's own Game Boy for the supervisor |
@@ -176,7 +190,7 @@ Nine more need a real game and are `#[ignore]`d. With your own ROM:
 VIVY_GB_ROM=roms/red.gb cargo test --release gameboy -- --ignored --nocapture
 ```
 
-That includes `build_the_task_states` and `actions_carry_out_tasks_by_script` from stage 3 (see "The gate") and `skills_she_writes_carry_out_battles` from stage 4; the gate's model runs skip themselves without `VIVY_GB_GATE=1`. `supervisor.rs` tests the task loop with a scripted model and a pretend game: reminders, the loop warning, the action limit. `session.rs` plays whole sessions the same way, in a pretend game of rooms in a row: checkpoints at new rooms, the ladder's warning, a rollback and its note to the strategist, going further back each time and then giving up, the caps, a model that keeps failing, and every file a restart needs. `a_session_plays_red_and_its_saves_load` (ignored, needs the ROM) plays two scripted episodes of Red and checks the checkpoint and `latest` load into another Game Boy in the right place, and that a new session gets the maps back.
+That includes `build_the_task_states` and `actions_carry_out_tasks_by_script` from stage 3 (see "The gate") and `skills_she_writes_carry_out_battles` from stage 4; the gate's model runs skip themselves without `VIVY_GB_GATE=1`. `supervisor.rs` tests the task loop with a scripted model and a pretend game: reminders, the loop warning, the action limit. `session.rs` plays whole sessions the same way, in a pretend game of rooms in a row: checkpoints at new rooms, the ladder's warning, a rollback and its note to the strategist, going further back each time and then giving up, the caps, a model that keeps failing, every file a restart needs, the log's reports (checkpoint pictures, the warning) and what the dashboard is sent. `dashboard.rs` tests the dashboard's text, while playing and after, and that a long one leaves out her notes first. `a_session_plays_red_and_its_saves_load` (ignored, needs the ROM) plays two scripted episodes of Red and checks the checkpoint and `latest` load into another Game Boy in the right place, and that a new session gets the maps back.
 
 The stage 2 ones play Red's opening first (mashing A, picking the names RED and BLUE) and start in her bedroom: `walks_out_of_the_house_and_into_oak` walks to the stairs through steps not seen yet, out of the front door and north until Oak stops her, checking memory and the screen agree on every step and that the font reads Oak's words; `exploring_fills_in_the_bedroom` explores until every step of the room is seen; `look_and_walk_read_well_on_a_real_game` prints what `look` and `walk` would post.
 

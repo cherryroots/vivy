@@ -33,6 +33,8 @@ pub struct Journal {
     pub goal: String,
     /// The strategist's notes, as it last wrote them.
     pub notes: Vec<String>,
+    /// Sessions started, ever.
+    pub sessions: u32,
     /// Episodes played, ever.
     pub episodes: u32,
     /// One line per episode (and per rollback), oldest first.

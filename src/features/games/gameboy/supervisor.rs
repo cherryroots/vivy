@@ -211,7 +211,7 @@ fn keep_words(all: &mut Vec<String>, new: &[String]) {
 }
 
 /// The arguments as they'd be typed: `(5, 3)` or `"up a"`.
-fn args_text(args: &Value) -> String {
+pub(super) fn args_text(args: &Value) -> String {
     if let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) {
         return format!("({x}, {y})");
     }

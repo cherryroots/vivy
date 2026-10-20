@@ -788,15 +788,15 @@ async fn gate_session() {
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
-        doing: None,
+        now: None,
         timer: None,
     };
     // Each line as it comes, so a long run can be followed.
     let printer = tokio::spawn(async move {
         let mut all = Vec::new();
-        while let Some(line) = lines.recv().await {
-            println!("{line}");
-            all.push(line);
+        while let Some(report) = lines.recv().await {
+            println!("{}", report.line);
+            all.push(report.line);
         }
         all
     });

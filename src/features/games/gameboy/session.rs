@@ -14,8 +14,10 @@
 //!   further back; 3 rollbacks without progress, or 15 episodes, and the session ends.
 //! - After every episode the journal, the maps, her skills, the day's use and a `latest`
 //!   save are written, so a restart loses one episode at most.
+//! - For the channel: a [`Report`] after each episode, checkpoint and warning, and [`Now`],
+//!   what she's doing, after every action (the dashboard in `dashboard.rs` shows it).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -24,16 +26,18 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
+use super::actions::Acted;
 use super::budget::Today;
 use super::files;
-use super::journal::{DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
+use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
 use super::map::AreaMap;
 use super::skills::{self, Skill};
 use super::strategist::{self, Ask, Calls, Care, Plan};
-use super::supervisor::{Episode, Player, run_task};
+use super::supervisor::{Episode, Player, args_text, run_task};
 use super::world::World;
 use crate::ai::{ChatProvider, OpenAi, Spend};
 use crate::core::timers::Timer;
@@ -51,6 +55,9 @@ const FAILURES_MOST: u32 = 3;
 const FAILURE_WAIT: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 30 });
 /// Episode lines the strategist sees.
 const RECENT_EPISODES: usize = 5;
+/// Episode lines and actions [`Now`] keeps for the dashboard.
+const EPISODES_SHOWN: usize = 3;
+const ACTIONS_SHOWN: usize = 6;
 /// The save made after every episode, for carrying on (`/games gameboy restore latest`).
 pub const LATEST: &str = "latest";
 /// What the strategist is told about the last task before there was one.
@@ -95,10 +102,10 @@ pub struct Session<'a> {
     pub limits: Limits,
     /// Cancelled by `/games gameboy stop` or a shutdown.
     pub stop: CancellationToken,
-    /// A line after each episode, for the channel.
-    pub report: mpsc::UnboundedSender<String>,
-    /// What she's doing now ("Episode 4: go downstairs..."), for the live message.
-    pub doing: Option<watch::Sender<String>>,
+    /// A line after each episode, checkpoint and warning, for the log.
+    pub report: mpsc::UnboundedSender<Report>,
+    /// What she's doing now, for the dashboard.
+    pub now: Option<watch::Sender<Now>>,
     /// Shown as running on the status picture while she plays. The caller ends it.
     pub timer: Option<Timer>,
 }
@@ -144,6 +151,110 @@ pub struct Summary {
     pub cheap_plans: u32,
 }
 
+/// A line for the log, with a picture of the screen for a checkpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Report {
+    pub line: String,
+    /// A PNG.
+    pub picture: Option<Vec<u8>>,
+}
+
+impl Report {
+    fn line(line: String) -> Report {
+        Report {
+            line,
+            picture: None,
+        }
+    }
+}
+
+/// What she's doing now, and what the journal and the day say: everything the dashboard
+/// shows. The session sends it before each episode and after each action.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Now {
+    /// When the session started, in seconds since 1970.
+    pub started: i64,
+    pub session: u32,
+    /// The episode playing (0 before the first plan).
+    pub episode: u32,
+    pub task: String,
+    pub area: String,
+    /// Actions in this episode so far.
+    pub actions: u32,
+    /// The last few actions, oldest first, like `press "a": The text moved on.`.
+    pub last_actions: VecDeque<String>,
+    /// Facts from the game's memory, a line each (none for games without a memory map).
+    pub facts: String,
+    pub goal: String,
+    pub notes: Vec<String>,
+    /// The last few episode lines.
+    pub episodes: Vec<String>,
+    /// Episodes in a row with nothing new.
+    pub stuck: u32,
+    pub checkpoints: u32,
+    pub skills: usize,
+    /// The skill written last.
+    pub newest_skill: Option<String>,
+    /// USD the paid models cost today, and the free tokens used.
+    pub usd: f64,
+    pub free_tokens: u64,
+}
+
+impl Now {
+    /// Takes in what the journal, her skills and the day say now.
+    pub fn read(&mut self, journal: &Journal, skills: &[Skill], today: &Today) {
+        self.session = journal.sessions;
+        self.goal.clone_from(&journal.goal);
+        self.notes.clone_from(&journal.notes);
+        self.episodes = journal.recent(EPISODES_SHOWN).to_vec();
+        self.stuck = journal.stuck;
+        self.checkpoints = journal.checkpoints;
+        self.skills = skills.len();
+        self.newest_skill = skills.last().map(|s| s.name.clone());
+        self.usd = today.usd;
+        self.free_tokens = today.free_tokens;
+    }
+}
+
+/// The game as the supervisor plays it: each action is also told to the dashboard.
+struct Watched<'a, G> {
+    game: &'a mut G,
+    now: Option<&'a watch::Sender<Now>>,
+}
+
+#[async_trait]
+impl<G: Game> Player for Watched<'_, G> {
+    async fn act(&mut self, name: &str, args: &Value) -> anyhow::Result<Acted> {
+        let acted = self.game.act(name, args).await?;
+        if let Some(now) = self.now {
+            let line = format!("{name} {}", args_text(args));
+            let line = format!("{}: {}", line.trim(), short(&acted.outcome, 70));
+            now.send_modify(|now| {
+                now.actions += 1;
+                now.area.clone_from(&acted.view.area);
+                now.facts.clone_from(&acted.view.facts);
+                if now.last_actions.len() == ACTIONS_SHOWN {
+                    now.last_actions.pop_front();
+                }
+                now.last_actions.push_back(line);
+            });
+        }
+        Ok(acted)
+    }
+
+    async fn look(&mut self) -> anyhow::Result<Acted> {
+        self.game.look().await
+    }
+
+    async fn describe(&mut self, acted: &Acted) -> anyhow::Result<String> {
+        self.game.describe(acted).await
+    }
+
+    async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
+        self.game.screen().await
+    }
+}
+
 /// The notes kept with a checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Checkpoint {
@@ -168,12 +279,20 @@ pub async fn play<G: Game>(
     if journal.goal.is_empty() {
         journal.goal = DEFAULT_GOAL.to_string();
     }
+    journal.sessions += 1;
     if game.world().await?.areas.is_empty()
         && let Some(areas) = read_json(&files::maps_path(dir, rom)).await?
     {
         game.set_areas(areas).await?;
     }
     let mut today = Today::on(read_json(&files::today_path(dir)).await?, Utc::now());
+    if let Some(now) = &session.now {
+        let skills = game.world().await?.skills;
+        now.send_modify(|now| {
+            now.started = Utc::now().timestamp();
+            now.read(&journal, &skills, &today);
+        });
+    }
     let started = Instant::now();
     let mut paid = paid_so_far(session.spends).await;
     let mut summary = Summary {
@@ -211,13 +330,19 @@ pub async fn play<G: Game>(
         }
         if rung == Rung::Rollback && roll_back(session, game, &mut journal).await? {
             summary.rollbacks += 1;
-            let _ = session
-                .report
-                .send(journal.log.last().cloned().unwrap_or_default());
+            let _ = session.report.send(Report::line(
+                journal.log.last().cloned().unwrap_or_default(),
+            ));
             rung = journal.rung();
         }
         if let Some(timer) = &session.timer {
             timer.running();
+        }
+        if rung == Rung::Change && journal.stuck == CHANGE_AT {
+            let _ = session.report.send(Report::line(format!(
+                "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
+                 of task, exploring first."
+            )));
         }
 
         let plan = match plan(session, game, &journal, &mut today, rung).await {
@@ -230,7 +355,7 @@ pub async fn play<G: Game>(
                 failures += 1;
                 let line = format!("Planning failed: {err:#}");
                 journal.log(line.clone());
-                let _ = session.report.send(line);
+                let _ = session.report.send(Report::line(line));
                 if failures >= FAILURES_MOST {
                     break Ended::Failing(format!("{err:#}"));
                 }
@@ -242,7 +367,7 @@ pub async fn play<G: Game>(
         let mut world = game.world().await?;
         let reviewed = skills::review(&mut world.skills, &plan.skill_changes);
         if !reviewed.is_empty() {
-            game.set_skills(world.skills).await?;
+            game.set_skills(world.skills.clone()).await?;
         }
         let task = if plan.task.trim().is_empty() {
             EXPLORE.to_string()
@@ -250,18 +375,26 @@ pub async fn play<G: Game>(
             plan.task.clone()
         };
 
-        let area = game.look().await?.view.area;
-        if let Some(doing) = &session.doing {
-            doing.send_replace(format!(
-                "Episode {}: {}",
-                journal.episodes + 1,
-                short(&task, 300)
-            ));
+        let look = game.look().await?;
+        let area = look.view.area;
+        if let Some(now) = &session.now {
+            now.send_modify(|now| {
+                now.read(&journal, &world.skills, &today);
+                now.episode = journal.episodes + 1;
+                now.task.clone_from(&task);
+                now.area.clone_from(&area);
+                now.facts = look.view.facts;
+                now.actions = 0;
+            });
         }
         let mut stopped = false;
         let mut failed = false;
+        let mut watched = Watched {
+            game: &mut *game,
+            now: session.now.as_ref(),
+        };
         let episode = tokio::select! {
-            episode = run_task(session.provider, game, &session.game, &task, None, EPISODE_ACTIONS) => episode,
+            episode = run_task(session.provider, &mut watched, &session.game, &task, None, EPISODE_ACTIONS) => episode,
             () = session.stop.cancelled() => {
                 stopped = true;
                 Ok(Episode::default())
@@ -311,16 +444,27 @@ pub async fn play<G: Game>(
         for new in &found.areas {
             summary.new_areas.push(new.clone());
         }
+        let mut pictured = None;
         if !found.areas.is_empty() {
             let at = game.look().await?.view.area;
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
+            pictured = Some(Report {
+                line: format!("📍 **Checkpoint {}** · {at}", journal.checkpoints),
+                picture: game.screen().await.ok(),
+            });
         }
         let now_paid = paid_so_far(session.spends).await;
         let usd = (now_paid - paid).max(0.0);
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
         keep(session, game, &journal, &world, &today).await?;
-        let _ = session.report.send(line);
+        let _ = session.report.send(Report::line(line));
+        if let Some(pictured) = pictured {
+            let _ = session.report.send(pictured);
+        }
+        if let Some(now) = &session.now {
+            now.send_modify(|now| now.read(&journal, &world.skills, &today));
+        }
         if failures >= FAILURES_MOST {
             break Ended::Failing(
                 episode
@@ -753,7 +897,7 @@ mod tests {
         provider: &'a Scripted,
         dir: &Path,
         episodes: u32,
-        report: mpsc::UnboundedSender<String>,
+        report: mpsc::UnboundedSender<Report>,
     ) -> Session<'a> {
         Session {
             provider,
@@ -770,7 +914,7 @@ mod tests {
             },
             stop: CancellationToken::new(),
             report,
-            doing: None,
+            now: None,
             timer: None,
         }
     }
@@ -781,7 +925,9 @@ mod tests {
         // Two new rooms, then nothing new: stuck from episode 3 on.
         let provider = Scripted::new(&[true, true]);
         let (report, mut lines) = mpsc::unbounded_channel();
-        let session = session(&provider, dir.path(), 13, report);
+        let mut session = session(&provider, dir.path(), 13, report);
+        let (now, watching) = watch::channel(Now::default());
+        session.now = Some(now);
         let mut game = Rooms::new();
         let summary = play(&session, &mut game, Some("reach the end"))
             .await
@@ -792,16 +938,43 @@ mod tests {
         assert_eq!((summary.checkpoints, summary.rollbacks), (2, 1));
         assert_eq!(summary.cheap_plans, 13, "no OpenAI: the cheap model plans");
 
-        // The episode lines went to the channel, with the rollback.
+        // The episode lines went to the log, with pictures of the checkpoints, the warning
+        // at 3 episodes without progress, and the rollback.
         let mut sent = Vec::new();
-        while let Ok(line) = lines.try_recv() {
-            sent.push(line);
+        while let Ok(report) = lines.try_recv() {
+            sent.push(report);
         }
-        assert_eq!(sent.len(), 14, "{sent:#?}");
-        assert!(sent[0].starts_with("#1 ") && sent[0].contains("Room 0: task 1 → done"));
-        assert!(sent[0].contains("new: Room 0, Room 1"), "{}", sent[0]);
-        assert!(sent[0].contains("skills: rewrote talk"), "{}", sent[0]);
-        assert!(sent[11].starts_with("Rolled back to checkpoint 2 in Room 2"));
+        let line = |n: usize| sent[n].line.as_str();
+        assert_eq!(sent.len(), 17, "{sent:#?}");
+        assert!(line(0).starts_with("#1 ") && line(0).contains("Room 0: task 1 → done"));
+        assert!(line(0).contains("new: Room 0, Room 1"), "{}", line(0));
+        assert!(line(0).contains("skills: rewrote talk"), "{}", line(0));
+        assert_eq!(line(1), "📍 **Checkpoint 1** · Room 1");
+        assert_eq!(sent[1].picture.as_deref(), Some(&[1, 2, 3][..]));
+        assert!(
+            line(7).contains("Nothing new for 3 episodes"),
+            "{}",
+            line(7)
+        );
+        assert!(line(14).starts_with("Rolled back to checkpoint 2 in Room 2"));
+        assert!(sent.iter().filter(|r| r.picture.is_some()).count() == 2);
+
+        // The dashboard's last view of it.
+        let now = watching.borrow().clone();
+        assert_eq!(
+            (now.session, now.episode, now.task.as_str()),
+            (1, 13, "task 13")
+        );
+        assert_eq!((now.area.as_str(), now.actions), ("Room 2", 1));
+        assert_eq!(now.last_actions.len(), ACTIONS_SHOWN);
+        assert_eq!(now.last_actions[5], "press \"a\": Nothing changed.");
+        assert_eq!(now.goal, "reach the end");
+        assert_eq!(now.notes, vec!["note 13"]);
+        assert_eq!(now.episodes.len(), EPISODES_SHOWN);
+        assert!(now.episodes[2].starts_with("#13 "));
+        assert_eq!((now.stuck, now.checkpoints, now.skills), (2, 2, 1));
+        assert_eq!(now.newest_skill.as_deref(), Some("talk"));
+        assert!(now.started > 0);
 
         // The ladder shows in the plans: a warning from 3 episodes without progress, and
         // after the rollback, what happened instead of the last task.
@@ -847,8 +1020,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(
-            (journal.goal.as_str(), journal.episodes),
-            ("reach the end", 14)
+            (journal.goal.as_str(), journal.episodes, journal.sessions),
+            ("reach the end", 14, 2)
         );
     }
 
@@ -910,8 +1083,8 @@ mod tests {
         let session = session(&provider, dir.path(), 2, report);
         let mut game = Local::new(red::tests::new_game());
         let summary = play(&session, &mut game, None).await.unwrap();
-        while let Ok(line) = lines.try_recv() {
-            println!("{line}");
+        while let Ok(report) = lines.try_recv() {
+            println!("{}", report.line);
         }
         assert_eq!(summary.episodes, 2);
         assert_eq!(summary.new_areas, vec!["Red's House 1F", "Red's House 2F"]);

@@ -1,39 +1,48 @@
-//! `/games gameboy play`, `stop` and `status`: she plays by herself (`session.rs`) in the
-//! background. The reply to `play` is the live message: a GIF of the last seconds of play,
-//! replaced every `live_seconds`, with what she's doing now. A thread under it gets a
-//! message per episode and the summary at the end, so it reads in order afterwards. While she plays, the commands that move the game are refused, so nobody
-//! presses buttons under her.
+//! `/games gameboy play`, `stop`, `status` and `dashboard`: she plays by herself
+//! (`session.rs`) in the background. The reply to `play` is the dashboard
+//! (`dashboard.rs`), kept up to date while she plays. A thread under it is the log: a
+//! message per episode, checkpoint (with a picture) and warning, and the summary with a GIF
+//! at the end, so it reads in order afterwards. While she plays, the commands that move the
+//! game are refused, so nobody presses buttons under her.
 
 use std::sync::Mutex;
-use std::time::Duration;
 
 use poise::CreateReply;
 use serenity::all::{
-    AutoArchiveDuration, ChannelId, CreateAllowedMentions, CreateAttachment, CreateMessage,
-    CreateThread, EditAttachments, EditMessage, Message,
+    AutoArchiveDuration, ChannelId, ComponentInteraction, CreateAllowedMentions, CreateAttachment,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, CreateThread,
+    EditAttachments, EditMessage, Message,
 };
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::budget::Today;
-use super::commands::{GIF_SCALE, admin, game_look, game_name, on_machine};
-use super::console::{RECENT_SECONDS, RECORD_EVERY, console};
+use super::commands::{admin, game_look, game_name, on_machine};
+use super::dashboard::{self, Board, Live, last_seconds};
 use super::journal::{DEFAULT_GOAL, Journal};
 use super::player::OnConsole;
-use super::session::{self, Limits, Session, Summary};
-use super::{Settings, files, pictures};
+use super::session::{self, Limits, Now, Report, Session, Summary};
+use super::skills::Skill;
+use super::{Settings, files};
 use crate::core::{BotCtx, Context, Result, user_error};
 
 /// Episode lines `status` shows.
 const LINES_SHOWN: usize = 8;
-/// The live GIF is replaced at most this often, in seconds.
-const LIVE_FASTEST: u64 = 5;
 /// Episodes one session plays at most.
 const EPISODES_MOST: u32 = 200;
+/// What a dashboard says while she isn't playing.
+const RESTING: &str = "⏸️ She isn't playing. `/games gameboy play` starts her.";
 
-/// Cancels the session that's playing, if one is.
-static PLAYING: Mutex<Option<CancellationToken>> = Mutex::new(None);
+/// The session that's playing, if one is: how to stop it, and how to hand its dashboard a
+/// new message.
+static PLAYING: Mutex<Option<Running>> = Mutex::new(None);
+
+struct Running {
+    stop: CancellationToken,
+    moves: mpsc::UnboundedSender<Message>,
+}
 
 /// Clears [`PLAYING`] when the session ends, however it ends.
 struct Playing;
@@ -52,6 +61,15 @@ pub fn not_playing() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Stops her, if she's playing.
+fn stop_playing() -> &'static str {
+    let stopped = PLAYING.lock().unwrap().as_ref().map(|r| r.stop.cancel());
+    match stopped {
+        Some(()) => "⏹️ Stopping her. The summary follows in the log.",
+        None => "She isn't playing by herself.",
+    }
 }
 
 /// Let her play by herself for a while, choosing her own tasks
@@ -73,11 +91,19 @@ pub async fn play(
     if ctx.data().ai.chat().is_none() {
         return Err(user_error("Playing needs a model: the bot has no AI key."));
     }
-    let (rom, game) = on_machine(|m| {
+    let guild = ctx
+        .guild_id()
+        .ok_or_else(|| user_error("Playing needs a server."))?;
+    let (rom, game, skills) = on_machine(|m| {
         game_look(m)?;
-        Ok((m.rom.clone(), game_name(&m.emulator.info().title)))
+        Ok((
+            m.rom.clone(),
+            game_name(&m.emulator.info().title),
+            m.world.skills.clone(),
+        ))
     })
     .await?;
+    let (moves, moved) = mpsc::unbounded_channel();
     let stop = {
         let mut playing = PLAYING.lock().unwrap();
         if playing.is_some() {
@@ -86,7 +112,10 @@ pub async fn play(
             ));
         }
         let stop = ctx.data().shutdown.child_token();
-        *playing = Some(stop.clone());
+        *playing = Some(Running {
+            stop: stop.clone(),
+            moves,
+        });
         stop
     };
     let guard = Playing;
@@ -96,40 +125,57 @@ pub async fn play(
         daily_usd: settings.daily_usd,
         free_tokens: settings.free_tokens,
     };
-    let journal = read_journal(&settings, &rom).await;
-    let shown_goal = goal
+    // The dashboard before the first episode, from the journal.
+    let journal = read_journal(&settings, &rom).await.unwrap_or_default();
+    let today = Today::on(
+        read(&files::today_path(&settings.saves_dir())).await,
+        chrono::Utc::now(),
+    );
+    let mut first = Now::default();
+    first.read(&journal, &skills, &today);
+    first.started = chrono::Utc::now().timestamp();
+    first.session = journal.sessions + 1;
+    first.goal = goal
         .as_deref()
         .map(str::trim)
         .filter(|g| !g.is_empty())
-        .or(journal
-            .as_ref()
-            .map(|j| j.goal.as_str())
-            .filter(|g| !g.is_empty()))
+        .or(Some(journal.goal.as_str()).filter(|g| !g.is_empty()))
         .unwrap_or(DEFAULT_GOAL)
         .to_string();
-    let planner = if ctx.data().ai.openai.is_some() {
-        "the strategist plans on the free OpenAI tokens"
-    } else {
-        "the cheap model plans (no OpenAI key)"
+    let board = Board {
+        game: &game,
+        now: &first,
+        minutes: limits.minutes,
+        daily_usd: settings.daily_usd,
+        free_tokens: settings.free_tokens,
+        log: None,
+        over: None,
     };
-    let live = ctx
+    let message = ctx
         .send(
             CreateReply::default()
-                .content(format!(
-                    "▶️ She's playing **{game}** by herself for up to {} minutes; {planner}.\n\
-                     Goal: {shown_goal}\n-# Each episode goes in the thread below. \
-                     `/games gameboy stop` stops her, `/games gameboy status` shows her notes.",
-                    limits.minutes
-                ))
+                .content(dashboard::text(&board, first.started))
+                .components(dashboard::buttons(None, false))
                 .allowed_mentions(CreateAllowedMentions::new()),
         )
         .await?
         .into_message()
         .await?;
-    let bot = ctx.data().clone();
+    let live = Live {
+        bot: ctx.data().clone(),
+        game,
+        minutes: limits.minutes,
+        daily_usd: settings.daily_usd,
+        free_tokens: settings.free_tokens,
+        guild,
+        log: message.channel_id,
+    };
     ctx.data().tasks.spawn(async move {
         let _guard = guard;
-        run(bot, live, settings, rom, game, limits, goal, stop).await;
+        run(
+            live, message, moved, first, settings, rom, limits, goal, stop,
+        )
+        .await;
     });
     Ok(())
 }
@@ -138,17 +184,126 @@ pub async fn play(
 #[poise::command(slash_command)]
 pub async fn stop(ctx: Context<'_>) -> Result<()> {
     admin(ctx)?;
-    let stopped = PLAYING
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(CancellationToken::cancel);
-    ctx.say(match stopped {
-        Some(()) => "⏹️ Stopping her. The summary follows.",
-        None => "She isn't playing by herself.",
+    ctx.say(stop_playing()).await?;
+    Ok(())
+}
+
+/// Post her dashboard here: live while she plays, else how her last session ended
+#[poise::command(slash_command)]
+pub async fn dashboard(ctx: Context<'_>) -> Result<()> {
+    let settings = admin(ctx)?;
+    let moves = PLAYING.lock().unwrap().as_ref().map(|r| r.moves.clone());
+    if let Some(moves) = moves {
+        let message = ctx
+            .say("➡️ Moving the dashboard here…")
+            .await?
+            .into_message()
+            .await?;
+        // She stopped meanwhile: this one shows how she left it.
+        if let Err(SendError(mut message)) = moves.send(message) {
+            let (text, gif) = resting(&settings).await?;
+            let mut attachments = EditAttachments::new();
+            if let Some(gif) = gif {
+                attachments = attachments.add(CreateAttachment::bytes(gif, "live.gif"));
+            }
+            let edit = EditMessage::new()
+                .content(text)
+                .allowed_mentions(CreateAllowedMentions::new())
+                .attachments(attachments);
+            message.edit(ctx.http(), edit).await?;
+        }
+        return Ok(());
+    }
+    let (text, gif) = resting(&settings).await?;
+    let mut reply = CreateReply::default()
+        .content(text)
+        .allowed_mentions(CreateAllowedMentions::new());
+    if let Some(gif) = gif {
+        reply = reply.attachment(CreateAttachment::bytes(gif, "live.gif"));
+    }
+    ctx.send(reply).await?;
+    Ok(())
+}
+
+/// The dashboard while she isn't playing, from her files, with the last seconds of play
+/// if the Game Boy is on.
+async fn resting(settings: &Settings) -> Result<(String, Option<Vec<u8>>)> {
+    let (rom, game, skills) = on_machine(|m| {
+        Ok((
+            m.rom.clone(),
+            game_name(&m.emulator.info().title),
+            m.world.skills.clone(),
+        ))
     })
     .await?;
+    let journal = read_journal(settings, &rom).await.unwrap_or_default();
+    let today = Today::on(
+        read(&files::today_path(&settings.saves_dir())).await,
+        chrono::Utc::now(),
+    );
+    let mut now = Now::default();
+    now.read(&journal, &skills, &today);
+    if now.goal.is_empty() {
+        now.goal = DEFAULT_GOAL.to_string();
+    }
+    let board = Board {
+        game: &game,
+        now: &now,
+        minutes: settings.session_minutes,
+        daily_usd: settings.daily_usd,
+        free_tokens: settings.free_tokens,
+        log: None,
+        over: Some(RESTING),
+    };
+    let text = dashboard::text(&board, chrono::Utc::now().timestamp());
+    Ok((text, last_seconds().await.map(|(_, gif)| gif)))
+}
+
+/// The dashboard's buttons: Stop, and Skills (her skills, for the one who pressed).
+pub async fn on_component(bot: &BotCtx, i: &ComponentInteraction, action: &str) -> Result<()> {
+    let text = if !bot.is_admin(i.user.id) {
+        "Only admins can use the Game Boy buttons.".to_string()
+    } else if action == "stop" {
+        stop_playing().to_string()
+    } else if action == "skills" {
+        match on_machine(|m| Ok(m.world.skills.clone())).await {
+            Ok(list) => skills_text(&list),
+            Err(err) => format!("{err:#}"),
+        }
+    } else {
+        return Ok(());
+    };
+    let response = CreateInteractionResponseMessage::new()
+        .content(text)
+        .allowed_mentions(CreateAllowedMentions::new())
+        .ephemeral(true);
+    i.create_response(&bot.http, CreateInteractionResponse::Message(response))
+        .await?;
     Ok(())
+}
+
+/// Her skills, a line each: the name, when she uses it, and how often she has.
+fn skills_text(list: &[Skill]) -> String {
+    if list.is_empty() {
+        return "She hasn't written any skills for this game yet.".to_string();
+    }
+    let lines: Vec<String> = list
+        .iter()
+        .map(|s| {
+            let kind = if s.rules.is_empty() {
+                "know-how"
+            } else {
+                "routine"
+            };
+            format!(
+                "- **{}** ({kind}, used {}): {}",
+                s.name,
+                s.uses,
+                short(&s.use_when, 150)
+            )
+        })
+        .collect();
+    short(&lines.join("\n"), 1990)
 }
 
 /// Her goal, notes and last episodes for this game, and what playing used today
@@ -209,32 +364,34 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Plays the session: the live GIF in `live` (the reply to `play`), a line per episode
-/// and the summary in a thread under it.
+/// Plays the session, with the dashboard in `message` (the reply to `play`) and the log in
+/// a thread under it.
 #[allow(clippy::too_many_arguments)]
 async fn run(
-    bot: BotCtx,
-    live: Message,
+    live: Live,
+    mut message: Message,
+    moved: mpsc::UnboundedReceiver<Message>,
+    first: Now,
     settings: Settings,
     rom: String,
-    game: String,
     limits: Limits,
     goal: Option<String>,
     stop: CancellationToken,
 ) {
+    let bot = live.bot.clone();
     let Some(provider) = bot.ai.chat() else {
         return;
     };
-    let name: String = format!("{game} · {}", chrono::Utc::now().format("%-d %b %H:%M"))
+    let name: String = format!("{} · Session {}", live.game, first.session)
         .chars()
         .take(100)
         .collect();
     // Run inside a thread already, or without the permission: the channel itself.
-    let log = match live
+    let log = match message
         .channel_id
         .create_thread_from_message(
             &bot.http,
-            live.id,
+            message.id,
             CreateThread::new(name).auto_archive_duration(AutoArchiveDuration::OneDay),
         )
         .await
@@ -242,20 +399,15 @@ async fn run(
         Ok(thread) => thread.id,
         Err(err) => {
             warn!("couldn't start a thread for the Game Boy session: {err}");
-            live.channel_id
+            message.channel_id
         }
     };
-    let (report, lines) = mpsc::unbounded_channel();
-    let forward = tokio::spawn(post_lines(bot.clone(), log, lines));
-    let (doing, now) = watch::channel(String::new());
+    let live = Live { log, ..live };
+    live.show(&mut message, &first, None, None).await;
+    let (report, reports) = mpsc::unbounded_channel();
+    let forward = tokio::spawn(post_reports(bot.clone(), log, reports));
+    let (now, watching) = watch::channel(first);
     let ended = CancellationToken::new();
-    let watching = tokio::spawn(live_gif(
-        bot.clone(),
-        live,
-        now,
-        ended.clone(),
-        settings.live_seconds,
-    ));
     let timer = bot
         .timers
         .add("Game Boy", "an episode at a time while she plays");
@@ -263,21 +415,37 @@ async fn run(
         provider: provider.as_ref(),
         openai: bot.ai.openai.as_deref(),
         spends: &bot.ai.spends,
-        game,
+        game: live.game.clone(),
         saves_dir: settings.saves_dir(),
         rom,
         limits,
         stop,
         report,
-        doing: Some(doing),
+        now: Some(now),
         timer: Some(timer.clone()),
     };
-    let result = session::play(&session, &mut OnConsole, goal.as_deref()).await;
+    let playing = async {
+        let result = session::play(&session, &mut OnConsole, goal.as_deref()).await;
+        ended.cancel();
+        result
+    };
+    let following = live.follow(
+        message,
+        watching,
+        moved,
+        ended.clone(),
+        settings.live_seconds,
+    );
+    let (result, mut message) = tokio::join!(playing, following);
     timer.ended();
+    let last = session
+        .now
+        .as_ref()
+        .map(|now| now.borrow().clone())
+        .unwrap_or_default();
+    // The log's last episode lines go out before the summary.
     drop(session);
-    ended.cancel();
     let _ = forward.await;
-    let _ = watching.await;
     let today = Today::on(
         read(&files::today_path(&settings.saves_dir())).await,
         chrono::Utc::now(),
@@ -289,66 +457,27 @@ async fn run(
             format!("⚠️ Her session broke off: {err:#}")
         }
     };
-    if let Err(err) = log.send_message(&bot.http, plain(&text)).await {
+    let gif = last_seconds().await.map(|(_, gif)| gif);
+    let mut summary = plain(&text);
+    if let Some(gif) = &gif {
+        summary = summary.add_file(CreateAttachment::bytes(gif.clone(), "last.gif"));
+    }
+    if let Err(err) = log.send_message(&bot.http, summary).await {
         warn!("couldn't post the Game Boy session's summary: {err}");
     }
+    let over = text.trim_start_matches("⏹️ ");
+    live.show(&mut message, &last, Some(over), gif).await;
 }
 
-/// Keeps the live message's GIF to the last seconds of play, every `every` seconds while
-/// the game has moved, with what she's doing now; at the end, says where the summary is.
-async fn live_gif(
-    bot: BotCtx,
-    mut live: Message,
-    now: watch::Receiver<String>,
-    ended: CancellationToken,
-    every: u64,
-) {
-    let head = live.content.clone();
-    let mut shown = None;
-    loop {
-        let over = if every == 0 {
-            ended.cancelled().await;
-            true
-        } else {
-            tokio::select! {
-                () = tokio::time::sleep(Duration::from_secs(every.max(LIVE_FASTEST))) => false,
-                () = ended.cancelled() => true,
-            }
-        };
-        let Some((mark, gif)) = last_seconds().await else {
-            if over {
-                break;
-            }
-            continue;
-        };
-        // Nothing moved since the last one (she's thinking): leave it.
-        if !over && shown == Some(mark) {
-            continue;
+/// Each report as a message of its own, so the log reads in order.
+async fn post_reports(bot: BotCtx, log: ChannelId, mut reports: mpsc::UnboundedReceiver<Report>) {
+    while let Some(report) = reports.recv().await {
+        let mut message = plain(&report.line);
+        if let Some(picture) = report.picture {
+            message = message.add_file(CreateAttachment::bytes(picture, "checkpoint.png"));
         }
-        shown = Some(mark);
-        let line = if over {
-            "⏹️ Session over: the summary is in the thread.".to_string()
-        } else {
-            format!("🔴 Live · {}", now.borrow().as_str())
-        };
-        let edit = EditMessage::new()
-            .content(short(&format!("{head}\n{line}"), 1990))
-            .allowed_mentions(CreateAllowedMentions::new())
-            .attachments(EditAttachments::new().add(CreateAttachment::bytes(gif, "live.gif")));
-        if let Err(err) = live.edit(&bot.http, edit).await {
-            warn!("couldn't update the live Game Boy GIF: {err}");
-        }
-        if over {
-            break;
-        }
-    }
-}
-
-/// Each episode's line as a message of its own, so the thread reads in order.
-async fn post_lines(bot: BotCtx, log: ChannelId, mut lines: mpsc::UnboundedReceiver<String>) {
-    while let Some(line) = lines.recv().await {
-        if let Err(err) = log.send_message(&bot.http, plain(&line)).await {
-            warn!("couldn't post a Game Boy episode: {err}");
+        if let Err(err) = log.send_message(&bot.http, message).await {
+            warn!("couldn't post to the Game Boy log: {err}");
         }
     }
 }
@@ -391,27 +520,6 @@ fn summary_text(summary: &Summary, today: &Today, daily_usd: f64) -> String {
         today.usd,
         summary.free_tokens / 1000
     )
-}
-
-/// The last seconds of play as a GIF, if the Game Boy is still on, with how many screens
-/// it had recorded (to tell whether it moved since). The screens are copied on the Game
-/// Boy's thread and made into a GIF off it, so play isn't held up.
-async fn last_seconds() -> Option<(u64, Vec<u8>)> {
-    let (mark, screens) = console()
-        .with(|machine| {
-            let m = machine.as_ref()?;
-            let screens = u64::from(RECENT_SECONDS) * 60 / u64::from(RECORD_EVERY);
-            let shown = m.screens_since(m.recorded().saturating_sub(screens));
-            (!shown.is_empty()).then(|| (m.recorded(), shown))
-        })
-        .await
-        .ok()
-        .flatten()?;
-    let gif = tokio::task::spawn_blocking(move || pictures::gif(&screens, RECORD_EVERY, GIF_SCALE))
-        .await
-        .ok()?
-        .ok()?;
-    Some((mark, gif))
 }
 
 async fn read_journal(settings: &Settings, rom: &str) -> Option<Journal> {

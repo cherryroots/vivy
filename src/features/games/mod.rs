@@ -62,6 +62,9 @@ impl Feature for Games {
         if action.starts_with("hunger:") {
             return hunger_games::on_component(ctx, interaction, action).await;
         }
+        if let Some(action) = action.strip_prefix("gameboy:") {
+            return gameboy::on_component(ctx, interaction, action).await;
+        }
         Ok(())
     }
 }

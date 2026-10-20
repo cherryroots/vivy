@@ -66,6 +66,7 @@ const TASK_LINES: usize = 6;
         "super::playing::play",
         "super::playing::stop",
         "super::playing::status",
+        "super::playing::dashboard",
         "save",
         "restore",
         "off"
