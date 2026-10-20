@@ -30,6 +30,9 @@ screen.
 - Text boxes: use read_text. Choices and menus: move the cursor with press, then press a.
 - To talk to someone or read a sign, stand next to it, face it (press that direction), \
 then press a.
+- When you catch yourself pressing the same things again and again (battles, menus), write \
+a skill for it with write_skill, then run it with use_skill. Skills stay for this game. \
+After using one, check how it went, and rewrite it if it didn't do what you meant.
 - Judge the screen, not your own claims. When nothing changes, check which way you're \
 facing and try something different.
 - When the screen shows the task is done, call finish with done: true. If it can't be done \
@@ -114,6 +117,9 @@ pub async fn run_task(
     let tools = actions::tools();
     let mut nudges = 0;
     let mut unchanged = 0;
+    // Whether text is still up, and whether she has been told to read it before finishing.
+    let mut text_up = !start.view.can_walk && !start.view.text.is_empty();
+    let mut told_to_read = false;
 
     while episode.actions < most {
         let request = ChatRequest {
@@ -139,10 +145,25 @@ pub async fn run_task(
             if call.name == "finish" {
                 let summary = call.args["summary"].as_str().unwrap_or("").to_string();
                 let finished = call.args["done"].as_bool().unwrap_or(false);
+                // What a game does after text closes can be what finishes the task (a
+                // battle's end is saved once its last words are read), so once per task
+                // she's asked to read it first.
+                if finished && text_up && !told_to_read {
+                    told_to_read = true;
+                    results.push(ToolOutput {
+                        call_id: call.id.clone(),
+                        output: "There's still text on screen. Read it first (read_text), \
+                                 then check the task is done and finish."
+                            .to_string(),
+                        images: vec![png(player.screen().await?)],
+                    });
+                    continue;
+                }
                 episode.finished = Some((finished, summary));
                 return Ok(episode);
             }
             let acted = player.act(&call.name, &call.args).await?;
+            text_up = !acted.view.can_walk && !acted.view.text.is_empty();
             episode.actions += 1;
             keep_words(&mut episode.words, &acted.words);
             episode.log.push(format!(
@@ -194,9 +215,10 @@ fn args_text(args: &Value) -> String {
     if let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) {
         return format!("({x}, {y})");
     }
-    match args["buttons"].as_str() {
-        Some(buttons) => format!("\"{buttons}\""),
-        None => String::new(),
+    match (args["buttons"].as_str(), args["name"].as_str()) {
+        (Some(buttons), _) => format!("\"{buttons}\""),
+        (None, Some(name)) => format!("\"{name}\""),
+        _ => String::new(),
     }
 }
 
@@ -420,6 +442,27 @@ mod tests {
         assert!(episode.digest().starts_with("Ran out of actions"));
     }
 
+    #[tokio::test]
+    async fn finishing_with_text_up_asks_her_to_read_it_once() {
+        let done = || {
+            Some((
+                "finish",
+                serde_json::json!({"done": true, "summary": "won"}),
+            ))
+        };
+        let provider = Scripted {
+            answers: Mutex::new(vec![done(), done()]),
+            asked: Mutex::new(Vec::new()),
+        };
+        let episode = run_task(&provider, &mut Still, "Test Game", "win", None, 5)
+            .await
+            .unwrap();
+        assert_eq!(episode.finished, Some((true, "won".to_string())));
+        assert_eq!((episode.actions, episode.requests), (0, 2));
+        let asked = provider.asked.lock().unwrap();
+        assert!(texts(&asked[1]).contains("There's still text on screen. Read it first"));
+    }
+
     #[test]
     fn a_digest_lists_actions_and_text() {
         let episode = Episode {
@@ -441,6 +484,10 @@ mod tests {
         assert_eq!(
             args_text(&serde_json::json!({"buttons": "up a"})),
             "\"up a\""
+        );
+        assert_eq!(
+            args_text(&serde_json::json!({"name": "fight"})),
+            "\"fight\""
         );
         assert_eq!(args_text(&serde_json::json!({})), "");
     }

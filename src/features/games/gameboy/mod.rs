@@ -1,6 +1,6 @@
 //! Vivy plays Game Boy games. Stages 1 to 3 of the plan: the emulator, admin commands to
 //! play it by hand, code that reads the game and walks her around, and a cheap model that
-//! carries out one short task at a time.
+//! carries out one short task at a time. Stage 4 so far: skills she writes herself.
 //!
 //! - `emulator.rs`: the Game Boy (the `boytacean` crate), a frame at a time
 //! - `console.rs`: the one Game Boy on its own thread, with its last seconds of screens
@@ -12,8 +12,9 @@
 //! - `red/`: Pokémon Red's memory map, and looking at Red
 //! - `actions.rs`, `supervisor.rs`, `player.rs`: the supervisor's tools, its loop, and the
 //!   Game Boy it plays
+//! - `skills.rs`: her own skills, know-how and routines she writes for a game (pure)
 //! - `strategist.rs`: the stronger model's call that picks the next task
-//! - `gate/`: stage 3's measurements (tests only)
+//! - `gate/`: the measurements (tests only)
 //! - `commands.rs`: `/games gameboy ...`
 //!
 //! The plan, stage by stage, is in `docs/features/gameboy.md`.
@@ -33,6 +34,7 @@ mod player;
 mod presses;
 mod red;
 mod screen;
+mod skills;
 // The strategist is measured by stage 3's gate; the bot calls it from stage 4.
 #[cfg_attr(not(test), allow(dead_code))]
 mod strategist;

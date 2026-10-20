@@ -44,10 +44,21 @@ pub fn parse(text: &str) -> Result<Vec<Press>, String> {
             let mut buttons = Vec::new();
             for name in what.split('+') {
                 let button = Button::parse(name).ok_or_else(|| {
-                    format!(
-                        "`{name}` isn't a button. The buttons are a, b, start, select, up, \
-                         down, left and right."
-                    )
+                    // `aa` for two presses of A, written together.
+                    let letters =
+                        name.len() > 1 && name.chars().all(|c| "abudlrABUDLR".contains(c));
+                    if letters {
+                        let apart: Vec<String> = name.chars().map(String::from).collect();
+                        format!(
+                            "`{name}` isn't a button: put spaces between presses, like `{}`.",
+                            apart.join(" ")
+                        )
+                    } else {
+                        format!(
+                            "`{name}` isn't a button. The buttons are a, b, start, select, up, \
+                             down, left and right."
+                        )
+                    }
                 })?;
                 if !buttons.contains(&button) {
                     buttons.push(button);
@@ -129,6 +140,11 @@ mod tests {
     fn explains_mistakes() {
         assert!(parse("").unwrap_err().contains("Say which"));
         assert!(parse("jump").unwrap_err().contains("`jump` isn't a button"));
+        assert!(
+            parse("aa")
+                .unwrap_err()
+                .contains("put spaces between presses, like `a a`")
+        );
         assert!(parse("a*0").unwrap_err().contains("number from 1"));
         assert!(parse("a*lots").unwrap_err().contains("number from 1"));
         assert!(parse("a*65").unwrap_err().contains("more than 64"));

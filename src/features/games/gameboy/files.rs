@@ -28,6 +28,12 @@ pub fn saves_folder(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_dir.join(stem)
 }
 
+/// Her skills for a ROM's game, next to its save states. Going back to a save keeps them:
+/// they're what she knows, not where the game is.
+pub fn skills_path(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("skills.json")
+}
+
 /// The save states made for a ROM, by name (without `.state`), sorted.
 pub fn saves(saves_dir: &Path, rom: &str) -> Vec<String> {
     names_with(&saves_folder(saves_dir, rom), &["state"])

@@ -1,5 +1,6 @@
 //! What a model can do in the game, as tools: walk to a step, explore, press a few buttons,
-//! read through text. Code does the work; the model only picks the action and where.
+//! read through text, and write and use her own skills. Code does the work; the model only
+//! picks the action and where.
 //!
 //! Every action ends with a look, and its answer says what happened in a short line, then
 //! where she is now ([`describe`]). The words seen along the way are kept, so code can
@@ -9,8 +10,9 @@ use serde_json::{Value, json};
 
 use super::console::{Machine, Timing};
 use super::emulator::Button;
-use super::map::LEGEND;
+use super::map::{Kind, LEGEND};
 use super::presses::{self, Press};
+use super::skills::{self, Skill};
 use super::walk::{Look, Walked, explore, walk_to};
 use super::world::{View, World};
 use crate::ai::ToolDef;
@@ -81,6 +83,56 @@ pub fn tools() -> Vec<ToolDef> {
             parameters: json!({"type": "object", "properties": {}}),
         },
         ToolDef {
+            name: "write_skill",
+            description: "Write down a skill of your own for this game, to use later with \
+                use_skill: know-how (notes you'll read then), a routine code runs as one \
+                action, or both. Write one when you work something out, or catch yourself \
+                repeating the same presses (a battle, a menu). A routine's rules: each round, \
+                the first rule whose if_words are on screen (case doesn't matter; leave \
+                if_words empty to fit any screen) has its 1 to 5 buttons pressed. It stops \
+                when you can walk (unless stop_when_free is false), when any of stop_words \
+                is on screen, after most rounds (default 30, at most 50), when no rule fits, \
+                or when nothing changes 3 rounds running (stop words only count after its \
+                first press). The same name replaces a skill: fix one that didn't work \
+                rather than writing another beside it.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "use_when": {"type": "string"},
+                    "notes": {"type": "string"},
+                    "rules": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "if_words": {"type": "string"},
+                                "press": {"type": "string"}
+                            },
+                            "required": ["press"]
+                        }
+                    },
+                    "stop_words": {"type": "array", "items": {"type": "string"}},
+                    "stop_when_free": {"type": "boolean"},
+                    "most": {"type": "integer"}
+                },
+                "required": ["name", "use_when"]
+            }),
+        },
+        ToolDef {
+            name: "use_skill",
+            description: "Use one of your skills by its name, as one action: shows its \
+                notes and runs its routine, telling you how many rounds it ran, why it \
+                stopped and the text it went through.",
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"}
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolDef {
             name: "finish",
             description: "End the task. done: whether the screen shows the task is \
                 complete. Say what happened in summary.",
@@ -118,11 +170,50 @@ pub fn run(
     match name {
         "walk_to" => {
             let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) else {
-                return refused(world, machine, look, "walk_to needs whole numbers x and y.");
+                return told(world, machine, look, "walk_to needs whole numbers x and y.");
             };
-            let walk = walk_to(world, machine, look, (x as i32, y as i32), WALK_MOST);
+            let (x, y) = (x as i32, y as i32);
+            let view = look(world, machine);
+            // Outside the area only its edge steps can be walked to, and only where the step
+            // inside them isn't a wall: they're the ways out.
+            if let Some(map) = world.areas.get(&view.area)
+                && let Some((w, h)) = map.size
+                && !map.inside((x, y))
+                && map.kind((x, y)) == Some(Kind::Edge)
+                && map.kind((x.clamp(0, w - 1), y.clamp(0, h - 1))) == Some(Kind::Wall)
+            {
+                return told(
+                    world,
+                    machine,
+                    look,
+                    &format!(
+                        "({x}, {y}) is past the edge of {} behind a wall, so there's no way out \
+                         there. The ways out are edge steps (>) next to floor or grass.",
+                        view.area
+                    ),
+                );
+            }
+            if let Some(map) = world.areas.get(&view.area)
+                && let Some((w, h)) = map.size
+                && !map.inside((x, y))
+                && map.kind((x, y)) != Some(Kind::Edge)
+            {
+                return told(
+                    world,
+                    machine,
+                    look,
+                    &format!(
+                        "({x}, {y}) is outside {}, which is {w}×{h} steps (x 0 to {}, y 0 to \
+                         {}). To leave it, walk to an edge step (>) and step on through it.",
+                        view.area,
+                        w - 1,
+                        h - 1
+                    ),
+                );
+            }
+            let walk = walk_to(world, machine, look, (x, y), WALK_MOST);
             let view = settle(world, machine, look, &mut Vec::new());
-            walked(walk.result, walk.steps, view, (x as i32, y as i32), false)
+            walked(walk.result, walk.steps, view, (x, y), false)
         }
         "explore" => {
             let walk = explore(world, machine, look, WALK_MOST);
@@ -132,7 +223,26 @@ pub fn run(
         }
         "press" => press(world, machine, look, args["buttons"].as_str().unwrap_or("")),
         "read_text" => read_text(world, machine, look),
-        _ => refused(
+        "write_skill" => {
+            let saved = Skill::from_args(args).and_then(|skill| {
+                let (name, clash) = (skill.name.clone(), skill.clash());
+                skills::save(&mut world.skills, skill).map(|()| (name, clash))
+            });
+            match saved {
+                Ok((name, clash)) => {
+                    let warning = clash.map(|c| format!(" Careful: {c}")).unwrap_or_default();
+                    told(
+                        world,
+                        machine,
+                        look,
+                        &format!("Saved the skill \"{name}\". Use it with use_skill.{warning}"),
+                    )
+                }
+                Err(why) => told(world, machine, look, &why),
+            }
+        }
+        "use_skill" => use_skill(world, machine, look, args["name"].as_str().unwrap_or("")),
+        _ => told(
             world,
             machine,
             look,
@@ -151,10 +261,11 @@ pub fn look(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
     }
 }
 
-fn refused(world: &mut World, machine: &mut Machine, look: Look, why: &str) -> Acted {
+/// Looks, and tells her `line` about it.
+fn told(world: &mut World, machine: &mut Machine, look: Look, line: &str) -> Acted {
     let view = look(world, machine);
     Acted {
-        outcome: why.to_string(),
+        outcome: line.to_string(),
         words: words_of(&view),
         view,
     }
@@ -199,10 +310,10 @@ fn walked(result: Walked, steps: u32, view: View, target: (i32, i32), exploring:
 fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) -> Acted {
     let presses = match presses::parse(buttons) {
         Ok(p) if p.is_empty() => {
-            return refused(world, machine, look, "Say which buttons to press.");
+            return told(world, machine, look, "Say which buttons to press.");
         }
         Ok(p) if p.len() > PRESS_MOST => {
-            return refused(
+            return told(
                 world,
                 machine,
                 look,
@@ -210,7 +321,7 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
             );
         }
         Ok(p) => p,
-        Err(why) => return refused(world, machine, look, &why),
+        Err(why) => return told(world, machine, look, &why),
     };
     let before = look(world, machine);
     let screen_before = machine.emulator.screen();
@@ -300,12 +411,103 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
     }
 }
 
+/// Rounds in a row that change nothing before a skill gives up.
+const SKILL_STUCK: u32 = 3;
+
+/// Runs one of her skills: each round, the buttons of the first rule that fits the screen,
+/// until it says to stop. Notes how it went on the skill, for her list.
+fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -> Acted {
+    let Some(skill) = skills::find(&mut world.skills, name).cloned() else {
+        let why = if world.skills.is_empty() {
+            "You have no skills yet: write one with write_skill.".to_string()
+        } else {
+            let names: Vec<&str> = world.skills.iter().map(|s| s.name.as_str()).collect();
+            format!(
+                "There's no skill called {name}. Yours: {}.",
+                names.join(", ")
+            )
+        };
+        return told(world, machine, look, &why);
+    };
+    let notes = if skill.notes.is_empty() {
+        String::new()
+    } else {
+        format!("\nYour notes: {}", skill.notes)
+    };
+    if skill.know_how() {
+        return told(world, machine, look, &format!("{}{notes}", skill.name));
+    }
+    let mut view = look(world, machine);
+    let mut words = Vec::new();
+    keep_words(&mut words, &view);
+    let (mut rounds, mut presses, mut still) = (0, 0, 0);
+    let stopped = loop {
+        if let Some(why) = skill.stop(&view, rounds > 0) {
+            break why;
+        }
+        if rounds == skill.most {
+            break format!("it ran its {} rounds", skill.most);
+        }
+        if still == SKILL_STUCK {
+            break format!("nothing changed for {SKILL_STUCK} rounds");
+        }
+        let Some(rule) = skill.rule_for(&view) else {
+            let says = if view.text.is_empty() {
+                "has no words".to_string()
+            } else {
+                format!("says \"{}\"", view.text.replace('\n', " / "))
+            };
+            break format!("no rule fits the screen, which {says}");
+        };
+        // Checked when it was written.
+        let buttons = presses::parse(&rule.press).unwrap_or_default();
+        let (before, screen_before) = (view.clone(), machine.emulator.screen());
+        for one in &buttons {
+            machine.press(std::slice::from_ref(one), Timing::default());
+            view = settle(world, machine, look, &mut words);
+        }
+        rounds += 1;
+        presses += buttons.len();
+        still = if view == before && machine.emulator.screen() == screen_before {
+            still + 1
+        } else {
+            0
+        };
+    };
+    let summary = format!("stopped after {rounds} rounds: {stopped}");
+    // Rewriting it under its name keeps one skill per job, rather than near-copies.
+    let fix = if rounds == 0 {
+        " It pressed nothing: rewrite it under the same name to fix it (a rule with empty \
+         if_words fits any screen)."
+    } else {
+        ""
+    };
+    if let Some(kept) = skills::find(&mut world.skills, &skill.name) {
+        kept.uses += 1;
+        kept.last = summary.clone();
+    }
+    Acted {
+        outcome: format!(
+            "Used {}: {presses} presses, {summary}.{fix}{notes}",
+            skill.name
+        ),
+        view,
+        words,
+    }
+}
+
 /// Where she is now, for the model: the facts, whether she can walk, the words on screen
 /// and the map around her.
 pub fn describe(world: &World, view: &View) -> String {
     let mut lines = Vec::new();
+    let size = world
+        .areas
+        .get(&view.area)
+        .and_then(|map| map.size)
+        .map(|(w, h)| format!(" ({w}×{h} steps)"))
+        .unwrap_or_default();
     lines.push(format!(
-        "Place: {}, standing at ({}, {}).",
+        "Place: {}{size}, standing at ({}, {}).",
         view.area, view.at.0, view.at.1
     ));
     if !view.facts.is_empty() {
@@ -326,6 +528,10 @@ pub fn describe(world: &World, view: &View) -> String {
             "Map ({LEGEND}):\n{}",
             map.draw(view.at, MAP_RADIUS).trim_end()
         ));
+    }
+    let skills = skills::list(&world.skills);
+    if !skills.is_empty() {
+        lines.push(skills);
     }
     lines.join("\n")
 }
@@ -354,7 +560,7 @@ mod tests {
     #[test]
     fn the_tools_have_object_schemas() {
         let tools = tools();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 7);
         for tool in &tools {
             assert_eq!(tool.parameters["type"], "object", "{}", tool.name);
         }
