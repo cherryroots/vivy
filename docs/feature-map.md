@@ -199,6 +199,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #88 | | Game Boy (stage 2): code reads Pokémon Red (tile grid and sprites from video memory, dark screens, text from the font, the game's memory map checked against the screen), keeps a map of each area that fills in, and walks her to any step by pathfinding; `/games gameboy look` and `walk` (admins) |
 | #89 | | Game Boy (stage 3): a cheap model (Haiku, the `game_play` job) carries out one short task at a time through five actions (walk, explore, press, read text, finish); `/games gameboy task` (admins); the strategist's call (`OpenAi::structured`); the gate, 15 tasks from Red's opening checked in code, which Haiku passed at 96% |
 | #90 | | Game Boy (stage 4a): skills she writes herself instead of a coded battle action: know-how notes and button routines matched on the words on screen, run as one action (`write_skill`, `use_skill`), kept per game in `skills.json`; `/games gameboy skills` (admins); Red's battles as facts (both Pokémon, moves and PP); the strategist (Astra) reviews her skills in its call; the learning gate |
+| #93 | | Chat: pictures she sees (on the message she answers, the one it replies to, and earlier ones in the request) are copied into her code sandbox too, not only attached files, named by their bytes (`image-1a2b3c4d.png`) with a note saying the name, so she can run code on a screenshot; on Claude (`container_upload`) and the OpenAI fallback (`/mnt/data`); old Claude uploads are forgotten once so pictures get the new names |
 
 ## Not built yet
 

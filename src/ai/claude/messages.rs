@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use base64::Engine as _;
 use serde_json::{Value, json};
 
-use super::ContentKey;
+use super::{ContentKey, image_name};
 use crate::ai::{ModelFile, NativeRound, Part, Role, ToolDef, Turn};
 use crate::util::media::ModelImage;
 
@@ -56,17 +56,7 @@ pub fn to_messages(
             match part {
                 Part::Text(text) if text.trim().is_empty() => {}
                 Part::Text(text) => content.push(json!({"type": "text", "text": text})),
-                Part::Image(image) => {
-                    let source = match uploaded.get(&ContentKey::of(&image.data)) {
-                        Some(id) => json!({"type": "file", "file_id": id}),
-                        None => json!({
-                            "type": "base64",
-                            "media_type": image.mime,
-                            "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
-                        }),
-                    };
-                    content.push(json!({"type": "image", "source": source}));
-                }
+                Part::Image(image) => content.extend(image_blocks(image, uploaded, code_execution)),
                 Part::File(file) => content.extend(file_blocks(file, uploaded, code_execution)),
                 Part::ToolResult {
                     call_id,
@@ -159,6 +149,34 @@ fn tool_result(call_id: &str, output: &str, images: &[ModelImage]) -> Value {
         }}));
     }
     json!({"type": "tool_result", "tool_use_id": call_id, "content": content})
+}
+
+/// A picture, and when it's uploaded, a copy in the code execution container so code can
+/// open it, with a note saying what it's called there.
+fn image_blocks(
+    image: &ModelImage,
+    uploaded: &HashMap<ContentKey, String>,
+    code_execution: bool,
+) -> Vec<Value> {
+    let id = uploaded.get(&ContentKey::of(&image.data));
+    let source = match id {
+        Some(id) => json!({"type": "file", "file_id": id}),
+        None => json!({
+            "type": "base64",
+            "media_type": image.mime,
+            "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
+        }),
+    };
+    let mut blocks = vec![json!({"type": "image", "source": source})];
+    if code_execution && let Some(id) = id {
+        let note = format!(
+            "[The picture above is copied into your code execution environment as {}]",
+            image_name(image)
+        );
+        blocks.push(json!({"type": "text", "text": note}));
+        blocks.push(json!({"type": "container_upload", "file_id": id}));
+    }
+    blocks
 }
 
 /// An attached file: a note naming it, the PDF itself so Claude can read it, and a copy in
@@ -425,6 +443,8 @@ mod tests {
             content,
             &json!([
                 {"type": "image", "source": {"type": "file", "file_id": "file_pic"}},
+                {"type": "text", "text": "[The picture above is copied into your code execution environment as image-040c5b8c.png]"},
+                {"type": "container_upload", "file_id": "file_pic"},
                 {"type": "text", "text": "[sales.xlsx is attached, and copied into your code execution environment]"},
                 {"type": "container_upload", "file_id": "file_sheet"},
                 {"type": "text", "text": "[menu.pdf is attached]"},
@@ -432,7 +452,8 @@ mod tests {
             ])
         );
 
-        // Without code execution the spreadsheet can't be opened.
+        // Without code execution the spreadsheet can't be opened, and the picture is only
+        // looked at.
         let content = &to_messages(&turns, "m", "s", &uploaded, false)[0]["content"];
         assert_eq!(
             content[1]["text"],

@@ -461,6 +461,19 @@ impl ModelImage {
         let encoded = base64::engine::general_purpose::STANDARD.encode(&self.data);
         format!("data:{};base64,{encoded}", self.mime)
     }
+
+    /// A file name for the image, for putting it in a code sandbox: like
+    /// `image-1a2b3c4d.png`, named by its bytes (FNV-1a), so two images don't get the same
+    /// name (Discord calls every pasted screenshot image.png) and one image always gets the
+    /// same name.
+    pub fn file_name(&self) -> String {
+        let mut hash: u32 = 0x811c_9dc5;
+        for &byte in &self.data {
+            hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+        }
+        let extension = self.mime.rsplit('/').next().unwrap_or("png");
+        format!("image-{hash:08x}.{extension}")
+    }
 }
 
 /// A Discord profile picture link (`.webp`, or `.gif` when animated) as a still PNG of
@@ -858,5 +871,20 @@ mod tests {
             data: vec![1, 2, 3],
         };
         assert_eq!(image.data_url(), "data:image/png;base64,AQID");
+    }
+
+    #[test]
+    fn images_are_named_by_their_bytes() {
+        let image = |mime, data: &[u8]| ModelImage {
+            mime,
+            data: data.to_vec(),
+        };
+        // FNV-1a of "a" is e40c292c.
+        assert_eq!(image("image/png", b"a").file_name(), "image-e40c292c.png");
+        assert_eq!(image("image/jpeg", b"a").file_name(), "image-e40c292c.jpeg");
+        assert_ne!(
+            image("image/png", b"a").file_name(),
+            image("image/png", b"b").file_name()
+        );
     }
 }

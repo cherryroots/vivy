@@ -11,8 +11,8 @@
 //!
 //! Pictures and attached files go through the Files API: uploaded once, then sent by ID.
 //! The IDs are kept in SQLite (see `uploads.rs`), so they stay the same after a restart.
-//! Attached files are also copied into the code execution container, and files the code
-//! saves come back as Files API IDs, which [`Claude::download_file`] fetches.
+//! Attached files and pictures are also copied into the code execution container, and files
+//! the code saves come back as Files API IDs, which [`Claude::download_file`] fetches.
 //!
 //! What each response cost is added to [`Spend`] (see `price.rs`).
 //!
@@ -388,7 +388,7 @@ impl Claude {
     /// upload failed.
     async fn upload_part(&self, key: ContentKey, part: &Part) -> Option<(ContentKey, String)> {
         let (name, mime, data) = match part {
-            Part::Image(image) => (image_name(image.mime), image.mime, &image.data),
+            Part::Image(image) => (image_name(image), image.mime, &image.data),
             Part::File(file) => (file.name.clone(), file.mime.as_str(), &file.data),
             _ => return None,
         };
@@ -525,12 +525,12 @@ fn missing_files(
 /// A copy of a picture that fits [`MAX_IMAGE_SIDE`] and [`MAX_IMAGE_BYTES`], or `None`
 /// when it already does (or can't be read, in which case Claude says so).
 async fn shrink_image(data: Vec<u8>) -> Option<ModelImage> {
+    if !too_big(&data) {
+        return None;
+    }
     tokio::task::spawn_blocking(move || {
         let image = image::load_from_memory(&data).ok()?;
         let fits = image.width() <= MAX_IMAGE_SIDE && image.height() <= MAX_IMAGE_SIDE;
-        if fits && data.len() <= MAX_IMAGE_BYTES {
-            return None;
-        }
         // `resize` fills the bounds, so a picture that's only too many bytes would grow;
         // that one is just saved again as JPEG, which is smaller.
         let smaller = if fits {
@@ -553,10 +553,30 @@ async fn shrink_image(data: Vec<u8>) -> Option<ModelImage> {
     .flatten()
 }
 
-/// A name for an uploaded picture, from its type.
-fn image_name(mime: &str) -> String {
-    let extension = mime.rsplit('/').next().unwrap_or("png");
-    format!("image.{extension}")
+/// Whether a picture is over [`MAX_IMAGE_SIDE`] or [`MAX_IMAGE_BYTES`], so it's made
+/// smaller before uploading. Only reads the size in the picture's header.
+fn too_big(data: &[u8]) -> bool {
+    if data.len() > MAX_IMAGE_BYTES {
+        return true;
+    }
+    image::ImageReader::new(std::io::Cursor::new(data))
+        .with_guessed_format()
+        .ok()
+        .and_then(|reader| reader.into_dimensions().ok())
+        .is_some_and(|(width, height)| width > MAX_IMAGE_SIDE || height > MAX_IMAGE_SIDE)
+}
+
+/// A picture's file name, which is also its name in the code execution container (see
+/// [`ModelImage::file_name`]). One that's made smaller is uploaded as a JPEG.
+fn image_name(image: &ModelImage) -> String {
+    let name = image.file_name();
+    if !too_big(&image.data) {
+        return name;
+    }
+    let stem = name
+        .rsplit_once('.')
+        .map_or(name.as_str(), |(stem, _)| stem);
+    format!("{stem}.jpeg")
 }
 
 /// Sets (or with `None`, removes) the ID of the code execution container to use. The
@@ -1018,6 +1038,16 @@ mod tests {
             out.into_inner()
         };
         assert_eq!(shrink_image(encode(100, 50)).await, None);
+        // The name says what's uploaded: the picture as it is, or a smaller JPEG.
+        let named = |data| {
+            let name = image_name(&ModelImage {
+                mime: "image/png",
+                data,
+            });
+            name.rsplit_once('.').unwrap().1.to_string()
+        };
+        assert_eq!(named(encode(100, 50)), "png");
+        assert_eq!(named(encode(4000, 1000)), "jpeg");
         let smaller = shrink_image(encode(4000, 1000)).await.unwrap();
         assert_eq!(smaller.mime, "image/jpeg");
         let read = image::load_from_memory(&smaller.data).unwrap();
@@ -1048,7 +1078,6 @@ mod tests {
     fn content_keys_follow_the_bytes() {
         assert_eq!(ContentKey::of(&[1, 2]), ContentKey::of(&[1, 2]));
         assert_ne!(ContentKey::of(&[1, 2]), ContentKey::of(&[2, 1]));
-        assert_eq!(image_name("image/webp"), "image.webp");
     }
 
     #[test]
