@@ -117,6 +117,18 @@ impl Default for OpenAiConfig {
     }
 }
 
+/// The answer of [`OpenAi::structured`].
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Clone)]
+pub struct Structured {
+    /// The JSON answer, which fits the schema.
+    pub value: Value,
+    /// Input and output tokens, for counting free daily tokens.
+    pub tokens: u64,
+    /// What it would cost at list prices.
+    pub used: super::spend::Used,
+}
+
 pub struct OpenAi {
     http: reqwest::Client,
     token: String,
@@ -252,6 +264,57 @@ impl OpenAi {
             message: error_message(&text),
         }
         .into())
+    }
+
+    /// One answer that must fit a JSON schema (OpenAI's structured outputs), with no tools
+    /// and nothing stored: for planning jobs whose answer code reads, like the Game Boy
+    /// strategist's. The job picks the model and effort (`[ai.openai.jobs.<job>]`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn structured(
+        &self,
+        job: &'static str,
+        system: &str,
+        input: &str,
+        schema_name: &str,
+        schema: &Value,
+    ) -> anyhow::Result<Structured> {
+        let settings = job_settings(&self.config.jobs, job, None);
+        let body = json!({
+            "model": settings.model.as_deref().unwrap_or(&self.config.model),
+            "instructions": system,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": input}]}],
+            "reasoning": {"effort": settings.effort.as_deref().unwrap_or(&self.config.reasoning_effort)},
+            "text": {"format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "schema": schema,
+                "strict": true,
+            }},
+            "store": false,
+            "prompt_cache_key": format!("vivy:{job}"),
+        });
+        let response: Value = self.responses(&body).await?.json().await?;
+        let used = price::chat_cost(&response, None);
+        if let Some(spend) = &self.spend {
+            spend.add(job, used).await;
+        }
+        let text: String = response["output"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["type"] == "message")
+            .flat_map(|item| item["content"].as_array().into_iter().flatten())
+            .filter_map(|part| part["text"].as_str())
+            .collect();
+        let value = serde_json::from_str(&text)
+            .with_context(|| format!("OpenAI's answer isn't the JSON asked for: {text:.200}"))?;
+        let usage = &response["usage"];
+        Ok(Structured {
+            value,
+            tokens: usage["input_tokens"].as_u64().unwrap_or(0)
+                + usage["output_tokens"].as_u64().unwrap_or(0),
+            used,
+        })
     }
 
     /// Uploads a file with the Files API and returns its ID.

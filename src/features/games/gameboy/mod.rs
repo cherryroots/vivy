@@ -1,5 +1,6 @@
-//! Vivy plays Game Boy games. Stages 1 and 2 of the plan: the emulator, admin commands to
-//! play it by hand, and code that reads the game and walks her around. No AI yet.
+//! Vivy plays Game Boy games. Stages 1 to 3 of the plan: the emulator, admin commands to
+//! play it by hand, code that reads the game and walks her around, and a cheap model that
+//! carries out one short task at a time.
 //!
 //! - `emulator.rs`: the Game Boy (the `boytacean` crate), a frame at a time
 //! - `console.rs`: the one Game Boy on its own thread, with its last seconds of screens
@@ -9,21 +10,33 @@
 //! - `screen.rs`, `change.rs`, `text.rs`: the tile grid, dark screens, the font (pure)
 //! - `moves.rs`, `map.rs`, `world.rs`, `walk.rs`: steps, area maps, walking to a step
 //! - `red/`: Pokémon Red's memory map, and looking at Red
+//! - `actions.rs`, `supervisor.rs`, `player.rs`: the supervisor's tools, its loop, and the
+//!   Game Boy it plays
+//! - `strategist.rs`: the stronger model's call that picks the next task
+//! - `gate/`: stage 3's measurements (tests only)
 //! - `commands.rs`: `/games gameboy ...`
 //!
 //! The plan, stage by stage, is in `docs/features/gameboy.md`.
 
+mod actions;
 mod change;
 mod commands;
 mod console;
 mod emulator;
 mod files;
+#[cfg(test)]
+mod gate;
 mod map;
 mod moves;
 mod pictures;
+mod player;
 mod presses;
 mod red;
 mod screen;
+// The strategist is measured by stage 3's gate; the bot calls it from stage 4.
+#[cfg_attr(not(test), allow(dead_code))]
+mod strategist;
+mod supervisor;
 // Reading text from the font, for games with no memory map. Tested on Pokémon Red now;
 // played games use it once the tile classifier arrives.
 #[cfg(test)]

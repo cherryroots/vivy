@@ -1,6 +1,6 @@
 # Game Boy
 
-Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. **Stages 1 and 2 are done: the emulator, played by hand with admin commands, and code that reads Pokémon Red's screen and memory, keeps a map of each area and walks her anywhere on it. No AI yet.**
+Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. **Stages 1 to 3 are done: the emulator, played by hand with admin commands; code that reads Pokémon Red's screen and memory, keeps a map of each area and walks her anywhere on it; and a cheap model (the supervisor) that carries out one short task at a time, with the gate that measures how well it does. She doesn't play on her own yet (stage 4).**
 
 The plan, with the research behind it and every decision, is the "Vivy plays any Game Boy game" doc in the project. The stages are at the bottom of this page.
 
@@ -17,6 +17,7 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy gif seconds:` | The last few seconds (at most 10) as a GIF. |
 | `/games gameboy look` | What code reads from the game: where she is, the facts from its memory (badges, money, party, bag, story so far), the map of the area so far, the words on screen and the last 5 steps. Pokémon Red and Blue only for now. |
 | `/games gameboy walk x: y:` | Walks to that step of the map (code finds the way and takes it), with a GIF and the `look` after. Leave out `x` and `y` to walk to the nearest step not seen yet. Stops early when she walks into another area or something takes over the screen, like a text box. |
+| `/games gameboy task task: actions:` | A cheap model (the supervisor, below) carries out one short task by itself, like `go down the stairs, until you're on the floor below`, taking at most `actions:` actions (default 30). Posts whether it says it's done, its last actions, a GIF of the last seconds and the `look` after. Pokémon Red and Blue only for now. |
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
 | `/games gameboy restore name:` | Goes back to a save of the ROM that's in. |
 | `/games gameboy off` | Takes the ROM out. |
@@ -58,6 +59,35 @@ Code reads everything it can from the Game Boy itself, so a model is only asked 
 - **Area maps** (`map.rs`). A map per area that fills in as she goes: what each step is, steps she walked onto (always floor, whatever they look like), steps that blocked her from one side, doors and where they led, her own markers, and the people on the last screen (not saved, they move). `path` finds the shortest way (breadth-first), through unseen steps only when nothing known reaches; doors and edges can only be the last step, since stepping on one leaves the area. `frontier` is the unseen steps next to what she can reach, nearest first. `draw` writes it as text with x along the top and y down the side, with a legend.
 - **Walking** (`walk.rs`). `walk_to` finds the way, takes one step, looks again, and repeats. A step that didn't move her marks that way as blocked (unless someone was standing there, or something took over the screen) and the way is found again. It stops when she arrives, walks into another area (waiting for the fade to finish, since Red changes its map number about 20 frames before fading), something takes over the screen (it waits up to 2 seconds for the words), there's no way, or 6 steps failed. `explore` walks toward the nearest unseen step until it has been seen. Every step goes in the movement log (`world.rs`), as lines like `Pallet Town (5, 6) up: moved to (5, 5)`.
 
+## Short tasks (stage 3)
+
+The supervisor carries out one short task at a time, like "take the Potion out of the PC in your room, until it's in your bag". It's the `game_play` job: Claude Haiku at low effort with no web or code, unless `[ai.claude.jobs.game_play]` says otherwise. Its prompt names no game and stays the same for every task, so it's cached; the game and the task come in the first message, with where she is and a picture of the screen.
+
+- **Actions** (`actions.rs`). The model picks one tool at a time and code does the work: `walk_to x y` (walking as in stage 2), `explore`, `press` (1 to 5 buttons, like `up a`), `read_text` (presses A until the text is gone or a choice comes up, at most 30 times), and `finish done summary`. After each one the screen settles first: she only counts as free to walk if she still is a third of a second later (the rival walks up a moment after his words close), and typed-out text is waited for until it stops changing. The answer is one line of what happened, then where she is: the facts from memory, whether she can walk, the words on screen and the map 7 steps around her, plus the screen at twice its size (about 120 tokens). Words only count inside a box, so the swirl into a battle doesn't read as letters.
+- **The loop** (`supervisor.rs`). `run_task` asks for an action, runs it, sends back what happened, and repeats until `finish` or the action limit. Answering in words gets two reminders to use a tool; three actions in a row that change nothing get a warning to check which way she's facing and try something else. The `Episode` keeps every action and its outcome and all the words seen, and `digest` writes that for the strategist. Code, not the model's `finish`, decides whether a task was really done.
+- **Where it plays** (`player.rs`). The supervisor plays through the `Player` trait: in the bot that's the one Game Boy on its thread; the gate has a Game Boy of its own.
+- **The strategist** (`strategist.rs`). Once per episode a stronger OpenAI model reads the goal, its notes, the last episode's digest and where she is, and answers with up to 15 notes and the next short task, as JSON that fits a strict schema (`OpenAi::structured`, nothing stored). It's asked in one call, or in two (notes first, then the task with the new notes). The gate measures which works; the bot uses it from stage 4.
+
+## The gate
+
+Before anything is built on the supervisor, stage 3 measures it on 15 tasks from Red's opening, each run 3 times. The gate passes when at least half the runs are done. If Haiku stays under that, the plan's fallbacks are tried in cost order: Haiku with hints from the strategist, a model from OpenAI's free group playing, Gemini 3.8 Flash playing, Sonnet playing.
+
+The tasks start from save states that `build_the_task_states` makes by playing a new game by script (walking with code, mashing through text and battles), from her bedroom to Viridian City with Oak's Parcel: `bedroom`, `downstairs`, `pallet`, `lab`, `starter`, `after_rival`, `pallet_starter`, `route1`, `viridian` and `parcel`. Each task is checked in code from the game's memory and the words seen: the area she ends in, the bag, the party, a story flag, or words like "Shades of" from the town sign. They are going downstairs, the Potion from the PC, talking to Mom, going outside, reading the town sign, heading north until Oak stops her, choosing a starter, the rival battle, leaving the lab, onto Route 1, up Route 1 to Viridian City (with wild Pokémon in the grass), into the Mart for the parcel, healing at the Pokémon Center, saving the game, and leaving the Mart. `actions_carry_out_tasks_by_script` checks the actions and the checks with no model, on five of them.
+
+The runs are `#[ignore]`d tests that only call models with `VIVY_GB_GATE=1`. They need your ROM, the keys (`VIVY_ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`) and the states (in `VIVY_GB_TASKS`, default the project's shared folder):
+
+```bash
+export VIVY_GB_ROM=roms/red.gb VIVY_GB_GATE=1
+cargo test --release build_the_task_states -- --ignored     # the states, once
+cargo test --release gate_keys_work -- --ignored --nocapture # one small call to each
+cargo test --release gate_tasks -- --ignored --nocapture     # the supervisor on the tasks
+cargo test --release gate_strategists -- --ignored --nocapture
+```
+
+`gate_tasks` takes `VIVY_GB_PLAYER` (the model playing, default `claude-haiku-5-5`; `gemini-...` and `gpt-...` models work too), `VIVY_GB_EFFORT` (`low`), `VIVY_GB_RUNS` (3), `VIVY_GB_ONLY` (only tasks whose names contain it) and `VIVY_GB_HINTS` (an OpenAI model that writes a hint before each task). `gate_strategists` plays the long goal, bringing Oak's Parcel back to Oak, from `parcel` with each model in `VIVY_GB_STRATEGISTS` (`gpt-6-astra,gpt-6.1-sol`) asked in one call and in two: at most 15 episodes of 30 actions. Each run stops at `VIVY_GB_GATE_USD` dollars (15) at list prices, and writes `report.md`, `log.md` (every episode's actions and words) and each run's last screen to a new folder in `VIVY_GB_RESULTS` (default `/mnt/project-files/gameboy/gate`). A cloud session's proxy re-signs TLS, so the gate also trusts the certificate in `SSL_CERT_FILE`.
+
+**Results (20 October 2026).** Haiku 5.5 at low effort passed: 43 of 45 runs done (96%), never claiming a task done when it wasn't, for $0.10 in all (about $0.002 a task). Every task went 3 for 3 except up Route 1 (1 of 3): both misses used up their 50 actions in wild battles, since she reads each battle turn as separate actions. On the long goal, Astra and 6.1 Sol both got the parcel to Oak in all four runs (5 or 6 episodes, 64 to 77 actions), planning the same five legs; two calls doubled the strategist's tokens for no gain, so the strategist is asked in one. None of the fallbacks were needed. The reports are in the project's shared folder under `gameboy/gate/`.
+
 ## Settings
 
 Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`). The gate keys are `[features.games]`'s, shared with the other games.
@@ -85,18 +115,27 @@ All under `src/features/games/gameboy/`.
 | `red/look.rs` | Looking at Red: marking the screen's steps on the area map from the game's own walkable list |
 | `red/names.rs` | Species, item and map names, made from the disassembly |
 | `red/story.rs` | The story flags worth knowing |
+| `actions.rs` | What the supervisor can do, as tools: walk, explore, press, read text; settling the screen after each; where she is, as text for the model |
+| `supervisor.rs` | `run_task`: the supervisor carrying out one task; the `Player` trait; `Episode` and its digest |
+| `player.rs` | The supervisor's player in the bot: the Game Boy on its thread |
+| `strategist.rs` | The strategist's call: the next task and notes, as JSON in a strict schema |
 | `commands.rs` | `/games gameboy ...` |
+| `gate/mod.rs` | Stage 3's gate (tests only): the key check, the task runs, the strategist runs, their reports |
+| `gate/tasks.rs` | The task states, made by playing Red by script; the 15 tasks and their checks; the long goal |
+| `gate/player.rs` | The gate's own Game Boy for the supervisor |
 | `test_rom.rs` | A tiny Game Boy program, built byte by byte, that the tests run instead of a game |
 
 ## Tests
 
 `cargo test gameboy` runs everything on `test_rom.rs`'s little program, so no ROM is needed: frames, buttons reaching the game, the screen, save states playing back the same (also on a second Game Boy), a Game Boy Color game, GIFs and PNGs, typed presses, folders and names, and a panic on the emulator's thread.
 
-Six more need a real game and are `#[ignore]`d. With your own ROM:
+Eight more need a real game and are `#[ignore]`d. With your own ROM:
 
 ```bash
 VIVY_GB_ROM=roms/red.gb cargo test --release gameboy -- --ignored --nocapture
 ```
+
+That includes `build_the_task_states` and `actions_carry_out_tasks_by_script` from stage 3 (see "The gate"); the gate's model runs skip themselves without `VIVY_GB_GATE=1`. `supervisor.rs` tests the task loop with a scripted model and a pretend game: reminders, the loop warning, the action limit.
 
 The stage 2 ones play Red's opening first (mashing A, picking the names RED and BLUE) and start in her bedroom: `walks_out_of_the_house_and_into_oak` walks to the stairs through steps not seen yet, out of the front door and north until Oak stops her, checking memory and the screen agree on every step and that the font reads Oak's words; `exploring_fills_in_the_bedroom` explores until every step of the room is seen; `look_and_walk_read_well_on_a_real_game` prints what `look` and `walk` would post.
 
@@ -107,9 +146,9 @@ The stage 2 ones play Red's opening first (mashing A, picking the names RED and 
 | Stage | What it adds |
 |---|---|
 | 1 | The emulator and manual control: load, press, screen, save and load states, GIFs |
-| 2 (this) | Reading the game in code: screen changes and fades, the tile grid from video memory, text from the font, a log of every step, a map of each area that fills in, walking to a spot by pathfinding, exploring, and Pokémon Red's memory map (area, position, story flags, badges, party) checked against the screen. Red's own walkable-tile list sorts its tiles exactly, so sorting tiles with a model (for games with no memory map) moved to stage 7 |
-| 3 | Short tasks played by a cheap model (Haiku) through a few actions, measured on 10 to 20 tasks from Red, each 3 times. A gate: if Haiku stays under the target, the fallbacks in the plan are tried first |
-| 4 | The strategist (GPT-6 Astra on OpenAI's free daily tokens, Haiku once they're used), goals and notes in her memory folder, walkthrough milestones, checkpoints, getting unstuck, the session runner with its caps |
+| 2 | Reading the game in code: screen changes and fades, the tile grid from video memory, text from the font, a log of every step, a map of each area that fills in, walking to a spot by pathfinding, exploring, and Pokémon Red's memory map (area, position, story flags, badges, party) checked against the screen. Red's own walkable-tile list sorts its tiles exactly, so sorting tiles with a model (for games with no memory map) moved to stage 7 |
+| 3 (this) | Short tasks played by a cheap model (Haiku) through a few actions, measured on 15 tasks from Red, each 3 times, and the strategist's call measured on a longer goal (Astra and 6.1 Sol, one call and two). A gate: if Haiku stays under half, the fallbacks in the plan are tried first. `/games gameboy task` tries a task by hand |
+| 4 | An action that fights a battle to its end (the gate's one weak spot), the strategist (GPT-6 Astra on OpenAI's free daily tokens, Haiku once they're used), goals and notes in her memory folder, walkthrough milestones, checkpoints, getting unstuck, the session runner with its caps |
 | 5 | Discord: `/games gameboy play` and `status`, a thread per game, Opus narrating as a voice message in her voice with one GIF and a short line (so posts stay compact), hints from replies starting `hint:` |
 | 6 | Learning a new game by herself: fast exploration, an insights file she confirms in play, replaying what worked |
 | 7 | Other games: tiles sorted by a model once per new tile, letters labelled the same way, memory maps for games that have one, side-view games, then the Game Boy Advance |
