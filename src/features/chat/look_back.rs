@@ -9,10 +9,10 @@
 
 use std::collections::HashMap;
 
+use crate::util::discord::{ChannelId, MessageId};
 use chrono::DateTime;
 use chrono_tz::Tz;
 use serde_json::{Value, json};
-use serenity::all::{ChannelId, MessageId};
 
 use super::channels;
 use super::store::{self, StoredPart, Turn};

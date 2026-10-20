@@ -12,16 +12,10 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{
-    ChannelId, ChannelType, ComponentInteraction, ComponentInteractionDataKind,
-    CreateAllowedMentions, CreateAttachment, CreateInteractionResponse,
-    CreateInteractionResponseMessage, CreateMessage, EditMessage, GuildId, Message, MessageId,
-    UserId,
-};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
+use twilight_interactions::command::{CommandModel, CreateCommand};
 
 use super::game::{self, FEWEST_FOR_TEAMS, Game, Kind, Reward, Round};
 use super::last_words::{self, LastWords};
@@ -29,8 +23,14 @@ use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
 use super::{areas, looks, notes, stats, voice};
 use crate::ai::ChatProvider;
-use crate::core::{BotCtx, Context, Result, user_error};
+use crate::core::{
+    BotCtx, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
+};
 use crate::features::games::who_said_it::sources::{self, From, Source};
+use crate::util::discord::{
+    ChannelId, ChannelType, Draft, GuildId, Message, MessageId, Permissions, UserId, display_name,
+    member_name, no_pings, start_typing,
+};
 use crate::util::media::ModelImage;
 
 /// Discord's limit for a user menu, and more than a round's message can hold well.
@@ -114,7 +114,7 @@ fn winner(counts: &[(Reward, usize)]) -> (Reward, bool) {
 
 impl Running {
     /// The Reaping message as it is now.
-    fn lobby_message(&self) -> CreateInteractionResponseMessage {
+    fn lobby_message(&self) -> Draft {
         let lobby = self.lobby.lock().unwrap();
         let picked: Vec<u64> = lobby.picked.iter().map(|(id, _)| *id).collect();
         let (embed, components) = ui::lobby(
@@ -126,9 +126,7 @@ impl Running {
             self.closes_at,
             lobby.extras,
         );
-        CreateInteractionResponseMessage::new()
-            .embed(embed)
-            .components(components)
+        Draft::new().embed(embed).components(components)
     }
 }
 
@@ -143,14 +141,20 @@ impl Drop for Leave {
     }
 }
 
-/// A battle royale between members, written by Vivy, until one is left
-#[poise::command(slash_command, guild_only, rename = "hungergames")]
-pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "hungergames",
+    desc = "A battle royale between members, written by Vivy, until one is left"
+)]
+pub struct HungerGames;
+
+/// `/games hungergames`
+pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
     let guild = ctx
         .guild_id()
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
-    let bot = ctx.data().clone();
+    let bot = ctx.bot.clone();
     // The who-said-it settings are for the quote reader (last words).
     let crate::features::games::Settings {
         who_said_it: quote_settings,
@@ -166,7 +170,7 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
     let closes_at = Utc::now().timestamp() + settings.lobby_minutes.max(1) as i64 * 60;
     let running = Arc::new(Running {
         id: fastrand::u32(..),
-        host: ctx.author().id,
+        host: ctx.author_id(),
         max,
         closes_at,
         lobby: Mutex::new(Lobby {
@@ -199,9 +203,9 @@ pub async fn hunger_games(ctx: Context<'_>) -> Result<()> {
         ui::Extras::default(),
     );
     let reply = ctx
-        .send(CreateReply::default().embed(embed).components(components))
+        .send(Draft::new().embed(embed).components(components))
         .await?;
-    let lobby_message = reply.into_message().await?;
+    let lobby_message = reply.message(ctx).await?;
     info!(max, "Hunger Games Reaping opened");
 
     bot.tasks.clone().spawn(async move {
@@ -236,32 +240,44 @@ type Place = (String, u64);
 
 /// The kinds of channel that can be places in the arena: not voice or stage channels
 /// (Cherry's call).
-const PLACES: [ChannelType; 3] = [ChannelType::Text, ChannelType::News, ChannelType::Forum];
+const PLACES: [ChannelType; 3] = [
+    ChannelType::GuildText,
+    ChannelType::GuildAnnouncement,
+    ChannelType::GuildForum,
+];
 
 /// The channels everyone can read, for last words, and the arena's possible places in
 /// random order: the name and ID of every channel Vivy can see but this one (Cherry: nothing
 /// in the server is really hidden, and only the names and links are used). The game keeps
 /// as many of those as it has tributes, as the arena's places for the whole game.
 fn arena(bot: &BotCtx, guild: GuildId, here: ChannelId) -> Result<(Vec<Source>, Vec<Place>)> {
-    let me = bot.cache.current_user().id;
-    let cached = bot
-        .cache
-        .guild(guild)
-        .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
-    let sources = sources::pick(bot, &cached, here, From::Server)?;
+    if bot.cache.guild(guild).is_none() {
+        return Err(user_error(
+            "I don't know this server yet. Try again in a minute.",
+        ));
+    }
+    let sources = sources::pick(bot, guild, here, From::Server)?;
     // Without her own member in the cache, every channel the server lists counts.
-    let member = cached.members.get(&me);
+    let roles = bot
+        .cache
+        .member(guild, bot.bot_id)
+        .map(|m| m.roles().to_vec());
+    let can_view = |c: &crate::util::discord::Channel| match &roles {
+        Some(roles) => bot
+            .permissions_in(guild, bot.bot_id, roles, c)
+            .is_none_or(|p| p.contains(Permissions::VIEW_CHANNEL)),
+        None => true,
+    };
     // The channel the game is played in is left out: it's where everyone watches from,
     // not a place in the arena (often a test thread, too).
-    let mut places: Vec<Place> = cached
-        .channels
-        .values()
+    let mut places: Vec<Place> = bot
+        .guild_channels(guild)
+        .into_iter()
         .filter(|c| c.id != here && PLACES.contains(&c.kind))
         .filter(|c| bot.allows("games", Some(guild), c.id))
-        .filter(|c| member.is_none_or(|m| cached.user_permissions_in(c, m).view_channel()))
-        .map(|c| (c.name.clone(), c.id.get()))
+        .filter(|c| can_view(c))
+        .map(|c| (c.name.clone().unwrap_or_default(), c.id.get()))
         .collect();
-    drop(cached);
     fastrand::shuffle(&mut places);
     Ok((sources, places))
 }
@@ -271,7 +287,7 @@ async fn run(
     bot: &BotCtx,
     setup: Setup,
     running: &Running,
-    mut lobby_message: Message,
+    lobby_message: Message,
     settings: &Settings,
 ) {
     let closes_in = Duration::from_secs(settings.lobby_minutes.max(1) * 60);
@@ -296,8 +312,8 @@ async fn run(
                     lobby.tributes(running.max)
                 };
                 let embed = ui::lobby_closed(&tributes, "Nobody pressed Start in time, so the Games are off.");
-                let edit = EditMessage::new().embed(embed).components(Vec::new());
-                if let Err(err) = lobby_message.edit(&bot.http, edit).await {
+                let edit = Draft::new().embed(embed).components(Vec::new());
+                if let Err(err) = edit.edit(&bot.http, lobby_message.channel_id, lobby_message.id).await {
                     warn!("couldn't close the Hunger Games Reaping: {err}");
                 }
                 return;
@@ -559,7 +575,7 @@ async fn play(
         intro.push_str(&grudges);
     }
     // `text`, not `say`: the teams and grudges in it name people without pinging them.
-    if let Err(err) = channel.send_message(&bot.http, text(intro)).await {
+    if let Err(err) = text(intro).send(&bot.http, channel).await {
         warn!("couldn't post the Hunger Games intro: {err}");
     }
     let mut pending = None;
@@ -568,7 +584,7 @@ async fn play(
     while let Some(kind) = game.next_kind() {
         let mut writing = pending.take().unwrap_or_else(|| write(&game, kind));
         let written = {
-            let _typing = channel.start_typing(&bot.http);
+            let _typing = start_typing(&bot.http, channel);
             tokio::select! {
                 () = bot.shutdown.cancelled() => {
                     writing.abort();
@@ -593,7 +609,7 @@ async fn play(
         let index = game.rounds.len();
         let victory = round.victory.clone();
         if let Some(line) = round.gamemaker.clone() {
-            let _typing = channel.start_typing(&bot.http);
+            let _typing = start_typing(&bot.http, channel);
             speak(line).await;
         }
         game.apply(round);
@@ -739,8 +755,9 @@ async fn prize_vote(
     };
     let (content, components) = ui::prize_vote(running.id, &vote.counts(), closes_at);
     *running.vote.lock().unwrap() = Some(vote);
-    let posted = channel
-        .send_message(&bot.http, text(content).components(components))
+    let posted = text(content)
+        .components(components)
+        .send(&bot.http, channel)
         .await;
     if let Err(err) = &posted {
         warn!("couldn't post the Octagon prize vote: {err}");
@@ -758,12 +775,12 @@ async fn prize_vote(
         .unwrap_or_default();
     let (won, random) = winner(&counts);
     info!(prize = won.name(), random, "Octagon prize voted");
-    if let Ok(mut message) = posted {
-        let closed = EditMessage::new()
+    if let Ok(message) = posted {
+        let closed = Draft::new()
             .content(ui::prize_chosen(won, &counts, random))
             .components(Vec::new())
-            .allowed_mentions(CreateAllowedMentions::new());
-        if let Err(err) = message.edit(&bot.http, closed).await {
+            .allowed_mentions(no_pings());
+        if let Err(err) = closed.edit(&bot.http, channel, message.id).await {
             warn!("couldn't close the Octagon prize vote: {err}");
         }
     }
@@ -856,26 +873,26 @@ async fn no_picture(bot: &BotCtx, channel: ChannelId, told: &AtomicBool, reason:
 /// Posts one message of the game, with its pictures. If Discord won't take them together,
 /// the text goes on its own and each picture after it, so one bad picture loses only itself.
 async fn post(bot: &BotCtx, channel: ChannelId, content: String, pictures: Vec<ModelImage>) {
-    let attach = |message: CreateMessage, n: usize, picture: &ModelImage| {
+    let attach = |message: Draft, n: usize, picture: &ModelImage| {
         let name = pictures::file_name(picture, n);
-        message.add_file(CreateAttachment::bytes(picture.data.clone(), name))
+        message.file(name, picture.data.clone())
     };
     if !pictures.is_empty() {
         let mut message = text(content.clone());
         for (i, picture) in pictures.iter().enumerate() {
             message = attach(message, i + 1, picture);
         }
-        match channel.send_message(&bot.http, message).await {
+        match message.send(&bot.http, channel).await {
             Ok(_) => return,
             Err(err) => warn!("couldn't post a Hunger Games message with its pictures: {err}"),
         }
     }
-    if let Err(err) = channel.send_message(&bot.http, text(content)).await {
+    if let Err(err) = text(content).send(&bot.http, channel).await {
         warn!("couldn't post a Hunger Games message: {err}");
     }
     for (i, picture) in pictures.iter().enumerate() {
-        let message = attach(CreateMessage::new(), i + 1, picture);
-        if let Err(err) = channel.send_message(&bot.http, message).await {
+        let message = attach(Draft::new(), i + 1, picture);
+        if let Err(err) = message.send(&bot.http, channel).await {
             warn!("couldn't post a Hunger Games picture: {err}");
         }
     }
@@ -946,22 +963,20 @@ async fn post_cannons(
         .map(|t| (t.id, t.kills, words.get(&t.id).cloned()))
         .collect();
     let message = text(ui::cannons(title, &fallen));
-    if let Err(err) = channel.send_message(&bot.http, message).await {
+    if let Err(err) = message.send(&bot.http, channel).await {
         warn!("couldn't post the Hunger Games cannons: {err}");
     }
 }
 
 /// A game message: plain text that pings nobody, even when a name or her text has an
 /// @everyone or a mention in it.
-fn text(content: String) -> CreateMessage {
-    CreateMessage::new()
-        .content(content)
-        .allowed_mentions(CreateAllowedMentions::new())
+fn text(content: String) -> Draft {
+    Draft::new().content(content).allowed_mentions(no_pings())
 }
 
 async fn called_off(bot: &BotCtx, channel: ChannelId) {
     let text = "📡 The arena's cameras broke down, so these Games are called off. Sorry! Try again in a bit.";
-    if let Err(err) = channel.say(&bot.http, text).await {
+    if let Err(err) = Draft::new().content(text).send(&bot.http, channel).await {
         warn!("couldn't call off the Hunger Games: {err}");
     }
 }
@@ -996,12 +1011,12 @@ pub async fn on_component(
         let Some((content, components)) = shown else {
             return tell(bot, interaction, "This vote is over.").await;
         };
-        let message = CreateInteractionResponseMessage::new()
+        let message = Draft::new()
             .content(content)
             .components(components)
-            .allowed_mentions(CreateAllowedMentions::new());
+            .allowed_mentions(no_pings());
         interaction
-            .create_response(&bot.http, CreateInteractionResponse::UpdateMessage(message))
+            .create_response(bot, Response::UpdateMessage(message))
             .await?;
         return Ok(());
     }
@@ -1019,19 +1034,21 @@ pub async fn on_component(
                 )
                 .await;
             }
-            let ComponentInteractionDataKind::UserSelect { values } = &interaction.data.kind else {
+            let Some(resolved) = &interaction.resolved else {
                 return Ok(());
             };
-            let resolved = &interaction.data.resolved;
-            let picked: Vec<(u64, String)> = values
+            let picked: Vec<(u64, String)> = interaction
+                .values
                 .iter()
+                .filter_map(|id| id.parse::<u64>().ok().filter(|&id| id > 0))
+                .map(UserId::new)
                 .filter(|id| !resolved.users.get(id).is_some_and(|u| u.bot))
                 .map(|id| {
                     let name = resolved
                         .members
-                        .get(id)
+                        .get(&id)
                         .and_then(|m| m.nick.clone())
-                        .or_else(|| resolved.users.get(id).map(|u| u.display_name().to_string()))
+                        .or_else(|| resolved.users.get(&id).map(|u| display_name(u).to_string()))
                         .unwrap_or_else(|| format!("Tribute {id}"));
                     (id.get(), name)
                 })
@@ -1040,11 +1057,8 @@ pub async fn on_component(
             running.lobby.lock().unwrap().picked = picked;
         }
         ui::Action::Volunteer => {
-            let name = interaction
-                .member
-                .as_ref()
-                .map_or(interaction.user.display_name(), |m| m.display_name())
-                .to_string();
+            let nick = interaction.member.as_ref().and_then(|m| m.nick.as_deref());
+            let name = member_name(nick, &interaction.user).to_string();
             let refusal = {
                 let mut lobby = running.lobby.lock().unwrap();
                 let me = user.get();
@@ -1128,31 +1142,26 @@ pub async fn on_component(
             } else {
                 "The host called off the Games."
             };
-            let message = CreateInteractionResponseMessage::new()
+            let message = Draft::new()
                 .embed(ui::lobby_closed(&tributes, why))
                 .components(Vec::new());
             interaction
-                .create_response(&bot.http, CreateInteractionResponse::UpdateMessage(message))
+                .create_response(bot, Response::UpdateMessage(message))
                 .await?;
             return Ok(());
         }
     }
     interaction
-        .create_response(
-            &bot.http,
-            CreateInteractionResponse::UpdateMessage(running.lobby_message()),
-        )
+        .create_response(bot, Response::UpdateMessage(running.lobby_message()))
         .await?;
     Ok(())
 }
 
 /// Answers a press with a note only the presser sees.
 async fn tell(bot: &BotCtx, interaction: &ComponentInteraction, text: &str) -> Result<()> {
-    let message = CreateInteractionResponseMessage::new()
-        .content(text)
-        .ephemeral(true);
+    let message = Draft::new().content(text).ephemeral();
     interaction
-        .create_response(&bot.http, CreateInteractionResponse::Message(message))
+        .create_response(bot, Response::Message(message))
         .await?;
     Ok(())
 }

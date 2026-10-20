@@ -5,19 +5,17 @@
 //! played in is always fine. Any other channel must be readable by everyone in the server
 //! (the @everyone role can view it and read its history), and not age-restricted.
 
-use serenity::all::{
-    ChannelId, ChannelType, Guild, GuildChannel, PermissionOverwrite, PermissionOverwriteType,
-    Permissions, RoleId,
-};
+use twilight_model::channel::permission_overwrite::{PermissionOverwrite, PermissionOverwriteType};
 
 use crate::core::{BotCtx, user_error};
+use crate::util::discord::{Channel, ChannelId, ChannelType, GuildId, Permissions, RoleId};
 
 /// Where `/games whosaidit` takes its quotes from.
 pub enum From {
     /// The channel the game is played in.
     Here,
     /// One other channel or thread.
-    Channel(Box<GuildChannel>),
+    Channel(Box<Channel>),
     /// Every channel everyone in the server can read, and this one.
     Server,
 }
@@ -32,7 +30,7 @@ pub struct Source {
 /// The channels to read for `from`, or a reason a person can read when there are none.
 pub fn pick(
     bot: &BotCtx,
-    guild: &Guild,
+    guild: GuildId,
     here: ChannelId,
     from: From,
 ) -> anyhow::Result<Vec<Source>> {
@@ -44,13 +42,13 @@ pub fn pick(
         From::Here => Ok(vec![this]),
         From::Channel(channel) if channel.id == here => Ok(vec![this]),
         From::Channel(channel) => {
-            if !bot.allows("games", Some(guild.id), channel.id) {
+            if !bot.allows("games", Some(guild), channel.id) {
                 return Err(user_error(format!(
                     "Games are turned off in <#{}>.",
                     channel.id
                 )));
             }
-            if !public(guild, &channel) {
+            if !public(bot, guild, &channel) {
                 return Err(user_error(
                     "I only take quotes from another channel when everyone in the server can \
                      read it, so nobody sees messages they couldn't already. Play it in that \
@@ -59,23 +57,26 @@ pub fn pick(
             }
             Ok(vec![Source {
                 channel: channel.id,
-                name: Some(channel.name.clone()),
+                name: channel.name.clone(),
             }])
         }
         From::Server => {
             let mut sources = vec![this];
-            for channel in guild.channels.values() {
-                let readable = matches!(channel.kind, ChannelType::Text | ChannelType::News);
+            for channel in bot.guild_channels(guild) {
+                let readable = matches!(
+                    channel.kind,
+                    ChannelType::GuildText | ChannelType::GuildAnnouncement
+                );
                 if channel.id == here
                     || !readable
-                    || !public(guild, channel)
-                    || !bot.allows("games", Some(guild.id), channel.id)
+                    || !public(bot, guild, &channel)
+                    || !bot.allows("games", Some(guild), channel.id)
                 {
                     continue;
                 }
                 sources.push(Source {
                     channel: channel.id,
-                    name: Some(channel.name.clone()),
+                    name: channel.name.clone(),
                 });
             }
             Ok(sources)
@@ -85,26 +86,31 @@ pub fn pick(
 
 /// Whether everyone in the server can read `channel`'s history, and it isn't
 /// age-restricted. A thread counts as its parent channel.
-fn public(guild: &Guild, channel: &GuildChannel) -> bool {
+fn public(bot: &BotCtx, guild: GuildId, channel: &Channel) -> bool {
+    let parent;
     let channel = match channel.kind {
-        ChannelType::PublicThread | ChannelType::NewsThread => {
-            match channel.parent_id.and_then(|p| guild.channels.get(&p)) {
-                Some(parent) => parent,
+        ChannelType::PublicThread | ChannelType::AnnouncementThread => {
+            match channel.parent_id.and_then(|p| bot.cache.channel(p)) {
+                Some(found) => {
+                    parent = found.clone();
+                    &parent
+                }
                 None => return false,
             }
         }
-        ChannelType::Text | ChannelType::News => channel,
+        ChannelType::GuildText | ChannelType::GuildAnnouncement => channel,
         _ => return false,
     };
-    if channel.nsfw {
+    if channel.nsfw == Some(true) {
         return false;
     }
     // The @everyone role's ID is the server's ID.
-    let everyone = RoleId::new(guild.id.get());
-    let Some(role) = guild.roles.get(&everyone) else {
+    let everyone: RoleId = guild.cast();
+    let Some(role) = bot.cache.role(everyone) else {
         return false;
     };
-    everyone_can_read(role.permissions, &channel.permission_overwrites, everyone)
+    let overwrites = channel.permission_overwrites.as_deref().unwrap_or_default();
+    everyone_can_read(role.resource().permissions, overwrites, everyone)
 }
 
 /// Whether the @everyone role can view a channel and read its history: its server-wide
@@ -115,12 +121,12 @@ fn everyone_can_read(
     overwrites: &[PermissionOverwrite],
     everyone: RoleId,
 ) -> bool {
-    if server_wide.administrator() {
+    if server_wide.contains(Permissions::ADMINISTRATOR) {
         return true;
     }
     let mut permissions = server_wide;
     for overwrite in overwrites {
-        if overwrite.kind == PermissionOverwriteType::Role(everyone) {
+        if overwrite.kind == PermissionOverwriteType::Role && overwrite.id == everyone.cast() {
             permissions = (permissions & !overwrite.deny) | overwrite.allow;
         }
     }
@@ -138,7 +144,8 @@ mod tests {
         PermissionOverwrite {
             allow,
             deny,
-            kind: PermissionOverwriteType::Role(RoleId::new(role)),
+            id: RoleId::new(role).cast(),
+            kind: PermissionOverwriteType::Role,
         }
     }
 

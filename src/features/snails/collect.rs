@@ -1,8 +1,8 @@
 //! What gets indexed from a message: its links, and the pictures worth hashing.
 //! Pure functions, tested below.
 
+use crate::util::discord::Message;
 use reqwest::Url;
-use serenity::all::Message;
 
 use super::links;
 use crate::util::media;
@@ -73,11 +73,11 @@ pub fn pictures(msg: &Message) -> Vec<Picture> {
         if links::is_gif(&a.filename) {
             continue;
         }
-        let small = small_url(&a.proxy_url, w, h);
+        let small = small_url(&a.proxy_url, w as u32, h as u32);
         push(&mut found, small, &a.url);
     }
     for embed in &msg.embeds {
-        let kind = embed.kind.as_deref().unwrap_or("");
+        let kind = embed.kind.as_str();
         // A custom emoji or sticker sent as a link previews as a picture too.
         if kind == "gifv" || embed.url.as_deref().is_some_and(links::is_ignored) {
             continue;
@@ -90,7 +90,7 @@ pub fn pictures(msg: &Message) -> Vec<Picture> {
         if let Some(image) = &embed.image {
             let proxy = image.proxy_url.as_deref().unwrap_or(&image.url);
             if let (Some(w), Some(h)) = (image.width, image.height) {
-                push(&mut found, small_url(proxy, w, h), &image.url);
+                push(&mut found, small_url(proxy, w as u32, h as u32), &image.url);
             }
         } else if let Some(thumb) = &embed.thumbnail
             && kind == "image"
@@ -100,7 +100,7 @@ pub fn pictures(msg: &Message) -> Vec<Picture> {
             // subreddit's icon.
             let proxy = thumb.proxy_url.as_deref().unwrap_or(&thumb.url);
             if let (Some(w), Some(h)) = (thumb.width, thumb.height) {
-                push(&mut found, small_url(proxy, w, h), &thumb.url);
+                push(&mut found, small_url(proxy, w as u32, h as u32), &thumb.url);
             }
         }
     }
@@ -162,16 +162,7 @@ mod tests {
     use serde_json::json;
 
     fn message(value: serde_json::Value) -> Message {
-        let mut base = json!({
-            "id": "1", "channel_id": "2", "author": {"id": "3", "username": "u", "discriminator": "0", "avatar": null},
-            "content": "", "timestamp": "2026-10-09T00:00:00Z", "edited_timestamp": null, "tts": false,
-            "mention_everyone": false, "mentions": [], "mention_roles": [], "attachments": [],
-            "embeds": [], "pinned": false, "type": 0
-        });
-        for (k, v) in value.as_object().unwrap() {
-            base[k] = v.clone();
-        }
-        serde_json::from_value(base).unwrap()
+        crate::util::discord::test_message(value)
     }
 
     #[test]

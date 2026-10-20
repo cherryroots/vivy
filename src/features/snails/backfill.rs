@@ -15,56 +15,63 @@ use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::Context as _;
-use serenity::all::{
-    ChannelId, ChannelType, GetMessages, GuildChannel, GuildId, HttpError, LightMethod, Request,
-    Route, ThreadsData,
-};
-use serenity::futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt};
 use tracing::{debug, info, warn};
+use twilight_interactions::command::{CommandModel, CommandOption, CreateCommand, CreateOption};
 
 use super::index;
 use super::store::{self, CrawlStatus, HostFailures};
 use super::{check, collect};
-use crate::core::{BotCtx, Context, Result, user_error};
+use crate::core::{BotCtx, CommandCtx, Result, user_error};
+use crate::util::discord::{
+    Channel, ChannelId, ChannelType, GuildId, MessageId, Page, error_status, get_messages,
+};
 
 /// Messages indexed at the same time. Each downloads its pictures from Discord's media proxy.
 const PARALLEL: usize = 8;
 /// Discord's largest page of messages.
-const PAGE: u8 = 100;
+const PAGE: u16 = 100;
 /// Wait after a failed page before trying again.
 const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Servers with a crawl running in this process, so a second start doesn't run two.
 static WORKERS: LazyLock<Mutex<HashSet<u64>>> = LazyLock::new(Default::default);
 
-#[derive(Debug, poise::ChoiceParameter)]
+#[derive(Debug, CommandOption, CreateOption)]
 pub enum Action {
-    #[name = "start"]
+    #[option(name = "start", value = "start")]
     Start,
-    #[name = "pause"]
+    #[option(name = "pause", value = "pause")]
     Pause,
-    #[name = "status"]
+    #[option(name = "status", value = "status")]
     Status,
 }
 
-/// Read the server's older messages so Check Snail knows them (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "backfill")]
-pub async fn snail_backfill(
-    ctx: Context<'_>,
-    #[description = "start (or continue), pause, or show progress"] action: Action,
-) -> Result<()> {
-    if !ctx.data().is_admin(ctx.author().id) {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "backfill",
+    desc = "Read the server's older messages so Check Snail knows them (admins)"
+)]
+pub struct SnailsBackfill {
+    /// start (or continue), pause, or show progress
+    action: Action,
+}
+
+/// `/snails backfill`. Answers privately.
+pub async fn snail_backfill(ctx: CommandCtx, args: SnailsBackfill) -> Result<()> {
+    if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error("Only admins can use this command."));
     }
     let guild = ctx
         .guild_id()
-        .context("guild_only command without a server")?;
-    let bot = ctx.data();
+        .context("server-only command without a server")?;
+    let bot = &ctx.bot;
+    let action = args.action;
     let g = guild.get();
     let text = match action {
         Action::Start => {
             // Listing every thread takes a few requests.
-            ctx.defer_ephemeral().await?;
+            ctx.defer().await?;
             let channels = list_channels(bot, guild).await?;
             let total = channels.len();
             let added = bot
@@ -190,78 +197,85 @@ fn describe_failures(hosts: &[HostFailures]) -> String {
 /// Every channel and thread with messages: text, news, voice and stage chats, plus active
 /// and archived threads (forum posts are threads too).
 async fn list_channels(ctx: &BotCtx, guild: GuildId) -> Result<Vec<(u64, String)>> {
-    let channels = guild
-        .channels(&ctx.http)
+    let channels = ctx
+        .http
+        .guild_channels(guild)
         .await
-        .context("listing the server's channels")?;
+        .context("listing the server's channels")?
+        .models()
+        .await?;
     let mut found = Vec::new();
-    for channel in channels.values() {
+    for channel in &channels {
         if matches!(
             channel.kind,
-            ChannelType::Text | ChannelType::News | ChannelType::Voice | ChannelType::Stage
+            ChannelType::GuildText
+                | ChannelType::GuildAnnouncement
+                | ChannelType::GuildVoice
+                | ChannelType::GuildStageVoice
         ) {
-            found.push((channel.id.get(), channel.name.clone()));
+            found.push(thread_entry(channel));
         }
         if matches!(
             channel.kind,
-            ChannelType::Text | ChannelType::News | ChannelType::Forum
+            ChannelType::GuildText | ChannelType::GuildAnnouncement | ChannelType::GuildForum
         ) {
             for private in [false, true] {
                 match archived_threads(ctx, channel.id, private).await {
                     Ok(threads) => found.extend(threads.iter().map(thread_entry)),
                     // Private archived threads need Manage Threads; without it they're skipped.
-                    Err(err) => debug!("no archived threads for #{}: {err}", channel.name),
+                    Err(err) => debug!(
+                        "no archived threads for #{}: {err}",
+                        channel.name.as_deref().unwrap_or_default()
+                    ),
                 }
             }
         }
     }
-    let active = guild
-        .get_active_threads(&ctx.http)
+    let active = ctx
+        .http
+        .active_threads(guild)
         .await
-        .context("listing active threads")?;
+        .context("listing active threads")?
+        .model()
+        .await?;
     found.extend(active.threads.iter().map(thread_entry));
     found.sort();
     found.dedup_by_key(|(id, _)| *id);
     Ok(found)
 }
 
-fn thread_entry(thread: &GuildChannel) -> (u64, String) {
-    (thread.id.get(), thread.name.clone())
+fn thread_entry(channel: &Channel) -> (u64, String) {
+    (channel.id.get(), channel.name.clone().unwrap_or_default())
 }
 
-/// All archived threads of a channel. Discord pages them by archive time, which serenity's
-/// helper sends as a number instead of the timestamp Discord expects, so the request is built
-/// here.
+/// All archived threads of a channel. Discord pages them by archive time.
 async fn archived_threads(
     ctx: &BotCtx,
     channel: ChannelId,
     private: bool,
-) -> serenity::Result<Vec<GuildChannel>> {
-    let mut threads: Vec<GuildChannel> = Vec::new();
+) -> anyhow::Result<Vec<Channel>> {
+    let mut threads: Vec<Channel> = Vec::new();
     let mut before: Option<String> = None;
     loop {
-        let route = if private {
-            Route::ChannelArchivedPrivateThreads {
-                channel_id: channel,
+        let page = if private {
+            let request = ctx.http.private_archived_threads(channel).limit(100);
+            match &before {
+                Some(before) => request.before(before).await?,
+                None => request.await?,
             }
         } else {
-            Route::ChannelArchivedPublicThreads {
-                channel_id: channel,
+            let request = ctx.http.public_archived_threads(channel).limit(100);
+            match &before {
+                Some(before) => request.before(before).await?,
+                None => request.await?,
             }
         };
-        let mut params = vec![("limit", "100".to_string())];
-        if let Some(before) = &before {
-            params.push(("before", before.clone()));
-        }
-        let page: ThreadsData = ctx
-            .http
-            .fire(Request::new(route, LightMethod::Get).params(Some(params)))
-            .await?;
-        let oldest = page
-            .threads
-            .last()
-            .and_then(|t| t.thread_metadata?.archive_timestamp?.to_rfc3339());
-        let more = page.has_more;
+        let page = page.model().await?;
+        let oldest = page.threads.last().and_then(|t| {
+            let time = t.thread_metadata.as_ref()?.archive_timestamp;
+            Some(time.iso_8601().to_string())
+        });
+        let more = page.has_more.unwrap_or(false);
         threads.extend(page.threads);
         match oldest {
             Some(time) if more => before = Some(time),
@@ -356,17 +370,17 @@ async fn read_page(
     channel: ChannelId,
     before: Option<u64>,
 ) -> std::result::Result<(), PageError> {
-    let mut request = GetMessages::new().limit(PAGE);
-    if let Some(before) = before {
-        request = request.before(before);
-    }
-    let messages = match channel.messages(&ctx.http, request).await {
+    let page = match before {
+        Some(before) => Page::Before(MessageId::new(before)),
+        None => Page::Newest,
+    };
+    let messages = match get_messages(&ctx.http, channel, page, PAGE).await {
         Ok(messages) => messages,
         Err(err) => {
             return Err(if is_no_access(&err) {
-                PageError::NoAccess(err.to_string())
+                PageError::NoAccess(format!("{err:#}"))
             } else {
-                PageError::Retry(err.into())
+                PageError::Retry(err)
             });
         }
     };
@@ -441,13 +455,11 @@ async fn catch_up(ctx: &BotCtx, guild: GuildId) -> Result<()> {
         }
         match catch_up_channel(ctx, guild, channel, after).await {
             Ok(read) => total += read,
-            Err(err) => match err.downcast_ref::<serenity::Error>() {
-                // Deleted, or the bot lost access: nothing to catch up.
-                Some(e) if is_no_access(e) => {
-                    debug!(channel = channel.get(), "snail catch-up skipped: {err}")
-                }
-                _ => warn!(channel = channel.get(), "snail catch-up failed: {err:#}"),
-            },
+            // Deleted, or the bot lost access: nothing to catch up.
+            Err(err) if is_no_access(&err) => {
+                debug!(channel = channel.get(), "snail catch-up skipped: {err}")
+            }
+            Err(err) => warn!(channel = channel.get(), "snail catch-up failed: {err:#}"),
         }
     }
     if total > 0 {
@@ -471,8 +483,8 @@ async fn catch_up_channel(
 ) -> anyhow::Result<usize> {
     let mut read = 0;
     loop {
-        let request = GetMessages::new().after(after).limit(PAGE);
-        let mut page = channel.messages(&ctx.http, request).await?;
+        let mut page =
+            get_messages(&ctx.http, channel, Page::After(MessageId::new(after)), PAGE).await?;
         // Discord sends the page newest first.
         page.sort_by_key(|m| m.id);
         let Some(last) = page.last().map(|m| m.id.get()) else {
@@ -502,17 +514,10 @@ async fn catch_up_channel(
     }
 }
 
-pub fn http_status(err: &serenity::Error) -> Option<u16> {
-    match err {
-        serenity::Error::Http(HttpError::UnsuccessfulRequest(r)) => Some(r.status_code.as_u16()),
-        _ => None,
-    }
-}
-
 /// Whether Discord refused the request for good: any 4xx except 429 (slow down). Trying
 /// again won't help, unlike a network error or a 5xx.
-pub fn is_no_access(err: &serenity::Error) -> bool {
-    http_status(err).is_some_and(|s| (400..500).contains(&s) && s != 429)
+pub fn is_no_access(err: &anyhow::Error) -> bool {
+    error_status(err).is_some_and(|s| (400..500).contains(&s) && s != 429)
 }
 
 #[cfg(test)]

@@ -3,16 +3,17 @@
 use anyhow::Context as _;
 use chrono::Utc;
 use image::DynamicImage;
-use poise::CreateReply;
-use serenity::all::{ChannelId, CreateAllowedMentions, GuildId, Message, MessageId};
 use tracing::debug;
 
 use super::fingerprint::{self, Fingerprint};
 use super::index::{self, LoadedPicture};
 use super::store::{self, Candidate, Catch, Failure, Indexed, Posted};
 use super::{backfill, collect};
-use crate::core::{BotCtx, Context, Result};
+use crate::core::{BotCtx, Command, CommandCtx, Result};
 use crate::util::count;
+use crate::util::discord::{
+    ChannelId, Draft, GuildId, Message, MessageId, created_at, error_status, get_message, no_pings,
+};
 
 /// At most this many close pictures get the detail check (each needs a download).
 const MAX_CANDIDATES: usize = 12;
@@ -24,15 +25,23 @@ const MAX_LISTED: usize = 10;
 /// `count_within_days` in the settings, a week by default.
 const DAY_SECS: i64 = 24 * 60 * 60;
 
-/// Check whether this was posted here before
-#[poise::command(context_menu_command = "Check Snail", guild_only, ephemeral)]
-pub async fn check_snail(ctx: Context<'_>, msg: Message) -> Result<()> {
+/// "Check Snail" in a message's Apps menu: was this posted here before?
+pub fn check_snail() -> Command {
+    Command::message("Check Snail", |ctx| Box::pin(run(ctx))).guild_only()
+}
+
+async fn run(ctx: CommandCtx) -> Result<()> {
+    let ctx = ctx.ephemeral();
     let guild = ctx
         .guild_id()
-        .context("guild_only command without a server")?;
+        .context("server-only command without a server")?;
+    let msg = ctx
+        .target_message()
+        .context("Check Snail without a message")?
+        .clone();
     // Downloads and the detail check take longer than Discord's 3 seconds.
-    ctx.defer_ephemeral().await?;
-    let text = match find_snails(ctx.data(), guild, &msg).await? {
+    ctx.defer().await?;
+    let text = match find_snails(&ctx.bot, guild, &msg).await? {
         None => "This message has no links or pictures to check.".to_string(),
         Some((snails, unchecked, failed)) => {
             let mut text = match (snails.is_empty(), failed) {
@@ -50,12 +59,8 @@ pub async fn check_snail(ctx: Context<'_>, msg: Message) -> Result<()> {
             text
         }
     };
-    ctx.send(
-        CreateReply::default()
-            .content(text)
-            .allowed_mentions(CreateAllowedMentions::new()),
-    )
-    .await?;
+    ctx.send(Draft::new().content(text).allowed_mentions(no_pings()))
+        .await?;
     Ok(())
 }
 
@@ -118,7 +123,7 @@ async fn count_if_snail(
     if links.is_empty() && pictures.is_empty() {
         return Ok(());
     }
-    let at = msg.timestamp.unix_timestamp();
+    let at = msg.timestamp.as_secs();
     let within = super::settings(ctx).count_within_days.max(1) * DAY_SECS;
     if !recent(at, Utc::now().timestamp(), within) {
         return Ok(());
@@ -288,10 +293,7 @@ async fn close_pictures(
 /// the bot can't read it right now, like a channel it lost access to.
 async fn still_there(ctx: &BotCtx, posted: &Posted) -> Result<Option<Message>> {
     let channel = ChannelId::new(posted.channel);
-    match channel
-        .message(&ctx.http, MessageId::new(posted.message))
-        .await
-    {
+    match get_message(&ctx.http, channel, MessageId::new(posted.message)).await {
         Ok(msg) => Ok(Some(msg)),
         Err(err) if is_not_found(&err) => {
             let id = posted.message;
@@ -339,8 +341,8 @@ async fn same_picture(ctx: &BotCtx, candidate: &Candidate, image: &DynamicImage)
     Ok(difference <= fingerprint::DETAIL_LIMIT)
 }
 
-fn is_not_found(err: &serenity::Error) -> bool {
-    backfill::http_status(err) == Some(404)
+fn is_not_found(err: &anyhow::Error) -> bool {
+    error_status(err) == Some(404)
 }
 
 /// The reply listing `snails`, plus a line for the `unchecked` ones not listed.
@@ -348,7 +350,7 @@ fn describe(guild: GuildId, snails: &[Snail], unchecked: usize) -> String {
     let mut text = String::from("🐌 **Snail!** This was posted before:");
     for snail in snails {
         let p = &snail.posted;
-        let when = MessageId::new(p.message).created_at().unix_timestamp();
+        let when = created_at(MessageId::new(p.message)).timestamp();
         let what = if snail.same_link {
             "same link"
         } else {

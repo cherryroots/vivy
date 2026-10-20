@@ -45,7 +45,7 @@ The tool takes one argument, `script`: the spoken words, with ElevenLabs v4 audi
 
 ### Posting a voice message
 
-A Discord voice message can't have text. It needs the message flag `IS_VOICE_MESSAGE` (`1 << 13`, a 1 shifted left 13 places, so bit 13) and exactly one audio attachment carrying `duration_secs` and a base64 `waveform`. serenity's `CreateAttachment` can't carry those two fields, so `mod.rs` writes the JSON payload by hand and sends it with `Http::send_message` together with the file `voice-message.ogg`. The payload also makes it a reply to the asker's message (`fail_if_not_exists: false`, so a deleted question doesn't fail it) and allows no mentions except the reply ping.
+A Discord voice message can't have text. It needs the message flag `IS_VOICE_MESSAGE` (`1 << 13`, a 1 shifted left 13 places, so bit 13) and exactly one audio attachment carrying `duration_secs` and a base64 `waveform`. Twilight's message builder can't carry those two fields, so `mod.rs` writes the JSON payload by hand and sends it with `util::discord::send_raw` together with the file `voice-message.ogg`. The payload also makes it a reply to the asker's message (`fail_if_not_exists: false`, so a deleted question doesn't fail it) and allows no mentions except the reply ping.
 
 ### How chat treats it
 

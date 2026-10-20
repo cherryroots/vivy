@@ -9,6 +9,9 @@
 use super::tools::{find_member, parse_user_id};
 use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, user_error};
+use crate::util::discord::{
+    avatar_url, display_name, get_member, get_user, member_avatar_url, member_display_name,
+};
 use crate::util::media::{ModelImage, download, png_link};
 use serde_json::{Value, json};
 
@@ -46,16 +49,16 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<ToolReply>
     let (user_id, name, url, for_server) = match asker.guild {
         Some(guild) => {
             let member = match &query {
-                None => guild.member(&ctx.http, asker.user).await?,
+                None => get_member(&ctx.http, guild, asker.user).await?,
                 Some(query) => find_member(ctx, guild, query).await?,
             };
-            let (url, for_server) = match member.avatar_url() {
+            let (url, for_server) = match member_avatar_url(guild, member.user.id, member.avatar) {
                 Some(url) => (url, true),
-                None => (member.user.face(), false),
+                None => (avatar_url(&member.user), false),
             };
             (
                 member.user.id,
-                member.display_name().to_string(),
+                member_display_name(&member).to_string(),
                 url,
                 for_server,
             )
@@ -68,11 +71,15 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<ToolReply>
                     user_error("In a DM I can only find people by mention or user ID.")
                 })?,
             };
-            let user = id
-                .to_user(&ctx.http)
+            let user = get_user(&ctx.http, id)
                 .await
                 .map_err(|_| user_error(format!("There's nobody with ID {id}.")))?;
-            (user.id, user.display_name().to_string(), user.face(), false)
+            (
+                user.id,
+                display_name(&user).to_string(),
+                avatar_url(&user),
+                false,
+            )
         }
     };
 

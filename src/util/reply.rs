@@ -6,10 +6,7 @@
 //! parts whose text changed, sends the new ones, and deletes the ones that are no longer
 //! needed. Parts that didn't change cost no API call.
 
-use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateAttachment, CreateMessage, EditMessage, Http, Message,
-    MessageFlags, MessageId,
-};
+use super::discord::{ChannelId, Draft, Http, Message, MessageId, ping_replied};
 
 /// What has to happen to Discord message `n` to show the new parts.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -79,31 +76,29 @@ impl LiveReply {
         for change in changes(&shown, parts) {
             match change {
                 Change::Edit(n) => {
-                    let mut edit = EditMessage::new()
+                    let mut edit = Draft::new()
                         .content(&parts[n])
-                        .allowed_mentions(mentions());
+                        .allowed_mentions(ping_replied());
                     if self.clear_files {
-                        edit = edit.remove_all_attachments();
+                        edit = edit.remove_all_files();
                     }
-                    self.channel
-                        .edit_message(http, self.sent[n].0, edit)
-                        .await?;
+                    edit.edit(http, self.channel, self.sent[n].0).await?;
                     self.sent[n].1 = parts[n].clone();
                 }
                 Change::Send(n) => {
-                    let mut message = CreateMessage::new()
+                    let mut message = Draft::new()
                         .content(&parts[n])
-                        .allowed_mentions(mentions())
+                        .allowed_mentions(ping_replied())
                         // Links in answers would otherwise each get a big preview.
-                        .flags(MessageFlags::SUPPRESS_EMBEDS);
+                        .suppress_embeds();
                     if let (0, Some(reply_to)) = (n, self.reply_to) {
-                        message = message.reference_message((self.channel, reply_to));
+                        message = message.reply_to(reply_to);
                     }
-                    let sent = self.channel.send_message(http, message).await?;
+                    let sent = message.send(http, self.channel).await?;
                     self.sent.push((sent.id, parts[n].clone()));
                 }
                 Change::Delete(n) => {
-                    self.channel.delete_message(http, self.sent[n].0).await?;
+                    http.delete_message(self.channel, self.sent[n].0).await?;
                     self.sent.pop();
                 }
             }
@@ -117,28 +112,23 @@ impl LiveReply {
     pub async fn attach(
         &mut self,
         http: &Http,
-        files: Vec<CreateAttachment>,
+        files: Vec<(String, Vec<u8>)>,
     ) -> anyhow::Result<Message> {
         let (id, _) = self
             .sent
             .last()
             .ok_or_else(|| anyhow::anyhow!("nothing was sent yet"))?;
-        let mut edit = EditMessage::new();
-        for file in files {
-            edit = edit.new_attachment(file);
+        let mut edit = Draft::new();
+        for (name, data) in files {
+            edit = edit.file(name, data);
         }
-        Ok(self.channel.edit_message(http, *id, edit).await?)
+        edit.edit(http, self.channel, *id).await
     }
 
     /// The Discord messages that make up the reply, in order.
     pub fn message_ids(&self) -> Vec<MessageId> {
         self.sent.iter().map(|(id, _)| *id).collect()
     }
-}
-
-/// Bot replies ping the person they reply to, and nobody else, whatever the text says.
-fn mentions() -> CreateAllowedMentions {
-    CreateAllowedMentions::new().replied_user(true)
 }
 
 #[cfg(test)]

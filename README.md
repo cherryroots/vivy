@@ -8,7 +8,7 @@ The code aims to be:
 - **Provider agnostic.** AI chat sits behind one trait, so Claude, OpenAI or Gemini can be swapped in.
 - **Simple and readable.** Easy to study for someone learning Rust.
 
-Built with [serenity](https://github.com/serenity-rs/serenity) and [poise](https://github.com/serenity-rs/poise) for Discord, [tokio](https://tokio.rs), and one SQLite file. [`docs/feature-map.md`](docs/feature-map.md) is the overview of every feature and what's next, [`docs/architecture.md`](docs/architecture.md) explains how the code fits together, and `docs/features/` has a page per feature.
+Built with [Twilight](https://github.com/twilight-rs/twilight) for Discord, [tokio](https://tokio.rs), and one SQLite file. [`docs/feature-map.md`](docs/feature-map.md) is the overview of every feature and what's next, [`docs/architecture.md`](docs/architecture.md) explains how the code fits together, and `docs/features/` has a page per feature.
 
 ## Features
 

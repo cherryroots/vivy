@@ -12,19 +12,18 @@ use std::sync::{Arc, LazyLock, Mutex};
 use anyhow::{Context as _, bail};
 use chrono::Utc;
 use rusqlite::Connection;
-use serenity::all::{
-    ActionRowComponent, ChannelId, ComponentInteraction, ComponentInteractionDataKind,
-    CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateInteractionResponse,
-    CreateInteractionResponseFollowup, CreateInteractionResponseMessage, CreateMessage,
-    EditInteractionResponse, EditMessage, GuildId, MessageId, ModalInteraction, UserId,
-};
 use tracing::{info, warn};
+use twilight_model::channel::message::component::Component;
 
 use super::ledger::{self, CLAIM, Season, TAX_THRESHOLD, check_bet, ledger};
 use super::ui::{self, Action, PickKind, View};
 use super::{names, render, store};
 use crate::core::errors::UserError;
-use crate::core::{BotCtx, BotEvent, Result, user_error};
+use crate::core::{
+    BotCtx, BotEvent, ComponentInteraction, ModalInteraction, Respond as _, Response, Result,
+    user_error,
+};
+use crate::util::discord::{ChannelId, Draft, GuildId, MessageId, UserId, no_pings};
 
 const SERVER_ONLY: &str = "The wheel only works in a server.";
 const NO_GAME: &str = "There's no game running. Start one with /wheel status.";
@@ -46,27 +45,20 @@ impl Game {
 
 /// A status message: the round as a picture, with its buttons under it.
 pub struct Status {
-    pub picture: CreateAttachment,
-    pub buttons: Vec<CreateActionRow>,
+    /// The picture's file name and PNG.
+    pub picture: (String, Vec<u8>),
+    pub buttons: Vec<Component>,
 }
 
 impl Status {
     /// Replaces the message this status's button was on, after [`ComponentInteraction::defer`].
     /// Clears the embed that status messages from before the picture had.
-    fn update(self) -> EditInteractionResponse {
-        EditInteractionResponse::new()
+    fn update(self) -> Draft {
+        let (name, png) = self.picture;
+        Draft::new()
             .embeds(Vec::new())
-            .clear_attachments()
-            .new_attachment(self.picture)
-            .components(self.buttons)
-    }
-
-    /// The same, as an edit of a message by ID.
-    fn edit(self) -> EditMessage {
-        EditMessage::new()
-            .embeds(Vec::new())
-            .remove_all_attachments()
-            .new_attachment(self.picture)
+            .remove_all_files()
+            .file(name, png)
             .components(self.buttons)
     }
 }
@@ -102,7 +94,7 @@ pub async fn status_message(
         None => format!("round-{}.png", round.number),
     };
     Ok(Status {
-        picture: CreateAttachment::bytes(png, file),
+        picture: (file, png),
         buttons,
     })
 }
@@ -118,12 +110,13 @@ pub async fn post_status(
     content: &str,
 ) -> Result<()> {
     let status = status_message(ctx, guild, game, index).await?;
-    let message = CreateMessage::new()
+    let (name, png) = status.picture;
+    let message = Draft::new()
         .content(content)
-        .add_file(status.picture)
+        .file(name, png)
         .components(status.buttons)
-        .allowed_mentions(CreateAllowedMentions::new());
-    let sent = channel.send_message(&ctx.http, message).await?;
+        .allowed_mentions(no_pings());
+    let sent = message.send(&ctx.http, channel).await?;
     remember_status(ctx, guild, channel, sent.id).await;
     Ok(())
 }
@@ -212,7 +205,7 @@ async fn update_status(
     let redraw = redraw_lock(guild);
     let _turn = redraw.lock.lock().await;
     let status = fresh_status(ctx, guild, game, index).await?;
-    i.edit_response(&ctx.http, status.update()).await?;
+    i.edit_response(ctx, status.update()).await?;
     Ok(())
 }
 
@@ -270,12 +263,8 @@ pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) 
         // The round on that message is over: say so, with a button to the current one.
         (Err(err), Some(message)) if is_not_current(&err) => {
             let (text, button) = ui::not_current(NOT_CURRENT, message);
-            let response = CreateInteractionResponseMessage::new()
-                .content(text)
-                .components(button)
-                .ephemeral(true);
-            i.create_response(&ctx.http, CreateInteractionResponse::Message(response))
-                .await?;
+            let response = Draft::new().content(text).components(button).ephemeral();
+            i.create_response(ctx, Response::Message(response)).await?;
             Ok(())
         }
         (result, _) => result,
@@ -359,10 +348,10 @@ async fn amount_entered(
     let input = modal_value(i).unwrap_or_default();
     let (game, amount) = place_bet(ctx, guild, round, i.user.id.get(), on, input).await?;
     // The modal came from a bet slip, which is updated in place.
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     let note = format!("✅ Bet {amount}.");
     let slip = slip(ctx, guild, &game, i.user.id.get(), on, message, Some(&note)).await?;
-    i.edit_response(&ctx.http, slip).await?;
+    i.edit_response(ctx, slip).await?;
     edit_status(
         ctx,
         i.channel_id,
@@ -387,10 +376,10 @@ async fn stake(
 ) -> Result<()> {
     let input = format!("{percent}%");
     let (game, amount) = place_bet(ctx, guild, round, i.user.id.get(), on, input).await?;
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     let note = format!("✅ Bet {amount}.");
     let slip = slip(ctx, guild, &game, i.user.id.get(), on, message, Some(&note)).await?;
-    i.edit_response(&ctx.http, slip).await?;
+    i.edit_response(ctx, slip).await?;
     edit_status(
         ctx,
         i.channel_id,
@@ -435,8 +424,7 @@ async fn other_amount(
         current.usable(user) + existing,
         existing,
     );
-    i.create_response(&ctx.http, CreateInteractionResponse::Modal(modal))
-        .await?;
+    i.create_response(ctx, Response::Modal(modal)).await?;
     Ok(())
 }
 
@@ -480,7 +468,7 @@ async fn slip(
     on: u64,
     message: u64,
     note: Option<&str>,
-) -> Result<EditInteractionResponse> {
+) -> Result<Draft> {
     let numbers = ledger(&game.season);
     let current = numbers.last().context("a season has rounds")?;
     let names = names::lookup(ctx, guild, &[on]).await;
@@ -493,9 +481,7 @@ async fn slip(
         message,
         note,
     );
-    Ok(EditInteractionResponse::new()
-        .content(content)
-        .components(buttons))
+    Ok(Draft::new().content(content).components(buttons))
 }
 
 /// "View Current Round": shows the latest round on this message.
@@ -505,7 +491,7 @@ async fn current(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId) -> Resu
         .call(move |conn| active_game(conn, guild.get()))
         .await?;
     // Looking up names and drawing can take longer than Discord waits for an answer.
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     update_status(ctx, i, guild, &game, game.latest()).await?;
     Ok(())
 }
@@ -523,7 +509,7 @@ async fn refresh(
         .call(move |conn| active_game(conn, guild.get()))
         .await?;
     // Looking up names and drawing can take longer than Discord waits for an answer.
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     let index = game.latest();
     let number = game.season.rounds[index].number;
     let text = if edit_status(ctx, i.channel_id, message, guild, &game, index).await {
@@ -531,10 +517,8 @@ async fn refresh(
     } else {
         "That wheel message is gone. Run /wheel status for the current round.".to_string()
     };
-    let note = EditInteractionResponse::new()
-        .content(text)
-        .components(Vec::new());
-    i.edit_response(&ctx.http, note).await?;
+    let note = Draft::new().content(text).components(Vec::new());
+    i.edit_response(ctx, note).await?;
     Ok(())
 }
 
@@ -563,12 +547,10 @@ async fn claim(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, round: i6
     info!("claimed");
 
     // Looking up names and drawing can take longer than Discord waits for an answer.
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     update_status(ctx, i, guild, &game, game.latest()).await?;
-    let followup = CreateInteractionResponseFollowup::new()
-        .content(claimed_text(&game, user))
-        .ephemeral(true);
-    i.create_followup(&ctx.http, followup).await?;
+    let followup = Draft::new().content(claimed_text(&game, user)).ephemeral();
+    i.create_followup(ctx, followup).await?;
     Ok(())
 }
 
@@ -615,7 +597,7 @@ async fn open_menu(
         }));
     }
 
-    i.defer_ephemeral(&ctx.http).await?;
+    i.defer_ephemeral(ctx).await?;
     let names = names::lookup(ctx, guild, &choices).await;
     // Under each name: the movie, or for Remove bet how much is on it.
     let descriptions: HashMap<u64, String> = match kind {
@@ -635,10 +617,8 @@ async fn open_menu(
         &names,
         &descriptions,
     );
-    let menu = EditInteractionResponse::new()
-        .content(content)
-        .components(menu);
-    i.edit_response(&ctx.http, menu).await?;
+    let menu = Draft::new().content(content).components(menu);
+    i.edit_response(ctx, menu).await?;
     Ok(())
 }
 
@@ -651,10 +631,7 @@ async fn picked(
     round: i64,
     message: MessageId,
 ) -> Result<()> {
-    let ComponentInteractionDataKind::StringSelect { values } = &i.data.kind else {
-        bail!("the menu sent no values");
-    };
-    let on: u64 = values.first().context("nothing selected")?.parse()?;
+    let on: u64 = i.values.first().context("nothing selected")?.parse()?;
     let user = i.user.id.get();
     match kind {
         PickKind::Place => {
@@ -662,9 +639,9 @@ async fn picked(
                 .db
                 .call(move |conn| open_round(conn, guild.get(), round))
                 .await?;
-            i.defer(&ctx.http).await?;
+            i.defer(ctx).await?;
             let slip = slip(ctx, guild, &game, user, on, message.get(), None).await?;
-            i.edit_response(&ctx.http, slip).await?;
+            i.edit_response(ctx, slip).await?;
         }
         PickKind::Remove => {
             let game = ctx
@@ -686,7 +663,7 @@ async fn picked(
             info!("removed the bet on {on}");
             let names = names::lookup(ctx, guild, &[on]).await;
             let text = format!("Removed your bet on {}.", ui::name(&names, on));
-            i.create_response(&ctx.http, update_text(text)).await?;
+            i.create_response(ctx, update_text(text)).await?;
             edit_status(ctx, i.channel_id, message, guild, &game, game.latest()).await;
         }
         PickKind::Winner => {
@@ -724,7 +701,7 @@ async fn picked(
                 game.season.movies.get(&on).map(String::as_str),
             );
             let text = format!("Set {winner} as the winner of round {number}.");
-            i.create_response(&ctx.http, update_text(text)).await?;
+            i.create_response(ctx, update_text(text)).await?;
             edit_status(ctx, i.channel_id, message, guild, &game, resolved).await;
             // The channel only saw a blurred picture so far: open the new round under it,
             // with its buttons, so nobody has to press View Current Round first.
@@ -774,7 +751,7 @@ async fn undo(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, round: i64
         game.season.rounds[game.latest()].number
     );
     // Looking up names and drawing can take longer than Discord waits for an answer.
-    i.defer(&ctx.http).await?;
+    i.defer(ctx).await?;
     update_status(ctx, i, guild, &game, game.latest()).await?;
     Ok(())
 }
@@ -793,11 +770,8 @@ async fn help(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, season: i6
             Ok(store::load_season(conn, season)?.rules)
         })
         .await?;
-    let response = CreateInteractionResponseMessage::new()
-        .content(ui::help_text(rules))
-        .ephemeral(true);
-    i.create_response(&ctx.http, CreateInteractionResponse::Message(response))
-        .await?;
+    let response = Draft::new().content(ui::help_text(rules)).ephemeral();
+    i.create_response(ctx, Response::Message(response)).await?;
     Ok(())
 }
 
@@ -809,8 +783,7 @@ async fn rename(ctx: &BotCtx, i: &ComponentInteraction, guild: GuildId, round: i
         .call(move |conn| Ok(store::chosen_names(conn, guild.get())?.remove(&user)))
         .await?;
     let modal = ui::name_modal(round, current.as_deref());
-    i.create_response(&ctx.http, CreateInteractionResponse::Modal(modal))
-        .await?;
+    i.create_response(ctx, Response::Modal(modal)).await?;
     Ok(())
 }
 
@@ -838,11 +811,8 @@ async fn name_entered(
         Some(name) => format!("The wheel now calls you **{name}**."),
         None => "The wheel shows your Discord name again.".to_string(),
     };
-    let response = CreateInteractionResponseMessage::new()
-        .content(text)
-        .ephemeral(true);
-    i.create_response(&ctx.http, CreateInteractionResponse::Message(response))
-        .await?;
+    let response = Draft::new().content(text).ephemeral();
+    i.create_response(ctx, Response::Message(response)).await?;
 
     // Redraw the round the status message shows, if it's from the game being played.
     let index = game
@@ -873,8 +843,7 @@ async fn confirm_reset(
         return Err(user_error(SEASON_CHANGED));
     }
     let modal = ui::new_season_modal(keep_options, season);
-    i.create_response(&ctx.http, CreateInteractionResponse::Modal(modal))
-        .await?;
+    i.create_response(ctx, Response::Modal(modal)).await?;
     Ok(())
 }
 
@@ -931,7 +900,7 @@ async fn reset(
     info!("started season {number}");
     let text = format!("Started season {number}. Show it with /wheel status.");
     // Replaces the confirmation the modal came from, so its button is gone.
-    i.create_response(&ctx.http, update_text(text)).await?;
+    i.create_response(ctx, update_text(text)).await?;
     Ok(())
 }
 
@@ -949,12 +918,8 @@ fn claimed_text(game: &Game, user: u64) -> String {
 }
 
 /// Replaces a private menu with a line of text.
-fn update_text(text: String) -> CreateInteractionResponse {
-    CreateInteractionResponse::UpdateMessage(
-        CreateInteractionResponseMessage::new()
-            .content(text)
-            .components(Vec::new()),
-    )
+fn update_text(text: String) -> Response {
+    Response::UpdateMessage(Draft::new().content(text).components(Vec::new()))
 }
 
 /// Shows round `index` on the public status message after a change made from a private
@@ -978,13 +943,13 @@ async fn edit_status(
         return true;
     }
     let edit = match fresh_status(ctx, guild, game, index).await {
-        Ok(status) => status.edit(),
+        Ok(status) => status.update(),
         Err(err) => {
             warn!("couldn't draw the wheel status: {err:#}");
             return false;
         }
     };
-    match channel.edit_message(&ctx.http, message, edit).await {
+    match edit.edit(&ctx.http, channel, message).await {
         Ok(_) => true,
         Err(err) => {
             warn!("couldn't update the wheel status message: {err}");
@@ -995,12 +960,5 @@ async fn edit_status(
 
 /// The text typed into a modal (each wheel modal has one field).
 fn modal_value(i: &ModalInteraction) -> Option<String> {
-    i.data
-        .components
-        .iter()
-        .flat_map(|row| &row.components)
-        .find_map(|component| match component {
-            ActionRowComponent::InputText(input) => input.value.clone(),
-            _ => None,
-        })
+    i.first_value().map(str::to_string)
 }

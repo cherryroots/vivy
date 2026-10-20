@@ -17,7 +17,7 @@ pub(super) mod ui;
 
 use serde::Deserialize;
 
-pub use play::{on_component, who_said_it};
+pub use play::{WhoSaidIt, on_component, who_said_it};
 
 /// `[features.games.who_said_it]` settings.
 #[derive(Debug, Clone, Deserialize)]

@@ -52,7 +52,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-pub use commands::gameboy;
+pub use commands::{GameboyCommand, autocomplete, gameboy};
 
 /// `[features.games.gameboy]` settings.
 #[derive(Debug, Clone, Deserialize)]

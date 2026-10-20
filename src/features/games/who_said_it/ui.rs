@@ -1,9 +1,12 @@
 //! The game's messages: the question with its buttons, the answer, and the final scores.
 //! Everything here takes plain values and builds messages; nothing talks to Discord.
 
-use serenity::all::{ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateEmbedFooter};
+use twilight_model::channel::message::Embed;
+use twilight_model::channel::message::component::{ButtonStyle, Component};
+use twilight_util::builder::embed::{EmbedBuilder, EmbedFooterBuilder};
 
 use super::game::{Outcome, Quote, Round};
+use crate::util::discord::{button, buttons};
 use crate::util::shorten;
 
 /// Vivy's teal, down the side of every message.
@@ -32,24 +35,19 @@ pub fn question(
     total: usize,
     round: &Round,
     ends_at: i64,
-) -> (CreateEmbed, Vec<CreateActionRow>) {
+) -> (Embed, Vec<Component>) {
     let description = format!(
         "{}\n\nAnswers close <t:{ends_at}:R>.",
         quote_block(&round.quote.text)
     );
-    let buttons = round
-        .choices
-        .iter()
-        .map(|person| {
-            CreateButton::new(button_id(game, index, person.id))
-                .label(shorten(&person.name, 80))
-                .style(ButtonStyle::Secondary)
-        })
-        .collect();
-    (
-        embed(index, total, round, description),
-        vec![CreateActionRow::Buttons(buttons)],
-    )
+    let row = round.choices.iter().map(|person| {
+        button(
+            button_id(game, index, person.id),
+            shorten(&person.name, 80),
+            ButtonStyle::Secondary,
+        )
+    });
+    (embed(index, total, round, description), vec![buttons(row)])
 }
 
 /// The same question once it's over: the author's button turns green, every button stops
@@ -60,7 +58,7 @@ pub fn answer(
     total: usize,
     round: &Round,
     outcome: &Outcome,
-) -> (CreateEmbed, Vec<CreateActionRow>) {
+) -> (Embed, Vec<Component>) {
     let mut lines = vec![
         quote_block(&round.quote.text),
         String::new(),
@@ -85,29 +83,27 @@ pub fn answer(
     if outcome.right.is_empty() && outcome.wrong.is_empty() {
         lines.push("Nobody answered.".to_string());
     }
-    let buttons = round
-        .choices
-        .iter()
-        .map(|person| {
-            let style = if person.id == round.quote.author {
-                ButtonStyle::Success
-            } else {
-                ButtonStyle::Secondary
-            };
-            CreateButton::new(button_id(game, index, person.id))
-                .label(shorten(&person.name, 80))
-                .style(style)
-                .disabled(true)
-        })
-        .collect();
+    let row = round.choices.iter().map(|person| {
+        let style = if person.id == round.quote.author {
+            ButtonStyle::Success
+        } else {
+            ButtonStyle::Secondary
+        };
+        button(
+            button_id(game, index, person.id),
+            shorten(&person.name, 80),
+            style,
+        )
+        .disabled(true)
+    });
     (
         embed(index, total, round, lines.join("\n")),
-        vec![CreateActionRow::Buttons(buttons)],
+        vec![buttons(row)],
     )
 }
 
 /// The final scores, best first. `stopped` says the game ended early because nobody played.
-pub fn scores(standings: &[(String, u32)], stopped: bool) -> CreateEmbed {
+pub fn scores(standings: &[(String, u32)], stopped: bool) -> Embed {
     let medals = ["🥇", "🥈", "🥉"];
     let mut lines: Vec<String> = standings
         .iter()
@@ -127,18 +123,20 @@ pub fn scores(standings: &[(String, u32)], stopped: bool) -> CreateEmbed {
         lines.push(String::new());
         lines.push("Nobody answered twice in a row, so I stopped there.".to_string());
     }
-    CreateEmbed::new()
+    EmbedBuilder::new()
         .title("Who said it? Final scores")
         .description(lines.join("\n"))
         .color(COLOR)
+        .build()
 }
 
-fn embed(index: usize, total: usize, round: &Round, description: String) -> CreateEmbed {
-    CreateEmbed::new()
+fn embed(index: usize, total: usize, round: &Round, description: String) -> Embed {
+    EmbedBuilder::new()
         .title(format!("Who said it? {}/{total}", index + 1))
         .description(description)
-        .footer(CreateEmbedFooter::new(said(&round.quote)))
+        .footer(EmbedFooterBuilder::new(said(&round.quote)))
         .color(COLOR)
+        .build()
 }
 
 /// Where and when a quote was said: "Said in #general, March 2025", or "Said in March
