@@ -128,9 +128,44 @@ impl RomInfo {
     }
 }
 
+/// The registers that say how the picture is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Registers {
+    /// LCDC: screen on, which maps and tiles, window and sprites on.
+    pub lcdc: u8,
+    /// Where the background is scrolled to.
+    pub scx: u8,
+    pub scy: u8,
+    /// Where the window (a second layer, for menus and text boxes) starts on the screen.
+    pub wx: u8,
+    pub wy: u8,
+    /// The original Game Boy's palettes: which shade each colour number shows.
+    pub bgp: u8,
+    pub obp0: u8,
+    pub obp1: u8,
+}
+
+/// What a picture was drawn from, read as V-Blank starts, before the game changes any of it
+/// for the next frame. Stage 2's screen reading (`screen.rs`) works from this, not from the
+/// pixels.
+#[derive(Debug, Clone)]
+pub struct Video {
+    /// Video memory: tiles and the two tile maps. 8 KB, or 16 KB on a Game Boy Color, where
+    /// the second bank holds more tiles and each map cell's attributes.
+    pub vram: Vec<u8>,
+    /// The 40 sprites, 4 bytes each.
+    pub oam: Vec<u8>,
+    pub registers: Registers,
+    /// Whether the screen was drawn this frame (it's off between areas in many games).
+    pub drawn: bool,
+    pub color: bool,
+}
+
 pub struct Emulator {
     gb: GameBoy,
     info: RomInfo,
+    /// The last frame's video memory, read as its V-Blank started.
+    video: Video,
     /// Frames run since the ROM was loaded (or since the state was loaded).
     frames: u64,
     /// The buttons held down right now.
@@ -155,9 +190,17 @@ impl Emulator {
             .map_err(|e| anyhow!("loading the ROM: {e}"))?;
         // No sound: nobody hears it, and it's about a quarter of the work.
         gb.set_apu_enabled(false);
+        let video = Video {
+            vram: Vec::new(),
+            oam: Vec::new(),
+            registers: Registers::default(),
+            drawn: false,
+            color: info.color,
+        };
         Ok(Emulator {
             gb,
             info,
+            video,
             frames: 0,
             held: Vec::new(),
         })
@@ -178,8 +221,13 @@ impl Emulator {
     pub fn frame(&mut self) {
         let start = self.gb.ppu_frame();
         let mut cycles: u32 = 0;
+        let mut drawn = false;
         loop {
             cycles += u32::from(self.gb.clock());
+            if !drawn && self.gb.ppu_ly() == 144 {
+                self.read_video();
+                drawn = true;
+            }
             if self.gb.ppu_frame() != start {
                 break;
             }
@@ -189,7 +237,43 @@ impl Emulator {
                 break;
             }
         }
+        self.video.drawn = drawn;
         self.frames += 1;
+    }
+
+    fn read_video(&mut self) {
+        let registers = Registers {
+            lcdc: self.gb.read_memory(0xff40),
+            scy: self.gb.read_memory(0xff42),
+            scx: self.gb.read_memory(0xff43),
+            bgp: self.gb.read_memory(0xff47),
+            obp0: self.gb.read_memory(0xff48),
+            obp1: self.gb.read_memory(0xff49),
+            wy: self.gb.read_memory(0xff4a),
+            wx: self.gb.read_memory(0xff4b),
+        };
+        let ppu = self.gb.ppu_i();
+        let vram = if self.info.color {
+            ppu.vram_cgb()
+        } else {
+            ppu.vram_dmg()
+        };
+        // Copied into the buffers already there, so a frame allocates nothing.
+        self.video.vram.clear();
+        self.video.vram.extend_from_slice(vram);
+        self.video.oam.clear();
+        self.video.oam.extend_from_slice(&ppu.oam()[..160]);
+        self.video.registers = registers;
+    }
+
+    /// What the last frame was drawn from (see [`Video`]).
+    pub fn video(&self) -> &Video {
+        &self.video
+    }
+
+    /// One byte of the Game Boy's memory, as the game would read it.
+    pub fn read(&mut self, address: u16) -> u8 {
+        self.gb.read_memory(address)
     }
 
     /// Whether the game has the screen switched on (LCDC bit 7).
@@ -255,18 +339,13 @@ pub mod tests {
     use super::*;
     use crate::features::games::gameboy::test_rom;
 
-    // Only the tests use these for now; stage 2 reads game memory with `read`.
+    // Only the tests use this; the bot runs frames through `Machine`, which records them.
     impl Emulator {
         /// Runs this many frames.
         pub fn run(&mut self, frames: u32) {
             for _ in 0..frames {
                 self.frame();
             }
-        }
-
-        /// One byte of the Game Boy's memory, as the game would read it.
-        pub fn read(&mut self, address: u16) -> u8 {
-            self.gb.read_memory(address)
         }
     }
 
