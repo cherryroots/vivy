@@ -55,6 +55,7 @@ mod test_rom;
 #[cfg_attr(not(test), allow(dead_code))]
 mod text;
 mod walk;
+mod web;
 mod world;
 
 use std::path::PathBuf;
@@ -63,6 +64,20 @@ use serde::Deserialize;
 
 pub use commands::{GameboyCommand, autocomplete, gameboy};
 pub use playing::on_component;
+
+/// Starts the live web page, if `web_bind` is set.
+pub fn start(ctx: &crate::core::BotCtx) {
+    let settings = commands::bot_settings(ctx);
+    if settings.web_bind.is_empty() {
+        return;
+    }
+    let shutdown = ctx.shutdown.clone();
+    ctx.tasks.spawn(async move {
+        if let Err(err) = web::serve(&settings.web_bind, shutdown).await {
+            tracing::warn!("the Game Boy web page stopped: {err:#}");
+        }
+    });
+}
 
 /// `[features.games.gameboy]` settings.
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +97,10 @@ pub struct Settings {
     /// While she plays, the dashboard (a GIF of her play since the last update, and what
     /// she's doing) is updated this often, in seconds (at least 5; 0: only at the end).
     pub live_seconds: u64,
+    /// Where the live web page listens, like `127.0.0.1:8787` (empty: no page). See `web.rs`.
+    pub web_bind: String,
+    /// The page's public address, for the dashboard's Watch live button (empty: no button).
+    pub web_url: String,
 }
 
 impl Default for Settings {
@@ -93,6 +112,8 @@ impl Default for Settings {
             daily_usd: 1.5,
             free_tokens: 1_000_000,
             live_seconds: 5,
+            web_bind: String::new(),
+            web_url: String::new(),
         }
     }
 }

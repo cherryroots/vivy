@@ -773,6 +773,10 @@ async fn gate_session() {
         Spend::new(db.clone(), "gemini", 0.0),
     ];
     let (report, mut lines) = tokio::sync::mpsc::unbounded_channel();
+    // With VIVY_GB_WEB (like 127.0.0.1:8787) she plays on the bot's Game Boy, the way
+    // `/games gameboy play` does, and the live web page shows it.
+    let web = std::env::var("VIVY_GB_WEB").ok();
+    let (now, watching) = tokio::sync::watch::channel(super::session::Now::default());
     let session = Session {
         provider: provider.as_ref(),
         openai: Some(&strategist),
@@ -788,7 +792,7 @@ async fn gate_session() {
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
-        now: None,
+        now: web.is_some().then_some(now),
         timer: None,
     };
     // Each line as it comes, so a long run can be followed.
@@ -801,7 +805,26 @@ async fn gate_session() {
         all
     });
     let started = Instant::now();
-    let result = session::play(&session, &mut local, goal.as_deref()).await;
+    let result = match &web {
+        None => session::play(&session, &mut local, goal.as_deref()).await,
+        Some(bind) => {
+            use super::console::console;
+            let Local { mut machine, world } = local;
+            machine.world = world;
+            console().with(move |m| *m = Some(machine)).await.unwrap();
+            let stop = tokio_util::sync::CancellationToken::new();
+            let (bind, serving) = (bind.clone(), stop.clone());
+            tokio::spawn(async move { super::web::serve(&bind, serving).await.unwrap() });
+            tokio::spawn(super::web::follow(GAME.to_string(), watching));
+            let result =
+                session::play(&session, &mut super::player::OnConsole, goal.as_deref()).await;
+            let mut machine = console().with(|m| m.take()).await.unwrap().unwrap();
+            let world = std::mem::take(&mut machine.world);
+            local = Local { machine, world };
+            stop.cancel();
+            result
+        }
+    };
     drop(session);
     let all = printer.await.unwrap();
     save_screen(&mut local, folder.join("end.png"));

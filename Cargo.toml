@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
+axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.22"
 boytacean = "=0.13.2"
 chrono = "0.4.45"

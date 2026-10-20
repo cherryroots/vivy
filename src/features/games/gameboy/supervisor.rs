@@ -400,6 +400,7 @@ mod tests {
                     can_walk: false,
                     text: "Hello".to_string(),
                     facts: String::new(),
+                    grid: None,
                 },
                 words: vec!["Hello".to_string()],
             })

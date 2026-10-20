@@ -74,6 +74,20 @@ pub struct View {
     pub text: String,
     /// Facts read from the game's memory, as prompt lines (empty if there are none).
     pub facts: String,
+    /// How the map's steps sit on the screen, while the map is showing.
+    pub grid: Option<Grid>,
+}
+
+/// How the map's steps sit on the screen, for drawing what code sees over it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct Grid {
+    /// Pixels a step is across and down.
+    pub pixels: i32,
+    /// Steps across and down the screen.
+    pub across: i32,
+    pub down: i32,
+    /// The screen step she stands on, counted from the top left.
+    pub player: (i32, i32),
 }
 
 impl World {

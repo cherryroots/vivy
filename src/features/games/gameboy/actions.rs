@@ -549,6 +549,7 @@ mod tests {
             can_walk: true,
             text: String::new(),
             facts: String::new(),
+            grid: None,
         };
         let walk = |steps, exploring| {
             walked(Walked::NoWay, steps, view.clone(), (3, 1), exploring).outcome
@@ -577,6 +578,7 @@ mod tests {
             can_walk: true,
             text: String::new(),
             facts: "Badges: none".to_string(),
+            grid: None,
         };
         let walking = describe(&world, &view);
         assert!(walking.contains("Place: Pallet Town, standing at (1, 1)."));
