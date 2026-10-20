@@ -790,6 +790,7 @@ async fn gate_session() {
         report,
         now: None,
         timer: None,
+        hints: Default::default(),
     };
     // Each line as it comes, so a long run can be followed.
     let printer = tokio::spawn(async move {
