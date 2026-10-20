@@ -8,8 +8,8 @@
 //!   `on_reaction_add`.
 //! - Buttons, select menus and modals have IDs like `reminders:snooze:12:10`. The part before
 //!   the first `:` picks the feature; the rest is passed to it.
-//! - Slash commands are handled by poise. [`command_check`] applies the gates and
-//!   [`on_error`] reports errors.
+//! - Slash commands go to the feature that declared them (see `core::interaction`), only
+//!   where that feature is allowed. Autocomplete requests go to the command's suggester.
 //!
 //! Each handler runs in its own task, inside a tracing span that names the feature, server,
 //! channel and message. If it fails, the error is logged and the user gets a short reply.
@@ -18,46 +18,36 @@ use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use poise::{BoxFuture, CreateReply, FrameworkError};
-use serenity::all::{
-    Builder as _, ChannelId, ComponentInteraction, CreateAllowedMentions,
-    CreateInteractionResponse, CreateInteractionResponseFollowup, CreateInteractionResponseMessage,
-    CreateMessage, FullEvent, GuildId, Interaction, InteractionId, Message, MessageId,
-    MessageUpdateEvent, ModalInteraction, Reaction, UserId,
-};
 use tracing::{Instrument as _, Span, debug, error, info, info_span, warn};
+use twilight_model::application::interaction::{Interaction, InteractionData, InteractionType};
+use twilight_model::gateway::GatewayReaction;
+use twilight_model::gateway::event::Event;
 
 use super::errors::{is_user_error, user_error, user_message};
-use super::{BotCtx, Context, Error, Feature, Mention, Result};
+use super::interaction::{
+    self, CommandCtx, ComponentInteraction, FeatureCommand, ModalInteraction, Respond as _,
+    Response,
+};
+use super::{BotCtx, Error, Feature, Mention, Result};
+use crate::util::discord::{
+    ChannelId, Draft, GuildId, InteractionId, Message, MessageId, UserId, mentions_user,
+    no_pings,
+};
 
-/// Called by poise for every gateway event.
-pub async fn handle_event(event: &FullEvent, bot: &BotCtx) -> Result<()> {
+/// Called for every gateway event, after the cache has seen it.
+pub async fn handle_event(bot: &BotCtx, event: Event) {
     match event {
-        FullEvent::Message { new_message } => on_message(bot, new_message),
-        FullEvent::ReactionAdd { add_reaction } => on_reaction_add(bot, add_reaction),
-        FullEvent::MessageUpdate { event, .. } => on_message_edit(bot, event),
-        FullEvent::MessageDelete {
-            channel_id,
-            deleted_message_id,
-            guild_id,
-        } => on_messages_deleted(bot, *guild_id, *channel_id, vec![*deleted_message_id]),
-        FullEvent::MessageDeleteBulk {
-            channel_id,
-            multiple_deleted_messages_ids,
-            guild_id,
-        } => on_messages_deleted(
-            bot,
-            *guild_id,
-            *channel_id,
-            multiple_deleted_messages_ids.clone(),
-        ),
-        FullEvent::InteractionCreate { interaction } => match interaction {
-            Interaction::Component(i) => on_component(bot, i).await,
-            Interaction::Modal(i) => on_modal(bot, i).await,
-            // Slash commands and autocomplete are poise's.
-            _ => {}
-        },
-        FullEvent::Ready { .. } => {
+        Event::MessageCreate(msg) => on_message(bot, &msg.0),
+        Event::ReactionAdd(reaction) => on_reaction_add(bot, &reaction.0),
+        Event::MessageUpdate(msg) => on_message_edit(bot, msg.0),
+        Event::MessageDelete(event) => {
+            on_messages_deleted(bot, event.guild_id, event.channel_id, vec![event.id])
+        }
+        Event::MessageDeleteBulk(event) => {
+            on_messages_deleted(bot, event.guild_id, event.channel_id, event.ids)
+        }
+        Event::InteractionCreate(interaction) => on_interaction(bot, interaction.0).await,
+        Event::Ready(_) => {
             // The first Ready is the start itself; later ones are full reconnects.
             static SEEN: AtomicBool = AtomicBool::new(false);
             if SEEN.swap(true, Ordering::Relaxed) {
@@ -70,10 +60,9 @@ pub async fn handle_event(event: &FullEvent, bot: &BotCtx) -> Result<()> {
                 }
             }
         }
-        FullEvent::Resume { .. } => info!(target: "lifecycle", "🔌 Reconnected to Discord"),
+        Event::Resumed => info!(target: "lifecycle", "🔌 Reconnected to Discord"),
         _ => {}
     }
-    Ok(())
 }
 
 fn on_message(bot: &BotCtx, msg: &Message) {
@@ -94,7 +83,7 @@ fn on_message(bot: &BotCtx, msg: &Message) {
         );
     }
 
-    if !msg.mentions_user_id(bot.bot_id) {
+    if !mentions_user(&msg, bot.bot_id) {
         return;
     }
     let text = strip_mentions(&msg.content, bot.bot_id);
@@ -139,8 +128,8 @@ fn on_message(bot: &BotCtx, msg: &Message) {
     );
 }
 
-fn on_reaction_add(bot: &BotCtx, reaction: &Reaction) {
-    if reaction.user_id == Some(bot.bot_id) {
+fn on_reaction_add(bot: &BotCtx, reaction: &GatewayReaction) {
+    if reaction.user_id == bot.bot_id {
         return;
     }
     let reaction = Arc::new(reaction.clone());
@@ -151,7 +140,7 @@ fn on_reaction_add(bot: &BotCtx, reaction: &Reaction) {
             guild = reaction.guild_id.map(|g| g.get()),
             channel = reaction.channel_id.get(),
             message_id = reaction.message_id.get(),
-            user = reaction.user_id.map(|u| u.get()),
+            user = reaction.user_id.get(),
         );
         let (bot2, reaction2) = (bot.clone(), reaction.clone());
         run(bot, feature.name(), span, ReplyTo::Nobody, async move {
@@ -160,12 +149,12 @@ fn on_reaction_add(bot: &BotCtx, reaction: &Reaction) {
     }
 }
 
-fn on_message_edit(bot: &BotCtx, event: &MessageUpdateEvent) {
+fn on_message_edit(bot: &BotCtx, event: Message) {
     // The bot's own edits (streaming answers) come here too; nobody needs those.
-    if event.author.as_ref().is_some_and(|a| a.bot) {
+    if event.author.bot {
         return;
     }
-    let event = Arc::new(event.clone());
+    let event = Arc::new(event);
     for feature in enabled_features(bot, event.guild_id, event.channel_id) {
         let span = info_span!(
             "message_edit",
@@ -205,12 +194,117 @@ fn on_messages_deleted(
     }
 }
 
-async fn on_component(bot: &BotCtx, i: &ComponentInteraction) {
+async fn on_interaction(bot: &BotCtx, interaction: Interaction) {
+    match (&interaction.kind, &interaction.data) {
+        (InteractionType::ApplicationCommand, Some(InteractionData::ApplicationCommand(_))) => {
+            on_command(bot, interaction)
+        }
+        (
+            InteractionType::ApplicationCommandAutocomplete,
+            Some(InteractionData::ApplicationCommand(_)),
+        ) => on_autocomplete(bot, interaction),
+        (_, Some(InteractionData::MessageComponent(_))) => {
+            if let Some(i) = ComponentInteraction::from_interaction(&interaction) {
+                on_component(bot, i).await;
+            }
+        }
+        (_, Some(InteractionData::ModalSubmit(_))) => {
+            if let Some(i) = ModalInteraction::from_interaction(&interaction) {
+                on_modal(bot, i).await;
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The feature's command with this name.
+fn find_command<'a>(bot: &'a BotCtx, name: &str) -> Option<&'a FeatureCommand> {
+    bot.commands
+        .iter()
+        .find(|command| command.command.definition.name == name)
+}
+
+fn on_command(bot: &BotCtx, interaction: Interaction) {
+    let Some(InteractionData::ApplicationCommand(data)) = interaction.data.clone() else {
+        return;
+    };
+    let ctx = CommandCtx::new(bot.clone(), Arc::new(interaction), Arc::new(*data));
+    let Some(command) = find_command(bot, &ctx.data.name) else {
+        warn!("no command is called /{}", ctx.data.name);
+        return;
+    };
+    let feature = command.feature;
+    let run = command.command.run;
+    let span = info_span!(
+        "command",
+        feature,
+        command = %ctx.data.name,
+        guild = ctx.guild_id().map(|g| g.get()),
+        channel = ctx.channel_id().get(),
+        user = ctx.author_id().get(),
+    );
+    let bot2 = bot.clone();
+    bot.tasks.spawn(
+        async move {
+            // A command is only allowed where its feature is.
+            if !bot2.allows(feature, ctx.guild_id(), ctx.channel_id()) {
+                let draft = Draft::new().content(turned_off(feature)).ephemeral();
+                if let Err(err) = ctx.send(draft).await {
+                    warn!("couldn't say the command is turned off: {err:#}");
+                }
+                return;
+            }
+            if let Err(err) = run(ctx.clone()).await {
+                let command = &ctx.data.name;
+                if is_user_error(&err) {
+                    debug!("/{command}: told the user: {err}");
+                } else {
+                    error!("/{command} failed: {err:#}");
+                }
+                let draft = Draft::new().content(user_message(&err)).ephemeral();
+                if let Err(err) = ctx.send(draft).await {
+                    warn!("couldn't tell the user what went wrong: {err:#}");
+                }
+            }
+        }
+        .instrument(span),
+    );
+}
+
+fn on_autocomplete(bot: &BotCtx, interaction: Interaction) {
+    let Some(InteractionData::ApplicationCommand(data)) = interaction.data.clone() else {
+        return;
+    };
+    let Some(command) = find_command(bot, &data.name) else {
+        return;
+    };
+    let (Some(suggest), Some(typed)) = (command.command.autocomplete, interaction::typed(&data))
+    else {
+        return;
+    };
+    let interaction = Arc::new(interaction);
+    let ctx = CommandCtx::new(bot.clone(), interaction.clone(), Arc::new(*data));
+    let bot2 = bot.clone();
+    bot.tasks.spawn(async move {
+        let choices = match suggest(ctx, typed).await {
+            Ok(choices) => choices,
+            Err(err) => {
+                warn!("autocomplete failed: {err:#}");
+                Vec::new()
+            }
+        };
+        if let Err(err) = interaction::suggest(&bot2, &interaction, choices).await {
+            debug!("couldn't send suggestions: {err:#}");
+        }
+    });
+}
+
+async fn on_component(bot: &BotCtx, i: ComponentInteraction) {
     let reply = ReplyTo::Interaction {
         id: i.id,
         token: i.token.clone(),
     };
-    let Some((feature, action)) = route_custom_id(bot, &i.data.custom_id) else {
+    let Some((feature, action)) = route_custom_id(bot, &i.custom_id) else {
         // Most likely a button on a message from voltgpt.
         tell_user(bot, &reply, STALE).await;
         return;
@@ -226,20 +320,20 @@ async fn on_component(bot: &BotCtx, i: &ComponentInteraction) {
         channel = i.channel_id.get(),
         message_id = i.message.id.get(),
         user = i.user.id.get(),
-        custom_id = %i.data.custom_id,
+        custom_id = %i.custom_id,
     );
-    let (bot2, i2, action) = (bot.clone(), i.clone(), action.to_string());
+    let (bot2, action) = (bot.clone(), action.to_string());
     run(bot, feature.name(), span, reply, async move {
-        feature.on_component(&bot2, &i2, &action).await
+        feature.on_component(&bot2, &i, &action).await
     });
 }
 
-async fn on_modal(bot: &BotCtx, i: &ModalInteraction) {
+async fn on_modal(bot: &BotCtx, i: ModalInteraction) {
     let reply = ReplyTo::Interaction {
         id: i.id,
         token: i.token.clone(),
     };
-    let Some((feature, action)) = route_custom_id(bot, &i.data.custom_id) else {
+    let Some((feature, action)) = route_custom_id(bot, &i.custom_id) else {
         tell_user(bot, &reply, STALE).await;
         return;
     };
@@ -253,11 +347,11 @@ async fn on_modal(bot: &BotCtx, i: &ModalInteraction) {
         guild = i.guild_id.map(|g| g.get()),
         channel = i.channel_id.get(),
         user = i.user.id.get(),
-        custom_id = %i.data.custom_id,
+        custom_id = %i.custom_id,
     );
-    let (bot2, i2, action) = (bot.clone(), i.clone(), action.to_string());
+    let (bot2, action) = (bot.clone(), action.to_string());
     run(bot, feature.name(), span, reply, async move {
-        feature.on_modal(&bot2, &i2, &action).await
+        feature.on_modal(&bot2, &i, &action).await
     });
 }
 
@@ -346,44 +440,36 @@ async fn report(bot: &BotCtx, feature: &str, reply: &ReplyTo, err: &Error) {
 /// Tells the user something: privately (ephemeral) for interactions, as a reply for
 /// messages.
 async fn tell_user(bot: &BotCtx, reply: &ReplyTo, text: &str) {
-    let http = &bot.http;
-    let message = || {
-        CreateInteractionResponseMessage::new()
-            .content(text)
-            .ephemeral(true)
-    };
-    let followup = || {
-        CreateInteractionResponseFollowup::new()
-            .content(text)
-            .ephemeral(true)
-    };
     // An interaction can only be responded to once. If the handler already did, follow up.
     let result = match reply {
         ReplyTo::Nobody => return,
-        ReplyTo::Message(channel, id) => channel
-            .send_message(
-                http,
-                CreateMessage::new()
-                    .content(text)
-                    .reference_message((*channel, *id))
-                    .allowed_mentions(CreateAllowedMentions::new()),
-            )
+        ReplyTo::Message(channel, id) => Draft::new()
+            .content(text)
+            .reply_to(*id)
+            .allowed_mentions(no_pings())
+            .send(&bot.http, *channel)
             .await
             .map(|_| ()),
-        // The same as `interaction.create_response(..)` and `.create_followup(..)`, which
-        // only need the interaction's ID and token.
         ReplyTo::Interaction { id, token } => {
-            match CreateInteractionResponse::Message(message())
-                .execute(http, (*id, token))
-                .await
-            {
+            let handle = Handle(*id, token);
+            let draft = Draft::new().content(text).ephemeral();
+            match handle.create_response(bot, Response::Message(draft.clone())).await {
                 Ok(()) => Ok(()),
-                Err(_) => followup().execute(http, (None, token)).await.map(|_| ()),
+                Err(_) => handle.create_followup(bot, draft).await.map(|_| ()),
             }
         }
     };
     if let Err(err) = result {
-        warn!("couldn't tell the user what went wrong: {err}");
+        warn!("couldn't tell the user what went wrong: {err:#}");
+    }
+}
+
+/// An interaction known only by its ID and token, which is all a response needs.
+struct Handle<'a>(InteractionId, &'a str);
+
+impl super::interaction::Respond for Handle<'_> {
+    fn handle(&self) -> (InteractionId, &str) {
+        (self.0, self.1)
     }
 }
 
@@ -473,62 +559,6 @@ fn strip_prefix_word<'t>(text: &'t str, prefix: &str) -> Option<&'t str> {
     } else {
         None
     }
-}
-
-// ---------------------------------------------------------------------------------------
-// poise hooks
-// ---------------------------------------------------------------------------------------
-
-/// Runs before every slash command: a command is only allowed where its feature is.
-pub fn command_check(ctx: Context<'_>) -> BoxFuture<'_, Result<bool>> {
-    Box::pin(async move {
-        let Some(feature) = ctx.command().category.as_deref() else {
-            return Ok(true);
-        };
-        Ok(ctx.data().allows(feature, ctx.guild_id(), ctx.channel_id()))
-    })
-}
-
-/// Reports errors from slash commands the same way as from other handlers.
-pub fn on_error(error: FrameworkError<'_, super::BotCtx, Error>) -> BoxFuture<'_, ()> {
-    Box::pin(async move {
-        match error {
-            FrameworkError::Command { error, ctx, .. } => {
-                let feature = ctx.command().category.as_deref().unwrap_or("core");
-                let command = &ctx.command().name;
-                if is_user_error(&error) {
-                    debug!(feature, "/{command}: told the user: {error}");
-                } else {
-                    error!(
-                        feature,
-                        user = ctx.author().id.get(),
-                        "/{command} failed: {error:#}"
-                    );
-                }
-                let reply = CreateReply::default()
-                    .content(user_message(&error))
-                    .ephemeral(true);
-                if let Err(err) = ctx.send(reply).await {
-                    warn!("couldn't tell the user what went wrong: {err}");
-                }
-            }
-            FrameworkError::CommandCheckFailed { ctx, .. } => {
-                let feature = ctx.command().category.as_deref().unwrap_or("bot");
-                let _ = ctx
-                    .send(
-                        CreateReply::default()
-                            .content(turned_off(feature))
-                            .ephemeral(true),
-                    )
-                    .await;
-            }
-            other => {
-                if let Err(err) = poise::builtins::on_error(other).await {
-                    warn!("error while handling a poise error: {err}");
-                }
-            }
-        }
-    })
 }
 
 #[cfg(test)]

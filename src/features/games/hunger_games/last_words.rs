@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use chrono::{Duration, Utc};
 use serenity::all::{GuildId, Message};
-use serenity::futures::future::join_all;
+use futures::future::join_all;
 use tracing::{debug, info, warn};
 
 use crate::core::BotCtx;

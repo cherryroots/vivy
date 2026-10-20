@@ -12,7 +12,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use serenity::all::{ChannelId, HttpError, UserId};
+use crate::util::discord::{ChannelId, UserId, error_code, error_status};
 use tokio::sync::Notify;
 use tracing::{Instrument as _, error, info, info_span, warn};
 
@@ -88,8 +88,8 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
         .await?
         .unwrap_or(Tz::UTC);
 
-    let mut sent = channel
-        .send_message(&ctx.http, ui::fired_message(&reminder, now, true, zone))
+    let mut sent = ui::fired_message(&reminder, now, true, zone)
+        .send(&ctx.http, channel)
         .await;
     // If the images were the problem (too big for the server now, say), send it without
     // them. The reminder links to the original message, which still has them.
@@ -101,8 +101,8 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
             reminder = id,
             "couldn't send a reminder with its images, sending it without: {err}"
         );
-        sent = channel
-            .send_message(&ctx.http, ui::fired_message(&reminder, now, false, zone))
+        sent = ui::fired_message(&reminder, now, false, zone)
+            .send(&ctx.http, channel)
             .await;
     }
 
@@ -196,13 +196,8 @@ fn next_time(reminder: &Reminder, now: i64) -> Option<i64> {
 
 /// Whether Discord refused the message for being too big: HTTP 413, or Discord's error
 /// 40005 ("Request entity too large"). Other errors, like a timeout, aren't the images' fault.
-fn too_big(err: &serenity::Error) -> bool {
-    match err {
-        serenity::Error::Http(HttpError::UnsuccessfulRequest(response)) => {
-            response.status_code.as_u16() == 413 || response.error.code == 40005
-        }
-        _ => false,
-    }
+fn too_big(err: &anyhow::Error) -> bool {
+    error_status(err) == Some(413) || error_code(err) == Some(40005)
 }
 
 /// How long to sleep when the next reminder is at `next`. At most an hour, so delivered

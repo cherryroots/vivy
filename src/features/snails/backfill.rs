@@ -19,7 +19,7 @@ use serenity::all::{
     ChannelId, ChannelType, GetMessages, GuildChannel, GuildId, HttpError, LightMethod, Request,
     Route, ThreadsData,
 };
-use serenity::futures::stream::{self, StreamExt};
+use futures::stream::{self, StreamExt};
 use tracing::{debug, info, warn};
 
 use super::index;

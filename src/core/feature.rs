@@ -8,14 +8,13 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use serenity::all::{
-    ChannelId, ComponentInteraction, GuildId, Message, MessageId, MessageUpdateEvent,
-    ModalInteraction, Reaction, UserId,
-};
+use twilight_model::gateway::GatewayReaction;
 
 use super::config::Config;
-use super::{BotCtx, BotEvent, Command, Result};
+use super::interaction::{Command, ComponentInteraction, ModalInteraction};
+use super::{BotCtx, BotEvent, Result};
 use crate::ai::{ToolDef, ToolReply};
+use crate::util::discord::{ChannelId, GuildId, Message, MessageId, UserId};
 
 #[async_trait]
 pub trait Feature: Send + Sync + 'static {
@@ -134,13 +133,13 @@ pub trait Feature: Send + Sync + 'static {
         Ok(())
     }
 
-    async fn on_reaction_add(&self, _ctx: &BotCtx, _reaction: &Reaction) -> Result<()> {
+    async fn on_reaction_add(&self, _ctx: &BotCtx, _reaction: &GatewayReaction) -> Result<()> {
         Ok(())
     }
 
-    /// A message was edited, or Discord added a link preview to it later. The event only
-    /// holds the fields that changed; fetch the message for the rest.
-    async fn on_message_edit(&self, _ctx: &BotCtx, _event: &MessageUpdateEvent) -> Result<()> {
+    /// A message was edited, or Discord added a link preview to it later. Discord sends the
+    /// whole message as it is now.
+    async fn on_message_edit(&self, _ctx: &BotCtx, _msg: &Message) -> Result<()> {
         Ok(())
     }
 
@@ -261,7 +260,7 @@ impl Panel {
     /// The box about the bot herself ("Vivy's mind"), which several features add rows to.
     pub fn about_bot(ctx: &BotCtx, rows: Vec<Stat>) -> Panel {
         Panel {
-            title: format!("{}'s mind", ctx.cache.current_user().name),
+            title: format!("{}'s mind", ctx.bot_name),
             rows,
             picture: None,
         }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::Context as _;
 use serde_json::{Value, json};
 use serenity::all::{Message, UserId, content_safe};
-use serenity::futures::future::join_all;
+use futures::future::join_all;
 use tracing::warn;
 
 use super::store::{self, StoredPart, Turn};

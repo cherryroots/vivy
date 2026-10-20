@@ -2,7 +2,7 @@
 
 use chrono_tz::Tz;
 use rusqlite::{Connection, OptionalExtension};
-use serenity::all::UserId;
+use crate::util::discord::UserId;
 
 use super::db::Db;
 

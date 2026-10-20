@@ -3,18 +3,20 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use serenity::all::{
-    ActivityData, Cache, ChannelId, GuildId, Http, MembershipState, ShardManager, UserId,
-};
 use tokio::sync::broadcast;
+use twilight_cache_inmemory::InMemoryCache;
+use twilight_model::oauth::team::TeamMembershipState;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::warn;
 
 use super::config::{Config, Gate};
 use super::db::Db;
+use super::gateway::Gateway;
+use super::interaction::FeatureCommand;
 use super::{BotEvent, Feature, Timers};
 use crate::ai::Ai;
+use crate::util::discord::{ApplicationId, ChannelId, GuildId, Http, UserId};
 
 /// Cheap to clone: every field is a handle to something shared.
 #[derive(Clone)]
@@ -22,9 +24,13 @@ pub struct BotCtx {
     /// Discord's REST API: send messages, edit them, respond to interactions.
     pub http: Arc<Http>,
     /// What the gateway has told us about servers, channels and users.
-    pub cache: Arc<Cache>,
-    /// The gateway connections, for latency and shutdown.
-    pub shard_manager: Arc<ShardManager>,
+    pub cache: Arc<InMemoryCache>,
+    /// The gateway connections, for the status line and latency.
+    pub gateway: Arc<Gateway>,
+    /// The bot's Discord application, which interactions are answered as.
+    pub application_id: ApplicationId,
+    /// Every feature's slash commands.
+    pub commands: Arc<Vec<FeatureCommand>>,
     pub db: Db,
     pub config: Arc<Config>,
     /// AI models (chat, and one-off calls any feature can make).
@@ -42,6 +48,8 @@ pub struct BotCtx {
     /// Every feature, in the order of `features::all()`.
     pub features: Arc<Vec<Arc<dyn Feature>>>,
     pub bot_id: UserId,
+    /// The bot's username, like "Vivy".
+    pub bot_name: String,
     /// Who owns the bot's Discord application: its owner, or the members of the team that
     /// owns it. Read once at startup with [`app_owners`].
     pub app_owners: Arc<Vec<UserId>>,
@@ -68,27 +76,32 @@ impl BotCtx {
 
     /// The channel a thread is in, or `None` when `channel` isn't a thread the cache knows.
     pub fn thread_parent(&self, guild: Option<GuildId>, channel: ChannelId) -> Option<ChannelId> {
-        let guild = self.cache.guild(guild?)?;
-        let thread = guild.threads.iter().find(|t| t.id == channel)?;
-        thread.parent_id
+        guild?;
+        let channel = self.cache.channel(channel)?;
+        if !channel.kind.is_thread() {
+            return None;
+        }
+        channel.parent_id
     }
 
     /// A channel's or thread's name, from the cache. `None` when the cache doesn't know it.
     pub fn channel_name(&self, guild: GuildId, channel: ChannelId) -> Option<String> {
-        let guild = self.cache.guild(guild)?;
-        guild
-            .channels
-            .get(&channel)
-            .or_else(|| guild.threads.iter().find(|t| t.id == channel))
-            .map(|c| c.name.clone())
+        let channel = self.cache.channel(channel)?;
+        if channel.guild_id != Some(guild) {
+            return None;
+        }
+        channel.name.clone()
     }
 
     /// Sets the bot's custom status, the line under its name, on every gateway connection.
     pub async fn set_status(&self, text: &str) {
-        let activity = ActivityData::custom(text);
-        for runner in self.shard_manager.runners.lock().await.values() {
-            runner.runner_tx.set_activity(Some(activity.clone()));
-        }
+        self.gateway.set_status(text);
+    }
+
+    /// The bot's token as Discord's API wants it ("Bot ..."), for calls Twilight doesn't
+    /// have, like message search.
+    pub fn token(&self) -> &str {
+        self.http.token().unwrap_or_default()
     }
 
     /// Whether the user is listed in `admins` in config.toml.
@@ -107,8 +120,14 @@ impl BotCtx {
 /// Who owns the bot's Discord application, asked from Discord: the owner, or the team's
 /// members when a team owns it. Empty, with a warning, when Discord can't be asked.
 pub async fn app_owners(http: &Http) -> Vec<UserId> {
-    let info = match http.get_current_application_info().await {
-        Ok(info) => info,
+    let info = match http.current_user_application().await {
+        Ok(response) => match response.model().await {
+            Ok(info) => info,
+            Err(err) => {
+                warn!("couldn't read who owns the bot's Discord application: {err}");
+                return Vec::new();
+            }
+        },
         Err(err) => {
             warn!("couldn't read who owns the bot's Discord application: {err}");
             return Vec::new();
@@ -120,7 +139,7 @@ pub async fn app_owners(http: &Http) -> Vec<UserId> {
         Some(team) => team
             .members
             .iter()
-            .filter(|member| member.membership_state == MembershipState::Accepted)
+            .filter(|member| member.membership_state == TeamMembershipState::Accepted)
             .map(|member| member.user.id)
             .collect(),
         None => info.owner.map(|owner| owner.id).into_iter().collect(),

@@ -35,7 +35,7 @@ use chrono::{DateTime, Utc};
 use image::imageops::FilterType;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::futures::future::join_all;
+use futures::future::join_all;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 

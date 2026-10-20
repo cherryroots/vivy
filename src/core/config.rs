@@ -14,7 +14,7 @@ use std::sync::{LazyLock, Mutex};
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use serenity::all::{ChannelId, GuildId};
+use crate::util::discord::{ChannelId, GuildId};
 use tracing::warn;
 
 #[derive(Debug, Deserialize)]

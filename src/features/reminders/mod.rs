@@ -24,12 +24,8 @@ use anyhow::{Context as _, bail};
 use async_trait::async_trait;
 use chrono::Utc;
 use chrono_tz::Tz;
-use serenity::all::{
-    ActionRowComponent, ComponentInteraction, ComponentInteractionDataKind, CreateAllowedMentions,
-    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, Message,
-    ModalInteraction, PremiumTier, UserId,
-};
 use tokio::sync::Notify;
+use twilight_model::guild::PremiumTier;
 use tracing::{info, warn};
 
 use self::parse::{Repeat, When};
@@ -37,8 +33,11 @@ use self::store::{Image, NewReminder};
 use self::ui::Action;
 use crate::ai::ToolDef;
 use crate::core::{
-    Asker, BotCtx, Command, Feature, LegacyImport, Mention, Result, Stat, settings, user_error,
+    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, Mention,
+    ModalInteraction, Respond as _, Response, Result, Stat, settings, user_error,
 };
+use crate::util::discord::{Draft, Message, UserId, no_pings};
+use crate::util::media::download;
 
 #[derive(Default)]
 pub struct Reminders {
@@ -145,7 +144,7 @@ impl Feature for Reminders {
         // Only keep what the bot can upload again in this server, which depends on its boosts.
         let tier = msg
             .guild_id
-            .and_then(|id| ctx.cache.guild(id).map(|guild| guild.premium_tier));
+            .and_then(|id| ctx.cache.guild(id).map(|guild| guild.premium_tier()));
         let (images, skipped) = download_images(msg, upload_limit(tier)).await;
         let new = NewReminder {
             user_id: msg.author.id.get(),
@@ -181,7 +180,7 @@ impl Feature for Reminders {
         let repeat_text = repeat
             .as_deref()
             .map(|saved| parse::repeat_for_display(saved, home));
-        let reply = CreateMessage::new()
+        let reply = Draft::new()
             .content(ui::confirmation(
                 fire_at,
                 &parsed.message,
@@ -191,9 +190,9 @@ impl Feature for Reminders {
                 &skipped,
             ))
             .components(vec![ui::cancel_button(id)])
-            .reference_message(msg)
-            .allowed_mentions(CreateAllowedMentions::new());
-        msg.channel_id.send_message(&ctx.http, reply).await?;
+            .reply_to(msg.id)
+            .allowed_mentions(no_pings());
+        reply.send(&ctx.http, msg.channel_id).await?;
         Ok(Mention::Handled)
     }
 
@@ -209,18 +208,15 @@ impl Feature for Reminders {
             Some(Action::Snooze { id, minutes }) => {
                 let until = Utc::now().timestamp() + minutes * 60;
                 self.snooze(ctx, i.user.id, id, until).await?;
-                i.create_response(&ctx.http, snoozed_update(&i.message.content, until))
+                i.create_response(ctx, snoozed_update(&i.message.content, until))
                     .await?;
                 Ok(())
             }
             Some(Action::AskSnooze { id }) => {
                 // Checked before the modal opens, so nobody types a time for nothing.
                 self.snoozable(ctx, i.user.id, id).await?;
-                i.create_response(
-                    &ctx.http,
-                    CreateInteractionResponse::Modal(ui::snooze_modal(id)),
-                )
-                .await?;
+                i.create_response(ctx, Response::Modal(ui::snooze_modal(id)))
+                    .await?;
                 Ok(())
             }
             Some(Action::SnoozeTo { .. }) | None => bail!("unknown action {action:?}"),
@@ -232,7 +228,7 @@ impl Feature for Reminders {
             bail!("unknown modal {action:?}");
         };
         // The typed time, read like the time of a reminder, in the user's timezone.
-        let typed = modal_value(i).unwrap_or_default();
+        let typed = i.first_value().unwrap_or_default();
         let when = parse::parse_when(&typed).map_err(user_error)?;
         if matches!(when, When::Every(_)) {
             return Err(user_error(
@@ -245,7 +241,7 @@ impl Feature for Reminders {
             .timestamp();
         self.snooze(ctx, i.user.id, id, until).await?;
         let original = i.message.as_ref().map_or("", |m| m.content.as_str());
-        i.create_response(&ctx.http, snoozed_update(original, until))
+        i.create_response(ctx, snoozed_update(original, until))
             .await?;
         Ok(())
     }
@@ -266,10 +262,9 @@ impl Reminders {
 
     /// The `/reminders` delete menu. The list stays open, reloaded, for the next delete.
     async fn delete(&self, ctx: &BotCtx, i: &ComponentInteraction) -> Result<()> {
-        let ComponentInteractionDataKind::StringSelect { values } = &i.data.kind else {
-            bail!("the delete menu sent no values");
-        };
-        let id: i64 = values.first().context("no reminder selected")?.parse()?;
+        let id: i64 = i
+            .values
+            .first().context("no reminder selected")?.parse()?;
         let deleted = self.remove(ctx, id, i.user.id).await?;
         let note = if deleted {
             "✅ Reminder deleted."
@@ -285,14 +280,9 @@ impl Reminders {
             .await?
             .unwrap_or(Tz::UTC);
         let (text, menu) = ui::list_message(&list, Some(note), zone);
-        let response = CreateInteractionResponseMessage::new()
-            .content(text)
-            .components(menu);
-        i.create_response(
-            &ctx.http,
-            CreateInteractionResponse::UpdateMessage(response),
-        )
-        .await?;
+        let response = Draft::new().content(text).components(menu);
+        i.create_response(ctx, Response::UpdateMessage(response))
+            .await?;
         Ok(())
     }
 
@@ -314,14 +304,11 @@ impl Reminders {
             ));
         }
         info!(reminder = id, "reminder cancelled");
-        let response = CreateInteractionResponseMessage::new()
+        let response = Draft::new()
             .content(ui::cancelled(&i.message.content))
             .components(Vec::new());
-        i.create_response(
-            &ctx.http,
-            CreateInteractionResponse::UpdateMessage(response),
-        )
-        .await?;
+        i.create_response(ctx, Response::UpdateMessage(response))
+            .await?;
         Ok(())
     }
 
@@ -361,29 +348,17 @@ impl Reminders {
 }
 
 /// The delivered reminder after a snooze: its buttons swapped for a "snoozed until" line.
-fn snoozed_update(original: &str, until: i64) -> CreateInteractionResponse {
-    let response = CreateInteractionResponseMessage::new()
+fn snoozed_update(original: &str, until: i64) -> Response {
+    let response = Draft::new()
         .content(ui::snoozed(original, until))
         .components(Vec::new());
-    CreateInteractionResponse::UpdateMessage(response)
-}
-
-/// The text typed into a modal (each reminder modal has one field).
-fn modal_value(i: &ModalInteraction) -> Option<String> {
-    i.data
-        .components
-        .iter()
-        .flat_map(|row| &row.components)
-        .find_map(|component| match component {
-            ActionRowComponent::InputText(input) => input.value.clone(),
-            _ => None,
-        })
+    Response::UpdateMessage(response)
 }
 
 /// The biggest file the bot can upload in a server with this boost level, in bytes.
 /// DMs (`None`) get the base limit.
-fn upload_limit(tier: Option<PremiumTier>) -> u32 {
-    const MIB: u32 = 1024 * 1024;
+fn upload_limit(tier: Option<PremiumTier>) -> u64 {
+    const MIB: u64 = 1024 * 1024;
     match tier {
         Some(PremiumTier::Tier2) => 50 * MIB,
         Some(PremiumTier::Tier3) => 100 * MIB,
@@ -394,7 +369,7 @@ fn upload_limit(tier: Option<PremiumTier>) -> u32 {
 
 /// Downloads the images (and videos) attached to the message. Returns them and the names
 /// of the ones that couldn't be kept: bigger than `max_bytes`, or the download failed.
-async fn download_images(msg: &Message, max_bytes: u32) -> (Vec<Image>, Vec<String>) {
+async fn download_images(msg: &Message, max_bytes: u64) -> (Vec<Image>, Vec<String>) {
     let mut images = Vec::new();
     let mut skipped = Vec::new();
     // Discord only sets a width on images and videos.
@@ -403,13 +378,13 @@ async fn download_images(msg: &Message, max_bytes: u32) -> (Vec<Image>, Vec<Stri
             skipped.push(attachment.filename.clone());
             continue;
         }
-        match attachment.download().await {
+        match download(&attachment.url, max_bytes as usize).await {
             Ok(data) => images.push(Image {
                 filename: attachment.filename.clone(),
                 data,
             }),
             Err(err) => {
-                warn!("couldn't download {}: {err}", attachment.filename);
+                warn!("couldn't download {}: {err:#}", attachment.filename);
                 skipped.push(attachment.filename.clone());
             }
         }

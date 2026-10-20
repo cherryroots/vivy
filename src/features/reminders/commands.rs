@@ -1,40 +1,58 @@
 //! Slash commands: `/reminders` and `/timezone`.
 
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{AutocompleteChoice, CreateAutocompleteResponse};
+use twilight_interactions::command::{CommandModel, CreateCommand};
 
 use super::{parse, store, ui};
-use crate::core::{Context, Result, settings, user_error};
+use crate::core::interaction::{Choice, Typed, choice};
+use crate::core::{Command, CommandCtx, Result, settings, user_error};
+use crate::util::discord::Draft;
 
-/// List your pending reminders and delete them
-#[poise::command(slash_command, ephemeral)]
-pub async fn reminders(ctx: Context<'_>) -> Result<()> {
-    let user = ctx.author().id.get();
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "reminders", desc = "List your pending reminders and delete them")]
+pub struct RemindersCommand;
+
+pub fn reminders() -> Command {
+    Command::slash::<RemindersCommand>(|ctx| Box::pin(list(ctx)))
+}
+
+async fn list(ctx: CommandCtx) -> Result<()> {
+    let ctx = ctx.ephemeral();
+    let user = ctx.author_id().get();
     let list = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| Ok(store::list_pending(conn, user)?))
         .await?;
-    let zone = settings::timezone(&ctx.data().db, ctx.author().id)
+    let zone = settings::timezone(&ctx.bot.db, ctx.author_id())
         .await?
         .unwrap_or(chrono_tz::Tz::UTC);
     let (text, menu) = ui::list_message(&list, None, zone);
-    ctx.send(CreateReply::default().content(text).components(menu))
-        .await?;
+    ctx.send(Draft::new().content(text).components(menu)).await?;
     Ok(())
 }
 
-/// Set your timezone, used for reminders and when Vivy talks about times
-#[poise::command(slash_command, ephemeral)]
-pub async fn timezone(
-    ctx: Context<'_>,
-    #[description = "A zone like Europe/Oslo or an abbreviation like CET. Leave empty to see yours."]
-    #[autocomplete = "autocomplete_zone"]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "timezone",
+    desc = "Set your timezone, used for reminders and when Vivy talks about times"
+)]
+pub struct TimezoneCommand {
+    /// A zone like Europe/Oslo or an abbreviation like CET. Leave empty to see yours.
+    #[command(autocomplete = true)]
     zone: Option<String>,
-) -> Result<()> {
-    let db = &ctx.data().db;
-    let user = ctx.author().id;
+}
+
+pub fn timezone() -> Command {
+    Command::slash::<TimezoneCommand>(|ctx| Box::pin(set_timezone(ctx)))
+        .autocomplete(|_, typed| Box::pin(autocomplete_zone(typed)))
+}
+
+async fn set_timezone(ctx: CommandCtx) -> Result<()> {
+    let ctx = ctx.ephemeral();
+    let TimezoneCommand { zone } = ctx.parse()?;
+    let db = &ctx.bot.db;
+    let user = ctx.author_id();
 
     let Some(name) = zone else {
         let text = match settings::timezone(db, user).await? {
@@ -76,8 +94,8 @@ fn local_time(zone: chrono_tz::Tz) -> String {
 
 /// Suggests zone names containing what the user typed so far: the abbreviations Vivy knows
 /// ("CET") first, then the long names ("Europe/Oslo").
-async fn autocomplete_zone(_ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
-    let partial = partial.to_lowercase();
+async fn autocomplete_zone(typed: Typed) -> Result<Vec<Choice>> {
+    let partial = typed.value.to_lowercase();
     let short = parse::ZONE_ABBREVIATIONS
         .iter()
         .copied()
@@ -86,10 +104,9 @@ async fn autocomplete_zone(_ctx: Context<'_>, partial: &str) -> CreateAutocomple
         .iter()
         .map(|zone| zone.name())
         .filter(|name| name.contains('/') && name.to_lowercase().contains(&partial));
-    let choices = short
+    Ok(short
         .chain(long)
         .take(25)
-        .map(AutocompleteChoice::from)
-        .collect();
-    CreateAutocompleteResponse::new().set_choices(choices)
+        .map(|name| choice(name, name))
+        .collect())
 }

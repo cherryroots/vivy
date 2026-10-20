@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use chrono::Utc;
 use image::DynamicImage;
 use serenity::all::{GuildId, Message};
-use serenity::futures::future::join_all;
+use futures::future::join_all;
 use tracing::debug;
 
 use super::collect::{self, Picture};

@@ -20,7 +20,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
-use serenity::all::{ChannelId, CreateAllowedMentions, CreateMessage, Http};
+use crate::util::discord::{ChannelId, Draft, Http, no_pings};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -482,11 +482,9 @@ pub fn spawn_discord_poster(
                 lines.push(line);
             }
             for content in render(&lines) {
-                let message = CreateMessage::new()
-                    .content(content)
-                    .allowed_mentions(CreateAllowedMentions::new());
+                let message = Draft::new().content(content).allowed_mentions(no_pings());
                 // Not `tracing`: a failure here would log a line that fails to post again.
-                if let Err(err) = channel.send_message(&http, message).await {
+                if let Err(err) = message.send(&http, channel).await {
                     eprintln!(
                         "could not post to the log channel {channel} (logging.log_channel in \
 config.toml): {err}. Is the bot in that channel?"

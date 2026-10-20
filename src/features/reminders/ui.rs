@@ -1,10 +1,10 @@
 //! What reminders look like in Discord: message texts, buttons, the delete menu, and the
 //! button IDs.
 
-use serenity::all::{
-    ButtonStyle, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton,
-    CreateInputText, CreateMessage, CreateModal, CreateSelectMenu, CreateSelectMenuKind,
-    CreateSelectMenuOption, InputTextStyle, UserId,
+use twilight_model::channel::message::component::{ButtonStyle, Component, TextInputStyle};
+
+use crate::util::discord::{
+    Draft, Modal, UserId, button, buttons, menu, menu_option, menu_row, ping_users, text_input,
 };
 
 use chrono::DateTime;
@@ -108,18 +108,19 @@ pub fn confirmation(
 }
 
 /// The Cancel button under the "I'll remind you" reply. Only the reminder's owner can use it.
-pub fn cancel_button(id: i64) -> CreateActionRow {
-    let button = CreateButton::new(Action::Cancel { id }.custom_id())
-        .label("Cancel")
-        .style(ButtonStyle::Secondary);
-    CreateActionRow::Buttons(vec![button])
+pub fn cancel_button(id: i64) -> Component {
+    buttons(vec![button(
+        Action::Cancel { id }.custom_id(),
+        "Cancel",
+        ButtonStyle::Secondary,
+    )])
 }
 
 /// The delivered reminder: pings only its owner, links to the message that set it, and
 /// carries its images and snooze buttons. With `with_images` false the images are left off
 /// (used when Discord refused the upload) and counted in the "missing" hint instead. `zone`
 /// is the owner's timezone, so a repeat reads "every day at 9:00" without the zone's name.
-pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz) -> CreateMessage {
+pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz) -> Draft {
     let set = match reminder.source_message_id {
         Some(message) => {
             let guild = reminder
@@ -160,41 +161,35 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz)
     }
 
     let id = reminder.id;
-    let button = |action: Action, label: &str| {
-        CreateButton::new(action.custom_id())
-            .label(label)
-            .style(ButtonStyle::Secondary)
+    let snooze = |action: Action, label: &str| {
+        button(action.custom_id(), label, ButtonStyle::Secondary)
     };
-    let mut buttons: Vec<CreateButton> = SNOOZES
+    let mut row: Vec<_> = SNOOZES
         .iter()
-        .map(|&(label, minutes)| button(Action::Snooze { id, minutes }, label))
+        .map(|&(label, minutes)| snooze(Action::Snooze { id, minutes }, label))
         .collect();
-    buttons.push(button(Action::AskSnooze { id }, "Pick a time…"));
+    row.push(snooze(Action::AskSnooze { id }, "Pick a time…"));
 
-    let mut message = CreateMessage::new()
+    let mut message = Draft::new()
         .content(content)
-        .allowed_mentions(CreateAllowedMentions::new().users([UserId::new(reminder.user_id)]))
-        .components(vec![CreateActionRow::Buttons(buttons)]);
+        .allowed_mentions(ping_users([UserId::new(reminder.user_id)]))
+        .components(vec![buttons(row)]);
     if !with_images {
         return message;
     }
     for image in &reminder.images {
-        message = message.add_file(CreateAttachment::bytes(
-            image.data.clone(),
-            image.filename.clone(),
-        ));
+        message = message.file(image.filename.clone(), image.data.clone());
     }
     message
 }
 
 /// The modal behind "Pick a time…".
-pub fn snooze_modal(id: i64) -> CreateModal {
-    let input = CreateInputText::new(InputTextStyle::Short, "When?", "when")
-        .placeholder("in 30m, at 18:00, tomorrow at 9am, friday")
-        .max_length(100)
-        .required(true);
-    CreateModal::new(Action::SnoozeTo { id }.custom_id(), "Snooze until…")
-        .components(vec![CreateActionRow::InputText(input)])
+pub fn snooze_modal(id: i64) -> Modal {
+    let mut input = text_input("when", TextInputStyle::Short);
+    input.placeholder = Some("in 30m, at 18:00, tomorrow at 9am, friday".into());
+    input.max_length = Some(100);
+    input.required = Some(true);
+    Modal::new(Action::SnoozeTo { id }.custom_id(), "Snooze until…").input("When?", input)
 }
 
 /// The delivered reminder's text after a snooze button was pressed.
@@ -223,7 +218,7 @@ pub fn list_message(
     reminders: &[Summary],
     note: Option<&str>,
     zone: Tz,
-) -> (String, Vec<CreateActionRow>) {
+) -> (String, Vec<Component>) {
     let mut text = note.map(|note| format!("{note}\n")).unwrap_or_default();
     if reminders.is_empty() {
         text.push_str("You have no pending reminders.");
@@ -272,16 +267,14 @@ pub fn list_message(
                 Some(repeat) => format!("{when} · {}", parse::repeat_for_display(repeat, zone)),
                 None => when,
             };
-            CreateSelectMenuOption::new(label, reminder.id.to_string())
-                .description(shorten(&description, 100))
+            let mut option = menu_option(label, reminder.id.to_string());
+            option.description = Some(shorten(&description, 100));
+            option
         })
         .collect();
-    let menu = CreateSelectMenu::new(
-        Action::Delete.custom_id(),
-        CreateSelectMenuKind::String { options },
-    )
-    .placeholder("Delete a reminder…");
-    (text, vec![CreateActionRow::SelectMenu(menu)])
+    let mut delete = menu(Action::Delete.custom_id(), options);
+    delete.placeholder = Some("Delete a reminder…".into());
+    (text, vec![menu_row(delete)])
 }
 
 #[cfg(test)]
@@ -310,7 +303,7 @@ mod tests {
     }
 
     /// The text the message would send.
-    fn content(message: &CreateMessage) -> String {
+    fn content(message: &Draft) -> String {
         let json = serde_json::to_value(message).unwrap();
         json["content"].as_str().unwrap().to_string()
     }
