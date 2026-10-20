@@ -266,6 +266,7 @@ impl<G: Game> Player for Watched<'_, G> {
 async fn reach_milestones<G: Game>(
     game: &mut G,
     journal: &mut Journal,
+    entered: &[String],
 ) -> anyhow::Result<Vec<String>> {
     if journal.milestones.iter().all(|m| m.reached.is_some()) {
         return Ok(Vec::new());
@@ -284,14 +285,14 @@ async fn reach_milestones<G: Game>(
         episode: journal.episodes,
         usd: journal.usd,
     };
-    let names = notes::reach(&mut journal.milestones, &journal.areas, &facts, at);
+    let names = notes::reach(&mut journal.milestones, entered, &facts, at);
     let episodes = at.episode - before.episode;
     let s = if episodes == 1 { "" } else { "s" };
     let lines: Vec<String> = names
         .iter()
         .map(|name| {
             format!(
-                "🏁 **Milestone: {name}** · episode {}, {episodes} episode{s} and ${:.2} since \
+                "🏁 **Milestone: {name}** · episode {}, {episodes} episode{s} and ${:.3} since \
                  the last",
                 at.episode,
                 (at.usd - before.usd).max(0.0)
@@ -479,11 +480,12 @@ pub async fn play<G: Game>(
             (None, _) => "ran out of actions".to_string(),
         };
         let mut line = format!(
-            "#{} {} {area}: {} → {outcome}, {} actions, {}",
+            "#{} {} {area}: {} → {outcome}, {} action{}, {}",
             journal.episodes,
             Utc::now().format("%m-%d %H:%M"),
             short(&task, 120),
             episode.actions,
+            if episode.actions == 1 { "" } else { "s" },
             found.line()
         );
         if journal.stuck > 0 {
@@ -511,7 +513,7 @@ pub async fn play<G: Game>(
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
         journal.usd += usd;
         notes::check_all(&mut journal.notes, &world);
-        let reached = reach_milestones(game, &mut journal).await?;
+        let reached = reach_milestones(game, &mut journal, &episode.entered).await?;
         keep(session, game, &journal, &world, &today).await?;
         let _ = session.report.send(Report::line(line));
         if let Some(pictured) = pictured {
@@ -1125,8 +1127,8 @@ mod tests {
         assert_eq!(
             reached,
             [
-                "🏁 **Milestone: Reach Room 1** · episode 1, 1 episode and $0.00 since the last",
-                "🏁 **Milestone: Reach Room 2** · episode 3, 2 episodes and $0.00 since the last"
+                "🏁 **Milestone: Reach Room 1** · episode 1, 1 episode and $0.000 since the last",
+                "🏁 **Milestone: Reach Room 2** · episode 3, 2 episodes and $0.000 since the last"
             ],
             "{sent:#?}"
         );

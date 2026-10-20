@@ -11,8 +11,6 @@
 //!
 //! Pure: the journal keeps both, the session runs the checks after each episode.
 
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 
 use super::map::Kind;
@@ -239,12 +237,16 @@ pub fn spots(text: &str) -> Vec<(i32, i32)> {
     found
 }
 
-/// The area a text names: the longest area name in it, whatever the case.
+/// The area a text names, whatever the case: one it says the spot is "in" first (in
+/// "the Mart's door is at x 29, y 19 in Viridian City", Viridian City), else the longest.
 fn area_in<'a>(text: &str, areas: impl Iterator<Item = &'a String>) -> Option<&'a String> {
     let lower = text.to_lowercase();
     areas
         .filter(|area| !area.is_empty() && lower.contains(&area.to_lowercase()))
-        .max_by_key(|area| area.len())
+        .max_by_key(|area| {
+            let name = area.to_lowercase();
+            (lower.contains(&format!("in {name}")), area.len())
+        })
 }
 
 /// A step toward the goal, which code checks.
@@ -253,7 +255,7 @@ fn area_in<'a>(text: &str, areas: impl Iterator<Item = &'a String>) -> Option<&'
 pub struct Milestone {
     /// Like "Reach Viridian City".
     pub name: String,
-    /// Reached once she has been in this area (empty: not this kind).
+    /// Reached once she goes into this area (empty: not this kind).
     pub area: String,
     /// Reached once the game's fact starting with this name (like `Badges`)...
     pub fact: String,
@@ -271,18 +273,29 @@ pub struct Reached {
 }
 
 impl Milestone {
+    /// The test, the same however it's written.
+    fn test(&self) -> (String, String, String) {
+        let lower = |s: &str| s.trim().to_lowercase();
+        if self.area.trim().is_empty() {
+            (String::new(), lower(&self.fact), lower(&self.has))
+        } else {
+            (lower(&self.area), String::new(), String::new())
+        }
+    }
+
     /// Whether it can be checked at all: an area, or a fact and its words.
     pub fn checkable(&self) -> bool {
         !self.area.trim().is_empty()
             || (!self.fact.trim().is_empty() && !self.has.trim().is_empty())
     }
 
-    /// Whether what perception reads says she's there: an area she has been in, or the
-    /// fact line saying it.
-    pub fn met(&self, areas: &BTreeSet<String>, facts: &str) -> bool {
+    /// Whether what perception reads says she's there: an area she went into in the last
+    /// episode (being in it from before doesn't count, so going back to Oak isn't reached
+    /// by having met him once), or the fact line saying it.
+    pub fn met(&self, entered: &[String], facts: &str) -> bool {
         let area = self.area.trim().to_lowercase();
         if !area.is_empty() {
-            return areas.iter().any(|a| a.to_lowercase() == area);
+            return entered.iter().any(|a| a.to_lowercase() == area);
         }
         let (fact, has) = (
             self.fact.trim().to_lowercase(),
@@ -322,7 +335,11 @@ pub fn replace_ahead(kept: &mut Vec<Milestone>, theirs: Vec<Milestone>) {
     kept.retain(|m| m.reached.is_some());
     let same = |a: &Milestone, b: &Milestone| a.name.trim().eq_ignore_ascii_case(b.name.trim());
     for mut milestone in theirs {
-        if !milestone.checkable() || kept.iter().any(|k| same(k, &milestone)) {
+        // The same test as one ahead is the same step under another name.
+        let repeats = |k: &Milestone| {
+            same(k, &milestone) || (k.reached.is_none() && k.test() == milestone.test())
+        };
+        if !milestone.checkable() || kept.iter().any(repeats) {
             continue;
         }
         if kept.iter().filter(|m| m.reached.is_none()).count() == MILESTONES_AHEAD {
@@ -336,13 +353,13 @@ pub fn replace_ahead(kept: &mut Vec<Milestone>, theirs: Vec<Milestone>) {
 /// Marks the milestones perception says she has reached. Gives back their names.
 pub fn reach(
     milestones: &mut [Milestone],
-    areas: &BTreeSet<String>,
+    entered: &[String],
     facts: &str,
     at: Reached,
 ) -> Vec<String> {
     let mut reached = Vec::new();
     for milestone in milestones.iter_mut().filter(|m| m.reached.is_none()) {
-        if milestone.met(areas, facts) {
+        if milestone.met(entered, facts) {
             milestone.reached = Some(at);
             reached.push(milestone.name.clone());
         }
@@ -394,6 +411,14 @@ mod tests {
         assert_eq!(
             check(
                 "Viridian City's Pokémon Center entrance is at (23, 25).",
+                &world
+            ),
+            Check::Agrees("(23, 25) in Viridian City is a way out on the map".to_string())
+        );
+        // Two areas named: the one the spot is in.
+        assert_eq!(
+            check(
+                "The Viridian Pokémon Center door is at x 23, y 25 in Viridian City.",
                 &world
             ),
             Check::Agrees("(23, 25) in Viridian City is a way out on the map".to_string())
@@ -483,7 +508,7 @@ mod tests {
             milestone("Win the Boulder Badge", "", "Badges", "boulder"),
             milestone("Get the Pokédex", "", "Story so far", "got the Pokédex"),
         ];
-        let areas: BTreeSet<String> = ["Viridian City".to_string()].into();
+        let entered = ["Viridian City".to_string()];
         let facts =
             "Location: Viridian City at x 1, y 2\nBadges: none\nStory so far: got the Pokédex";
         let at = Reached {
@@ -491,13 +516,16 @@ mod tests {
             usd: 0.04,
         };
         assert_eq!(
-            reach(&mut list, &areas, facts, at),
+            reach(&mut list, &entered, facts, at),
             vec!["Reach Viridian City", "Get the Pokédex"]
         );
         assert_eq!(list[0].reached, Some(at));
         assert_eq!(progress(&list), "2 of 3 · next: Win the Boulder Badge");
         // Reached once stays reached; nothing new the second time.
-        assert!(reach(&mut list, &BTreeSet::new(), "", at).is_empty());
+        assert!(reach(&mut list, &[], "", at).is_empty());
+        // Being in an area from before isn't going into it.
+        let mut back = vec![milestone("Back to Oak", "Oak's Lab", "", "")];
+        assert!(reach(&mut back, &[], "Location: Oak's Lab at x 1, y 2", at).is_empty());
         assert_eq!(
             list[1].for_plan(),
             "Win the Boulder Badge (fact \"Badges\" has \"boulder\")"
@@ -519,6 +547,7 @@ mod tests {
             milestone("reach route 1", "Route 1", "", ""),
             milestone("Win a battle", "", "", ""),
             milestone("Reach Pewter City", "Pewter City", "", ""),
+            milestone("Get to Pewter", " pewter city", "", ""),
         ];
         theirs.extend((0..10).map(|i| milestone(&format!("m{i}"), &format!("A{i}"), "", "")));
         replace_ahead(&mut kept, theirs);

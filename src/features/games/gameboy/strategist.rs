@@ -42,13 +42,18 @@ Notes: facts that make sense on their own (name the people, places and things), 
 where it came from: \"seen\" (on screen, in the text read or the facts), \"tried\" (a task \
 showed it), \"hint from\" and the name (from someone watching), or \"guess\". Code checks \
 the notes it can against its maps: [code checked: ...] means they agree, [code found it \
-WRONG: ...] means fix or drop it. Don't note what the facts show (HP, levels, money, where \
+WRONG: ...] means fix or drop it. A note about where something is (a door, a person, a \
+way on) names its area and spot as the facts write it, like \"Viridian Mart's door is at \
+x 29, y 19 in Viridian City\", so code can check it. Don't note what the facts show (HP, levels, money, where \
 the player stands): they change by themselves.
 
-Milestones: up to 8 steps toward the goal, next first, each one code can check: an area \
-to be in (its name as the game shows it), or a line of the facts and words in it (like \
-fact \"Badges\" has \"Boulder\"). Leave area empty for a fact, fact and has empty for an \
-area. Code keeps the reached ones; send the ones still ahead, changed as you learn more.
+Milestones: up to 8 story steps toward the goal, next first, each bigger than a task (a \
+new town or route, a key item got, a boss beaten; not a room or a staircase), and each \
+one code can check: an area \
+to go into (its name as the game shows it; being there already doesn't count), or a line \
+of the facts and words in it (like fact \"Badges\" has \"Boulder\"). Leave area empty for \
+a fact, fact and has empty for an area. Code keeps the reached ones; send the ones still \
+ahead, changed as you learn more.
 
 Skills: the executor writes its own, with know-how notes and a routine code runs as one \
 action. Each round of a routine, the first rule whose if_words are on screen (any case; \
