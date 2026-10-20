@@ -24,6 +24,7 @@ use twilight_util::builder::message::ButtonBuilder;
 
 use super::commands::GIF_SCALE;
 use super::console::{RECENT_SECONDS, RECORD_EVERY, console};
+use super::emulator::FPS;
 use super::pictures;
 use super::session::{EPISODE_ACTIONS, Now};
 use crate::core::BotCtx;
@@ -42,6 +43,9 @@ const STILL_NAME: &str = "last.png";
 /// How long a live GIF stays on its last screen, in seconds: longer than the dashboard
 /// takes to bring the next one, so it never starts over.
 const HOLD_SECONDS: u32 = 60;
+/// Seconds allowed for a GIF to upload and load before it plays: the next one waits until
+/// the last has played this long after it.
+const LOAD_SECONDS: f64 = 2.0;
 /// The panel's edge: teal like her hair while she plays, grey once it's over.
 const LIVE_COLOUR: u32 = 0x2BB3A3;
 const OVER_COLOUR: u32 = 0x80848E;
@@ -414,12 +418,15 @@ impl Live {
     ) -> Message {
         let mut shown_mark = None;
         let mut shown_now = None;
+        // Seconds the last GIF plays for, so the next doesn't cut it off.
+        let mut playing = 0.0;
         loop {
+            let wait = (every.max(FASTEST) as f64).max(playing + LOAD_SECONDS);
             let tick = async {
                 if every == 0 {
                     std::future::pending::<()>().await;
                 } else {
-                    tokio::time::sleep(Duration::from_secs(every.max(FASTEST))).await;
+                    tokio::time::sleep(Duration::from_secs_f64(wait)).await;
                 }
             };
             tokio::select! {
@@ -445,9 +452,10 @@ impl Live {
             }
             // Each edit sends a GIF again, since a message's files can't be kept otherwise:
             // what she played since the last one, or her screen as it is if nothing moved.
-            let clip = clip(shown_mark, every.max(FASTEST)).await;
-            let mark = clip.as_ref().map(|(mark, _)| *mark);
-            self.show(&mut message, &current, None, clip.map(|(_, gif)| gif))
+            let clip = clip(shown_mark).await;
+            playing = clip.as_ref().map_or(0.0, |c| c.seconds);
+            let mark = clip.as_ref().map(|c| c.mark);
+            self.show(&mut message, &current, None, clip.map(|c| c.gif))
                 .await;
             shown_mark = mark.or(shown_mark);
             shown_now = Some(current);
@@ -464,12 +472,20 @@ async fn recorded() -> Option<u64> {
         .flatten()
 }
 
-/// What she played since `mark` (from [`recorded`]; `None`: the last seconds), as a GIF for
-/// the live dashboard, with how many screens had been recorded. It plays in `seconds` at
-/// most, sped up when more happened, so each one carries on from the last without
-/// skipping. Then it stays on her screen as it is now for a minute, so it doesn't start
-/// over before the next one comes. When nothing moved, it's that screen alone.
-pub async fn clip(mark: Option<u64>, seconds: u64) -> Option<(u64, Vec<u8>)> {
+/// A GIF for the live dashboard.
+pub struct Clip {
+    /// How many screens had been recorded, to make the next one from.
+    pub mark: u64,
+    pub gif: Vec<u8>,
+    /// How long it plays before it stays on its last screen.
+    pub seconds: f64,
+}
+
+/// What she played since `mark` (from [`recorded`]; `None`: the last seconds), at the
+/// game's speed, so each one carries on from the last. Then it stays on her screen as it
+/// is now for a minute, so it doesn't start over before the next one comes. When nothing
+/// moved, it's that screen alone. At most the last [`RECENT_SECONDS`].
+pub async fn clip(mark: Option<u64>) -> Option<Clip> {
     let (recorded, screens) = console()
         .with(move |machine| {
             let m = machine.as_ref()?;
@@ -483,30 +499,18 @@ pub async fn clip(mark: Option<u64>, seconds: u64) -> Option<(u64, Vec<u8>)> {
         .await
         .ok()
         .flatten()?;
-    let most = (seconds * 60 / u64::from(RECORD_EVERY)).max(1) as usize;
-    let screens = fit(screens, most);
+    let seconds = (screens.len().saturating_sub(1) as u64 * u64::from(RECORD_EVERY)) as f64 / FPS;
     let gif = tokio::task::spawn_blocking(move || {
         pictures::gif_held(&screens, RECORD_EVERY, GIF_SCALE, HOLD_SECONDS * 60)
     })
     .await
     .ok()?
     .ok()?;
-    Some((recorded, gif))
-}
-
-/// At most `most` of `screens`: every nth one, ending on the newest.
-fn fit<T>(screens: Vec<T>, most: usize) -> Vec<T> {
-    if screens.len() <= most {
-        return screens;
-    }
-    let step = screens.len().div_ceil(most);
-    let newest = screens.len() - 1;
-    screens
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| (newest - i).is_multiple_of(step))
-        .map(|(_, screen)| screen)
-        .collect()
+    Some(Clip {
+        mark: recorded,
+        gif,
+        seconds,
+    })
 }
 
 /// Her screen as it is, as a PNG, if the Game Boy is on: the ended dashboard's still.
@@ -660,13 +664,6 @@ mod tests {
         assert!(text.contains("Last actions") && text.contains("Skills"));
         assert!(text.contains("· nothing new for 3 episodes"));
         assert!(text.ends_with("log: <#42>"), "the footer stays");
-    }
-
-    #[test]
-    fn a_long_clip_is_sped_up_to_end_on_the_newest_screen() {
-        assert_eq!(fit((0..5).collect(), 10), vec![0, 1, 2, 3, 4]);
-        assert_eq!(fit((0..10).collect(), 4), vec![0, 3, 6, 9]);
-        assert_eq!(fit((0..9).collect(), 3), vec![2, 5, 8]);
     }
 
     #[test]

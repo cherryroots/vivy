@@ -124,10 +124,10 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 `gate_session` plays one whole session the way the bot does, with the real models: Haiku acting and `VIVY_GB_REVIEWER` (`gpt-6-astra`) planning, from a new game in her bedroom or the task state `VIVY_GB_START`, for `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40), with `VIVY_GB_GATE_USD` (3) as the day's cap. Its report has every episode's line, her notes and skills at the end, and the saves folder with the journal and checkpoints.
 
-**The dashboard** (`dashboard.rs`) is one Components V2 message: a panel with a coloured edge (teal while she plays, grey once it's over) and dividers between its parts, in the normal font size (unlike an embed). It's edited every `live_seconds` (5) while anything changed:
+**The dashboard** (`dashboard.rs`) is one Components V2 message: a panel with a coloured edge (teal while she plays, grey once it's over) and dividers between its parts, in the normal font size (unlike an embed). It's edited every `live_seconds` (5), or once the last GIF has played, while anything changed:
 
 - a header with the session's number, its minutes so far, the episode and the area
-- a GIF of her play since the last edit, so each one carries on from the last (sped up to fit when more happened). It then stays on her screen as it is for a minute, longer than the next edit takes, so Discord's looping never starts it over. When nothing moved, it's that screen alone
+- a GIF of her play since the last edit, at the game's speed, so each one carries on from the last (at most the last 10 seconds). The next edit waits until it has played, plus 2 seconds to upload and load. It then stays on her screen as it is for a minute, so Discord's looping never starts it over. When nothing moved, it's that screen alone. The game itself moves in bursts: an action plays out in a moment, then it waits while Haiku thinks (0.5 to 4 seconds a call)
 - her goal, the task she's on, how many of its 30 actions she has used, and how long she has been stuck
 - the facts from the game's memory, one per line with the name in bold, where it has a memory map (Pokémon Red: where she is, badges, money, party, the story so far)
 - her last 6 actions, her last 3 episode lines (how each went in bold; only the task is shortened), the strategist's notes and her skills (a V2 message holds 4000 characters of text; past 3800 the notes go first, then skills, episodes and actions)
