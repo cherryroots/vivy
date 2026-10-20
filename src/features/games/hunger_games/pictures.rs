@@ -20,8 +20,8 @@
 //! deaths in it. A picture that fails is missing, and [`draw`] says why, so the game can
 //! tell the channel once.
 
+use crate::util::discord::{ChannelId, GuildId, MessageId, UserId};
 use serde_json::json;
-use serenity::all::{ChannelId, GuildId, MessageId, UserId};
 use tracing::{info, warn};
 
 use crate::core::{Asker, BotCtx};

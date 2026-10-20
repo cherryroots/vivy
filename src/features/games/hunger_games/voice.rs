@@ -7,8 +7,8 @@
 //! the way `notes.rs` reads memory. So the voice feature's gate and monthly limit apply,
 //! and without an ElevenLabs key, or with voice off in the channel, the lines are text only.
 
+use crate::util::discord::{ChannelId, GuildId, MessageId};
 use serde_json::json;
-use serenity::all::{ChannelId, GuildId, MessageId};
 use tracing::{debug, info};
 
 use crate::core::{Asker, BotCtx};

@@ -2,7 +2,7 @@
 //! search bar, with every filter the API has. The chat tool `search_messages` and the
 //! Hunger Games' last words both use it.
 //!
-//! serenity has no call for this endpoint yet, so it goes through `reqwest` with the bot
+//! Twilight has no call for this endpoint yet, so it goes through `reqwest` with the bot
 //! token. Discord answers 202 while it is still indexing a server, and 429 when searches
 //! come too fast; both say how long to wait, and the search waits and tries again a few
 //! times.
@@ -12,10 +12,10 @@
 
 use std::time::Duration;
 
+use super::discord::{Channel, GuildId, Message};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde_json::Value;
-use serenity::all::{GuildChannel, GuildId, Message};
 use tracing::{debug, warn};
 
 /// Most results one page has (Discord's limit).
@@ -110,7 +110,7 @@ pub struct Found {
     /// by its length.
     pub messages: Vec<Message>,
     /// The threads the messages are in.
-    pub threads: Vec<GuildChannel>,
+    pub threads: Vec<Channel>,
     /// Whether Discord is still indexing the server's older messages, so older results
     /// may be missing.
     pub indexing: bool,

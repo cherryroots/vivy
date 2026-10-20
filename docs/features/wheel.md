@@ -26,7 +26,7 @@ All in `src/features/wheel/`, starting with the pure logic.
 | `render.rs` | The round as a picture: `round_svg` writes SVG text, `round_png` turns it into a PNG with the shared helpers in `src/util/svg.rs`. |
 | `names.rs` | Display names for the stored user IDs, with a cache. |
 | `actions.rs` | The handlers for buttons, menus and modals, and `status_message`, which builds a status picture with its buttons. |
-| `commands.rs` | `/wheel` and its five subcommands (`status`, `add`, `movie`, `bet`, `reset`), written with `poise`. Each subcommand function keeps its old name (`wheel_status`, `insert_bet`, …); `rename` sets the name Discord shows. |
+| `commands.rs` | `/wheel` and its five subcommands (`status`, `add`, `movie`, `bet`, `reset`): the enum `WheelCommand` has one variant per subcommand, each a struct with its options (`twilight-interactions`). Each subcommand function keeps its old name (`wheel_status`, `insert_bet`, …). |
 | `tools.rs` | The chat tool `get_wheel_status`. |
 | `import.rs` | voltgpt's running game, read from its `game_state` JSON. |
 | `sim.rs` | Simulated games that compare the payout rules. Test-only (`#[cfg(test)]`, an ignored test). |
@@ -74,7 +74,7 @@ Every handler in `actions.rs` and `commands.rs` loads the season, checks the act
 ### Playing a round
 
 - **Claim** adds a claim and redraws the status message. A private follow-up says how much the player has this round and the smallest bet that avoids the tax.
-- **Bet** needs money above 0 (otherwise "Press Claim"). It opens a private menu of the options left, sorted by name. Discord fits 25 options in a menu, so a bigger wheel gets up to five menus (one per row), each placeholder naming the first and last name it holds, like "(Alice … Dana)"; past 125 the message says how many didn't fit. Remove bet and Winner work the same. Picking one opens the **bet slip**: a private message with the option's current payout and pot (pool) or multiplier (classic), the player's money, what they already bet and can still bet, their current bet on this option and what it would return now, and a tax hint. It has buttons for 10%, 25% and 50% of the round's money (classic: also 100%), each showing its amount. A button is disabled when that bet isn't allowed, and the button matching the current bet is green and disabled. Each click places the bet, redraws the slip and redraws the public status message. "Other amount…" opens a modal (a plain serenity `CreateModal`, since it opens from a button) whose label shows the limit. Betting on the same option again changes that bet (`INSERT ... ON CONFLICT DO UPDATE`).
+- **Bet** needs money above 0 (otherwise "Press Claim"). It opens a private menu of the options left, sorted by name. Discord fits 25 options in a menu, so a bigger wheel gets up to five menus (one per row), each placeholder naming the first and last name it holds, like "(Alice … Dana)"; past 125 the message says how many didn't fit. Remove bet and Winner work the same. Picking one opens the **bet slip**: a private message with the option's current payout and pot (pool) or multiplier (classic), the player's money, what they already bet and can still bet, their current bet on this option and what it would return now, and a tax hint. It has buttons for 10%, 25% and 50% of the round's money (classic: also 100%), each showing its amount. A button is disabled when that bet isn't allowed, and the button matching the current bet is green and disabled. Each click places the bet, redraws the slip and redraws the public status message. "Other amount…" opens a modal (`util::discord::Modal`, opened from the button) whose label shows the limit. Betting on the same option again changes that bet (`INSERT ... ON CONFLICT DO UPDATE`).
 - **Remove bet** opens a private menu of your bets in this round, each with its amount under the name; picking one deletes it.
 - **Winner** (admins) opens a menu of the options left. Picking one sets the winner and starts the next round. Nobody has to have bet. The public status message then shows the resolved round (a blurred spoiler), a new message with the new round's picture and buttons is posted under it ("Round 3 is over. Round 4 is open: claim and bet below.", `actions::post_status`), and `BotEvent::WheelRoundResolved` is published.
 - **Undo Winner** (admins) is shown on a resolved round while it is the round before the latest and nobody has bet in the latest round yet. It deletes the latest round (with its claims) and reopens the resolved one. The check runs again on press.
@@ -123,7 +123,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | `on_component` | Every button and select menu (`actions::on_component`). |
 | `on_modal` | The bet amount, name and new season modals (`actions::on_modal`). |
 
-Admin checks happen inside each admin command and button with `ctx.is_admin`, not with a poise `check` (a failed check would answer with the "turned off" message).
+Admin checks happen inside each admin command and button with `ctx.is_admin`, not in the dispatcher (whose refusal says the feature is turned off).
 
 It publishes `BotEvent::WheelRoundResolved { guild_id, round, winner }` when a winner is set; `round` is the round number, not its database ID. No feature listens to it yet.
 

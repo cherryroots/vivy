@@ -18,9 +18,10 @@ mod who_said_it;
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serenity::all::ComponentInteraction;
+use twilight_interactions::command::{CommandModel, CreateCommand};
 
-use crate::core::{BotCtx, Command, Context, Feature, Result};
+use crate::core::interaction::{Choice, Typed};
+use crate::core::{BotCtx, Command, CommandCtx, ComponentInteraction, Feature, Result};
 
 /// `[features.games]` settings: one table per game.
 #[derive(Debug, Default, Deserialize)]
@@ -69,21 +70,50 @@ impl Feature for Games {
     }
 }
 
-/// Games to play in the channel
-#[poise::command(
-    slash_command,
-    guild_only,
-    subcommands(
-        "who_said_it::who_said_it",
-        "hunger_games::hunger_games",
-        "hunger_games::leaderboard",
-        "hunger_games::reset_leaderboard",
-        "gameboy::gameboy"
-    ),
-    subcommand_required
+/// `/games`: each game is a subcommand (`gameboy` is a group of its own).
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "games",
+    desc = "Games to play in the channel",
+    contexts = "guild"
 )]
-pub async fn games(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
+pub enum GamesCommand {
+    #[command(name = "whosaidit")]
+    WhoSaidIt(who_said_it::WhoSaidIt),
+    #[command(name = "hungergames")]
+    HungerGames(hunger_games::HungerGames),
+    #[command(name = "leaderboard")]
+    Leaderboard(hunger_games::Leaderboard),
+    #[command(name = "resetleaderboard")]
+    ResetLeaderboard(hunger_games::ResetLeaderboard),
+    #[command(name = "gameboy")]
+    Gameboy(gameboy::GameboyCommand),
+}
+
+pub fn games() -> Command {
+    Command::slash::<GamesCommand>(|ctx| Box::pin(run(ctx)))
+        .autocomplete(|ctx, typed| Box::pin(autocomplete(ctx, typed)))
+}
+
+async fn run(ctx: CommandCtx) -> Result<()> {
+    match ctx.parse::<GamesCommand>()? {
+        GamesCommand::WhoSaidIt(args) => who_said_it::who_said_it(&ctx, args).await,
+        GamesCommand::HungerGames(_) => hunger_games::hunger_games(&ctx).await,
+        GamesCommand::Leaderboard(args) => hunger_games::leaderboard(&ctx, args).await,
+        // Admin commands answer privately.
+        GamesCommand::ResetLeaderboard(_) => {
+            hunger_games::reset_leaderboard(&ctx.ephemeral()).await
+        }
+        GamesCommand::Gameboy(command) => gameboy::gameboy(&ctx, command).await,
+    }
+}
+
+/// Only the Game Boy commands suggest anything.
+async fn autocomplete(ctx: CommandCtx, typed: Typed) -> Result<Vec<Choice>> {
+    if typed.subcommand.starts_with("gameboy") {
+        return Ok(gameboy::autocomplete(&ctx, &typed).await);
+    }
+    Ok(Vec::new())
 }
 
 #[cfg(test)]

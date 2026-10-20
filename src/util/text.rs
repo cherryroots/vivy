@@ -1,7 +1,7 @@
 //! The text in a message that isn't in its content: text file attachments and embeds.
 //! Chat adds both to what the model reads, in the same tagged format voltgpt used.
 
-use serenity::all::Message;
+use super::discord::Message;
 use tracing::warn;
 
 use super::media::download;
@@ -70,17 +70,19 @@ mod tests {
 
     #[test]
     fn embeds_as_text() {
-        let mut msg = Message::default();
+        let mut msg = crate::util::discord::test_message(json!({}));
         assert_eq!(embed_text(&msg), "");
 
         msg.embeds = vec![
             serde_json::from_value(json!({
+                "type": "rich",
                 "title": "Weather",
                 "description": "Sunny",
                 "fields": [{"name": "High", "value": "21°C", "inline": true}],
             }))
             .unwrap(),
-            serde_json::from_value(json!({"image": {"url": "https://x/a.png"}})).unwrap(),
+            serde_json::from_value(json!({"type": "image", "image": {"url": "https://x/a.png"}}))
+                .unwrap(),
         ];
         assert_eq!(
             embed_text(&msg),

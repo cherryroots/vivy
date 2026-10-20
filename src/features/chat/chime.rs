@@ -16,16 +16,15 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::util::discord::{
+    ChannelId, Draft, GuildId, Message, UserId, mentions_user, no_pings, ping_users, react,
+};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use chrono_tz::Tz;
 use serde::Deserialize;
 use serde_json::json;
-use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateMessage, GetMessages, GuildId, Message, ReactionType,
-    UserId,
-};
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
@@ -36,7 +35,7 @@ use crate::core::{Asker, BotCtx, Feature, Result};
 use crate::util::shorten_at_word;
 
 /// How many messages she reads before deciding.
-const READ_MESSAGES: u8 = 15;
+const READ_MESSAGES: u16 = 15;
 /// Rounds of tool calls (saving to memory) before she has to decide.
 const MAX_ROUNDS: usize = 4;
 /// The longest line she posts.
@@ -202,7 +201,7 @@ impl Chime {
             return Ok(());
         };
         // Messages to her get a real answer instead.
-        let to_her = msg.mentions_user_id(ctx.bot_id)
+        let to_her = mentions_user(msg, ctx.bot_id)
             || msg
                 .referenced_message
                 .as_ref()
@@ -314,9 +313,7 @@ pub async fn speak(
     let (line, reply_to) = match (decide(&done.text), last) {
         (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => (line, reply_to),
         (Decision::React(emoji), Some(msg)) => {
-            let reaction = ReactionType::try_from(emoji.as_str())
-                .with_context(|| format!("{emoji:?} isn't an emoji"))?;
-            msg.react(&ctx.http, reaction).await?;
+            react(&ctx.http, msg.channel_id, msg.id, &emoji).await?;
             info!("reacted with {emoji}");
             return Ok(());
         }
@@ -329,18 +326,18 @@ pub async fn speak(
     let target = reply_to
         .and_then(|n| n.checked_sub(1))
         .and_then(|i| messages.get(i));
-    let pings = match mention {
-        Some(user) => CreateAllowedMentions::new().users([user]),
-        None => CreateAllowedMentions::new(),
-    };
     // A reply, but without pinging its author: Discord pings unless told not to.
-    let mut message = CreateMessage::new()
+    let pings = match mention {
+        Some(user) => ping_users([user]),
+        None => no_pings(),
+    };
+    let mut message = Draft::new()
         .content(answer::discord_links(&line))
-        .allowed_mentions(pings.replied_user(false));
+        .allowed_mentions(pings);
     if let Some(target) = target {
-        message = message.reference_message(target);
+        message = message.reply_to(target.id);
     }
-    let sent = asker.channel.send_message(&ctx.http, message).await?;
+    let sent = message.send(&ctx.http, asker.channel).await?;
     let ids = vec![sent.id.get()];
     match target {
         Some(target) => info!("spoke up on her own, replying to {}", target.id),
@@ -402,32 +399,30 @@ async fn read_along(
 ) -> Result<(String, Vec<Message>)> {
     let mut messages = match last {
         Some(msg) => {
-            let mut before = channel
-                .messages(
-                    &ctx.http,
-                    GetMessages::new().before(msg.id).limit(READ_MESSAGES - 1),
-                )
+            let mut before = ctx
+                .http
+                .channel_messages(channel)
+                .before(msg.id)
+                .limit(READ_MESSAGES - 1)
+                .await?
+                .models()
                 .await?;
             before.insert(0, msg.clone());
             before
         }
         None => {
-            channel
-                .messages(&ctx.http, GetMessages::new().limit(READ_MESSAGES))
+            ctx.http
+                .channel_messages(channel)
+                .limit(READ_MESSAGES)
+                .await?
+                .models()
                 .await?
         }
     };
     // Discord gives the newest first.
     messages.reverse();
     let name = guild
-        .and_then(|guild| ctx.cache.guild(guild))
-        .and_then(|guild| {
-            guild
-                .channels
-                .get(&channel)
-                .or_else(|| guild.threads.iter().find(|t| t.id == channel))
-                .map(|c| c.name.clone())
-        })
+        .and_then(|guild| ctx.channel_name(guild, channel))
         .unwrap_or_default();
     let mut lines = Vec::new();
     for (i, m) in messages.iter().enumerate() {

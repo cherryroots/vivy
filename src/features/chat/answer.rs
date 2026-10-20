@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::util::discord::MessageId;
 use anyhow::anyhow;
-use serenity::all::{CreateAttachment, MessageId};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -493,7 +493,7 @@ async fn attach_files(
     let mut attachments = Vec::new();
     for file in files.iter().take(MAX_FILES) {
         let data = provider.download_file(file).await?;
-        attachments.push(CreateAttachment::bytes(data, file_name(&file.filename)));
+        attachments.push((file_name(&file.filename), data));
     }
     let message = screen.reply.attach(&ctx.http, attachments).await?;
     let links: Vec<(String, String)> = message

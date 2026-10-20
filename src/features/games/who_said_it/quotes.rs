@@ -4,13 +4,17 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
-use serenity::all::{GetMessages, GuildId, Message, MessageId, MessageType, UserId};
 use tracing::debug;
+use twilight_model::channel::message::MessageType;
 
 use super::Settings;
 use super::game::{Person, Quote, Round};
 use super::sources::Source;
 use crate::core::BotCtx;
+use crate::util::discord::{
+    GuildId, Message, MessageId, Page, UserId, created_at, display_name, get_member, get_messages,
+    member_display_name, message_link, to_chrono,
+};
 
 /// How many moments in the channel's history are read, 100 messages each.
 const READS: usize = 6;
@@ -58,7 +62,7 @@ pub async fn load(
     if quotes.is_empty()
         && let Some(err) = failed
     {
-        return Err(anyhow::Error::from(err).context("reading the channel"));
+        return Err(err.context("reading the channel"));
     }
     debug!("found {} quotes by {} people", quotes.len(), people.len());
     fastrand::shuffle(&mut quotes);
@@ -73,7 +77,7 @@ pub async fn read_once(
     ctx: &BotCtx,
     sources: &[Source],
     settings: &Settings,
-) -> serenity::Result<Vec<(Quote, Person)>> {
+) -> anyhow::Result<Vec<(Quote, Person)>> {
     let Some(source) = sources.get(fastrand::usize(..sources.len().max(1))) else {
         return Ok(Vec::new());
     };
@@ -81,18 +85,17 @@ pub async fn read_once(
     // Nothing from the last hour, so the conversation going on right now isn't in it.
     let to = now - Duration::hours(1);
     let oldest = now - Duration::days(settings.lookback_days.max(1));
-    let from = (*source.channel.created_at()).max(oldest);
+    let from = created_at(source.channel).max(oldest);
     if to <= from {
         return Ok(Vec::new());
     }
     let span = (to - from).num_milliseconds().max(1);
     let at = from + Duration::milliseconds(fastrand::i64(0..span));
-    let read = GetMessages::new().before(id_at(at)).limit(100);
-    let messages = source
-        .channel
-        .messages(&ctx.http, read)
+    let messages = get_messages(&ctx.http, source.channel, Page::Before(id_at(at)), 100)
         .await
-        .inspect_err(|err| debug!("couldn't read {}: {err}", source.channel))?;
+        .inspect_err(|err| debug!("couldn't read {}: {err:#}", source.channel))?;
+    // Messages read from Discord don't say their server; the link needs it.
+    let guild = ctx.cache.channel(source.channel).and_then(|c| c.guild_id);
     let mut found = Vec::new();
     for msg in messages {
         if settings.exclude_users.contains(&msg.author.id.get()) {
@@ -103,14 +106,14 @@ pub async fn read_once(
         };
         let person = Person {
             id: msg.author.id.get(),
-            name: msg.author.display_name().to_string(),
+            name: display_name(&msg.author).to_string(),
         };
         let quote = Quote {
             author: person.id,
             text,
-            posted: msg.timestamp.format("%B %Y").to_string(),
+            posted: to_chrono(msg.timestamp).format("%B %Y").to_string(),
             place: source.name.clone(),
-            link: msg.link(),
+            link: message_link(guild, msg.channel_id, msg.id),
         };
         found.push((quote, person));
     }
@@ -137,13 +140,13 @@ pub async fn use_nicknames(ctx: &BotCtx, guild: GuildId, rounds: &mut [Round]) {
 
 /// A server member's nickname, or `None` when they aren't in the server.
 async fn member(ctx: &BotCtx, guild: GuildId, user: UserId) -> Option<Person> {
-    match guild.member(&ctx.http, user).await {
+    match get_member(&ctx.http, guild, user).await {
         Ok(member) => Some(Person {
             id: user.get(),
-            name: member.display_name().to_string(),
+            name: member_display_name(&member).to_string(),
         }),
         Err(err) => {
-            debug!("couldn't look up {user}: {err}");
+            debug!("couldn't look up {user}: {err:#}");
             None
         }
     }
@@ -162,13 +165,16 @@ pub(in crate::features::games) fn quote_text(msg: &Message, settings: &Settings)
     if msg.author.bot || msg.webhook_id.is_some() {
         return None;
     }
-    if !matches!(msg.kind, MessageType::Regular | MessageType::InlineReply) {
+    if !matches!(msg.kind, MessageType::Regular | MessageType::Reply) {
         return None;
     }
     let names: HashMap<u64, String> = msg
         .mentions
         .iter()
-        .map(|u| (u.id.get(), u.display_name().to_string()))
+        .map(|m| {
+            let nick = m.member.as_ref().and_then(|member| member.nick.clone());
+            (m.id.get(), nick.unwrap_or_else(|| m.name.clone()))
+        })
         .collect();
     let text = clean(&msg.content, &names);
     let chars = text.chars().count();
@@ -259,6 +265,6 @@ mod tests {
     fn ids_follow_the_clock() {
         let at = DateTime::from_timestamp_millis(DISCORD_EPOCH_MS + 1000).unwrap();
         assert_eq!(id_at(at).get(), 1000 << 22);
-        assert_eq!(*id_at(at).created_at(), at);
+        assert_eq!(created_at(id_at(at)), at);
     }
 }

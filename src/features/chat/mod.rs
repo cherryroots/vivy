@@ -34,7 +34,11 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::Value;
-use serenity::all::{Message, MessageFlags, MessageId, Reaction, ReactionType, UserId};
+use twilight_model::channel::message::{EmojiReactionType, MessageFlags};
+
+use crate::util::discord::{
+    GatewayReaction, Message, MessageId, UserId, display_name, get_message, remove_reaction,
+};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -98,7 +102,7 @@ impl Feature for Chat {
             return Ok(Vec::new());
         };
         let name = match ctx.cache.user(UserId::new(user)) {
-            Some(user) => user.display_name().to_string(),
+            Some(user) => display_name(&user).to_string(),
             None => "someone".to_string(),
         };
         let row = Stat::new(
@@ -227,13 +231,11 @@ impl Feature for Chat {
         self.chime.on_message(ctx, msg).await
     }
 
-    async fn on_reaction_add(&self, ctx: &BotCtx, reaction: &Reaction) -> Result<()> {
-        let ReactionType::Unicode(emoji) = &reaction.emoji else {
+    async fn on_reaction_add(&self, ctx: &BotCtx, reaction: &GatewayReaction) -> Result<()> {
+        let EmojiReactionType::Unicode { name: emoji } = &reaction.emoji else {
             return Ok(());
         };
-        let Some(user) = reaction.user_id else {
-            return Ok(());
-        };
+        let user = reaction.user_id;
         // Discord says whose message it is; skip the lookups for everyone else's.
         if reaction
             .message_author_id
@@ -247,7 +249,7 @@ impl Feature for Chat {
                     if self.stop(reaction.message_id, user) {
                         // Taken away again, like 🔁: the status says a second ❌ deletes
                         // the answer, and that one should be a fresh press.
-                        let _ = reaction.delete(&ctx.http).await;
+                        let _ = remove_reaction(&ctx.http, reaction).await;
                     }
                     Ok(())
                 } else {
@@ -398,7 +400,12 @@ impl Chat {
     }
 
     /// 🔁: writes the answer again, in the same messages, if `user` asked the question.
-    async fn regenerate(&self, ctx: &BotCtx, reaction: &Reaction, user: UserId) -> Result<()> {
+    async fn regenerate(
+        &self,
+        ctx: &BotCtx,
+        reaction: &GatewayReaction,
+        user: UserId,
+    ) -> Result<()> {
         if self.is_running(reaction.message_id) {
             return Ok(());
         }
@@ -407,7 +414,7 @@ impl Chat {
         };
         let provider = provider(ctx)?;
         // Take the reaction away again, so it can be used for the next try.
-        let _ = reaction.delete(&ctx.http).await;
+        let _ = remove_reaction(&ctx.http, reaction).await;
 
         let question_message = found.question_messages.first().copied();
         let asker = Asker {
@@ -421,7 +428,7 @@ impl Chat {
         // new ones.
         let mut text_messages = Vec::new();
         for id in found.answer_messages {
-            let voice = match reaction.channel_id.message(&ctx.http, id).await {
+            let voice = match get_message(&ctx.http, reaction.channel_id, id).await {
                 Ok(message) => message
                     .flags
                     .is_some_and(|flags| flags.contains(MessageFlags::IS_VOICE_MESSAGE)),
@@ -429,7 +436,7 @@ impl Chat {
                 Err(_) => continue,
             };
             if voice {
-                let _ = reaction.channel_id.delete_message(&ctx.http, id).await;
+                let _ = ctx.http.delete_message(reaction.channel_id, id).await;
             } else {
                 text_messages.push(id);
             }
@@ -441,13 +448,13 @@ impl Chat {
     }
 
     /// ❌ on a finished answer: deletes its messages, if `user` asked the question.
-    async fn delete(&self, ctx: &BotCtx, reaction: &Reaction, user: UserId) -> Result<()> {
+    async fn delete(&self, ctx: &BotCtx, reaction: &GatewayReaction, user: UserId) -> Result<()> {
         let Some(found) = find_answer(ctx, reaction.message_id, user).await? else {
             return Ok(());
         };
         for message in found.answer_messages {
             // A part someone already deleted is fine.
-            if let Err(err) = reaction.channel_id.delete_message(&ctx.http, message).await {
+            if let Err(err) = ctx.http.delete_message(reaction.channel_id, message).await {
                 warn!("couldn't delete an answer message: {err}");
             }
         }

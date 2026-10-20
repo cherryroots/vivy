@@ -24,7 +24,7 @@ All in `src/features/reminders/`, in a reading order that starts with the pure l
 | `store.rs` | The migrations and every SQL query, as plain synchronous `rusqlite` functions, with tests on an in-memory database. |
 | `ui.rs` | Message texts, the Cancel and snooze buttons, the snooze modal, the `/reminders` list and delete menu, and the custom IDs (the `Action` enum). |
 | `scheduler.rs` | The one background task that delivers due reminders, with retries. |
-| `commands.rs` | The slash commands `/reminders` and `/timezone`, written with `poise`. |
+| `commands.rs` | The slash commands `/reminders` and `/timezone`, each a struct deriving `CommandModel` and `CreateCommand` (`twilight-interactions`). |
 | `tools.rs` | The chat tools `create_reminder`, `list_reminders`, `cancel_reminder`. |
 | `import.rs` | Reading reminders from voltgpt's database. |
 | `mod.rs` | Wires it all in: the `Reminders` struct, its `Feature` implementation, the mention handler, the cancel, snooze and delete handlers, and image downloads. |

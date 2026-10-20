@@ -5,34 +5,42 @@
 //! the log thread instead (`playing.rs`). `/games gameboy dashboard` moves it to a new
 //! message, and the old one then says where it went.
 //!
-//! It's a plain message, which keeps Discord's normal font size, unlike an embed. Discord's
-//! newer layout (Components V2) would look closer to a panel, but serenity 0.12 can't read
-//! those messages back, so every edit would log an error.
+//! It's a Components V2 message: a panel with a coloured edge, the GIF inside it, and
+//! dividers between the parts, in Discord's normal font size (unlike an embed). Such a
+//! message has no `content`; everything is in its components, 4000 characters in all.
 
 use std::time::Duration;
 
 use chrono::Utc;
-use serenity::all::{
-    ButtonStyle, ChannelId, CreateActionRow, CreateAllowedMentions, CreateAttachment, CreateButton,
-    EditAttachments, EditMessage, GuildId, Message,
-};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+use twilight_model::channel::message::MessageFlags;
+use twilight_model::channel::message::component::{
+    Button, ButtonStyle, Component, Container, MediaGallery, MediaGalleryItem, Separator,
+    SeparatorSpacingSize, TextDisplay, UnfurledMediaItem,
+};
+use twilight_util::builder::message::ButtonBuilder;
 
 use super::commands::GIF_SCALE;
 use super::console::{RECENT_SECONDS, RECORD_EVERY, console};
 use super::pictures;
 use super::session::{EPISODE_ACTIONS, Now};
 use crate::core::BotCtx;
+use crate::util::discord::{self, ChannelId, Draft, GuildId, Message, no_pings};
 
 /// The buttons' IDs.
 pub const STOP: &str = "games:gameboy:stop";
 pub const SKILLS: &str = "games:gameboy:skills";
 /// The dashboard is edited at most this often, in seconds.
 const FASTEST: u64 = 5;
-/// Under Discord's 2000 characters.
-const MOST_CHARS: usize = 1990;
+/// Under Discord's 4000 characters for a whole Components V2 message.
+const MOST_CHARS: usize = 3800;
+/// The GIF's file name on the message.
+const GIF_NAME: &str = "live.gif";
+/// The panel's edge: teal like her hair while she plays, grey once it's over.
+const LIVE_COLOUR: u32 = 0x2BB3A3;
+const OVER_COLOUR: u32 = 0x80848E;
 
 /// What the dashboard shows besides [`Now`].
 pub struct Board<'a> {
@@ -48,9 +56,32 @@ pub struct Board<'a> {
     pub over: Option<&'a str>,
 }
 
-/// The dashboard's text at `at` (seconds since 1970). When it's too long for one message,
-/// sections are left out: her notes first, then skills, episodes and actions.
-pub fn text(board: &Board<'_>, at: i64) -> String {
+/// The dashboard's text, in the parts the panel shows with dividers between them.
+#[derive(Debug, PartialEq)]
+pub struct Parts {
+    /// The title, whether she's live, and how it went once it's over.
+    pub top: String,
+    /// Her goal, her task and what code reads from the game.
+    pub about: String,
+    /// Her last actions, recent episodes, notes and skills, those that fit.
+    pub middle: Vec<String>,
+    /// What playing used today.
+    pub foot: String,
+}
+
+impl Parts {
+    /// All of it as one text, as long as the panel's text is.
+    pub fn text(&self) -> String {
+        let mut parts = vec![self.top.clone(), self.about.clone()];
+        parts.extend(self.middle.iter().cloned());
+        parts.push(self.foot.clone());
+        parts.join("\n\n")
+    }
+}
+
+/// The dashboard's parts at `at` (seconds since 1970). When it's too long for one message,
+/// parts are left out: her notes first, then skills, episodes and actions.
+pub fn parts(board: &Board<'_>, at: i64) -> Parts {
     let now = board.now;
     let place = if now.area.is_empty() {
         String::new()
@@ -72,7 +103,7 @@ pub fn text(board: &Board<'_>, at: i64) -> String {
         }
         Some(how) => {
             top.push(format!("-# ⏹️ Ended · Session {}{place}", now.session));
-            top.push(how.to_string());
+            top.push(short(how, 1000));
         }
     }
     let mut about = vec![format!("**Goal:** {}", short(&now.goal, 300))];
@@ -125,21 +156,21 @@ pub fn text(board: &Board<'_>, at: i64) -> String {
     );
 
     let mut middle = [actions, episodes, notes, skills];
-    let joined = |middle: &[Option<String>]| {
-        let mut parts = vec![top.join("\n"), about.join("\n")];
-        parts.extend(middle.iter().flatten().cloned());
-        parts.push(foot.clone());
-        parts.join("\n\n")
+    let fitted = |middle: &[Option<String>]| Parts {
+        top: top.join("\n"),
+        about: about.join("\n"),
+        middle: middle.iter().flatten().cloned().collect(),
+        foot: foot.clone(),
     };
-    let mut text = joined(&middle);
+    let mut parts = fitted(&middle);
     for leave_out in [2, 3, 1, 0] {
-        if text.chars().count() <= MOST_CHARS {
+        if parts.text().chars().count() <= MOST_CHARS {
             break;
         }
         middle[leave_out] = None;
-        text = joined(&middle);
+        parts = fitted(&middle);
     }
-    short(&text, MOST_CHARS)
+    parts
 }
 
 /// A bold title over a line per item.
@@ -151,42 +182,109 @@ fn list(title: &str, items: &[String]) -> String {
     format!("**{title}**\n{}", lines.join("\n"))
 }
 
+/// The dashboard as a panel: the top, the GIF (when there is one), her goal and task, then
+/// the middle and the foot between dividers, and the buttons. `log` is a link to the log.
+pub fn panel(parts: &Parts, gif: bool, log: Option<String>, over: bool) -> Vec<Component> {
+    let mut inside = vec![text(&parts.top)];
+    if gif {
+        inside.push(Component::MediaGallery(MediaGallery {
+            id: None,
+            items: vec![MediaGalleryItem {
+                media: UnfurledMediaItem {
+                    url: format!("attachment://{GIF_NAME}"),
+                    proxy_url: None,
+                    height: None,
+                    width: None,
+                    content_type: None,
+                },
+                description: Some("The last seconds of her play".to_string()),
+                spoiler: None,
+            }],
+        }));
+    }
+    inside.push(text(&parts.about));
+    if !parts.middle.is_empty() {
+        inside.push(divider());
+        inside.push(text(&parts.middle.join("\n\n")));
+    }
+    inside.push(divider());
+    inside.push(text(&parts.foot));
+    if let Some(row) = buttons(log, over) {
+        inside.push(row);
+    }
+    let colour = if over { OVER_COLOUR } else { LIVE_COLOUR };
+    vec![Component::Container(Container {
+        id: None,
+        accent_color: Some(Some(colour)),
+        spoiler: None,
+        components: inside,
+    })]
+}
+
+/// A message that's a panel, with the GIF if there is one. Used to edit, it replaces the
+/// message's files (or removes them, without a GIF).
+fn draft(components: Vec<Component>, gif: Option<Vec<u8>>) -> Draft {
+    let draft = Draft::new()
+        .components(components)
+        .flags(MessageFlags::IS_COMPONENTS_V2)
+        .allowed_mentions(no_pings());
+    match gif {
+        Some(gif) => draft.file(GIF_NAME, gif),
+        None => draft.remove_all_files(),
+    }
+}
+
+/// The dashboard as a message to send or edit with: the panel, and the GIF in it.
+pub fn message(parts: &Parts, gif: Option<Vec<u8>>, log: Option<String>, over: bool) -> Draft {
+    draft(panel(parts, gif.is_some(), log, over), gif)
+}
+
+/// A short Components V2 message, like what an old dashboard says once it has moved.
+pub fn note(line: &str) -> Draft {
+    draft(vec![text(line)], None)
+}
+
 /// What an old dashboard says once it has moved to `link`.
 pub fn moved(link: &str) -> String {
     format!("➡️ The dashboard moved: {link}")
 }
 
-/// Stop and Skills while she plays, and a link to the log.
-pub fn buttons(log: Option<String>, over: bool) -> Vec<CreateActionRow> {
-    let mut row = Vec::new();
-    if !over {
-        row.push(
-            CreateButton::new(STOP)
-                .label("Stop")
-                .style(ButtonStyle::Danger),
-        );
-        row.push(
-            CreateButton::new(SKILLS)
-                .label("Skills")
-                .style(ButtonStyle::Secondary),
-        );
-    }
-    if let Some(log) = log {
-        row.push(CreateButton::new_link(log).label("Open log"));
-    }
-    if row.is_empty() {
-        Vec::new()
-    } else {
-        vec![CreateActionRow::Buttons(row)]
-    }
+fn text(content: &str) -> Component {
+    Component::TextDisplay(TextDisplay {
+        id: None,
+        content: content.to_string(),
+    })
 }
 
-/// A link to a channel, or to a message in it.
-pub fn link(guild: GuildId, channel: ChannelId, message: Option<&Message>) -> String {
-    match message {
-        Some(m) => format!("https://discord.com/channels/{guild}/{channel}/{}", m.id),
-        None => format!("https://discord.com/channels/{guild}/{channel}"),
+fn divider() -> Component {
+    Component::Separator(Separator {
+        id: None,
+        divider: Some(true),
+        spacing: Some(SeparatorSpacingSize::Small),
+    })
+}
+
+/// Stop and Skills while she plays, and a link to the log, as a row (if there's any).
+fn buttons(log: Option<String>, over: bool) -> Option<Component> {
+    let mut row: Vec<Button> = Vec::new();
+    if !over {
+        row.push(discord::button(STOP, "Stop", ButtonStyle::Danger).build());
+        row.push(discord::button(SKILLS, "Skills", ButtonStyle::Secondary).build());
     }
+    if let Some(log) = log {
+        row.push(
+            ButtonBuilder::new(ButtonStyle::Link)
+                .label("Open log")
+                .url(log)
+                .build(),
+        );
+    }
+    (!row.is_empty()).then(|| discord::buttons(row))
+}
+
+/// A link to a channel.
+pub fn channel_link(guild: GuildId, channel: ChannelId) -> String {
+    format!("https://discord.com/channels/{guild}/{channel}")
 }
 
 /// One session's dashboard: what it says and where its log is.
@@ -201,8 +299,8 @@ pub struct Live {
 }
 
 impl Live {
-    /// Edits `message` into the dashboard, with a new GIF if there is one, else keeping
-    /// the one it has.
+    /// Edits `message` into the dashboard, with `gif` as its picture (none without one).
+    /// `message` becomes the edited message.
     pub async fn show(
         &self,
         message: &mut Message,
@@ -219,20 +317,15 @@ impl Live {
             log: Some(self.log),
             over,
         };
-        let attachments = match gif {
-            Some(gif) => EditAttachments::new().add(CreateAttachment::bytes(gif, "live.gif")),
-            None => EditAttachments::keep_all(message),
-        };
-        let edit = EditMessage::new()
-            .content(text(&board, Utc::now().timestamp()))
-            .components(buttons(
-                Some(link(self.guild, self.log, None)),
-                over.is_some(),
-            ))
-            .allowed_mentions(CreateAllowedMentions::new())
-            .attachments(attachments);
-        if let Err(err) = message.edit(&self.bot.http, edit).await {
-            warn!("couldn't update the Game Boy dashboard: {err}");
+        let parts = parts(&board, Utc::now().timestamp());
+        let log = Some(channel_link(self.guild, self.log));
+        let edit = self::message(&parts, gif, log, over.is_some());
+        match edit
+            .edit(&self.bot.http, message.channel_id, message.id)
+            .await
+        {
+            Ok(edited) => *message = edited,
+            Err(err) => warn!("couldn't update the Game Boy dashboard: {err:#}"),
         }
     }
 
@@ -249,6 +342,8 @@ impl Live {
     ) -> Message {
         let mut shown_mark = None;
         let mut shown_now = None;
+        // Each edit sends the GIF again: a message's files can't be pointed to otherwise.
+        let mut shown_gif = None;
         loop {
             let tick = async {
                 if every == 0 {
@@ -260,12 +355,10 @@ impl Live {
             tokio::select! {
                 () = tick => {}
                 Some(new) = moves.recv() => {
-                    let edit = EditMessage::new()
-                        .content(moved(&link(self.guild, new.channel_id, Some(&new))))
-                        .components(Vec::new())
-                        .attachments(EditAttachments::new());
-                    if let Err(err) = message.edit(&self.bot.http, edit).await {
-                        warn!("couldn't point the old Game Boy dashboard to the new one: {err}");
+                    let link = discord::message_link(Some(self.guild), new.channel_id, new.id);
+                    let edit = note(&moved(&link));
+                    if let Err(err) = edit.edit(&self.bot.http, message.channel_id, message.id).await {
+                        warn!("couldn't point the old Game Boy dashboard to the new one: {err:#}");
                     }
                     message = new;
                     (shown_mark, shown_now) = (None, None);
@@ -280,8 +373,11 @@ impl Live {
             if !new_gif && shown_now.as_ref() == Some(&current) {
                 continue;
             }
-            let gif = gif.filter(|_| new_gif).map(|(_, gif)| gif);
-            self.show(&mut message, &current, None, gif).await;
+            if let Some((_, gif)) = gif.filter(|_| new_gif) {
+                shown_gif = Some(gif);
+            }
+            self.show(&mut message, &current, None, shown_gif.clone())
+                .await;
             shown_mark = mark.or(shown_mark);
             shown_now = Some(current);
         }
@@ -363,7 +459,7 @@ mod tests {
     fn the_live_dashboard_shows_what_she_is_doing() {
         let now = now();
         assert_eq!(
-            text(&board(&now, None), 1_000 + 24 * 60 + 30),
+            parts(&board(&now, None), 1_000 + 24 * 60 + 30).text(),
             "## Vivy plays Pokémon Red\n\
              -# 🔴 Live · Session 3 · 24 of 60 min · Episode 14 · Route 1\n\n\
              **Goal:** Bring Oak his parcel.\n\
@@ -383,7 +479,7 @@ mod tests {
     fn once_over_it_says_how_it_went_without_the_task() {
         let mut now = now();
         now.stuck = 4;
-        let text = text(&board(&now, Some("**Session over.** Her time was up.")), 0);
+        let text = parts(&board(&now, Some("**Session over.** Her time was up.")), 0).text();
         assert!(
             text.starts_with(
                 "## Vivy plays Pokémon Red\n-# ⏹️ Ended · Session 3 · Route 1\n\
@@ -398,9 +494,9 @@ mod tests {
     #[test]
     fn a_long_dashboard_leaves_out_her_notes_first() {
         let mut now = now();
-        now.notes = vec!["n".repeat(150); 12];
+        now.notes = vec!["n".repeat(150); 30];
         now.stuck = 3;
-        let text = text(&board(&now, None), 0);
+        let text = parts(&board(&now, None), 0).text();
         assert!(text.chars().count() <= MOST_CHARS);
         assert!(!text.contains("Her notes"), "{text}");
         assert!(text.contains("Last actions") && text.contains("Skills"));
@@ -409,11 +505,26 @@ mod tests {
     }
 
     #[test]
-    fn buttons_stop_and_open_the_log() {
-        let live = buttons(Some("https://discord.com/channels/1/2".to_string()), false);
-        let json = serde_json::to_string(&live).unwrap();
+    fn the_panel_has_the_gif_and_the_buttons() {
+        let now = now();
+        let parts = parts(&board(&now, None), 0);
+        let log = Some("https://discord.com/channels/1/2".to_string());
+        let live = message(&parts, Some(vec![1, 2, 3]), log.clone(), false);
+        assert_eq!(live.flags, Some(MessageFlags::IS_COMPONENTS_V2));
+        assert!(
+            live.content.is_none(),
+            "a Components V2 message has no content"
+        );
+        assert_eq!(live.files.len(), 1);
+        let json = serde_json::to_string(&live.components).unwrap();
+        assert!(json.starts_with(r#"[{"type":17,"#), "one container: {json}");
+        assert!(json.contains("attachment://live.gif"));
         assert!(json.contains(STOP) && json.contains(SKILLS) && json.contains("Open log"));
-        let over = serde_json::to_string(&buttons(None, true)).unwrap();
-        assert_eq!(over, "[]");
+
+        let over = message(&parts, None, log, true);
+        assert!(over.files.is_empty() && over.keep_files == Some(Vec::new()));
+        let json = serde_json::to_string(&over.components).unwrap();
+        assert!(!json.contains(STOP) && !json.contains("attachment://"));
+        assert!(json.contains("Open log"));
     }
 }

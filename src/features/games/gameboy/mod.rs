@@ -61,7 +61,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-pub use commands::gameboy;
+pub use commands::{GameboyCommand, autocomplete, gameboy};
 pub use playing::on_component;
 
 /// `[features.games.gameboy]` settings.

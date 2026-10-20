@@ -37,7 +37,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::ai::ToolDef;
-use crate::core::{Asker, BotCtx, Command, Feature, Panel, Result, Stat};
+use crate::core::{Asker, BotCtx, Command, ComponentInteraction, Feature, Panel, Result, Stat};
 
 pub struct Memory;
 
@@ -62,7 +62,7 @@ impl Feature for Memory {
     async fn on_component(
         &self,
         ctx: &BotCtx,
-        i: &serenity::all::ComponentInteraction,
+        i: &ComponentInteraction,
         action: &str,
     ) -> Result<()> {
         commands::on_component(ctx, i, action).await

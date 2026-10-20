@@ -36,10 +36,10 @@ use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use crate::util::discord::{ChannelId, GuildId, Message, MessageId, get_message};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use serenity::all::{ChannelId, GuildId, Message, MessageId, MessageUpdateEvent};
 use tracing::{debug, warn};
 
 use crate::core::{BotCtx, Command, Feature, Result, Stat};
@@ -161,7 +161,7 @@ impl Feature for Snails {
         if !still_waiting || ctx.shutdown.is_cancelled() {
             return Ok(());
         }
-        match msg.channel_id.message(&ctx.http, msg.id).await {
+        match get_message(&ctx.http, msg.channel_id, msg.id).await {
             Ok(fresh) => {
                 if let Err(err) = check::on_new_message(ctx, guild, &fresh).await {
                     warn!("couldn't save the message's late link previews: {err:#}");
@@ -175,22 +175,15 @@ impl Feature for Snails {
 
     /// An edit (or a link preview Discord added later): reads the message again so added
     /// links and pictures count and removed ones stop counting.
-    async fn on_message_edit(&self, ctx: &BotCtx, event: &MessageUpdateEvent) -> Result<()> {
-        let Some(guild) = event.guild_id else {
+    async fn on_message_edit(&self, ctx: &BotCtx, msg: &Message) -> Result<()> {
+        let Some(guild) = msg.guild_id else {
             return Ok(());
         };
-        // Pins, reactions' flags and the like: nothing that's indexed changed.
-        if event.content.is_none() && event.embeds.is_none() && event.attachments.is_none() {
-            return Ok(());
-        }
-        // Skip the read when the message has nothing to index now and had nothing before.
-        let may_have_content = event
-            .content
-            .as_deref()
-            .is_some_and(|c| !media::links(c).is_empty())
-            || event.embeds.as_ref().is_some_and(|e| !e.is_empty())
-            || event.attachments.as_ref().is_some_and(|a| !a.is_empty());
-        let id = event.id.get();
+        // Skip the database when the message has nothing to index now and had nothing before.
+        let may_have_content = !media::links(&msg.content).is_empty()
+            || !msg.embeds.is_empty()
+            || !msg.attachments.is_empty();
+        let id = msg.id.get();
         if !may_have_content
             && !ctx
                 .db
@@ -199,19 +192,12 @@ impl Feature for Snails {
         {
             return Ok(());
         }
-        let msg = match event.channel_id.message(&ctx.http, event.id).await {
-            Ok(msg) => msg,
-            Err(err) => {
-                debug!("couldn't read an edited message: {err}");
-                return Ok(());
-            }
-        };
         if msg.author.bot {
             return Ok(());
         }
         // This read is newer than the recheck would be, so a waiting recheck is skipped.
         self.waiting.lock().unwrap().remove(&msg.id.get());
-        if let Err(err) = check::on_new_message(ctx, guild, &msg).await {
+        if let Err(err) = check::on_new_message(ctx, guild, msg).await {
             warn!("couldn't save an edited message's links and pictures: {err:#}");
         }
         Ok(())

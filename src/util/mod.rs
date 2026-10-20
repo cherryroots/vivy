@@ -2,6 +2,7 @@
 //! media, drawing pictures, and pulling text out of messages. Nothing here knows about a
 //! specific feature.
 
+pub mod discord;
 pub mod frames;
 pub mod http;
 pub mod media;

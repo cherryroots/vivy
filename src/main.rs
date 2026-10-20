@@ -12,17 +12,23 @@ use std::time::Duration;
 
 use anyhow::Context as _;
 use chrono::Utc;
-use poise::serenity_prelude as serenity;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
+use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
+use twilight_gateway::{
+    Config as ShardConfig, Event, EventTypeFlags, Intents, Shard, StreamExt as _,
+};
 
 use crate::core::config::Config;
 use crate::core::db::{self, Db};
+use crate::core::gateway::Gateway;
+use crate::core::interaction::FeatureCommand;
 use crate::core::legacy::{self, Outcome};
 use crate::core::logging::{self, LogLine};
 use crate::core::{BotCtx, Feature, Timers, dispatcher};
+use crate::util::discord::{ChannelId, GuildId, Http};
 use crate::util::env_key;
 
 #[tokio::main]
@@ -109,162 +115,216 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         }
     }
 
-    // Slash commands. The category remembers which feature a command belongs to, for gating.
+    // Discord's REST API, and who the bot is.
+    let http = Arc::new(Http::new(token.clone()));
+    let me = http
+        .current_user()
+        .await
+        .context("logging in to Discord (is DISCORD_TOKEN right?)")?
+        .model()
+        .await?;
+    let application_id = http
+        .current_user_application()
+        .await
+        .context("reading the bot's Discord application")?
+        .model()
+        .await?
+        .id;
+    let app_owners = crate::core::ctx::app_owners(&http).await;
+
+    // Slash commands, each remembering its feature so it only runs where that feature is on.
     let mut commands = Vec::new();
     for feature in features.iter() {
-        for mut command in feature.commands() {
-            set_category(&mut command, feature.name());
-            commands.push(command);
+        for command in feature.commands() {
+            commands.push(FeatureCommand {
+                feature: feature.name(),
+                command,
+            });
         }
     }
 
+    // The gateway connections. Message content and presences are privileged: both need
+    // turning on in the Developer Portal.
+    let intents = Intents::GUILDS
+        | Intents::GUILD_MESSAGES
+        | Intents::GUILD_MESSAGE_REACTIONS
+        | Intents::GUILD_EMOJIS_AND_STICKERS
+        | Intents::DIRECT_MESSAGES
+        | Intents::DIRECT_MESSAGE_REACTIONS
+        | Intents::MESSAGE_CONTENT
+        | Intents::GUILD_PRESENCES;
+    let shards: Vec<Shard> = twilight_gateway::create_recommended(
+        &http,
+        ShardConfig::new(token, intents),
+        |_, builder| builder.build(),
+    )
+    .await
+    .context("asking Discord how to connect")?
+    .collect();
+    let gateway = Arc::new(Gateway::new(
+        shards.iter().map(|shard| shard.sender()).collect(),
+    ));
+    // What the gateway tells us about servers, channels, members and emoji. Messages
+    // aren't kept: features fetch the ones they need.
+    let cache = Arc::new(
+        DefaultInMemoryCache::builder()
+            .resource_types(ResourceType::all() - ResourceType::MESSAGE)
+            .build(),
+    );
+
     let (events, _) = broadcast::channel(100);
-
-    let options = poise::FrameworkOptions {
-        commands,
-        on_error: dispatcher::on_error,
-        command_check: Some(dispatcher::command_check),
-        event_handler: |framework, event| {
-            Box::pin(dispatcher::handle_event(event, framework.user_data))
-        },
-        owners: config
-            .admins
-            .iter()
-            .map(|&id| serenity::UserId::new(id))
-            .collect(),
-        // There are no prefix commands: mentions go to the features through the dispatcher.
-        // Without this, poise also reads "@Vivy remind me ..." as a command and warns that
-        // it doesn't know "remind".
-        prefix_options: poise::PrefixFrameworkOptions {
-            mention_as_prefix: false,
-            ..Default::default()
-        },
-        ..Default::default()
+    let bot = BotCtx {
+        http,
+        cache,
+        gateway,
+        application_id,
+        commands: Arc::new(commands),
+        db,
+        config: config.clone(),
+        ai,
+        web,
+        events,
+        shutdown: shutdown.clone(),
+        tasks: tasks.clone(),
+        timers,
+        features: features.clone(),
+        bot_id: me.id,
+        bot_name: me.name.clone(),
+        app_owners: Arc::new(app_owners),
+        started_at: Utc::now(),
     };
+    if let Some(channel) = config.logging.log_channel {
+        logging::spawn_discord_poster(
+            bot.http.clone(),
+            ChannelId::new(channel),
+            log_queue,
+            bot.shutdown.clone(),
+            &bot.tasks,
+        );
+    }
 
-    // `setup` runs once, when Discord says we're ready. It builds the `BotCtx` that every
-    // handler receives and starts the features' background tasks.
-    let setup_shutdown = shutdown.clone();
-    let setup_tasks = tasks.clone();
-    let framework = poise::Framework::builder()
-        .options(options)
-        // poise's owners come from `admins` in config.toml, not from the Discord application
-        // (Vivy's own owner, `BotCtx::is_owner`, is the application's). This has to be set here: the builder overwrites `initialize_owners` in the options.
-        .initialize_owners(false)
-        .setup(move |ctx, ready, framework| {
-            Box::pin(async move {
-                let app_owners = crate::core::ctx::app_owners(&ctx.http).await;
-                let bot = BotCtx {
-                    http: ctx.http.clone(),
-                    cache: ctx.cache.clone(),
-                    shard_manager: framework.shard_manager().clone(),
-                    db,
-                    config: config.clone(),
-                    ai,
-                    web,
-                    events,
-                    shutdown: setup_shutdown,
-                    tasks: setup_tasks,
-                    timers,
-                    features: features.clone(),
-                    bot_id: ready.user.id,
-                    app_owners: Arc::new(app_owners),
-                    started_at: Utc::now(),
-                };
-                if let Some(channel) = config.logging.log_channel {
-                    let channel = serenity::ChannelId::new(channel);
-                    logging::spawn_discord_poster(
-                        bot.http.clone(),
-                        channel,
-                        log_queue,
-                        bot.shutdown.clone(),
-                        &bot.tasks,
-                    );
-                }
-
-                // `setup` only ever runs once, so if it failed the bot would stay online
-                // but never answer. Slash commands failing to register isn't worth that:
-                // the ones from the last start keep working.
-                if let Err(err) = register_commands(ctx, ready, framework).await {
-                    error!("{err:#}");
-                }
-                dispatcher::spawn_bot_events(&bot);
-
-                let mut started = Vec::new();
-                for feature in features.iter() {
-                    if !bot.gate(feature.name()).enabled {
-                        continue;
-                    }
-                    match feature.start(&bot).await {
-                        Ok(()) => started.push(feature.name()),
-                        Err(err) => error!(feature = feature.name(), "failed to start: {err:#}"),
-                    }
-                }
-
-                info!(
-                    target: "lifecycle",
-                    "🟢 **Started** Vivy {} (`{}`) as {} · features: {}{}",
-                    crate::core::VERSION,
-                    crate::core::GIT_COMMIT,
-                    ready.user.name,
-                    started.join(", "),
-                    import_summary,
-                );
-                Ok(bot)
-            })
-        })
-        .build();
-
-    // Message content and presences are privileged: both need turning on in the Developer Portal.
-    let intents = serenity::GatewayIntents::non_privileged()
-        | serenity::GatewayIntents::MESSAGE_CONTENT
-        | serenity::GatewayIntents::GUILD_PRESENCES;
-    let mut client = serenity::ClientBuilder::new(&token, intents)
-        .framework(framework)
-        .await
-        .context("creating the Discord client")?;
-    let shard_manager = client.shard_manager.clone();
+    // One task per shard reads its events. The first Ready starts the features.
+    let started = Arc::new(std::sync::Mutex::new(Some(import_summary)));
     info!("connecting to Discord");
+    let mut shard_tasks = tokio::task::JoinSet::new();
+    for (number, shard) in shards.into_iter().enumerate() {
+        shard_tasks.spawn(run_shard(bot.clone(), shard, number, started.clone()));
+    }
 
-    tokio::select! {
-        result = client.start() => result.context("the Discord connection stopped")?,
-        () = shutdown_signal() => {
-            info!(target: "lifecycle", "🔴 **Shutting down**");
-            // Tell background tasks to stop, then give them a moment to finish (the control
-            // panel marks itself offline, the log poster sends its last lines).
-            shutdown.cancel();
-            tasks.close();
-            if tokio::time::timeout(Duration::from_secs(10), tasks.wait()).await.is_err() {
-                warn!("background tasks didn't stop within 10 seconds");
-            }
-            shard_manager.shutdown_all().await;
-        }
+    // Run until Ctrl+C or SIGTERM, or until Discord refuses the connection for good (a
+    // wrong token, or an intent that isn't turned on in the Developer Portal).
+    let refused = tokio::select! {
+        () = shutdown_signal() => false,
+        _ = shard_tasks.join_next() => true,
+    };
+    if refused {
+        error!("the Discord connection stopped and can't reconnect");
+    }
+    info!(target: "lifecycle", "🔴 **Shutting down**");
+    // Tell background tasks to stop, then give them a moment to finish (the control
+    // panel marks itself offline, the log poster sends its last lines).
+    shutdown.cancel();
+    tasks.close();
+    if tokio::time::timeout(Duration::from_secs(10), tasks.wait())
+        .await
+        .is_err()
+    {
+        warn!("background tasks didn't stop within 10 seconds");
+    }
+    bot.gateway.close();
+    let _ = tokio::time::timeout(Duration::from_secs(2), shard_tasks.join_all()).await;
+    if refused {
+        anyhow::bail!("the Discord connection stopped");
     }
     Ok(())
 }
 
-/// Marks `command` and its subcommands as `feature`'s. The gate check looks at the command
-/// that runs, which for `/memory show` is `show`, so subcommands need it too.
-fn set_category(command: &mut poise::Command<BotCtx, crate::core::Error>, feature: &'static str) {
-    command.category = Some(feature.into());
-    for sub in &mut command.subcommands {
-        set_category(sub, feature);
+/// Reads one shard's events until the bot stops: the cache sees each one first, then the
+/// dispatcher hands it to the features. `started` holds the import summary until the first
+/// Ready, which runs [`on_first_ready`].
+async fn run_shard(
+    bot: BotCtx,
+    mut shard: Shard,
+    number: usize,
+    started: Arc<std::sync::Mutex<Option<String>>>,
+) {
+    while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
+        let event = match item {
+            Ok(event) => event,
+            Err(err) => {
+                warn!("error from the Discord connection: {err}");
+                continue;
+            }
+        };
+        if let Event::GatewayClose(frame) = &event {
+            if bot.shutdown.is_cancelled() {
+                break;
+            }
+            // Most closes are followed by a reconnect. 4014 means an intent (message
+            // content or presences) isn't turned on in the Developer Portal.
+            warn!("Discord closed the connection: {frame:?}");
+        }
+        bot.cache.update(&event);
+        bot.gateway
+            .record_latency(number, shard.latency().average());
+        if let Event::Ready(ready) = &event {
+            let summary = started.lock().unwrap().take();
+            if let Some(summary) = summary {
+                let guilds = ready.guilds.iter().map(|guild| guild.id).collect();
+                on_first_ready(&bot, guilds, summary).await;
+            }
+        }
+        dispatcher::handle_event(&bot, event).await;
     }
+}
+
+/// Runs once, when Discord first says we're connected: registers the slash commands, starts
+/// delivering bot events, and starts every enabled feature. Then the 🟢 Started line.
+async fn on_first_ready(bot: &BotCtx, guilds: Vec<GuildId>, import_summary: String) {
+    // Failing to register isn't worth stopping for: the ones from the last start keep working.
+    if let Err(err) = register_commands(bot, &guilds).await {
+        error!("{err:#}");
+    }
+    dispatcher::spawn_bot_events(bot);
+
+    let mut started = Vec::new();
+    for feature in bot.features.iter() {
+        if !bot.gate(feature.name()).enabled {
+            continue;
+        }
+        match feature.start(bot).await {
+            Ok(()) => started.push(feature.name()),
+            Err(err) => error!(feature = feature.name(), "failed to start: {err:#}"),
+        }
+    }
+
+    info!(
+        target: "lifecycle",
+        "🟢 **Started** Vivy {} (`{}`) as {} · features: {}{}",
+        crate::core::VERSION,
+        crate::core::GIT_COMMIT,
+        bot.bot_name,
+        started.join(", "),
+        import_summary,
+    );
 }
 
 /// Registers the slash commands globally, and removes per-server commands that voltgpt
 /// registered under the same application, so they don't show up twice.
-async fn register_commands(
-    ctx: &serenity::Context,
-    ready: &serenity::Ready,
-    framework: &poise::Framework<BotCtx, crate::core::Error>,
-) -> anyhow::Result<()> {
-    poise::builtins::register_globally(ctx, &framework.options().commands)
+async fn register_commands(bot: &BotCtx, guilds: &[GuildId]) -> anyhow::Result<()> {
+    let definitions: Vec<_> = bot
+        .commands
+        .iter()
+        .map(|command| command.command.definition.clone())
+        .collect();
+    let interaction = bot.http.interaction(bot.application_id);
+    interaction
+        .set_global_commands(&definitions)
         .await
         .context("registering slash commands")?;
-    for guild in &ready.guilds {
-        if let Err(err) = guild.id.set_commands(&ctx.http, Vec::new()).await {
-            warn!("couldn't clear old commands in server {}: {err}", guild.id);
+    for &guild in guilds {
+        if let Err(err) = interaction.set_guild_commands(guild, &[]).await {
+            warn!("couldn't clear old commands in server {guild}: {err}");
         }
     }
     Ok(())

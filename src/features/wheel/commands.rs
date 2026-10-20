@@ -1,51 +1,71 @@
 //! `/wheel`, with `status` for everyone and `add`, `movie`, `bet` and `reset` for admins.
-//! Each subcommand keeps its old function name; `rename` sets the name Discord shows.
+//! The subcommands are the variants of [`WheelCommand`]; each has a struct with its options.
 
 use anyhow::Context as _;
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{GuildId, User};
 use tracing::info;
+use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_model::user::User;
 
 use super::actions::{Game, active_game, redraw_last, remember_status, status_message};
 use super::ledger::Bet;
 use super::{names, store, ui};
-use crate::core::{Context, Result, user_error};
+use crate::core::{Command, CommandCtx, Result, user_error};
+use crate::util::discord::{Draft, GuildId};
 
-/// The movie wheel
-#[poise::command(
-    slash_command,
-    guild_only,
-    subcommands(
-        "wheel_status",
-        "wheel_add",
-        "wheel_movie",
-        "insert_bet",
-        "reset_wheel"
-    ),
-    subcommand_required
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "wheel", desc = "The movie wheel", contexts = "guild")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "read once per command; a picked user is big, and that's fine"
 )]
-pub async fn wheel(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
+pub enum WheelCommand {
+    #[command(name = "status")]
+    Status(WheelStatus),
+    #[command(name = "add")]
+    Add(WheelAdd),
+    #[command(name = "movie")]
+    Movie(WheelMovie),
+    #[command(name = "bet")]
+    Bet(WheelBet),
+    #[command(name = "reset")]
+    Reset(WheelReset),
 }
 
-/// The current round, or an earlier one
-#[poise::command(slash_command, guild_only, rename = "status")]
-pub async fn wheel_status(
-    ctx: Context<'_>,
-    #[description = "Which round to show (default: the current one)"]
-    #[min = 1]
+pub fn wheel() -> Command {
+    Command::slash::<WheelCommand>(|ctx| Box::pin(run(ctx)))
+}
+
+async fn run(ctx: CommandCtx) -> Result<()> {
+    match ctx.parse::<WheelCommand>()? {
+        WheelCommand::Status(args) => wheel_status(ctx, args).await,
+        // The admin commands answer privately.
+        WheelCommand::Add(args) => wheel_add(ctx.ephemeral(), args).await,
+        WheelCommand::Movie(args) => wheel_movie(ctx.ephemeral(), args).await,
+        WheelCommand::Bet(args) => insert_bet(ctx.ephemeral(), args).await,
+        WheelCommand::Reset(args) => reset_wheel(ctx.ephemeral(), args).await,
+    }
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "status", desc = "The current round, or an earlier one")]
+pub struct WheelStatus {
+    /// Which round to show (default: the current one)
+    #[command(min_value = 1)]
     round: Option<i64>,
-    #[description = "Which season (default: the one being played)"]
-    #[min = 1]
+    /// Which season (default: the one being played)
+    #[command(min_value = 1)]
     season: Option<i64>,
-) -> Result<()> {
-    let guild = guild(ctx)?;
+}
+
+async fn wheel_status(ctx: CommandCtx, args: WheelStatus) -> Result<()> {
+    let WheelStatus { round, season } = args;
+    let guild = guild(&ctx)?;
     // Looking up names and drawing can take longer than Discord waits for an answer.
     ctx.defer().await?;
     let now = Utc::now().timestamp();
     let game = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -76,18 +96,15 @@ pub async fn wheel_status(
             .filter(|&n| n < count)
             .ok_or_else(|| user_error(format!("Pick a round from 1 to {count}.")))?,
     };
-    let status = status_message(ctx.data(), guild, &game, index).await?;
+    let status = status_message(&ctx.bot, guild, &game, index).await?;
+    let (name, png) = status.picture;
     let handle = ctx
-        .send(
-            CreateReply::default()
-                .attachment(status.picture)
-                .components(status.buttons),
-        )
+        .send(Draft::new().file(name, png).components(status.buttons))
         .await?;
     // The current round's message is the one admin commands redraw later.
     if index == count - 1 && game.active {
-        let sent = handle.message().await?;
-        remember_status(ctx.data(), guild, sent.channel_id, sent.id).await;
+        let sent = handle.message(&ctx).await?;
+        remember_status(&ctx.bot, guild, sent.channel_id, sent.id).await;
     }
     Ok(())
 }
@@ -100,25 +117,52 @@ async fn redraw_note(bot: &crate::core::BotCtx, guild: GuildId) -> String {
     }
 }
 
-/// Add users to the wheel with the movies they picked, or take them off (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "add")]
-#[allow(clippy::too_many_arguments)]
-pub async fn wheel_add(
-    ctx: Context<'_>,
-    #[description = "User to add to the wheel"] user: User,
-    #[description = "The movie they picked"] movie: Option<String>,
-    #[description = "Another user"] user2: Option<User>,
-    #[description = "The movie user2 picked"] movie2: Option<String>,
-    #[description = "Another user"] user3: Option<User>,
-    #[description = "The movie user3 picked"] movie3: Option<String>,
-    #[description = "Another user"] user4: Option<User>,
-    #[description = "The movie user4 picked"] movie4: Option<String>,
-    #[description = "Another user"] user5: Option<User>,
-    #[description = "The movie user5 picked"] movie5: Option<String>,
-    #[description = "Remove the users from the wheel"] remove: Option<bool>,
-) -> Result<()> {
-    require_admin(ctx)?;
-    let guild = guild(ctx)?;
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "add",
+    desc = "Add users to the wheel with the movies they picked, or take them off (admins)"
+)]
+pub struct WheelAdd {
+    /// User to add to the wheel
+    user: User,
+    /// The movie they picked
+    movie: Option<String>,
+    /// Another user
+    user2: Option<User>,
+    /// The movie user2 picked
+    movie2: Option<String>,
+    /// Another user
+    user3: Option<User>,
+    /// The movie user3 picked
+    movie3: Option<String>,
+    /// Another user
+    user4: Option<User>,
+    /// The movie user4 picked
+    movie4: Option<String>,
+    /// Another user
+    user5: Option<User>,
+    /// The movie user5 picked
+    movie5: Option<String>,
+    /// Remove the users from the wheel
+    remove: Option<bool>,
+}
+
+async fn wheel_add(ctx: CommandCtx, args: WheelAdd) -> Result<()> {
+    let WheelAdd {
+        user,
+        movie,
+        user2,
+        movie2,
+        user3,
+        movie3,
+        user4,
+        movie4,
+        user5,
+        movie5,
+        remove,
+    } = args;
+    require_admin(&ctx)?;
+    let guild = guild(&ctx)?;
     let remove = remove.unwrap_or(false);
     // Each user once, in the order given, with their movie. A movie without its user is a
     // mistake worth pointing out rather than dropping.
@@ -149,7 +193,7 @@ pub async fn wheel_add(
     let list = added.clone();
     // Whether each user was changed (added or removed), in the same order.
     let changed: Vec<bool> = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -172,7 +216,7 @@ pub async fn wheel_add(
         .await?;
 
     let ids: Vec<u64> = added.iter().map(|(id, _)| *id).collect();
-    let names = names::lookup(ctx.data(), guild, &ids).await;
+    let names = names::lookup(&ctx.bot, guild, &ids).await;
     let mut lines = Vec::new();
     for ((id, movie), &changed) in added.iter().zip(&changed) {
         let name = ui::name(&names, *id);
@@ -191,26 +235,33 @@ pub async fn wheel_add(
         }
         lines.push(line);
     }
-    lines.push(redraw_note(ctx.data(), guild).await);
+    lines.push(redraw_note(&ctx.bot, guild).await);
     ctx.say(lines.join("\n")).await?;
     Ok(())
 }
 
-/// Set or change the movie someone on the wheel picked (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "movie")]
-pub async fn wheel_movie(
-    ctx: Context<'_>,
-    #[description = "Who picked the movie"] user: User,
-    #[description = "The movie; leave it out to clear it"] movie: Option<String>,
-) -> Result<()> {
-    require_admin(ctx)?;
-    let guild = guild(ctx)?;
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "movie",
+    desc = "Set or change the movie someone on the wheel picked (admins)"
+)]
+pub struct WheelMovie {
+    /// Who picked the movie
+    user: User,
+    /// The movie; leave it out to clear it
+    movie: Option<String>,
+}
+
+async fn wheel_movie(ctx: CommandCtx, args: WheelMovie) -> Result<()> {
+    let WheelMovie { user, movie } = args;
+    require_admin(&ctx)?;
+    let guild = guild(&ctx)?;
     let movie = ui::clean_movie(movie.as_deref().unwrap_or("")).map_err(user_error)?;
     let id = user.id.get();
     let saved = movie.clone();
     let now = Utc::now().timestamp();
     let on_wheel = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| {
             let tx = conn.transaction()?;
@@ -221,7 +272,7 @@ pub async fn wheel_movie(
         })
         .await?;
 
-    let names = names::lookup(ctx.data(), guild, &[id]).await;
+    let names = names::lookup(&ctx.bot, guild, &[id]).await;
     let name = ui::name(&names, id);
     let text = match (on_wheel, movie) {
         (false, _) => format!("{name} isn't on the wheel. Add them with /wheel add."),
@@ -231,27 +282,38 @@ pub async fn wheel_movie(
     if on_wheel {
         info!("{text}");
     }
-    let text = format!("{text}\n{}", redraw_note(ctx.data(), guild).await);
+    let text = format!("{text}\n{}", redraw_note(&ctx.bot, guild).await);
     ctx.say(text).await?;
     Ok(())
 }
 
-/// Add, change or remove a bet in any round of the current season (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "bet")]
-pub async fn insert_bet(
-    ctx: Context<'_>,
-    #[description = "Who made the bet"] by: User,
-    #[description = "Who the bet is on"] on: User,
-    #[description = "How much was bet; 0 removes the bet"]
-    #[min = 0]
-    #[max = 1_000_000_000]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "bet",
+    desc = "Add, change or remove a bet in any round of the current season (admins)"
+)]
+pub struct WheelBet {
+    /// Who made the bet
+    by: User,
+    /// Who the bet is on
+    on: User,
+    /// How much was bet; 0 removes the bet
+    #[command(min_value = 0, max_value = 1_000_000_000)]
     amount: i64,
-    #[description = "Which round"]
-    #[min = 1]
+    /// Which round
+    #[command(min_value = 1)]
     round: i64,
-) -> Result<()> {
-    require_admin(ctx)?;
-    let guild = guild(ctx)?;
+}
+
+async fn insert_bet(ctx: CommandCtx, args: WheelBet) -> Result<()> {
+    let WheelBet {
+        by,
+        on,
+        amount,
+        round,
+    } = args;
+    require_admin(&ctx)?;
+    let guild = guild(&ctx)?;
     // Discord enforces the range too; this guards the ledger's math either way.
     if !(0..=1_000_000_000).contains(&amount) {
         return Err(user_error("The amount must be from 0 to 1,000,000,000."));
@@ -263,7 +325,7 @@ pub async fn insert_bet(
     };
     let saved = bet.clone();
     let changed =
-        ctx.data()
+        ctx.bot
             .db
             .call(move |conn| {
                 let tx = conn.transaction()?;
@@ -283,7 +345,7 @@ pub async fn insert_bet(
             })
             .await?;
 
-    let names = names::lookup(ctx.data(), guild, &[bet.by, bet.on]).await;
+    let names = names::lookup(&ctx.bot, guild, &[bet.by, bet.on]).await;
     let (by, on) = (ui::name(&names, bet.by), ui::name(&names, bet.on));
     let text = match (amount, changed) {
         (0, true) => format!("Removed the bet by {by} on {on} in round {round}."),
@@ -297,34 +359,40 @@ pub async fn insert_bet(
     Ok(())
 }
 
-/// Start a new season of the wheel; the old one stays viewable (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "reset")]
-pub async fn reset_wheel(
-    ctx: Context<'_>,
-    #[description = "Keep the current wheel options"] keep_options: Option<bool>,
-) -> Result<()> {
-    require_admin(ctx)?;
-    let guild = guild(ctx)?;
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "reset",
+    desc = "Start a new season of the wheel; the old one stays viewable (admins)"
+)]
+pub struct WheelReset {
+    /// Keep the current wheel options
+    keep_options: Option<bool>,
+}
+
+async fn reset_wheel(ctx: CommandCtx, args: WheelReset) -> Result<()> {
+    let WheelReset { keep_options } = args;
+    require_admin(&ctx)?;
+    let guild = guild(&ctx)?;
     // The button remembers which season it ends (0: none), so it can't end a later one.
     let season = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| Ok(store::active_season(conn, guild.get())?))
         .await?
         .unwrap_or(0);
     let (text, button) = ui::reset_confirmation(keep_options.unwrap_or(false), season);
-    ctx.send(CreateReply::default().content(text).components(button))
+    ctx.send(Draft::new().content(text).components(button))
         .await?;
     Ok(())
 }
 
-fn guild(ctx: Context<'_>) -> Result<GuildId> {
+fn guild(ctx: &CommandCtx) -> Result<GuildId> {
     ctx.guild_id()
         .context("guild_only command without a server")
 }
 
-fn require_admin(ctx: Context<'_>) -> Result<()> {
-    if ctx.data().is_admin(ctx.author().id) {
+fn require_admin(ctx: &CommandCtx) -> Result<()> {
+    if ctx.bot.is_admin(ctx.author_id()) {
         Ok(())
     } else {
         Err(user_error("Only admins can use this command."))
@@ -335,8 +403,8 @@ fn require_admin(ctx: Context<'_>) -> Result<()> {
 mod tests {
     #[test]
     fn subcommands_have_short_names() {
-        let wheel = super::wheel();
-        let names: Vec<&str> = wheel.subcommands.iter().map(|c| c.name.as_ref()).collect();
+        let wheel = super::wheel().definition;
+        let names: Vec<&str> = wheel.options.iter().map(|c| c.name.as_ref()).collect();
         assert_eq!(wheel.name, "wheel");
         assert_eq!(names, ["status", "add", "movie", "bet", "reset"]);
     }
