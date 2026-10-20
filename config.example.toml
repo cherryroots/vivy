@@ -326,12 +326,22 @@ picture_quality = "medium"
 victor_picture_quality = "high"
 
 [features.games.gameboy]
-# /games gameboy: a Game Boy (and Game Boy Color) emulator. For now admins play it by hand;
-# later Vivy plays it herself. The folder with the ROMs (.gb and .gbc files): your own
-# copies of games you own.
+# /games gameboy: a Game Boy (and Game Boy Color) emulator. Admins play it by hand, or let
+# Vivy play by herself with /games gameboy play. The folder with the ROMs (.gb and .gbc
+# files): your own copies of games you own.
 roms_dir = "roms"
-# The folder for save states, a folder per ROM inside it.
+# The folder for save states, a folder per ROM inside it, with her skills, journal and
+# checkpoints.
 saves_dir = "gameboy"
+# Minutes one /games gameboy play lasts, unless it says.
+session_minutes = 60
+# USD a day the paid models may cost while she plays (Haiku acting, and planning once the
+# free tokens are used up), at list prices.
+daily_usd = 1.5
+# OpenAI's free data-sharing tokens a day, which the strategist plans on. It stops before a
+# call could cross this. Its model is the game_plan job's: set it with
+# [ai.openai.jobs.game_plan] model = "gpt-6-astra" (left out: the OpenAI model above).
+free_tokens = 1000000
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.

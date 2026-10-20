@@ -101,6 +101,16 @@ impl Timer {
     pub fn next_at(&self, at: DateTime<Utc>) {
         self.timers.update(self.name, |state| state.next = Some(at));
     }
+
+    /// The loop has ended (one that runs only for a while, like a Game Boy session), so it
+    /// leaves the list until it adds itself again.
+    pub fn ended(&self) {
+        self.timers
+            .0
+            .lock()
+            .unwrap()
+            .retain(|state| state.name != self.name);
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +139,10 @@ mod tests {
         timers.add("Reminders", "at the next reminder");
         assert_eq!(timers.list().len(), 2);
         assert_eq!(timers.list()[0].next, None);
+
+        // A loop that ends leaves the list.
+        timer.ended();
+        assert_eq!(timers.list().len(), 1);
+        assert_eq!(timers.list()[0].name, "Snail retries");
     }
 }

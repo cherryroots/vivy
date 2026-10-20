@@ -1,5 +1,6 @@
 //! `/games gameboy ...`: playing the Game Boy by hand, for admins. There's one Game Boy for
-//! the whole bot, and it only moves when someone presses something here.
+//! the whole bot, and it only moves when someone presses something here, or while she
+//! plays by herself (`playing.rs`: `play`, `stop`, `status`).
 //!
 //! - `load`: put a ROM from `roms_dir` in and switch it on
 //! - `press`: press buttons, like `a a up*3 start`, and see a GIF of what happened
@@ -13,6 +14,7 @@
 //! - `task`: a cheap model (the supervisor) carries out one short task by itself, like
 //!   "go downstairs, until you're on the floor below"
 //! - `skills`: the skills she has written for this game, and forgetting one
+//! - `play`, `stop`, `status`: she plays by herself for a while (`playing.rs`)
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
 //! - `off`: take the ROM out
 
@@ -25,6 +27,7 @@ use serenity::all::{AutocompleteChoice, CreateAttachment, CreateAutocompleteResp
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
 use super::player::OnConsole;
+use super::playing::not_playing;
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
@@ -33,7 +36,7 @@ use crate::core::{Context, Result, user_error};
 
 /// Pictures in GIFs are this many times the screen's size (320×288). Smaller than PNGs,
 /// since a GIF has many of them.
-const GIF_SCALE: u32 = 2;
+pub(super) const GIF_SCALE: u32 = 2;
 
 /// Steps shown each way around her on the map.
 const MAP_RADIUS: i32 = 12;
@@ -51,8 +54,21 @@ const TASK_LINES: usize = 6;
     slash_command,
     rename = "gameboy",
     subcommands(
-        "load", "press", "wait", "screen", "gif", "look", "walk", "task", "skills", "save",
-        "restore", "off"
+        "load",
+        "press",
+        "wait",
+        "screen",
+        "gif",
+        "look",
+        "walk",
+        "task",
+        "skills",
+        "super::playing::play",
+        "super::playing::stop",
+        "super::playing::status",
+        "save",
+        "restore",
+        "off"
     ),
     subcommand_required
 )]
@@ -68,7 +84,7 @@ async fn load(
     #[autocomplete = "rom_names"]
     rom: String,
 ) -> Result<()> {
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let path = files::rom_path(&settings.roms_dir(), &rom)
         .ok_or_else(|| user_error(format!("There's no ROM called `{rom}` in the roms folder.")))?;
     ctx.defer().await?;
@@ -115,7 +131,7 @@ async fn press(
     #[max = 240]
     gap: Option<u32>,
 ) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     let presses = presses::parse(&buttons).map_err(user_error)?;
     let defaults = Timing::default();
     let timing = Timing {
@@ -150,7 +166,7 @@ async fn wait(
     #[max = 60]
     seconds: Option<u32>,
 ) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     let seconds = seconds.unwrap_or(3);
     ctx.defer().await?;
     let gif = on_machine(move |m| {
@@ -245,7 +261,7 @@ async fn walk(
     #[description = "The step's x, as `look` shows it (leave both out to explore)"] x: Option<i32>,
     #[description = "The step's y, as `look` shows it"] y: Option<i32>,
 ) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     ctx.defer().await?;
     let (text, gif) = on_machine(move |m| {
         let look = game_look(m)?;
@@ -299,7 +315,7 @@ async fn task(
     #[max = 60]
     actions: Option<u32>,
 ) -> Result<()> {
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let provider = ctx
         .data()
         .ai
@@ -372,7 +388,11 @@ async fn skills(
     ctx: Context<'_>,
     #[description = "A skill to forget, by its name"] forget: Option<String>,
 ) -> Result<()> {
-    let settings = admin(ctx)?;
+    let settings = if forget.is_some() {
+        changes(ctx)?
+    } else {
+        admin(ctx)?
+    };
     let (rom, forgot, list) = on_machine(move |m| {
         let forgot = forget.map(|name| skills::forget(&mut m.world.skills, &name).ok_or(name));
         Ok((m.rom.clone(), forgot, m.world.skills.clone()))
@@ -415,7 +435,7 @@ async fn write_skills(settings: &Settings, rom: &str, list: &[skills::Skill]) ->
 }
 
 /// A ROM's title as a game's name: `POKEMON RED` is Pokémon Red.
-fn game_name(title: &str) -> String {
+pub(super) fn game_name(title: &str) -> String {
     let words: Vec<String> = title
         .split_whitespace()
         .map(|word| match word {
@@ -436,7 +456,7 @@ fn game_name(title: &str) -> String {
 }
 
 /// How code looks at this game, or a friendly no.
-fn game_look(m: &Machine) -> Result<Look> {
+pub(super) fn game_look(m: &Machine) -> Result<Look> {
     look_for(m.emulator.info()).ok_or_else(|| {
         user_error("Code can only read Pokémon Red and Blue so far. Other games come later.")
     })
@@ -524,7 +544,7 @@ async fn restore(
     #[autocomplete = "save_names"]
     name: String,
 ) -> Result<()> {
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let rom = on_machine(|m| Ok(m.rom.clone())).await?;
     let path = files::save_path(&settings.saves_dir(), &rom, &name).map_err(user_error)?;
     let state = match tokio::fs::read(&path).await {
@@ -560,7 +580,7 @@ async fn restore(
 /// Take the ROM out (anything not saved is lost)
 #[poise::command(slash_command)]
 async fn off(ctx: Context<'_>) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     let rom = console()
         .with(|machine| machine.take().map(|m| m.rom))
         .await?;
@@ -573,7 +593,7 @@ async fn off(ctx: Context<'_>) -> Result<()> {
 }
 
 /// Only admins play by hand. Gives the settings, since every command needs a folder.
-fn admin(ctx: Context<'_>) -> Result<Settings> {
+pub(super) fn admin(ctx: Context<'_>) -> Result<Settings> {
     if !ctx.data().is_admin(ctx.author().id) {
         return Err(user_error("Only admins can use the Game Boy commands."));
     }
@@ -588,8 +608,16 @@ fn settings(ctx: Context<'_>) -> Settings {
         .unwrap_or_default()
 }
 
+/// For commands that move the game or change what she knows: admins, while she isn't
+/// playing by herself.
+fn changes(ctx: Context<'_>) -> Result<Settings> {
+    let settings = admin(ctx)?;
+    not_playing()?;
+    Ok(settings)
+}
+
 /// Runs `job` on the machine, or says there's no ROM in.
-async fn on_machine<T, F>(job: F) -> Result<T>
+pub(super) async fn on_machine<T, F>(job: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&mut Machine) -> Result<T> + Send + 'static,

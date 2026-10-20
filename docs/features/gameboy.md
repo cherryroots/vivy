@@ -1,12 +1,12 @@
 # Game Boy
 
-Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. **Stages 1 to 3 are done: the emulator, played by hand with admin commands; code that reads Pokémon Red's screen and memory, keeps a map of each area and walks her anywhere on it; and a cheap model (the supervisor) that carries out one short task at a time, with the gate that measures how well it does. Stage 4 is under way: so far, skills she writes herself. She doesn't play on her own yet.**
+Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. **Stages 1 to 3 are done: the emulator, played by hand with admin commands; code that reads Pokémon Red's screen and memory, keeps a map of each area and walks her anywhere on it; and a cheap model (the supervisor) that carries out one short task at a time, with the gate that measures how well it does. Stage 4 is under way: so far, skills she writes herself, and playing by herself in capped sessions with a journal, checkpoints and a stuck ladder. She doesn't post about it in her own voice yet (stage 5).**
 
 The plan, with the research behind it and every decision, is the "Vivy plays any Game Boy game" doc in the project. The stages are at the bottom of this page.
 
 ## Playing by hand
 
-There's one Game Boy for the whole bot. It only moves when someone presses something, so nothing runs in the background. Every command is for admins (`admins` in `config.toml`).
+There's one Game Boy for the whole bot. It only moves when someone presses something, or while she plays by herself (`play`, below); then the commands that move the game or change her skills are refused until she stops. Every command is for admins (`admins` in `config.toml`).
 
 | Command | What it does |
 |---|---|
@@ -19,6 +19,9 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy walk x: y:` | Walks to that step of the map (code finds the way and takes it), with a GIF and the `look` after. Leave out `x` and `y` to walk to the nearest step not seen yet. Stops early when she walks into another area or something takes over the screen, like a text box. |
 | `/games gameboy task task: actions:` | A cheap model (the supervisor, below) carries out one short task by itself, like `go down the stairs, until you're on the floor below`, taking at most `actions:` actions (default 30). Posts whether it says it's done, its last actions, a GIF of the last seconds and the `look` after. Pokémon Red and Blue only for now. |
 | `/games gameboy skills forget:` | The skills she has written for the game that's in (below), each with when it's for, its notes, its rules and how its last use went. `forget:` deletes one by name. |
+| `/games gameboy play minutes: goal: episodes:` | She plays by herself from where the game is, in the background, for up to `minutes:` (default `session_minutes`, 60) or `episodes:` short tasks (200), until the day's money for playing is spent, or until she's stuck for good (below). `goal:` replaces her goal for this game and is kept (default: play through to the credits). A message in the channel follows along, a line per episode, and a summary with a GIF of the last seconds comes at the end. |
+| `/games gameboy stop` | Stops her playing, at once; the summary follows. |
+| `/games gameboy status` | Her goal, notes and last episodes for the game that's in, whether she's playing, and what playing used today (paid dollars and free tokens). |
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
 | `/games gameboy restore name:` | Goes back to a save of the ROM that's in. |
 | `/games gameboy off` | Takes the ROM out. |
@@ -105,9 +108,23 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 **With the fixes, and with the review (20 October 2026).** Without the review she did all 10 tasks (up from 6), ending with 2 battle skills and no near-copies. With Astra reviewing after each task she did 9 of 10; the miss was Claude overloaded before her first action, which the gate now plays again once. Astra changed her skills twice in 10 reviews, merging them into one battle skill that won the rival battle in one action, and it dropped a stop word, `RED`, that had stopped every wild battle after one press. That was a matching bug, `RED` inside "appeared", now fixed by matching whole words. Haiku cost about $0.03 a gate run; each review about $0.03 at list prices, on the free daily tokens. Up Route 1's action counts mostly show whether the same path from the same state meets a wild Pokémon, so they say little about skills; longer play will. That run also found exploring could loop forever at the top of a route, now fixed.
 
+## Playing by herself (stage 4)
+
+`/games gameboy play` hands her the game (`session.rs`). Each episode the strategist reads her journal and picks one short task, the supervisor carries it out in at most 30 actions, and code counts what was new. She plays from wherever the game is, so `restore latest` first carries on from the last session.
+
+- **Who plans.** The strategist is the `game_plan` job on OpenAI's own endpoint (`OPENAI_TOKEN`), on the free daily data-sharing tokens: set its model with `[ai.openai.jobs.game_plan] model = "gpt-6-astra"`, otherwise it's the OpenAI section's `model` (GPT-6.1 Sol, also free). It answers in one call per episode (the gate found two calls no better), with the notes to keep, changes to her skills and the next task. Those free tokens don't show on OpenAI's usage page until they run out, so code counts them itself (`budget.rs`, `free_tokens`, 1M a day, reset at 00:00 UTC) and stops before a call could cross the limit, guessing each call at the biggest one so far today. From then on, or when OpenAI fails or isn't set up, the cheap model plans with the same instructions, answering through a `plan` tool (`strategist::plan_cheaply`, under the `game_play` job).
+- **Her journal.** `journal.json` next to her skills: the goal, the strategist's notes as it last wrote them, a line per episode (the last 200) and what code has counted. The strategist sees the last 5 lines with every plan, so it doesn't repeat a task that just failed. A restart picks it up again.
+- **Progress, counted by code.** An episode made progress when it reached an area for the first time, saw at least 8 steps of the maps not seen before, or read words on screen she never read before. What she claims doesn't count.
+- **Checkpoints.** Reaching an area for the first time saves a checkpoint: the save state and the notes as they were (`checkpoints/<n>.state` and `.json`, the newest 10 kept). The maps and her skills aren't in it: places stay where they are, and what she learned survives going back.
+- **The stuck ladder** (`journal::Rung`), by episodes in a row with nothing new: from 3 the strategist is told so, and asked to back out of any menu and pick a different kind of task, exploring first; at 6 it reviews its notes with fresh eyes at high effort (the `game_review` job, stopped at 90% of the free tokens since a crossing call could cost about a dollar); at 9 she goes back to the newest checkpoint, then one further back each time she's stuck again before anything new turns up. After 3 rollbacks like that, or 15 episodes with no checkpoint to go back to, the session ends rather than spend more. Asking the thread for a hint comes with stage 5.
+- **Caps.** Minutes, episodes, and `daily_usd` ($1.50): what the paid models cost while she plays (Haiku acting, and planning once the free tokens are used up), at list prices, added up from the spend records after each episode and kept per day in `today.json`. Strategist calls on OpenAI don't count, since they're free. A model failing 3 times in a row also ends it, with 30 seconds between tries.
+- **Nothing lost.** After every episode the journal, the maps (`maps.json`), her skills, the day's use and a save called `latest` are written (each through a temporary file), so a restart loses one episode at most. The Timers box on the status picture shows "Game Boy" while she plays, and her calls show on the spend card as `game_play` (and `game_plan` on OpenAI).
+
+Still to come in stage 4: notes that record their source and whether play confirmed them, walkthrough milestones checked by code, the puzzle helper, and the checkpoint ladder (how many episodes and dollars from one milestone to the next).
+
 ## Settings
 
-Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`). The gate keys are `[features.games]`'s, shared with the other games.
+Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000). The strategist's model is `[ai.openai.jobs.game_plan]` (and `game_review` for its reviews, high effort by default). The gate keys are `[features.games]`'s, shared with the other games.
 
 ## Files
 
@@ -135,9 +152,13 @@ All under `src/features/games/gameboy/`.
 | `actions.rs` | What the supervisor can do, as tools: walk, explore, press, read text, write and use skills; settling the screen after each; where she is, as text for the model |
 | `skills.rs` | Her skills: checking one she writes, which rule fits a screen, when it stops, her list as prompt lines (pure) |
 | `supervisor.rs` | `run_task`: the supervisor carrying out one task; the `Player` trait; `Episode` and its digest |
-| `player.rs` | The supervisor's player in the bot: the Game Boy on its thread |
-| `strategist.rs` | The strategist's call: the next task, notes and changes to her skills, as JSON in a strict schema |
+| `player.rs` | The supervisor's player in the bot, and the session's game: the Game Boy on its thread |
+| `strategist.rs` | The strategist's call: the next task, notes and changes to her skills, as JSON in a strict schema; the cheap model's plan through a tool once the free tokens are used |
+| `journal.rs` | Her journal: goal, notes, a line per episode, what counts as progress, the stuck ladder (pure) |
+| `budget.rs` | What playing used today: the free tokens, and whether the next strategist call fits; the paid dollars (pure) |
+| `session.rs` | Playing by herself until a cap: planning, episodes, checkpoints, rollbacks, writing everything after each episode; the `Game` trait |
 | `commands.rs` | `/games gameboy ...` |
+| `playing.rs` | `/games gameboy play`, `stop` and `status`, and the messages that follow a session |
 | `gate/mod.rs` | The gate (tests only): the key check, the task runs, the strategist runs, the learning runs, their reports |
 | `gate/tasks.rs` | The task states, made by playing Red by script; the 15 tasks and their checks; the long goal |
 | `gate/player.rs` | The gate's own Game Boy for the supervisor |
@@ -153,7 +174,7 @@ Nine more need a real game and are `#[ignore]`d. With your own ROM:
 VIVY_GB_ROM=roms/red.gb cargo test --release gameboy -- --ignored --nocapture
 ```
 
-That includes `build_the_task_states` and `actions_carry_out_tasks_by_script` from stage 3 (see "The gate") and `skills_she_writes_carry_out_battles` from stage 4; the gate's model runs skip themselves without `VIVY_GB_GATE=1`. `supervisor.rs` tests the task loop with a scripted model and a pretend game: reminders, the loop warning, the action limit.
+That includes `build_the_task_states` and `actions_carry_out_tasks_by_script` from stage 3 (see "The gate") and `skills_she_writes_carry_out_battles` from stage 4; the gate's model runs skip themselves without `VIVY_GB_GATE=1`. `supervisor.rs` tests the task loop with a scripted model and a pretend game: reminders, the loop warning, the action limit. `session.rs` plays whole sessions the same way, in a pretend game of rooms in a row: checkpoints at new rooms, the ladder's warning, a rollback and its note to the strategist, going further back each time and then giving up, the caps, a model that keeps failing, and every file a restart needs. `a_session_plays_red_and_its_saves_load` (ignored, needs the ROM) plays two scripted episodes of Red and checks the checkpoint and `latest` load into another Game Boy in the right place, and that a new session gets the maps back.
 
 The stage 2 ones play Red's opening first (mashing A, picking the names RED and BLUE) and start in her bedroom: `walks_out_of_the_house_and_into_oak` walks to the stairs through steps not seen yet, out of the front door and north until Oak stops her, checking memory and the screen agree on every step and that the font reads Oak's words; `exploring_fills_in_the_bedroom` explores until every step of the room is seen; `look_and_walk_read_well_on_a_real_game` prints what `look` and `walk` would post.
 
@@ -166,7 +187,7 @@ The stage 2 ones play Red's opening first (mashing A, picking the names RED and 
 | 1 | The emulator and manual control: load, press, screen, save and load states, GIFs |
 | 2 | Reading the game in code: screen changes and fades, the tile grid from video memory, text from the font, a log of every step, a map of each area that fills in, walking to a spot by pathfinding, exploring, and Pokémon Red's memory map (area, position, story flags, badges, party) checked against the screen. Red's own walkable-tile list sorts its tiles exactly, so sorting tiles with a model (for games with no memory map) moved to stage 7 |
 | 3 | Short tasks played by a cheap model (Haiku) through a few actions, measured on 15 tasks from Red, each 3 times, and the strategist's call measured on a longer goal (Astra and 6.1 Sol, one call and two). A gate: if Haiku stays under half, the fallbacks in the plan are tried first. `/games gameboy task` tries a task by hand |
-| 4 (under way) | Skills she writes herself, know-how and routines code runs as one action, kept per game, instead of a coded battle action (the gate's one weak spot), with a gate that measures whether later runs get better; then the strategist (GPT-6 Astra on OpenAI's free daily tokens, Haiku once they're used), goals and notes in her memory folder, walkthrough milestones, checkpoints, getting unstuck, the session runner with its caps |
-| 5 | Discord: `/games gameboy play` and `status`, a thread per game, Opus narrating as a voice message in her voice with one GIF and a short line (so posts stay compact), hints from replies starting `hint:` |
+| 4 (under way) | Skills she writes herself, know-how and routines code runs as one action, kept per game, instead of a coded battle action (the gate's one weak spot), with a gate that measures whether later runs get better (#90). Playing by herself: `/games gameboy play`, `stop` and `status`, the strategist on OpenAI's free daily tokens counted by code (Haiku once they're used), her journal, checkpoints, the stuck ladder, the caps (#91). Still to come: notes with sources, walkthrough milestones, the puzzle helper, the checkpoint ladder |
+| 5 | Discord: a thread per game, Opus narrating as a voice message in her voice with one GIF and a short line (so posts stay compact), hints from replies starting `hint:` |
 | 6 | Learning a new game by herself: fast exploration, an insights file she confirms in play, replaying what worked, and reading a game's memory without a hand-written map: code compares memory before and after her actions ("what changed when I stepped right", "which byte is the 19 HP on screen"), she names what she finds, and code keeps checking it, measured on whether she finds Red's own addresses |
 | 7 | Other games: tiles sorted by a model once per new tile, letters labelled the same way, memory maps for games that have one, side-view games, then the Game Boy Advance |

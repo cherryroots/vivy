@@ -212,7 +212,9 @@ impl Job {
     /// - "hunger_games": a Hunger Games round, in her own model at low effort so the next
     ///   round is ready while people read this one, with no web or code;
     /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
-    ///   with no web or code.
+    ///   with no web or code;
+    /// - "game_review": the Game Boy strategist's fresh look at its notes when she's stuck
+    ///   (OpenAI), at high effort.
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
@@ -237,6 +239,12 @@ impl Job {
             "game_play" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
+                web: off,
+                code: off,
+            },
+            "game_review" => Job {
+                model: None,
+                effort: Some("high".to_string()),
                 web: off,
                 code: off,
             },
@@ -479,6 +487,9 @@ pub struct Ai {
     pub spends: Vec<Spend>,
     /// Drawing pictures with OpenAI's Image API, when `OPENAI_TOKEN` is set.
     pub images: Option<Images>,
+    /// OpenAI for one-off structured answers (the Game Boy strategist), when
+    /// `OPENAI_TOKEN` is set, whichever provider chats. Always OpenAI's own endpoint.
+    pub openai: Option<Arc<OpenAi>>,
 }
 
 impl Ai {
@@ -508,6 +519,7 @@ impl Ai {
             fallback: Some(state),
             spends,
             images,
+            openai: None,
         }
     }
 

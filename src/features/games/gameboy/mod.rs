@@ -1,6 +1,7 @@
 //! Vivy plays Game Boy games. Stages 1 to 3 of the plan: the emulator, admin commands to
 //! play it by hand, code that reads the game and walks her around, and a cheap model that
-//! carries out one short task at a time. Stage 4 so far: skills she writes herself.
+//! carries out one short task at a time. Stage 4 so far: skills she writes herself, and
+//! playing by herself in sessions.
 //!
 //! - `emulator.rs`: the Game Boy (the `boytacean` crate), a frame at a time
 //! - `console.rs`: the one Game Boy on its own thread, with its last seconds of screens
@@ -14,12 +15,16 @@
 //!   Game Boy it plays
 //! - `skills.rs`: her own skills, know-how and routines she writes for a game (pure)
 //! - `strategist.rs`: the stronger model's call that picks the next task
+//! - `journal.rs`, `budget.rs`: her notes and episode log, and what playing used today
+//!   (pure)
+//! - `session.rs`: playing by herself until a cap, with checkpoints and the stuck ladder
 //! - `gate/`: the measurements (tests only)
 //! - `commands.rs`: `/games gameboy ...`
 //!
 //! The plan, stage by stage, is in `docs/features/gameboy.md`.
 
 mod actions;
+mod budget;
 mod change;
 mod commands;
 mod console;
@@ -27,16 +32,17 @@ mod emulator;
 mod files;
 #[cfg(test)]
 mod gate;
+mod journal;
 mod map;
 mod moves;
 mod pictures;
 mod player;
+mod playing;
 mod presses;
 mod red;
 mod screen;
+mod session;
 mod skills;
-// The strategist is measured by stage 3's gate; the bot calls it from stage 4.
-#[cfg_attr(not(test), allow(dead_code))]
 mod strategist;
 mod supervisor;
 // Reading text from the font, for games with no memory map. Tested on Pokémon Red now;
@@ -62,6 +68,13 @@ pub struct Settings {
     pub roms_dir: String,
     /// The folder for save states, a folder per ROM inside it.
     pub saves_dir: String,
+    /// Minutes one `/games gameboy play` lasts, unless it says.
+    pub session_minutes: u32,
+    /// USD a day the paid models may cost while she plays (Haiku playing, and planning
+    /// once the free tokens are used up), at list prices.
+    pub daily_usd: f64,
+    /// OpenAI's free tokens a day for the strategist (the data-sharing tokens).
+    pub free_tokens: u64,
 }
 
 impl Default for Settings {
@@ -69,6 +82,9 @@ impl Default for Settings {
         Settings {
             roms_dir: "roms".to_string(),
             saves_dir: "gameboy".to_string(),
+            session_minutes: 60,
+            daily_usd: 1.5,
+            free_tokens: 1_000_000,
         }
     }
 }

@@ -269,7 +269,6 @@ pub fn save(skills: &mut Vec<Skill>, skill: Skill) -> Result<(), String> {
 /// Applies the strategist's review of her skills: each change rewrites a skill (or adds
 /// one, under a new name) or deletes one, with `write_skill`'s arguments plus `change`.
 /// Skills it doesn't name stay as they are. Says what happened to each, for the log.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn review(skills: &mut Vec<Skill>, changes: &[Value]) -> Vec<String> {
     changes
         .iter()

@@ -145,6 +145,11 @@ impl AreaMap {
         self.kinds.get(&pos).copied()
     }
 
+    /// How many steps have been seen.
+    pub fn seen(&self) -> usize {
+        self.kinds.len()
+    }
+
     /// Whether a step is inside the area (always, when its size isn't known).
     pub fn inside(&self, (x, y): Pos) -> bool {
         self.size

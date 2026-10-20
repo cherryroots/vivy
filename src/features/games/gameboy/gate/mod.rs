@@ -25,7 +25,7 @@
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
 //! `VIVY_GB_RESULTS` (the project's shared folder).
 
-mod player;
+pub(super) mod player;
 mod tasks;
 
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::strategist::{self, Calls};
+use super::strategist::{self, Ask, Calls, Care};
 use super::supervisor::{Episode, Player, finish_stream, run_task};
 use crate::ai::{
     ChatProvider, ChatRequest, Claude, ClaudeConfig, Gemini, GeminiConfig, Input, Job, OpenAi,
@@ -318,11 +318,14 @@ async fn gate_tasks() {
                     match strategist::plan(
                         openai,
                         Calls::One,
-                        task.text,
-                        &[],
-                        &[],
-                        NOTHING_YET,
-                        &now,
+                        &Ask {
+                            goal: task.text,
+                            notes: &[],
+                            skills: &[],
+                            digest: NOTHING_YET,
+                            now: &now,
+                            care: Care::Routine,
+                        },
                     )
                     .await
                     {
@@ -484,11 +487,14 @@ async fn gate_strategists() {
                     let plan = match strategist::plan(
                         &openai,
                         calls,
-                        LONG_GOAL,
-                        &notes,
-                        &local.world.skills,
-                        &digest,
-                        &now,
+                        &Ask {
+                            goal: LONG_GOAL,
+                            notes: &notes,
+                            skills: &local.world.skills,
+                            digest: &digest,
+                            now: &now,
+                            care: Care::Routine,
+                        },
                     )
                     .await
                     {
@@ -658,11 +664,14 @@ async fn gate_learning() {
                 match strategist::plan(
                     openai,
                     Calls::One,
-                    task.text,
-                    &[],
-                    &local.world.skills,
-                    &episode.digest(),
-                    &now,
+                    &Ask {
+                        goal: task.text,
+                        notes: &[],
+                        skills: &local.world.skills,
+                        digest: &episode.digest(),
+                        now: &now,
+                        care: Care::Routine,
+                    },
                 )
                 .await
                 {
