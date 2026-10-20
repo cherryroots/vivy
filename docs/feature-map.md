@@ -196,6 +196,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #83 | | Reminders: the "Tomorrow 9:00" snooze button is removed; 10 min, 1 hour and Pick a time… stay |
 | #84 | | Chat: Discord message links in a question are opened for her (up to 3, as the asker, only channels they can read): author, time, whole text, text attachments, embeds and pictures come with the question as `<linked_messages>`; the prompt and `get_message`'s description say Discord links are hers to open and her web tools can't, so she stops saying she can't open them |
 | #87 | | Game Boy (stage 1): `/games gameboy load`, `press`, `wait`, `screen`, `gif`, `save`, `restore` and `off` (admins) play a Game Boy or Game Boy Color ROM from `roms_dir` by hand, with GIFs of what happened; the `boytacean` emulator on its own thread, a frame at a time, save states in `saves_dir` |
+| #88 | | Game Boy (stage 2): code reads Pokémon Red (tile grid and sprites from video memory, dark screens, text from the font, the game's memory map checked against the screen), keeps a map of each area that fills in, and walks her to any step by pathfinding; `/games gameboy look` and `walk` (admins) |
 
 ## Not built yet
 
