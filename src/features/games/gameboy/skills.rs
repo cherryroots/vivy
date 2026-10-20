@@ -118,6 +118,15 @@ impl Skill {
                     .collect()
             })
             .unwrap_or_default();
+        if let Some(number) = stop_words
+            .iter()
+            .find(|w| w.contains(|c: char| c.is_ascii_digit()))
+        {
+            return Err(format!(
+                "Stop words can't have numbers in them (\"{number}\"): HP, levels and money \
+                 change, so it would stop at the wrong time."
+            ));
+        }
         let too_long = std::iter::once(&use_when)
             .chain(stop_words.iter())
             .chain(rules.iter().map(|r| &r.if_words))
@@ -269,7 +278,6 @@ pub fn save(skills: &mut Vec<Skill>, skill: Skill) -> Result<(), String> {
 /// Applies the strategist's review of her skills: each change rewrites a skill (or adds
 /// one, under a new name) or deletes one, with `write_skill`'s arguments plus `change`.
 /// Skills it doesn't name stay as they are. Says what happened to each, for the log.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn review(skills: &mut Vec<Skill>, changes: &[Value]) -> Vec<String> {
     changes
         .iter()
@@ -469,6 +477,9 @@ mod tests {
         assert!(
             !bad(json!({"name": "x", "use_when": "x", "rules": [{"press": "jump"}]})).is_empty()
         );
+        let numbers = json!({"name": "x", "use_when": "x", "rules": [{"press": "a"}],
+            "stop_words": ["fainted", "9/ 31"]});
+        assert!(bad(numbers).contains("numbers in them (\"9/ 31\")"));
         let most = Skill::from_args(&json!({
             "name": "x", "use_when": "x", "rules": [{"press": "a"}], "most": 500
         }))

@@ -34,6 +34,28 @@ pub fn skills_path(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_folder(saves_dir, rom).join("skills.json")
 }
 
+/// Her journal for a ROM's game (`journal.rs`): the goal, notes and episode log.
+pub fn journal_path(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("journal.json")
+}
+
+/// The maps code has drawn of the game's areas. Kept across sessions and rollbacks: the
+/// places stay where they are.
+pub fn maps_path(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("maps.json")
+}
+
+/// The session's checkpoints, `<n>.state` with `<n>.json` (the notes at the time). In a
+/// folder of their own, so they stay out of the saves list.
+pub fn checkpoints_folder(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("checkpoints")
+}
+
+/// What playing used today, for every game (`budget.rs`).
+pub fn today_path(saves_dir: &Path) -> PathBuf {
+    saves_dir.join("today.json")
+}
+
 /// The save states made for a ROM, by name (without `.state`), sorted.
 pub fn saves(saves_dir: &Path, rom: &str) -> Vec<String> {
     names_with(&saves_folder(saves_dir, rom), &["state"])

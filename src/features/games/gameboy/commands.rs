@@ -1,5 +1,6 @@
 //! `/games gameboy ...`: playing the Game Boy by hand, for admins. There's one Game Boy for
-//! the whole bot, and it only moves when someone presses something here.
+//! the whole bot, and it only moves when someone presses something here, or while she
+//! plays by herself (`playing.rs`: `play`, `stop`, `status`, `dashboard`).
 //!
 //! - `load`: put a ROM from `roms_dir` in and switch it on
 //! - `press`: press buttons, like `a a up*3 start`, and see a GIF of what happened
@@ -13,6 +14,7 @@
 //! - `task`: a cheap model (the supervisor) carries out one short task by itself, like
 //!   "go downstairs, until you're on the floor below"
 //! - `skills`: the skills she has written for this game, and forgetting one
+//! - `play`, `stop`, `status`, `dashboard`: she plays by herself for a while (`playing.rs`)
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
 //! - `off`: take the ROM out
 
@@ -24,6 +26,7 @@ use twilight_interactions::command::{CommandModel, CreateCommand};
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
 use super::player::OnConsole;
+use super::playing::{self, not_playing};
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
@@ -34,7 +37,7 @@ use crate::util::discord::Draft;
 
 /// Pictures in GIFs are this many times the screen's size (320×288). Smaller than PNGs,
 /// since a GIF has many of them.
-const GIF_SCALE: u32 = 2;
+pub(super) const GIF_SCALE: u32 = 2;
 
 /// Steps shown each way around her on the map.
 const MAP_RADIUS: i32 = 12;
@@ -69,6 +72,14 @@ pub enum GameboyCommand {
     Task(GameboyTask),
     #[command(name = "skills")]
     Skills(GameboySkills),
+    #[command(name = "play")]
+    Play(playing::GameboyPlay),
+    #[command(name = "stop")]
+    Stop(playing::GameboyStop),
+    #[command(name = "status")]
+    Status(playing::GameboyStatus),
+    #[command(name = "dashboard")]
+    Dashboard(playing::GameboyDashboard),
     #[command(name = "save")]
     Save(GameboySave),
     #[command(name = "restore")]
@@ -88,6 +99,10 @@ pub async fn gameboy(ctx: &CommandCtx, command: GameboyCommand) -> Result<()> {
         GameboyCommand::Walk(args) => walk(ctx, args).await,
         GameboyCommand::Task(args) => task(ctx, args).await,
         GameboyCommand::Skills(args) => skills(ctx, args).await,
+        GameboyCommand::Play(args) => playing::play(ctx, args).await,
+        GameboyCommand::Stop(_) => playing::stop(ctx).await,
+        GameboyCommand::Status(_) => playing::status(ctx).await,
+        GameboyCommand::Dashboard(_) => playing::dashboard(ctx).await,
         GameboyCommand::Save(args) => save(ctx, args).await,
         GameboyCommand::Restore(args) => restore(ctx, args).await,
         GameboyCommand::Off(_) => off(ctx).await,
@@ -113,7 +128,7 @@ pub struct GameboyLoad {
 
 async fn load(ctx: &CommandCtx, args: GameboyLoad) -> Result<()> {
     let GameboyLoad { rom } = args;
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let path = files::rom_path(&settings.roms_dir(), &rom)
         .ok_or_else(|| user_error(format!("There's no ROM called `{rom}` in the roms folder.")))?;
     ctx.defer().await?;
@@ -164,7 +179,7 @@ pub struct GameboyPress {
 
 async fn press(ctx: &CommandCtx, args: GameboyPress) -> Result<()> {
     let GameboyPress { buttons, hold, gap } = args;
-    admin(ctx)?;
+    changes(ctx)?;
     let presses = presses::parse(&buttons).map_err(user_error)?;
     let defaults = Timing::default();
     let timing = Timing {
@@ -199,7 +214,7 @@ pub struct GameboyWait {
 }
 
 async fn wait(ctx: &CommandCtx, args: GameboyWait) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     let seconds = args.seconds.map_or(3, |seconds| seconds as u32);
     ctx.defer().await?;
     let gif = on_machine(move |m| {
@@ -310,7 +325,7 @@ pub struct GameboyWalk {
 
 async fn walk(ctx: &CommandCtx, args: GameboyWalk) -> Result<()> {
     let (x, y) = (args.x.map(|x| x as i32), args.y.map(|y| y as i32));
-    admin(ctx)?;
+    changes(ctx)?;
     ctx.defer().await?;
     let (text, gif) = on_machine(move |m| {
         let look = game_look(m)?;
@@ -364,7 +379,7 @@ pub struct GameboyTask {
 
 async fn task(ctx: &CommandCtx, args: GameboyTask) -> Result<()> {
     let GameboyTask { task, actions } = args;
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let provider = ctx
         .bot
         .ai
@@ -439,7 +454,11 @@ pub struct GameboySkills {
 
 async fn skills(ctx: &CommandCtx, args: GameboySkills) -> Result<()> {
     let GameboySkills { forget } = args;
-    let settings = admin(ctx)?;
+    let settings = if forget.is_some() {
+        changes(ctx)?
+    } else {
+        admin(ctx)?
+    };
     let (rom, forgot, list) = on_machine(move |m| {
         let forgot = forget.map(|name| skills::forget(&mut m.world.skills, &name).ok_or(name));
         Ok((m.rom.clone(), forgot, m.world.skills.clone()))
@@ -482,7 +501,7 @@ async fn write_skills(settings: &Settings, rom: &str, list: &[skills::Skill]) ->
 }
 
 /// A ROM's title as a game's name: `POKEMON RED` is Pokémon Red.
-fn game_name(title: &str) -> String {
+pub(super) fn game_name(title: &str) -> String {
     let words: Vec<String> = title
         .split_whitespace()
         .map(|word| match word {
@@ -503,7 +522,7 @@ fn game_name(title: &str) -> String {
 }
 
 /// How code looks at this game, or a friendly no.
-fn game_look(m: &Machine) -> Result<Look> {
+pub(super) fn game_look(m: &Machine) -> Result<Look> {
     look_for(m.emulator.info()).ok_or_else(|| {
         user_error("Code can only read Pokémon Red and Blue so far. Other games come later.")
     })
@@ -595,7 +614,7 @@ pub struct GameboyRestore {
 
 async fn restore(ctx: &CommandCtx, args: GameboyRestore) -> Result<()> {
     let GameboyRestore { name } = args;
-    let settings = admin(ctx)?;
+    let settings = changes(ctx)?;
     let rom = on_machine(|m| Ok(m.rom.clone())).await?;
     let path = files::save_path(&settings.saves_dir(), &rom, &name).map_err(user_error)?;
     let state = match tokio::fs::read(&path).await {
@@ -633,7 +652,7 @@ async fn restore(ctx: &CommandCtx, args: GameboyRestore) -> Result<()> {
 pub struct GameboyOff;
 
 async fn off(ctx: &CommandCtx) -> Result<()> {
-    admin(ctx)?;
+    changes(ctx)?;
     let rom = console()
         .with(|machine| machine.take().map(|m| m.rom))
         .await?;
@@ -646,14 +665,14 @@ async fn off(ctx: &CommandCtx) -> Result<()> {
 }
 
 /// Only admins play by hand. Gives the settings, since every command needs a folder.
-fn admin(ctx: &CommandCtx) -> Result<Settings> {
+pub(super) fn admin(ctx: &CommandCtx) -> Result<Settings> {
     if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error("Only admins can use the Game Boy commands."));
     }
     Ok(settings(ctx))
 }
 
-fn settings(ctx: &CommandCtx) -> Settings {
+pub(super) fn settings(ctx: &CommandCtx) -> Settings {
     ctx.bot
         .config
         .feature::<crate::features::games::Settings>("games")
@@ -661,8 +680,16 @@ fn settings(ctx: &CommandCtx) -> Settings {
         .unwrap_or_default()
 }
 
+/// For commands that move the game or change what she knows: admins, while she isn't
+/// playing by herself.
+fn changes(ctx: &CommandCtx) -> Result<Settings> {
+    let settings = admin(ctx)?;
+    not_playing()?;
+    Ok(settings)
+}
+
 /// Runs `job` on the machine, or says there's no ROM in.
-async fn on_machine<T, F>(job: F) -> Result<T>
+pub(super) async fn on_machine<T, F>(job: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce(&mut Machine) -> Result<T> + Send + 'static,

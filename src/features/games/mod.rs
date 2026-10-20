@@ -5,8 +5,8 @@
 //! - `who_said_it/`: `/games whosaidit`, guessing who wrote old messages from the server
 //! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes,
 //!   and `/games leaderboard`, its wins and kills
-//! - `gameboy/`: `/games gameboy ...`, a Game Boy emulator Vivy will learn to play (for now
-//!   admins play it by hand)
+//! - `gameboy/`: `/games gameboy ...`, a Game Boy emulator admins play by hand, and Vivy
+//!   plays by herself in sessions
 //!
 //! Each game's buttons start with `games:<game>:`, and `on_component` hands a press to its
 //! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
@@ -62,6 +62,9 @@ impl Feature for Games {
         }
         if action.starts_with("hunger:") {
             return hunger_games::on_component(ctx, interaction, action).await;
+        }
+        if let Some(action) = action.strip_prefix("gameboy:") {
+            return gameboy::on_component(ctx, interaction, action).await;
         }
         Ok(())
     }

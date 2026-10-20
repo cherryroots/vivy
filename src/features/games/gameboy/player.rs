@@ -1,6 +1,8 @@
 //! The supervisor's player in the bot: the one Game Boy, on its own thread (`console.rs`).
 //! Each call is a job on that thread, with the world (area maps, movement log) the machine
-//! keeps.
+//! keeps. A session (`session.rs`) plays it too.
+
+use std::collections::HashMap;
 
 use anyhow::anyhow;
 use async_trait::async_trait;
@@ -8,7 +10,10 @@ use serde_json::Value;
 
 use super::actions::{self, Acted, SCREEN_SCALE};
 use super::console::{Machine, console};
+use super::map::AreaMap;
 use super::pictures::png_at;
+use super::session::Game;
+use super::skills::Skill;
 use super::supervisor::Player;
 use super::walk::{Look, look_for};
 use super::world::World;
@@ -55,5 +60,34 @@ impl Player for OnConsole {
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
         on_game(|_, m, _| png_at(&m.emulator.screen(), SCREEN_SCALE)).await?
+    }
+}
+
+#[async_trait]
+impl Game for OnConsole {
+    async fn world(&mut self) -> anyhow::Result<World> {
+        on_game(|world, _, _| world.clone()).await
+    }
+
+    async fn set_skills(&mut self, skills: Vec<Skill>) -> anyhow::Result<()> {
+        on_game(move |world, _, _| world.skills = skills).await
+    }
+
+    async fn set_areas(&mut self, areas: HashMap<String, AreaMap>) -> anyhow::Result<()> {
+        on_game(move |world, _, _| world.areas = areas).await
+    }
+
+    async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {
+        on_game(|_, m, _| m.emulator.save_state()).await?
+    }
+
+    async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()> {
+        on_game(move |_, m, _| {
+            m.emulator.load_state(&state)?;
+            // One frame, so the screen shows the saved game.
+            m.run(1);
+            Ok(())
+        })
+        .await?
     }
 }

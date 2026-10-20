@@ -8,13 +8,17 @@
 //! deleting ones that never helped.
 //!
 //! It's asked in one call, or in two (`Calls::Split`): first the notes, then the task with
-//! the new notes. Stage 3's gate measures which works better.
+//! the new notes. Stage 3's gate found one call as good, for half the tokens, so the
+//! session uses one. Once the free tokens are used up, the cheap model plans instead
+//! (`plan_cheaply`).
 
+use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::skills::{self, Skill};
-use crate::ai::OpenAi;
+use super::supervisor::finish_stream;
+use crate::ai::{ChatProvider, ChatRequest, Input, OpenAi, Part, Role, ToolDef, Turn};
 
 /// The fixed instructions.
 const PROMPT: &str = "You plan a run of a Game Boy game. An executor carries out one short \
@@ -25,7 +29,11 @@ and where the player is now. Facts read from the game's memory beat your notes.
 
 The next task:
 - one thing, a few steps at most, described by what's on screen, never by buttons or counts;
-- ends with \"until\" and what the screen will show when it's done;
+- in one area, or from it into the next: the executor has 30 actions, and wild battles \
+use them up;
+- ends with \"until\" and what the screen will show when it's done; to reach an area, \
+\"until you're in\" and its name as the game shows it, like \"until you're in Route 1\" \
+(code checks it);
 - different from a task that just failed, unless you can name what will go differently.
 
 Notes: facts that make sense on their own (name the people, places and things), at most \
@@ -36,7 +44,8 @@ action. Each round of a routine, the first rule whose if_words are on screen (an
 empty fits any screen) presses its buttons (1 to 5, spaced, like \"down right a\"). It \
 stops when the player can walk (unless stop_when_free is false), on a stop word once it \
 has pressed something, after most rounds (at most 50), when no rule fits, or when 3 \
-rounds change nothing. Each skill shows how its last use ended. Review them: rewrite one \
+rounds change nothing. Stop words are words, never numbers: HP, levels and money change. \
+Each skill shows how its last use ended. Review them: rewrite one \
 whose last use went wrong, merge near-copies into one and delete the rest, delete one \
 that never helped, add one when the last task repeated a job no skill covers. Rules \
 match words that are really on screen in the text read. Change nothing that works: an \
@@ -47,9 +56,33 @@ empty list keeps them all.";
 pub enum Calls {
     /// One call answers both the notes and the next task.
     One,
-    /// One call for the notes, then one for the task.
+    /// One call for the notes, then one for the task. Only the gate asks this way.
+    #[cfg_attr(not(test), allow(dead_code))]
     Split,
 }
+
+/// How hard it thinks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Care {
+    /// An ordinary episode: the `game_plan` job.
+    Routine,
+    /// She's stuck: a fresh-eyes look at the notes, the `game_review` job (high effort).
+    Review,
+}
+
+impl Care {
+    fn job(self) -> &'static str {
+        match self {
+            Care::Routine => "game_plan",
+            Care::Review => "game_review",
+        }
+    }
+}
+
+/// Added for a review.
+const REVIEW: &str = "Fresh eyes: the player has made no progress for several episodes. \
+Read your notes as if someone else wrote them: drop or fix any that the text read or the \
+facts don't back up, and pick a task unlike the recent ones.";
 
 /// The strategist's answer.
 #[derive(Debug, Clone, PartialEq)]
@@ -74,18 +107,20 @@ struct Answer {
     skill_changes: Option<Vec<Value>>,
 }
 
-/// Asks for the next task.
-pub async fn plan(
-    openai: &OpenAi,
-    calls: Calls,
-    goal: &str,
-    notes: &[String],
-    skills: &[Skill],
-    digest: &str,
-    now: &str,
-) -> anyhow::Result<Plan> {
-    let skills = skills::for_review(skills);
-    let situation = |notes: &[String]| {
+/// What the strategist is told, apart from its instructions.
+pub struct Ask<'a> {
+    pub goal: &'a str,
+    pub notes: &'a [String],
+    pub skills: &'a [Skill],
+    /// What the last task did.
+    pub digest: &'a str,
+    /// Where she is now, and anything code adds (the stuck ladder, the last episodes).
+    pub now: &'a str,
+    pub care: Care,
+}
+
+impl Ask<'_> {
+    fn situation(&self, notes: &[String]) -> String {
         let notes = if notes.is_empty() {
             "(none yet)".to_string()
         } else {
@@ -95,18 +130,32 @@ pub async fn plan(
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        format!(
-            "Goal: {goal}\n\nYour notes:\n{notes}\n\nThe executor's skills:\n{skills}\n\n\
-             The last task:\n{digest}\n\nNow:\n{now}"
-        )
-    };
+        let mut text = format!(
+            "Goal: {}\n\nYour notes:\n{notes}\n\nThe executor's skills:\n{}\n\n\
+             The last task:\n{}\n\nNow:\n{}",
+            self.goal,
+            skills::for_review(self.skills),
+            self.digest,
+            self.now
+        );
+        if self.care == Care::Review {
+            text.push_str("\n\n");
+            text.push_str(REVIEW);
+        }
+        text
+    }
+}
+
+/// Asks for the next task.
+pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Result<Plan> {
+    let job = ask.care.job();
     match calls {
         Calls::One => {
             let answer = openai
                 .structured(
-                    "game_plan",
+                    job,
                     PROMPT,
-                    &situation(notes),
+                    &ask.situation(ask.notes),
                     "plan",
                     &schema(true, true),
                 )
@@ -123,11 +172,11 @@ pub async fn plan(
         Calls::Split => {
             let first = openai
                 .structured(
-                    "game_plan",
+                    job,
                     PROMPT,
                     &format!(
                         "{}\n\nFirst, only the notes and the skills.",
-                        situation(notes)
+                        ask.situation(ask.notes)
                     ),
                     "notes",
                     &schema(true, false),
@@ -137,9 +186,9 @@ pub async fn plan(
             let new_notes = first_answer.notes.unwrap_or_default();
             let second = openai
                 .structured(
-                    "game_plan",
+                    job,
                     PROMPT,
-                    &format!("{}\n\nNow only the next task.", situation(&new_notes)),
+                    &format!("{}\n\nNow only the next task.", ask.situation(&new_notes)),
                     "task",
                     &schema(false, true),
                 )
@@ -156,6 +205,41 @@ pub async fn plan(
             })
         }
     }
+}
+
+/// Asks the cheap model (the supervisor's, the `game_play` job) instead, once the free
+/// tokens are used up or OpenAI isn't set up: the same instructions, with the answer as
+/// a call to its one tool, `plan`. Its cost shows on the spend card under `game_play`.
+pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow::Result<Plan> {
+    let request = ChatRequest {
+        system: format!("{PROMPT}\n\nAnswer by calling plan."),
+        input: Input::Full(vec![Turn {
+            role: Role::User,
+            parts: vec![Part::Text(ask.situation(ask.notes))],
+        }]),
+        tools: vec![ToolDef {
+            name: "plan",
+            description: "Your answer: your reasoning, the notes to keep, changes to the \
+                executor's skills (an empty list keeps them all) and its next task.",
+            parameters: schema(true, true),
+        }],
+        cache_key: "vivy:gameboy-plan".to_string(),
+        job: "game_play",
+    };
+    let done = finish_stream(provider, request).await?;
+    let call = done
+        .tool_calls
+        .into_iter()
+        .find(|call| call.name == "plan")
+        .context("the cheap planner answered without calling plan")?;
+    let parsed: Answer = serde_json::from_value(call.args)?;
+    Ok(Plan {
+        notes: parsed.notes.unwrap_or_default(),
+        task: parsed.next_task.unwrap_or_default(),
+        skill_changes: parsed.skill_changes.unwrap_or_default(),
+        tokens: 0,
+        usd: 0.0,
+    })
 }
 
 /// The answer's JSON schema: reasoning first, then the notes and skill changes and/or the

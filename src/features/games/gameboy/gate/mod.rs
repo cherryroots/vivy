@@ -16,6 +16,7 @@
 //!   an OpenAI model that writes a hint before each task
 //! - `gate_strategists`: the long goal with each strategist in `VIVY_GB_STRATEGISTS`
 //!   (`gpt-6-astra,gpt-6.1-sol`), asked in one call and in two
+//! - `gate_session`: one whole session as the bot plays it, with the real models
 //! - `gate_learning`: stage 4's question, whether she gets better by writing skills. The
 //!   tasks in `VIVY_GB_LEARN` (the rival battle, then up Route 1), `VIVY_GB_RUNS` times
 //!   (5) in a row, with the skills she writes kept from one run to the next; with
@@ -25,7 +26,7 @@
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
 //! `VIVY_GB_RESULTS` (the project's shared folder).
 
-mod player;
+pub(super) mod player;
 mod tasks;
 
 use std::collections::HashMap;
@@ -35,7 +36,7 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::strategist::{self, Calls};
+use super::strategist::{self, Ask, Calls, Care};
 use super::supervisor::{Episode, Player, finish_stream, run_task};
 use crate::ai::{
     ChatProvider, ChatRequest, Claude, ClaudeConfig, Gemini, GeminiConfig, Input, Job, OpenAi,
@@ -112,9 +113,14 @@ fn job(model: &str, effort: &str) -> HashMap<String, Job> {
         web: Some(false),
         code: Some(false),
     };
+    let review = Job {
+        effort: Some("high".to_string()),
+        ..job.clone()
+    };
     HashMap::from([
         ("game_play".to_string(), job.clone()),
         ("game_plan".to_string(), job),
+        ("game_review".to_string(), review),
     ])
 }
 
@@ -318,11 +324,14 @@ async fn gate_tasks() {
                     match strategist::plan(
                         openai,
                         Calls::One,
-                        task.text,
-                        &[],
-                        &[],
-                        NOTHING_YET,
-                        &now,
+                        &Ask {
+                            goal: task.text,
+                            notes: &[],
+                            skills: &[],
+                            digest: NOTHING_YET,
+                            now: &now,
+                            care: Care::Routine,
+                        },
                     )
                     .await
                     {
@@ -484,11 +493,14 @@ async fn gate_strategists() {
                     let plan = match strategist::plan(
                         &openai,
                         calls,
-                        LONG_GOAL,
-                        &notes,
-                        &local.world.skills,
-                        &digest,
-                        &now,
+                        &Ask {
+                            goal: LONG_GOAL,
+                            notes: &notes,
+                            skills: &local.world.skills,
+                            digest: &digest,
+                            now: &now,
+                            care: Care::Routine,
+                        },
                     )
                     .await
                     {
@@ -658,11 +670,14 @@ async fn gate_learning() {
                 match strategist::plan(
                     openai,
                     Calls::One,
-                    task.text,
-                    &[],
-                    &local.world.skills,
-                    &episode.digest(),
-                    &now,
+                    &Ask {
+                        goal: task.text,
+                        notes: &[],
+                        skills: &local.world.skills,
+                        digest: &episode.digest(),
+                        now: &now,
+                        care: Care::Routine,
+                    },
                 )
                 .await
                 {
@@ -716,6 +731,184 @@ async fn gate_learning() {
     )
     .unwrap();
     println!("{report}\nResults in {}", folder.display());
+}
+
+/// Stage 4b: one whole session as the bot plays it (`session::play`), with the real
+/// models: Haiku acting, the strategist (`VIVY_GB_REVIEWER`'s model, `gpt-6-astra`)
+/// planning, its checkpoints and stuck ladder. It starts from a new game in her bedroom,
+/// or from the task state `VIVY_GB_START`, with the default goal or `VIVY_GB_GOAL`, for
+/// `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40). `VIVY_GB_GATE_USD` caps the paid
+/// models (3). The report has every episode's line, her notes and skills at the end, and
+/// the saves folder (journal, maps, skills, checkpoints).
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and the model keys; spends money"]
+async fn gate_session() {
+    use super::session::{self, Game, Limits, Session};
+    if !gate_on() {
+        return;
+    }
+    let http = http();
+    let db = spend_db().await;
+    let model = setting("VIVY_GB_PLAYER", "claude-haiku-5-5");
+    let (provider, _) = player_model(&http, &db, &model);
+    let planner = setting("VIVY_GB_REVIEWER", "gpt-6-astra");
+    let strategist = openai(
+        &http,
+        &db,
+        &planner,
+        &setting("VIVY_GB_PLAN_EFFORT", "medium"),
+    );
+    let start = setting("VIVY_GB_START", "");
+    let goal = std::env::var("VIVY_GB_GOAL").ok();
+    let folder = results(&format!("session-{}", file_name(&planner)));
+    let saves = folder.join("saves");
+    let mut local = if start.is_empty() {
+        Local::new(super::red::tests::new_game())
+    } else {
+        Local::new(load(&start))
+    };
+    let spends = [
+        Spend::new(db.clone(), "claude", 0.0),
+        Spend::new(db.clone(), "openai", 0.0),
+        Spend::new(db.clone(), "gemini", 0.0),
+    ];
+    let (report, mut lines) = tokio::sync::mpsc::unbounded_channel();
+    let session = Session {
+        provider: provider.as_ref(),
+        openai: Some(&strategist),
+        spends: &spends,
+        game: GAME.to_string(),
+        saves_dir: saves.clone(),
+        rom: "red.gb".to_string(),
+        limits: Limits {
+            minutes: setting("VIVY_GB_MINUTES", "30").parse().unwrap(),
+            episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
+            daily_usd: setting("VIVY_GB_GATE_USD", "3").parse().unwrap(),
+            free_tokens: 1_000_000,
+        },
+        stop: tokio_util::sync::CancellationToken::new(),
+        report,
+        now: None,
+        timer: None,
+    };
+    // Each line as it comes, so a long run can be followed.
+    let printer = tokio::spawn(async move {
+        let mut all = Vec::new();
+        while let Some(report) = lines.recv().await {
+            println!("{}", report.line);
+            all.push(report.line);
+        }
+        all
+    });
+    let started = Instant::now();
+    let result = session::play(&session, &mut local, goal.as_deref()).await;
+    drop(session);
+    let all = printer.await.unwrap();
+    save_screen(&mut local, folder.join("end.png"));
+    let world = local.world().await.unwrap();
+    let today: super::budget::Today = serde_json::from_str(
+        &std::fs::read_to_string(saves.join("today.json")).unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let journal: super::journal::Journal = serde_json::from_str(
+        &std::fs::read_to_string(saves.join("red").join("journal.json")).unwrap_or_default(),
+    )
+    .unwrap_or_default();
+    let mut out = format!(
+        "# Stage 4b session: {model} playing, {planner} planning
+
+Start: {}. Goal: {}.
+
+",
+        if start.is_empty() {
+            "a new game, in her bedroom"
+        } else {
+            &start
+        },
+        journal.goal.trim_end_matches('.')
+    );
+    match &result {
+        Ok(s) => writeln!(
+            out,
+            "Ended: {} {} episodes in {:.0} minutes. New areas: {}. {} checkpoints, {} \
+             rollbacks, {} cheap plans. Paid models ${:.2}; {} free tokens; today's \
+             counter {} tokens.\n",
+            s.ended.line(),
+            s.episodes,
+            started.elapsed().as_secs_f64() / 60.0,
+            if s.new_areas.is_empty() {
+                "none".to_string()
+            } else {
+                s.new_areas.join(", ")
+            },
+            s.checkpoints,
+            s.rollbacks,
+            s.cheap_plans,
+            s.usd,
+            s.free_tokens,
+            today.free_tokens
+        )
+        .unwrap(),
+        Err(err) => writeln!(
+            out,
+            "The session broke off: {err:#}
+"
+        )
+        .unwrap(),
+    }
+    writeln!(
+        out,
+        "Spent ${:.2} at list prices in all.
+
+## Episodes
+",
+        spent(&db).await
+    )
+    .unwrap();
+    for line in &all {
+        writeln!(out, "- {line}").unwrap();
+    }
+    writeln!(
+        out,
+        "
+## Her notes at the end
+"
+    )
+    .unwrap();
+    for note in &journal.notes {
+        writeln!(out, "- {note}").unwrap();
+    }
+    writeln!(
+        out,
+        "
+## Her skills at the end
+"
+    )
+    .unwrap();
+    for skill in &world.skills {
+        writeln!(
+            out,
+            "{}
+",
+            skill.written()
+        )
+        .unwrap();
+    }
+    writeln!(
+        out,
+        "## The last task's digest
+
+{}",
+        journal.digest
+    )
+    .unwrap();
+    std::fs::write(folder.join("report.md"), &out).unwrap();
+    println!(
+        "{out}
+Results in {}",
+        folder.display()
+    );
+    result.unwrap();
 }
 
 #[cfg(test)]
