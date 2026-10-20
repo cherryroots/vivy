@@ -93,6 +93,7 @@ fn text_rows(tiles: &[u8]) -> Vec<String> {
 /// Marks every step on screen on the map, and where people stand.
 fn see(map: &mut AreaMap, state: &State, tiles: &[u8], screen: &Screen) {
     let (width, height) = (i32::from(state.map_size.0), i32::from(state.map_size.1));
+    map.size = Some((width, height));
     for j in 0..STEPS_DOWN {
         for i in 0..STEPS_ACROSS {
             let pos = (

@@ -92,8 +92,9 @@ pub fn tools() -> Vec<ToolDef> {
                 if_words empty to fit any screen) has its 1 to 5 buttons pressed. It stops \
                 when you can walk (unless stop_when_free is false), when any of stop_words \
                 is on screen, after most rounds (default 30, at most 50), when no rule fits, \
-                or when nothing changes 3 rounds running. The same name replaces a skill, \
-                so fix one that didn't work.",
+                or when nothing changes 3 rounds running (stop words only count after its \
+                first press). The same name replaces a skill: fix one that didn't work \
+                rather than writing another beside it.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -171,9 +172,29 @@ pub fn run(
             let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) else {
                 return told(world, machine, look, "walk_to needs whole numbers x and y.");
             };
-            let walk = walk_to(world, machine, look, (x as i32, y as i32), WALK_MOST);
+            let (x, y) = (x as i32, y as i32);
+            let view = look(world, machine);
+            if let Some(map) = world.areas.get(&view.area)
+                && let Some((w, h)) = map.size
+                && !map.inside((x, y))
+                && map.kind((x, y)).is_none()
+            {
+                return told(
+                    world,
+                    machine,
+                    look,
+                    &format!(
+                        "({x}, {y}) is outside {}, which is {w}×{h} steps (x 0 to {}, y 0 to \
+                         {}). To leave it, walk to an edge step (>) and step on through it.",
+                        view.area,
+                        w - 1,
+                        h - 1
+                    ),
+                );
+            }
+            let walk = walk_to(world, machine, look, (x, y), WALK_MOST);
             let view = settle(world, machine, look, &mut Vec::new());
-            walked(walk.result, walk.steps, view, (x as i32, y as i32), false)
+            walked(walk.result, walk.steps, view, (x, y), false)
         }
         "explore" => {
             let walk = explore(world, machine, look, WALK_MOST);
@@ -185,16 +206,19 @@ pub fn run(
         "read_text" => read_text(world, machine, look),
         "write_skill" => {
             let saved = Skill::from_args(args).and_then(|skill| {
-                let name = skill.name.clone();
-                skills::save(&mut world.skills, skill).map(|()| name)
+                let (name, clash) = (skill.name.clone(), skill.clash());
+                skills::save(&mut world.skills, skill).map(|()| (name, clash))
             });
             match saved {
-                Ok(name) => told(
-                    world,
-                    machine,
-                    look,
-                    &format!("Saved the skill \"{name}\". Use it with use_skill."),
-                ),
+                Ok((name, clash)) => {
+                    let warning = clash.map(|c| format!(" Careful: {c}")).unwrap_or_default();
+                    told(
+                        world,
+                        machine,
+                        look,
+                        &format!("Saved the skill \"{name}\". Use it with use_skill.{warning}"),
+                    )
+                }
                 Err(why) => told(world, machine, look, &why),
             }
         }
@@ -399,7 +423,7 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
     keep_words(&mut words, &view);
     let (mut rounds, mut presses, mut still) = (0, 0, 0);
     let stopped = loop {
-        if let Some(why) = skill.stop(&view) {
+        if let Some(why) = skill.stop(&view, rounds > 0) {
             break why;
         }
         if rounds == skill.most {
@@ -409,7 +433,12 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
             break format!("nothing changed for {SKILL_STUCK} rounds");
         }
         let Some(rule) = skill.rule_for(&view) else {
-            break "no rule fits the screen".to_string();
+            let says = if view.text.is_empty() {
+                "has no words".to_string()
+            } else {
+                format!("says \"{}\"", view.text.replace('\n', " / "))
+            };
+            break format!("no rule fits the screen, which {says}");
         };
         // Checked when it was written.
         let buttons = presses::parse(&rule.press).unwrap_or_default();
@@ -427,12 +456,22 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
         };
     };
     let summary = format!("stopped after {rounds} rounds: {stopped}");
+    // Rewriting it under its name keeps one skill per job, rather than near-copies.
+    let fix = if rounds == 0 {
+        " It pressed nothing: rewrite it under the same name to fix it (a rule with empty \
+         if_words fits any screen)."
+    } else {
+        ""
+    };
     if let Some(kept) = skills::find(&mut world.skills, &skill.name) {
         kept.uses += 1;
         kept.last = summary.clone();
     }
     Acted {
-        outcome: format!("Used {}: {presses} presses, {summary}.{notes}", skill.name),
+        outcome: format!(
+            "Used {}: {presses} presses, {summary}.{fix}{notes}",
+            skill.name
+        ),
         view,
         words,
     }
@@ -442,8 +481,14 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
 /// and the map around her.
 pub fn describe(world: &World, view: &View) -> String {
     let mut lines = Vec::new();
+    let size = world
+        .areas
+        .get(&view.area)
+        .and_then(|map| map.size)
+        .map(|(w, h)| format!(" ({w}×{h} steps)"))
+        .unwrap_or_default();
     lines.push(format!(
-        "Place: {}, standing at ({}, {}).",
+        "Place: {}{size}, standing at ({}, {}).",
         view.area, view.at.0, view.at.1
     ));
     if !view.facts.is_empty() {

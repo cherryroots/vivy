@@ -150,15 +150,34 @@ impl Skill {
             .find(|rule| rule.if_words.is_empty() || on_screen(&view.text, &rule.if_words))
     }
 
-    /// Why it stops on this screen, if it does.
-    pub fn stop(&self, view: &View) -> Option<String> {
+    /// Why it stops on this screen, if it does. Stop words only count once it has pressed
+    /// something: words already on screen when it starts are what it was used for.
+    pub fn stop(&self, view: &View, pressed: bool) -> Option<String> {
         if self.stop_when_free && view.can_walk {
             return Some("you can walk".to_string());
+        }
+        if !pressed {
+            return None;
         }
         self.stop_words
             .iter()
             .find(|words| on_screen(&view.text, words))
             .map(|words| format!("\"{words}\" is on screen"))
+    }
+
+    /// A warning about a stop word that is also a rule's words: it would stop the routine
+    /// on the very screen that rule is for.
+    pub fn clash(&self) -> Option<String> {
+        let word = self.stop_words.iter().find(|stop| {
+            self.rules.iter().any(|rule| {
+                !rule.if_words.is_empty()
+                    && (on_screen(&rule.if_words, stop) || on_screen(stop, &rule.if_words))
+            })
+        })?;
+        Some(format!(
+            "\"{word}\" is a stop word and also a rule's words, so it stops on the screen \
+             that rule is for. Pick a stop word that only shows once it's done."
+        ))
     }
 
     /// Whether it's know-how only, with no routine to run.
@@ -310,15 +329,41 @@ mod tests {
     #[test]
     fn it_stops_when_free_or_on_a_stop_word() {
         let skill = run_away();
-        assert_eq!(skill.stop(&view("", true)).as_deref(), Some("you can walk"));
         assert_eq!(
-            skill.stop(&view("can't\nescape!", false)).as_deref(),
+            skill.stop(&view("", true), false).as_deref(),
+            Some("you can walk")
+        );
+        assert_eq!(
+            skill.stop(&view("can't\nescape!", false), true).as_deref(),
             Some("\"Can't escape\" is on screen")
         );
-        assert_eq!(skill.stop(&view("Wild PIDGEY appeared!", false)), None);
+        assert_eq!(
+            skill.stop(&view("Wild PIDGEY appeared!", false), true),
+            None
+        );
+        // Stop words already up when it starts don't count.
+        assert_eq!(skill.stop(&view("can't escape", false), false), None);
         let mut keeps_going = skill.clone();
         keeps_going.stop_when_free = false;
-        assert_eq!(keeps_going.stop(&view("", true)), None);
+        assert_eq!(keeps_going.stop(&view("", true), true), None);
+    }
+
+    #[test]
+    fn a_stop_word_a_rule_uses_is_warned_about() {
+        assert_eq!(run_away().clash(), None);
+        let clashing = Skill::from_args(&json!({
+            "name": "fight",
+            "use_when": "a battle",
+            "rules": [{"if_words": "FIGHT", "press": "a"}],
+            "stop_words": ["fight run"]
+        }))
+        .unwrap();
+        assert!(
+            clashing
+                .clash()
+                .unwrap()
+                .starts_with("\"fight run\" is a stop word")
+        );
     }
 
     #[test]

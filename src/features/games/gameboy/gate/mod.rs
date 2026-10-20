@@ -851,6 +851,13 @@ mod tests {
             panic!("never met one");
         }
         let mut local = Local::new(load("route1"));
+        // A step past the area's edge is refused, rather than wandered toward.
+        let acted = act(&mut local, "walk_to", json!({"x": 10, "y": -6})).await;
+        assert!(
+            acted.outcome.contains("is outside Route 1"),
+            "{}",
+            acted.outcome
+        );
         act(&mut local, "write_skill", run_away).await;
         act(&mut local, "write_skill", fight).await;
         meet_one(&mut local).await;

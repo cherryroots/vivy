@@ -71,6 +71,10 @@ pub struct AreaMap {
     /// People seen on the last screen. Not saved: they move.
     #[serde(skip)]
     people: HashSet<Pos>,
+    /// The area's width and height in steps, when the game says (Red does). Steps outside
+    /// are past its edges, so a way is never looked for through them.
+    #[serde(default)]
+    pub size: Option<(i32, i32)>,
 }
 
 /// A direction, as stored in the map (buttons aren't serializable).
@@ -141,6 +145,12 @@ impl AreaMap {
         self.kinds.get(&pos).copied()
     }
 
+    /// Whether a step is inside the area (always, when its size isn't known).
+    pub fn inside(&self, (x, y): Pos) -> bool {
+        self.size
+            .is_none_or(|(w, h)| (0..w).contains(&x) && (0..h).contains(&y))
+    }
+
     /// Whether a step from `from` in `dir` can be tried: not blocked before, not into a
     /// person, onto a walkable step (or an unseen one, when `explore`).
     pub fn can_step(&self, from: Pos, dir: Dir, explore: bool) -> bool {
@@ -153,7 +163,9 @@ impl AreaMap {
         }
         match self.kinds.get(&to) {
             Some(kind) => kind.walkable(),
-            None => explore,
+            // Unseen steps past the area's edges are never a way: walking there wanders
+            // around the outside of the map.
+            None => explore && self.inside(to),
         }
     }
 
@@ -391,6 +403,26 @@ mod tests {
         assert_eq!(names(&way), "drru");
         // A door can be where she's going.
         assert_eq!(names(&map.path((0, 0), (1, 0), false).unwrap()), "r");
+    }
+
+    #[test]
+    fn exploring_stays_inside_the_area() {
+        // The top row's middle step is an edge out of the area; the rest is unseen.
+        let mut map = map_of(&["#>#", "...", "..."]);
+        map.size = Some((3, 6));
+        assert!(map.inside((2, 5)) && !map.inside((1, -1)) && !map.inside((3, 0)));
+        assert!(
+            map.path((1, 2), (1, 5), true).is_some(),
+            "unseen, but inside"
+        );
+        // Past the top, the only known way out is the edge; around the outside is none.
+        assert_eq!(map.path((1, 2), (1, -4), true), None);
+        assert_eq!(names(&map.path((1, 2), (1, 0), true).unwrap()), "uu");
+        map.size = None;
+        assert!(
+            map.path((1, 2), (1, -4), true).is_some(),
+            "no size, no limit"
+        );
     }
 
     #[test]
