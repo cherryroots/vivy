@@ -614,7 +614,7 @@ async fn gate_learning() {
             let before = spent(&db).await;
             let mut local = Local::new(load(task.state));
             local.world.skills = known.clone();
-            let episode = run_task(
+            let mut result = run_task(
                 provider.as_ref(),
                 &mut local,
                 GAME,
@@ -622,8 +622,25 @@ async fn gate_learning() {
                 None,
                 task.most,
             )
-            .await
-            .unwrap_or_else(|err| Episode {
+            .await;
+            // A busy model (Claude's 529, after the provider's own retries) says nothing
+            // about her play: wait, then play the task again from the start, once.
+            if let Err(err) = &result {
+                writeln!(log, "(the model call failed, playing it again: {err:#})\n").unwrap();
+                tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                local = Local::new(load(task.state));
+                local.world.skills = known.clone();
+                result = run_task(
+                    provider.as_ref(),
+                    &mut local,
+                    GAME,
+                    task.text,
+                    None,
+                    task.most,
+                )
+                .await;
+            }
+            let episode = result.unwrap_or_else(|err| Episode {
                 log: vec![format!("The model call failed: {err:#}")],
                 ..Episode::default()
             });
@@ -949,6 +966,36 @@ mod tests {
         let listed = local.describe(&acted).await.unwrap();
         println!("{listed}");
         assert!(listed.contains("- fight: a wild Pokémon to beat (used once"));
+    }
+
+    /// At the top of Route 1 some unseen steps are past the map's edge: exploring has to
+    /// end there, not aim at them forever, and walking past the edge is refused.
+    #[tokio::test]
+    #[ignore = "needs a ROM in VIVY_GB_ROM and the task states"]
+    async fn exploring_ends_at_the_edge_of_a_route() {
+        let mut local = Local::new(load("route1"));
+        let acted = local
+            .act("walk_to", &json!({"x": 10, "y": 0}))
+            .await
+            .unwrap();
+        println!("{}", acted.outcome);
+        assert_eq!(acted.view.at, (10, 0), "a wild Pokémon got in the way");
+        for _ in 0..4 {
+            let acted = local.act("explore", &json!({})).await.unwrap();
+            println!("explore: {}", acted.outcome);
+        }
+        // Past the top, a tree (3, -1) and a step not seen (2, -5): neither is a way out.
+        for (x, y) in [(3, -1), (2, -5)] {
+            let acted = local
+                .act("walk_to", &json!({"x": x, "y": y}))
+                .await
+                .unwrap();
+            assert!(
+                acted.outcome.contains("is outside Route 1"),
+                "{}",
+                acted.outcome
+            );
+        }
     }
 
     #[test]

@@ -226,15 +226,25 @@ impl Skill {
     }
 }
 
-/// Whether `words` are on the screen, ignoring case and line breaks.
+/// Whether `words` are on the screen as whole words, in order, ignoring case, line breaks
+/// and punctuation: `RED` is in "RED defeated BLUE!" but not in "PIDGEY appeared!". Words
+/// that are only marks (the cursor `▶`) are looked for as they are.
 fn on_screen(text: &str, words: &str) -> bool {
-    let flat = |s: &str| {
-        s.split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase()
+    let words_of = |s: &str| -> Vec<String> {
+        s.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’'))
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect()
     };
-    flat(text).contains(&flat(words))
+    let wanted = words_of(words);
+    if wanted.is_empty() {
+        // Only marks, like the cursor `▶`: those are looked for as they are.
+        let marks = words.trim();
+        return !marks.is_empty() && text.contains(marks);
+    }
+    words_of(text)
+        .windows(wanted.len())
+        .any(|w| w == wanted.as_slice())
 }
 
 /// Saves `skill`, replacing one with the same name, or says why it can't.
@@ -355,6 +365,17 @@ mod tests {
         assert_eq!(skill.rule_for(&menu).unwrap().press, "a");
         let menu = view("What will\nRED do? ▶FIGHT\nrun", false);
         assert_eq!(skill.rule_for(&menu).unwrap().press, "down right a");
+    }
+
+    #[test]
+    fn words_match_whole_words_only() {
+        assert!(on_screen("RED defeated\nBLUE!", "red"));
+        assert!(!on_screen("Wild PIDGEY\nappeared!", "RED"));
+        assert!(on_screen("▶FIGHT PKMN\nITEM RUN", "fight pkmn"));
+        assert!(on_screen("Can't\nescape!", "can't escape"));
+        assert!(on_screen("TYPE/\nNORMAL", "TYPE/"));
+        assert!(on_screen("▶YES\nNO", "▶") && !on_screen("YES\nNO", "▶"));
+        assert!(!on_screen("anything", " "), "nothing is never on screen");
     }
 
     #[test]

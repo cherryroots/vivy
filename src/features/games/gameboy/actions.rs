@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::console::{Machine, Timing};
 use super::emulator::Button;
-use super::map::LEGEND;
+use super::map::{Kind, LEGEND};
 use super::presses::{self, Press};
 use super::skills::{self, Skill};
 use super::walk::{Look, Walked, explore, walk_to};
@@ -174,10 +174,29 @@ pub fn run(
             };
             let (x, y) = (x as i32, y as i32);
             let view = look(world, machine);
+            // Outside the area only its edge steps can be walked to, and only where the step
+            // inside them isn't a wall: they're the ways out.
             if let Some(map) = world.areas.get(&view.area)
                 && let Some((w, h)) = map.size
                 && !map.inside((x, y))
-                && map.kind((x, y)).is_none()
+                && map.kind((x, y)) == Some(Kind::Edge)
+                && map.kind((x.clamp(0, w - 1), y.clamp(0, h - 1))) == Some(Kind::Wall)
+            {
+                return told(
+                    world,
+                    machine,
+                    look,
+                    &format!(
+                        "({x}, {y}) is past the edge of {} behind a wall, so there's no way out \
+                         there. The ways out are edge steps (>) next to floor or grass.",
+                        view.area
+                    ),
+                );
+            }
+            if let Some(map) = world.areas.get(&view.area)
+                && let Some((w, h)) = map.size
+                && !map.inside((x, y))
+                && map.kind((x, y)) != Some(Kind::Edge)
             {
                 return told(
                     world,

@@ -226,6 +226,10 @@ impl AreaMap {
                     continue;
                 }
                 if self.kind(next).is_none() && !self.walked.contains(&next) {
+                    // Past the area's edges there's nothing to see, and no way there.
+                    if !self.inside(next) {
+                        continue;
+                    }
                     if !found.contains(&next) {
                         found.push(next);
                     }
@@ -418,6 +422,9 @@ mod tests {
         // Past the top, the only known way out is the edge; around the outside is none.
         assert_eq!(map.path((1, 2), (1, -4), true), None);
         assert_eq!(names(&map.path((1, 2), (1, 0), true).unwrap()), "uu");
+        // Nothing past the edges is a frontier either, or exploring would aim there.
+        assert!(map.frontier((1, 2)).iter().all(|&pos| map.inside(pos)));
+        assert!(!map.frontier((1, 2)).is_empty());
         map.size = None;
         assert!(
             map.path((1, 2), (1, -4), true).is_some(),

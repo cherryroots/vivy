@@ -197,10 +197,15 @@ fn settle(machine: &mut Machine) {
 /// seen.
 pub fn explore(world: &mut World, machine: &mut Machine, look: Look, most: u32) -> Walk {
     let mut steps = 0;
+    // Unseen steps with no way to them: never tried twice, so exploring always ends.
+    let mut no_way = Vec::new();
     loop {
         let view = look(world, machine);
         let map = world.area(&view.area);
-        let target = map.frontier(view.at).first().copied();
+        let target = map
+            .frontier(view.at)
+            .into_iter()
+            .find(|pos| !no_way.contains(pos));
         let Some(target) = target.filter(|_| view.can_walk && steps < most) else {
             // Nothing left to see, or nothing she can walk to: walk_to says which.
             let result = match target {
@@ -224,7 +229,10 @@ pub fn explore(world: &mut World, machine: &mut Machine, look: Look, most: u32) 
                 walk.result = Walked::Arrived;
                 return walk;
             }
-            Walked::NoWay => continue,
+            Walked::NoWay => {
+                no_way.push(target);
+                continue;
+            }
             _ => return walk,
         }
     }
