@@ -7,3 +7,10 @@ config.toml
 *.db.imported
 /faces
 /banners
+
+# Game Boy ROMs and save states (never committed)
+/roms/
+/gameboy/
+*.gb
+*.gbc
+*.state

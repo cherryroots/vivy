@@ -66,6 +66,10 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 `/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round of a battle royale set in the server's own channels (the Scatter from the Octagon, days and nights, the boldest fighting for a prize in the Octagon, the final showdown in it), where weapons are found in the places themed to them and alliances form and break until one tribute wins. The fallen get last words (a real message of theirs), the host can let her work in fun things she remembers about the tributes, and with an ElevenLabs key her Gamemaker announcements are also voice messages in a Gamemaker voice of their own. The host can also have her draw a map of the arena with every round, with the tributes as sprites where the action is, and the victor surrounded by everyone they killed. Each round follows the last by itself, and `/games leaderboard` keeps the server's wins, kills and Octagons won (admins can start it over with `/games resetleaderboard`). The victor message names the cowards who never dared to step into the Octagon.
 
+### Game Boy
+
+Vivy is learning to play Game Boy games. For now admins play by hand: `/games gameboy load` puts in a ROM from the `roms` folder (your own copies), `/games gameboy press buttons:a a up*3 start` presses buttons and posts a GIF of what happened, and `screen`, `wait`, `gif`, `save` and `restore` do what they say. Later stages let her play by herself and tell the server how it's going ([docs/features/gameboy.md](docs/features/gameboy.md)).
+
 ### Control panel
 
 A status picture in a channel of your choice, refreshed every minute: uptime, version, the AI provider and its spend, Vivy's mood, per-feature stats and graphs. Warnings, errors and start and stop notices go to a log channel.

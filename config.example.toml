@@ -325,6 +325,14 @@ close_ups = 3
 picture_quality = "medium"
 victor_picture_quality = "high"
 
+[features.games.gameboy]
+# /games gameboy: a Game Boy (and Game Boy Color) emulator. For now admins play it by hand;
+# later Vivy plays it herself. The folder with the ROMs (.gb and .gbc files): your own
+# copies of games you own.
+roms_dir = "roms"
+# The folder for save states, a folder per ROM inside it.
+saves_dir = "gameboy"
+
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.
 # status_channel = 123456789012345678

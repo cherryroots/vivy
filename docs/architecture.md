@@ -320,3 +320,5 @@ A path through the code for learning it, from small to large:
 | `dotenvy` | Loading `.env` |
 | `fastrand` | Dice rolls, like whether Vivy chimes in |
 | `tempfile` | Temporary files for ffmpeg |
+| `boytacean` | The Game Boy emulator (pinned to one version, since save states may not survive an upgrade) |
+| `gif` | Writing GIFs of the Game Boy's screen with an exact palette |
