@@ -12,10 +12,10 @@
 
 use std::time::Duration;
 
+use super::discord::{Channel, GuildId, Message};
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde_json::Value;
-use super::discord::{Channel, GuildId, Message};
 use tracing::{debug, warn};
 
 /// Most results one page has (Discord's limit).

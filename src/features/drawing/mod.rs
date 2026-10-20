@@ -29,11 +29,11 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use serenity::all::{CreateAllowedMentions, CreateAttachment, CreateMessage, GetMessages, Message};
 use tracing::{info, warn};
 
 use crate::ai::{PictureRequest, ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
+use crate::util::discord::{Draft, Message, Page, get_message, get_messages, ping_replied};
 use crate::util::media::{self, MediaKind, ModelImage};
 use crate::util::search::snowflake_at;
 use crate::util::{env_key, month_start};
@@ -42,7 +42,7 @@ const TOOL: &str = "draw_picture";
 /// The most pictures sent along to draw from.
 const MAX_PICTURES: usize = 4;
 /// How many messages before and after one of Vivy's answers are checked for its pictures.
-const NEIGHBOURS: u8 = 4;
+const NEIGHBOURS: u16 = 4;
 
 /// `[features.drawing]` settings.
 #[derive(Debug, Deserialize)]
@@ -132,8 +132,8 @@ async fn pictures_around(ctx: &BotCtx, msg: &Message) -> Vec<media::Media> {
     if let Some(replied) = &msg.referenced_message
         && replied.author.id == ctx.bot_id
     {
-        let before = GetMessages::new().before(replied.id).limit(NEIGHBOURS);
-        let after = GetMessages::new().after(replied.id).limit(NEIGHBOURS);
+        let before = Page::Before(replied.id);
+        let after = Page::After(replied.id);
         // Discord lists newest first; walking away from the replied message means going
         // backwards through "before" and forwards through "after".
         let before = neighbours(ctx, msg, before).await;
@@ -151,8 +151,8 @@ async fn pictures_around(ctx: &BotCtx, msg: &Message) -> Vec<media::Media> {
     found
 }
 
-async fn neighbours(ctx: &BotCtx, msg: &Message, which: GetMessages) -> Vec<Message> {
-    match msg.channel_id.messages(&ctx.http, which).await {
+async fn neighbours(ctx: &BotCtx, msg: &Message, which: Page) -> Vec<Message> {
+    match get_messages(&ctx.http, msg.channel_id, which, NEIGHBOURS).await {
         Ok(messages) => messages,
         Err(err) => {
             warn!("couldn't read the messages around an answer: {err:#}");
@@ -258,9 +258,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
 
         let mut pictures: Vec<ModelImage> = Vec::new();
         if args.get("use_pictures").and_then(Value::as_bool) == Some(true) {
-            let msg = ctx
-                .http
-                .get_message(asker.channel, asker.message)
+            let msg = get_message(&ctx.http, asker.channel, asker.message)
                 .await
                 .context("reading the asker's message")?;
             for found in pictures_around(ctx, &msg).await {
@@ -315,13 +313,11 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
             (id, reply)
         } else {
             let name = format!("drawing.{}", picture.format);
-            let message = CreateMessage::new()
-                .add_file(CreateAttachment::bytes(picture.data, name))
-                .reference_message((asker.channel, asker.message))
-                .allowed_mentions(CreateAllowedMentions::new().replied_user(true));
-            let message = asker
-                .channel
-                .send_message(&ctx.http, message)
+            let message = Draft::new()
+                .file(name, picture.data)
+                .reply_to(asker.message)
+                .allowed_mentions(ping_replied())
+                .send(&ctx.http, asker.channel)
                 .await
                 .context("posting the picture")?;
             asker
@@ -404,7 +400,8 @@ fn quality<'a>(settings: &'a Settings, args: &Value) -> &'a str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serenity::all::Attachment;
+    use crate::util::discord::test_message;
+    use twilight_model::channel::Attachment;
 
     fn attachment(url: &str, content_type: &str) -> Attachment {
         serde_json::from_value(json!({
@@ -415,7 +412,7 @@ mod tests {
     }
 
     fn message(attachments: Vec<Attachment>) -> Message {
-        let mut msg = Message::default();
+        let mut msg = test_message(json!({}));
         msg.attachments = attachments;
         msg
     }
@@ -451,7 +448,7 @@ mod tests {
         )])));
         let urls: Vec<String> = pictures_in(&msg).into_iter().map(|m| m.url).collect();
         assert_eq!(urls, ["https://cdn/a.png", "https://cdn/c.webp"]);
-        assert!(pictures_in(&Message::default()).is_empty());
+        assert!(pictures_in(&message(Vec::new())).is_empty());
     }
 
     #[test]

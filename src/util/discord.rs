@@ -15,10 +15,11 @@ use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use twilight_model::channel::message::component::{
-    ActionRow, Button, ButtonStyle, Component, Label, SelectMenu, SelectMenuOption,
-    SelectMenuType, TextInput, TextInputStyle,
+    ActionRow, Button, ButtonStyle, Component, Label, SelectMenu, SelectMenuOption, SelectMenuType,
+    TextInput, TextInputStyle,
 };
-use twilight_model::channel::message::{AllowedMentions, Embed, MessageFlags, MentionType};
+use twilight_model::channel::message::embed::EmbedField;
+use twilight_model::channel::message::{AllowedMentions, Embed, EmojiReactionType, MessageFlags};
 use twilight_model::http::attachment::Attachment as NewFile;
 use twilight_model::id::Id;
 use twilight_model::id::marker::{
@@ -27,13 +28,17 @@ use twilight_model::id::marker::{
 };
 use twilight_model::user::User;
 use twilight_model::util::Timestamp;
+use twilight_util::builder::message::{ButtonBuilder, SelectMenuBuilder, SelectMenuOptionBuilder};
 
-pub use twilight_model::channel::message::component;
 pub use twilight_model::channel::{Channel, ChannelType, Message};
-pub use twilight_model::guild::{Member, PartialMember, Permissions};
+pub use twilight_model::gateway::GatewayReaction;
+pub use twilight_model::guild::{Member, PartialMember, Permissions, Role};
 
 /// The REST API client.
 pub type Http = twilight_http::Client;
+pub use twilight_http::request::channel::reaction::RequestReactionType;
+use twilight_http::request::{Form, Request};
+use twilight_http::routing::Route;
 
 pub type UserId = Id<UserMarker>;
 pub type GuildId = Id<GuildMarker>;
@@ -44,9 +49,6 @@ pub type EmojiId = Id<EmojiMarker>;
 pub type AttachmentId = Id<AttachmentMarker>;
 pub type ApplicationId = Id<ApplicationMarker>;
 pub type InteractionId = Id<InteractionMarker>;
-
-/// The biggest message Discord takes, in characters.
-pub const MAX_MESSAGE: usize = 2000;
 
 // ---------------------------------------------------------------------------------------
 // Drafts: messages to send or edits to make
@@ -122,13 +124,6 @@ impl Draft {
         self
     }
 
-    /// When editing: keeps this file that's already on the message. Adding new files
-    /// replaces the old ones, unless they are kept with this.
-    pub fn keep_file(mut self, id: AttachmentId) -> Draft {
-        self.keep_files.get_or_insert_with(Vec::new).push(id);
-        self
-    }
-
     pub fn allowed_mentions(mut self, mentions: AllowedMentions) -> Draft {
         self.allowed_mentions = Some(mentions);
         self
@@ -152,11 +147,6 @@ impl Draft {
     /// Link previews are left off.
     pub fn suppress_embeds(self) -> Draft {
         self.flags(MessageFlags::SUPPRESS_EMBEDS)
-    }
-
-    pub fn is_ephemeral(&self) -> bool {
-        self.flags
-            .is_some_and(|flags| flags.contains(MessageFlags::EPHEMERAL))
     }
 
     /// Sends it to `channel`.
@@ -245,14 +235,6 @@ pub fn ping_replied() -> AllowedMentions {
     }
 }
 
-/// Pings every user mentioned in the text (not roles or @everyone).
-pub fn ping_mentioned_users() -> AllowedMentions {
-    AllowedMentions {
-        parse: vec![MentionType::Users],
-        ..AllowedMentions::default()
-    }
-}
-
 /// Whether a message @-mentions this user (replies that ping count too).
 pub fn mentions_user(msg: &Message, user: UserId) -> bool {
     msg.mentions.iter().any(|mention| mention.id == user)
@@ -262,75 +244,57 @@ pub fn mentions_user(msg: &Message, user: UserId) -> bool {
 // Buttons, menus and modals
 // ---------------------------------------------------------------------------------------
 
-/// A button that sends `custom_id` to the bot when pressed.
-pub fn button(custom_id: impl Into<String>, label: impl Into<String>, style: ButtonStyle) -> Button {
-    Button {
-        id: None,
-        custom_id: Some(custom_id.into()),
-        disabled: false,
-        emoji: None,
-        label: Some(label.into()),
-        style,
-        url: None,
-        sku_id: None,
-    }
+/// A button that sends `custom_id` to the bot when pressed. Add `.emoji(..)` or
+/// `.disabled(..)` to the builder, and put it in a row with [`buttons`].
+pub fn button(
+    custom_id: impl Into<String>,
+    label: impl Into<String>,
+    style: ButtonStyle,
+) -> ButtonBuilder {
+    ButtonBuilder::new(style).custom_id(custom_id).label(label)
 }
 
-/// A button that opens a link.
-pub fn link_button(url: impl Into<String>, label: impl Into<String>) -> Button {
-    Button {
-        id: None,
-        custom_id: None,
-        disabled: false,
-        emoji: None,
-        label: Some(label.into()),
-        style: ButtonStyle::Link,
-        url: Some(url.into()),
-        sku_id: None,
+/// An emoji like "🎯" for a button or menu option.
+pub fn emoji(text: &str) -> EmojiReactionType {
+    EmojiReactionType::Unicode {
+        name: text.to_string(),
     }
 }
 
 /// A row of buttons. Discord fits 5 on a row.
-pub fn buttons(buttons: Vec<Button>) -> Component {
+pub fn buttons<B: Into<Button>>(buttons: impl IntoIterator<Item = B>) -> Component {
     Component::ActionRow(ActionRow {
         id: None,
-        components: buttons.into_iter().map(Component::Button).collect(),
+        components: buttons
+            .into_iter()
+            .map(|button| Component::Button(button.into()))
+            .collect(),
     })
 }
 
-/// A menu of text options, on a row of its own.
-pub fn menu(custom_id: impl Into<String>, options: Vec<SelectMenuOption>) -> SelectMenu {
-    SelectMenu {
-        id: None,
-        channel_types: None,
-        custom_id: custom_id.into(),
-        default_values: None,
-        disabled: false,
-        kind: SelectMenuType::Text,
-        max_values: None,
-        min_values: None,
-        options: Some(options),
-        placeholder: None,
-        required: None,
+/// A menu of text options (made with [`menu_option`], at most 25). Add a
+/// `.placeholder(..)` to the builder and put it on a row of its own with [`menu_row`].
+pub fn menu<O: Into<SelectMenuOption>>(
+    custom_id: impl Into<String>,
+    options: impl IntoIterator<Item = O>,
+) -> SelectMenuBuilder {
+    let mut menu = SelectMenuBuilder::new(custom_id, SelectMenuType::Text);
+    for option in options {
+        menu = menu.option(option);
     }
+    menu
 }
 
 /// One option of a [`menu`].
-pub fn menu_option(label: impl Into<String>, value: impl Into<String>) -> SelectMenuOption {
-    SelectMenuOption {
-        default: false,
-        description: None,
-        emoji: None,
-        label: label.into(),
-        value: value.into(),
-    }
+pub fn menu_option(label: impl Into<String>, value: impl Into<String>) -> SelectMenuOptionBuilder {
+    SelectMenuOptionBuilder::new(label, value)
 }
 
 /// A row holding one menu.
-pub fn menu_row(menu: SelectMenu) -> Component {
+pub fn menu_row(menu: impl Into<SelectMenu>) -> Component {
     Component::ActionRow(ActionRow {
         id: None,
-        components: vec![Component::SelectMenu(menu)],
+        components: vec![Component::SelectMenu(menu.into())],
     })
 }
 
@@ -351,31 +315,71 @@ impl Modal {
         }
     }
 
-    /// Adds a text box (see [`text_input`]) under a label.
-    pub fn input(mut self, label: impl Into<String>, input: TextInput) -> Modal {
+    /// Adds a text box with a label over it.
+    pub fn input(mut self, label: impl Into<String>, input: TextBox) -> Modal {
         self.components.push(Component::Label(Label {
             id: None,
             label: label.into(),
             description: None,
-            component: Box::new(Component::TextInput(input)),
+            component: Box::new(Component::TextInput(input.0)),
         }));
         self
     }
 }
 
 /// A text box for a [`Modal`]. Its text comes back under `custom_id`.
-#[allow(deprecated, reason = "the label goes on the Label around it instead")]
-pub fn text_input(custom_id: impl Into<String>, style: TextInputStyle) -> TextInput {
-    TextInput {
-        id: None,
-        custom_id: custom_id.into(),
-        label: None,
-        max_length: None,
-        min_length: None,
-        placeholder: None,
-        required: None,
-        style,
-        value: None,
+#[derive(Debug, Clone)]
+pub struct TextBox(TextInput);
+
+impl TextBox {
+    /// A one-line box.
+    pub fn short(custom_id: impl Into<String>) -> TextBox {
+        TextBox::new(custom_id, TextInputStyle::Short)
+    }
+
+    #[allow(deprecated, reason = "the label goes on the Label around it instead")]
+    fn new(custom_id: impl Into<String>, style: TextInputStyle) -> TextBox {
+        TextBox(TextInput {
+            id: None,
+            custom_id: custom_id.into(),
+            label: None,
+            max_length: None,
+            min_length: None,
+            placeholder: None,
+            required: None,
+            style,
+            value: None,
+        })
+    }
+
+    pub fn placeholder(mut self, text: impl Into<String>) -> TextBox {
+        self.0.placeholder = Some(text.into());
+        self
+    }
+
+    /// Text already in the box.
+    pub fn value(mut self, text: impl Into<String>) -> TextBox {
+        self.0.value = Some(text.into());
+        self
+    }
+
+    pub fn max_length(mut self, length: u16) -> TextBox {
+        self.0.max_length = Some(length);
+        self
+    }
+
+    pub fn required(mut self, required: bool) -> TextBox {
+        self.0.required = Some(required);
+        self
+    }
+}
+
+/// One field of an embed, for `EmbedBuilder::field`. `inline` fields sit side by side.
+pub fn field(name: impl Into<String>, value: impl Into<String>, inline: bool) -> EmbedField {
+    EmbedField {
+        inline,
+        name: name.into(),
+        value: value.into(),
     }
 }
 
@@ -452,7 +456,9 @@ pub fn created_at<T>(id: Id<T>) -> DateTime<Utc> {
 pub fn error_code(err: &anyhow::Error) -> Option<u64> {
     use twilight_http::api_error::ApiError;
     use twilight_http::error::ErrorType;
-    let err = err.chain().find_map(|e| e.downcast_ref::<twilight_http::Error>())?;
+    let err = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<twilight_http::Error>())?;
     match err.kind() {
         ErrorType::Response {
             error: ApiError::General(general),
@@ -465,11 +471,171 @@ pub fn error_code(err: &anyhow::Error) -> Option<u64> {
 /// The HTTP status Discord answered with, like 404 or 403.
 pub fn error_status(err: &anyhow::Error) -> Option<u16> {
     use twilight_http::error::ErrorType;
-    let err = err.chain().find_map(|e| e.downcast_ref::<twilight_http::Error>())?;
+    let err = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<twilight_http::Error>())?;
     match err.kind() {
         ErrorType::Response { status, .. } => Some(status.get()),
         _ => None,
     }
+}
+
+/// The name a member goes by in their server: their nickname, or [`display_name`].
+pub fn member_display_name(member: &Member) -> &str {
+    member_name(member.nick.as_deref(), &member.user)
+}
+
+/// Fetches a member of a server from Discord.
+pub async fn get_member(http: &Http, guild: GuildId, user: UserId) -> anyhow::Result<Member> {
+    Ok(http
+        .guild_member(guild, user)
+        .await
+        .context("fetching a server member")?
+        .model()
+        .await?)
+}
+
+/// Fetches a user from Discord.
+pub async fn get_user(http: &Http, user: UserId) -> anyhow::Result<User> {
+    Ok(http
+        .user(user)
+        .await
+        .context("fetching a user")?
+        .model()
+        .await?)
+}
+
+/// Fetches a channel or thread.
+pub async fn get_channel(http: &Http, channel: ChannelId) -> anyhow::Result<Channel> {
+    Ok(http
+        .channel(channel)
+        .await
+        .context("fetching a channel")?
+        .model()
+        .await?)
+}
+
+/// Reacts to a message with `emoji`: a plain one ("👍") or a server's own, written
+/// "<:name:123>", "<a:name:123>" or "name:123".
+pub async fn react(
+    http: &Http,
+    channel: ChannelId,
+    message: MessageId,
+    emoji: &str,
+) -> anyhow::Result<()> {
+    let reaction = parse_reaction(emoji).with_context(|| format!("{emoji:?} isn't an emoji"))?;
+    http.create_reaction(channel, message, &reaction)
+        .await
+        .context("adding a reaction")?;
+    Ok(())
+}
+
+/// Takes a reaction someone added away again.
+pub async fn remove_reaction(http: &Http, reaction: &GatewayReaction) -> anyhow::Result<()> {
+    let emoji = match &reaction.emoji {
+        EmojiReactionType::Custom { id, name, .. } => RequestReactionType::Custom {
+            id: *id,
+            name: name.as_deref(),
+        },
+        EmojiReactionType::Unicode { name } => RequestReactionType::Unicode { name },
+    };
+    http.delete_reaction(
+        reaction.channel_id,
+        reaction.message_id,
+        &emoji,
+        reaction.user_id,
+    )
+    .await
+    .context("removing a reaction")?;
+    Ok(())
+}
+
+/// The emoji in `text`, for [`react`].
+fn parse_reaction(text: &str) -> Option<RequestReactionType<'_>> {
+    let text = text.trim();
+    let inner = text.trim_start_matches('<').trim_end_matches('>');
+    if let Some((name, id)) = inner.rsplit_once(':')
+        && let Ok(id) = id.parse::<u64>()
+        && id > 0
+    {
+        let name = name.trim_start_matches("a:").trim_start_matches(':');
+        return Some(RequestReactionType::Custom {
+            id: EmojiId::new(id),
+            name: (!name.is_empty()).then_some(name),
+        });
+    }
+    (!text.is_empty()).then_some(RequestReactionType::Unicode { name: text })
+}
+
+/// Sends a message twilight has no builder for, like a voice message: `payload` is
+/// Discord's JSON for the message, and `files` its attachments, in the order of the ids in
+/// the payload's `attachments` (0, 1, ...).
+pub async fn send_raw(
+    http: &Http,
+    channel: ChannelId,
+    payload: &serde_json::Value,
+    files: &[(String, Vec<u8>)],
+) -> anyhow::Result<Message> {
+    let mut form = Form::new().json_part(b"payload_json", &serde_json::to_vec(payload)?);
+    for (i, (name, data)) in files.iter().enumerate() {
+        form = form.file_part(format!("files[{i}]").as_bytes(), name.as_bytes(), data);
+    }
+    let route = Route::CreateMessage {
+        channel_id: channel.get(),
+    };
+    let request = Request::builder(&route).form(form).build()?;
+    Ok(http
+        .request::<Message>(request)
+        .await
+        .context("sending a message")?
+        .model()
+        .await?)
+}
+
+/// Shows "Vivy is typing…" in a channel until it's dropped.
+pub struct Typing(tokio::task::JoinHandle<()>);
+
+impl Drop for Typing {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Starts [`Typing`]. Discord shows it for 10 seconds, so it's sent again every 8.
+pub fn start_typing(http: &std::sync::Arc<Http>, channel: ChannelId) -> Typing {
+    let http = http.clone();
+    Typing(tokio::spawn(async move {
+        loop {
+            let _ = http.create_typing_trigger(channel).await;
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        }
+    }))
+}
+
+/// Where a page of [`get_messages`] starts.
+pub enum Page {
+    /// The newest messages.
+    Newest,
+    /// The messages just before this one.
+    Before(MessageId),
+    /// The messages just after this one.
+    After(MessageId),
+}
+
+/// A page of up to `limit` (at most 100) messages of a channel, newest first.
+pub async fn get_messages(
+    http: &Http,
+    channel: ChannelId,
+    page: Page,
+    limit: u16,
+) -> anyhow::Result<Vec<Message>> {
+    let request = http.channel_messages(channel);
+    let response = match page {
+        Page::Newest => request.limit(limit).await,
+        Page::Before(id) => request.before(id).limit(limit).await,
+        Page::After(id) => request.after(id).limit(limit).await,
+    };
+    Ok(response.context("fetching messages")?.models().await?)
 }
 
 /// Fetches one message.
@@ -510,4 +676,32 @@ pub fn test_message(fields: serde_json::Value) -> Message {
         json[key] = value.clone();
     }
     serde_json::from_value(json).expect("a valid message")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reactions_read_plain_and_server_emoji() {
+        assert_eq!(
+            parse_reaction(" 👍 "),
+            Some(RequestReactionType::Unicode { name: "👍" })
+        );
+        let pog = RequestReactionType::Custom {
+            id: EmojiId::new(123),
+            name: Some("pog"),
+        };
+        assert_eq!(parse_reaction("<:pog:123>"), Some(pog));
+        assert_eq!(parse_reaction("<a:pog:123>"), Some(pog));
+        assert_eq!(parse_reaction("pog:123"), Some(pog));
+        assert_eq!(parse_reaction(""), None);
+    }
+
+    #[test]
+    fn ids_tell_their_time() {
+        // Discord's own example: 175928847299117063 was made on 2016-04-30.
+        let id = UserId::new(175_928_847_299_117_063);
+        assert_eq!(created_at(id).timestamp_millis(), 1_462_015_105_796);
+    }
 }

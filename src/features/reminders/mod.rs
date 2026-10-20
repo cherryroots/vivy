@@ -25,16 +25,16 @@ use async_trait::async_trait;
 use chrono::Utc;
 use chrono_tz::Tz;
 use tokio::sync::Notify;
-use twilight_model::guild::PremiumTier;
 use tracing::{info, warn};
+use twilight_model::guild::PremiumTier;
 
 use self::parse::{Repeat, When};
 use self::store::{Image, NewReminder};
 use self::ui::Action;
 use crate::ai::ToolDef;
 use crate::core::{
-    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, Mention,
-    ModalInteraction, Respond as _, Response, Result, Stat, settings, user_error,
+    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, Mention, ModalInteraction,
+    Respond as _, Response, Result, Stat, settings, user_error,
 };
 use crate::util::discord::{Draft, Message, UserId, no_pings};
 use crate::util::media::download;
@@ -229,7 +229,7 @@ impl Feature for Reminders {
         };
         // The typed time, read like the time of a reminder, in the user's timezone.
         let typed = i.first_value().unwrap_or_default();
-        let when = parse::parse_when(&typed).map_err(user_error)?;
+        let when = parse::parse_when(typed).map_err(user_error)?;
         if matches!(when, When::Every(_)) {
             return Err(user_error(
                 "A snooze happens once. Set a new reminder for something that repeats.",
@@ -262,9 +262,7 @@ impl Reminders {
 
     /// The `/reminders` delete menu. The list stays open, reloaded, for the next delete.
     async fn delete(&self, ctx: &BotCtx, i: &ComponentInteraction) -> Result<()> {
-        let id: i64 = i
-            .values
-            .first().context("no reminder selected")?.parse()?;
+        let id: i64 = i.values.first().context("no reminder selected")?.parse()?;
         let deleted = self.remove(ctx, id, i.user.id).await?;
         let note = if deleted {
             "✅ Reminder deleted."

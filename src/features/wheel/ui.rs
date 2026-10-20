@@ -4,10 +4,9 @@
 
 use std::collections::HashMap;
 
-use serenity::all::{
-    ButtonStyle, CreateActionRow, CreateButton, CreateInputText, CreateModal, CreateSelectMenu,
-    CreateSelectMenuKind, CreateSelectMenuOption, InputTextStyle,
-};
+use twilight_model::channel::message::component::{ButtonStyle, Component};
+
+use crate::util::discord::{Modal, TextBox, button, buttons, emoji, menu, menu_option, menu_row};
 
 use super::ledger::{
     BET_CAP, CLAIM, RoundLedger, Rules, Season, TAX_THRESHOLD, can_undo, check_bet,
@@ -300,57 +299,54 @@ pub fn name(names: &Names, user: u64) -> &str {
 }
 
 /// The buttons under a status message.
-pub fn status_buttons(view: &View) -> Vec<CreateActionRow> {
+pub fn status_buttons(view: &View) -> Vec<Component> {
     if !view.active {
         return Vec::new();
     }
     let round = view.season.rounds[view.index].id;
-    let button = |action: Action, label: &str, emoji: char, style| {
-        CreateButton::new(action.custom_id())
-            .label(label)
-            .emoji(emoji)
-            .style(style)
+    let button = |action: Action, label: &str, icon: &str, style| {
+        button(action.custom_id(), label, style).emoji(emoji(icon))
     };
-    let buttons = if view.is_latest() {
+    let first = if view.is_latest() {
         vec![
-            button(Action::Claim { round }, "Claim", '📈', ButtonStyle::Primary),
-            button(Action::Bet { round }, "Bet", '💸', ButtonStyle::Secondary),
+            button(Action::Claim { round }, "Claim", "📈", ButtonStyle::Primary),
+            button(Action::Bet { round }, "Bet", "💸", ButtonStyle::Secondary),
             button(
                 Action::Unbet { round },
                 "Remove bet",
-                '↩',
+                "↩",
                 ButtonStyle::Secondary,
             ),
             button(
                 Action::Winner { round },
                 "Winner",
-                '✨',
+                "✨",
                 ButtonStyle::Secondary,
             ),
         ]
     } else {
-        let mut buttons = vec![button(
+        let mut first = vec![button(
             Action::Current,
             "View Current Round",
-            '🎯',
+            "🎯",
             ButtonStyle::Primary,
         )];
         if view.undoable() {
-            buttons.push(button(
+            first.push(button(
                 Action::Undo { round },
                 "Undo Winner",
-                '⏪',
+                "⏪",
                 ButtonStyle::Danger,
             ));
         }
-        buttons
+        first
     };
     // Discord allows 5 buttons in a row.
     let more = vec![
         button(
             Action::Rename { round },
             "Change Name",
-            '🏷',
+            "🏷",
             ButtonStyle::Secondary,
         ),
         button(
@@ -358,14 +354,11 @@ pub fn status_buttons(view: &View) -> Vec<CreateActionRow> {
                 season: view.season.id,
             },
             "Help",
-            '❓',
+            "❓",
             ButtonStyle::Secondary,
         ),
     ];
-    vec![
-        CreateActionRow::Buttons(buttons),
-        CreateActionRow::Buttons(more),
-    ]
+    vec![buttons(first), buttons(more)]
 }
 
 /// Options in one Discord select menu, and menus (rows) in one message.
@@ -383,7 +376,7 @@ pub fn pick_menu(
     users: &[u64],
     names: &Names,
     descriptions: &HashMap<u64, String>,
-) -> (String, Vec<CreateActionRow>) {
+) -> (String, Vec<Component>) {
     let (title, placeholder) = match kind {
         PickKind::Place => ("Place a Bet", "Pick who to bet on"),
         PickKind::Remove => ("Remove a Bet", "Pick a bet to remove"),
@@ -399,14 +392,13 @@ pub fn pick_menu(
         let options = group
             .iter()
             .map(|&user| {
-                let option =
-                    CreateSelectMenuOption::new(shorten(name(names, user), 100), user.to_string());
+                let option = menu_option(shorten(name(names, user), 100), user.to_string());
                 match descriptions.get(&user) {
                     Some(text) => option.description(shorten(text, 100)),
                     None => option,
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
         // With several menus, each placeholder starts with the names it holds ("Alice … Dana:
         // pick who to bet on"), since a phone shows only the first few words of a placeholder.
         let placeholder = match (groups.len(), group.first(), group.last()) {
@@ -424,10 +416,8 @@ pub fn pick_menu(
             message,
             part: part as u8,
         };
-        let menu =
-            CreateSelectMenu::new(action.custom_id(), CreateSelectMenuKind::String { options })
-                .placeholder(placeholder);
-        rows.push(CreateActionRow::SelectMenu(menu));
+        let menu = menu(action.custom_id(), options).placeholder(placeholder);
+        rows.push(menu_row(menu));
     }
 
     let mut content = title.to_string();
@@ -442,15 +432,14 @@ pub fn pick_menu(
 
 /// The answer to a button on a status message that shows an old round: the error, and a
 /// button that shows the current round on that message.
-pub fn not_current(text: &str, message: u64) -> (String, Vec<CreateActionRow>) {
-    let button = CreateButton::new(Action::Refresh { message }.custom_id())
-        .label("View Current Round")
-        .emoji('🎯')
-        .style(ButtonStyle::Primary);
-    (
-        text.to_string(),
-        vec![CreateActionRow::Buttons(vec![button])],
+pub fn not_current(text: &str, message: u64) -> (String, Vec<Component>) {
+    let refresh = button(
+        Action::Refresh { message }.custom_id(),
+        "View Current Round",
+        ButtonStyle::Primary,
     )
+    .emoji(emoji("🎯"));
+    (text.to_string(), vec![buttons([refresh])])
 }
 
 /// The bet slip: a private message about betting on one option, with a button per share
@@ -464,7 +453,7 @@ pub fn bet_slip(
     on_name: &str,
     message: u64,
     note: Option<&str>,
-) -> (String, Vec<CreateActionRow>) {
+) -> (String, Vec<Component>) {
     let round = season.rounds.last().map_or(0, |r| r.id);
     let mine = season
         .rounds
@@ -520,36 +509,33 @@ pub fn bet_slip(
         Rules::Pool => &[TAX_THRESHOLD, 25, BET_CAP],
         Rules::Classic => &[TAX_THRESHOLD, 25, 50, 100],
     };
-    let mut buttons: Vec<CreateButton> = percents
+    let mut row: Vec<_> = percents
         .iter()
         .map(|&percent| {
             let amount = (money * percent + 99) / 100;
             let current = mine.is_some_and(|b| b.amount == amount);
             let allowed = check_bet(season, user, on, &amount.to_string()).is_ok();
-            CreateButton::new(
-                Action::Stake {
-                    round,
-                    on,
-                    message,
-                    percent,
-                }
-                .custom_id(),
-            )
-            .label(format!("{percent}% · {amount}"))
-            .style(if current {
+            let style = if current {
                 ButtonStyle::Success
             } else {
                 ButtonStyle::Primary
-            })
-            .disabled(current || !allowed)
+            };
+            let action = Action::Stake {
+                round,
+                on,
+                message,
+                percent,
+            };
+            button(action.custom_id(), format!("{percent}% · {amount}"), style)
+                .disabled(current || !allowed)
         })
         .collect();
-    buttons.push(
-        CreateButton::new(Action::Other { round, on, message }.custom_id())
-            .label("Other amount…")
-            .style(ButtonStyle::Secondary),
-    );
-    (lines.join("\n"), vec![CreateActionRow::Buttons(buttons)])
+    row.push(button(
+        Action::Other { round, on, message }.custom_id(),
+        "Other amount…",
+        ButtonStyle::Secondary,
+    ));
+    (lines.join("\n"), vec![buttons(row)])
 }
 
 /// The modal asking how much to bet. `existing` is the player's current bet on this option.
@@ -561,38 +547,37 @@ pub fn amount_modal(
     money: i64,
     max: i64,
     existing: i64,
-) -> CreateModal {
+) -> Modal {
     // Discord allows 45 characters in a label and 100 in a placeholder.
     let label = shorten(&format!("Amount (up to {max})"), 45);
     let placeholder = shorten(
         &format!("A number like 50, or a share of your {money} like 25%"),
         100,
     );
-    let mut input = CreateInputText::new(InputTextStyle::Short, label, "amount")
+    let mut input = TextBox::short("amount")
         .placeholder(placeholder)
         .required(true);
     if existing > 0 {
         input = input.value(existing.to_string());
     }
     let title = shorten(&format!("Bet on {on_name}"), 45);
-    CreateModal::new(Action::Amount { round, on, message }.custom_id(), title)
-        .components(vec![CreateActionRow::InputText(input)])
+    Modal::new(Action::Amount { round, on, message }.custom_id(), title).input(label, input)
 }
 
 /// The longest name a player can choose, in characters.
 pub const MAX_CHOSEN_NAME: usize = 32;
 
 /// The modal to change your name on the wheel. `current` is the name you chose before.
-pub fn name_modal(round: i64, current: Option<&str>) -> CreateModal {
-    let mut input = CreateInputText::new(InputTextStyle::Short, "Name on the wheel", "name")
+pub fn name_modal(round: i64, current: Option<&str>) -> Modal {
+    let mut input = TextBox::short("name")
         .placeholder("Leave empty to use your Discord name")
         .max_length(MAX_CHOSEN_NAME as u16)
         .required(false);
     if let Some(current) = current {
         input = input.value(current);
     }
-    CreateModal::new(Action::Name { round }.custom_id(), "Change your name")
-        .components(vec![CreateActionRow::InputText(input)])
+    Modal::new(Action::Name { round }.custom_id(), "Change your name")
+        .input("Name on the wheel", input)
 }
 
 /// Checks a name typed in the name modal. `None` means back to the Discord name.
@@ -670,7 +655,7 @@ pub fn help_text(rules: Rules) -> String {
 }
 
 /// The `/wheel reset` confirmation. `season` is the active season (0 if none).
-pub fn reset_confirmation(keep_options: bool, season: i64) -> (String, Vec<CreateActionRow>) {
+pub fn reset_confirmation(keep_options: bool, season: i64) -> (String, Vec<Component>) {
     let kept = if keep_options {
         " with the same options"
     } else {
@@ -683,31 +668,29 @@ pub fn reset_confirmation(keep_options: bool, season: i64) -> (String, Vec<Creat
         keep_options,
         season,
     };
-    let button = CreateButton::new(action.custom_id())
-        .label("Start a new season")
-        .style(ButtonStyle::Danger);
-    (text, vec![CreateActionRow::Buttons(vec![button])])
+    let start = button(
+        action.custom_id(),
+        "Start a new season",
+        ButtonStyle::Danger,
+    );
+    (text, vec![buttons([start])])
 }
 
 /// What an admin types in the confirm modal to start a new season.
 pub const CONFIRM_WORD: &str = "START";
 
 /// The modal that confirms a new season. Typing a word makes a double press harmless.
-pub fn new_season_modal(keep_options: bool, season: i64) -> CreateModal {
-    let input = CreateInputText::new(
-        InputTextStyle::Short,
-        format!("Type {CONFIRM_WORD} to end this season"),
-        "confirm",
-    )
-    .placeholder(CONFIRM_WORD)
-    .max_length(20)
-    .required(true);
+pub fn new_season_modal(keep_options: bool, season: i64) -> Modal {
+    let input = TextBox::short("confirm")
+        .placeholder(CONFIRM_WORD)
+        .max_length(20)
+        .required(true);
     let action = Action::NewSeason {
         keep_options,
         season,
     };
-    CreateModal::new(action.custom_id(), "Start a new season?")
-        .components(vec![CreateActionRow::InputText(input)])
+    Modal::new(action.custom_id(), "Start a new season?")
+        .input(format!("Type {CONFIRM_WORD} to end this season"), input)
 }
 
 /// Whether the text typed in the confirm modal is [`CONFIRM_WORD`], in any case.

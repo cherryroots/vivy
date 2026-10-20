@@ -26,11 +26,14 @@ mod tools;
 mod ui;
 
 use async_trait::async_trait;
-use serenity::all::{ComponentInteraction, GuildId, ModalInteraction};
 use tracing::warn;
 
 use crate::ai::ToolDef;
-use crate::core::{Asker, BotCtx, Command, Feature, LegacyImport, Result, Stat};
+use crate::core::{
+    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, ModalInteraction, Result,
+    Stat,
+};
+use crate::util::discord::GuildId;
 
 pub struct Wheel;
 

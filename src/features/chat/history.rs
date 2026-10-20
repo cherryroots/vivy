@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
+use crate::util::discord::{Message, UserId};
 use anyhow::Context as _;
-use serde_json::{Value, json};
-use serenity::all::{Message, UserId, content_safe};
 use futures::future::join_all;
+use serde_json::{Value, json};
 use tracing::warn;
 
 use super::store::{self, StoredPart, Turn};
@@ -103,12 +103,7 @@ pub async fn read_message(
     from_bot: bool,
 ) -> Vec<StoredPart> {
     // "<@123>" becomes "@name" and "<#123>" "#name", so the model sees who and where.
-    let text = content_safe(
-        &ctx.cache,
-        text,
-        &channels::mention_options(msg),
-        &msg.mentions,
-    );
+    let text = channels::name_people(ctx, msg, text);
     let text = channels::name_channels(ctx, &text).await;
     let text = if from_bot {
         text
@@ -498,7 +493,7 @@ async fn refresh_urls(ctx: &BotCtx, urls: &[String]) -> HashMap<String, String> 
         let response = ctx
             .web
             .post("https://discord.com/api/v10/attachments/refresh-urls")
-            .header("Authorization", ctx.http.token())
+            .header("Authorization", ctx.token())
             .json(&json!({ "attachment_urls": urls }))
             .send()
             .await?
@@ -552,7 +547,7 @@ pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::R
         written: None,
         started_at: None,
         error: None,
-        created_at: referenced.timestamp.unix_timestamp(),
+        created_at: referenced.timestamp.as_secs(),
     };
     ctx.db
         .call(move |conn| store::add_turn(conn, &turn, &[id]))

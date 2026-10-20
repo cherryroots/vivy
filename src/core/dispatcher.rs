@@ -30,8 +30,7 @@ use super::interaction::{
 };
 use super::{BotCtx, Error, Feature, Mention, Result};
 use crate::util::discord::{
-    ChannelId, Draft, GuildId, InteractionId, Message, MessageId, UserId, mentions_user,
-    no_pings,
+    ChannelId, Draft, GuildId, InteractionId, Message, MessageId, UserId, mentions_user, no_pings,
 };
 
 /// Called for every gateway event, after the cache has seen it.
@@ -453,7 +452,10 @@ async fn tell_user(bot: &BotCtx, reply: &ReplyTo, text: &str) {
         ReplyTo::Interaction { id, token } => {
             let handle = Handle(*id, token);
             let draft = Draft::new().content(text).ephemeral();
-            match handle.create_response(bot, Response::Message(draft.clone())).await {
+            match handle
+                .create_response(bot, Response::Message(draft.clone()))
+                .await
+            {
                 Ok(()) => Ok(()),
                 Err(_) => handle.create_followup(bot, draft).await.map(|_| ()),
             }

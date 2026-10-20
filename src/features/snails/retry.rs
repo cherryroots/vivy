@@ -7,12 +7,12 @@
 
 use std::time::Duration;
 
+use crate::util::discord::{ChannelId, GuildId, MessageId, error_status, get_message};
 use chrono::Utc;
-use serenity::all::{ChannelId, GuildId, MessageId};
 use tracing::{debug, info, warn};
 
 use super::store::{self, DueFailure};
-use super::{backfill, check, collect, index};
+use super::{check, collect, index};
 use crate::core::{BotCtx, Result};
 
 /// How often the list is checked for pictures due another try.
@@ -99,12 +99,10 @@ async fn retry_message(ctx: &BotCtx, failures: &[DueFailure]) -> Result<()> {
     let first = &failures[0];
     let id = first.message;
     let now = Utc::now().timestamp();
-    let msg = match ChannelId::new(first.channel)
-        .message(&ctx.http, MessageId::new(id))
-        .await
+    let msg = match get_message(&ctx.http, ChannelId::new(first.channel), MessageId::new(id)).await
     {
         Ok(msg) => msg,
-        Err(err) if backfill::http_status(&err) == Some(404) => {
+        Err(err) if error_status(&err) == Some(404) => {
             debug!(message = id, "a message with failed pictures was deleted");
             return ctx.db.call(move |conn| Ok(store::forget(conn, id)?)).await;
         }

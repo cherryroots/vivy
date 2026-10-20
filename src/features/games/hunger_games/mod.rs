@@ -30,8 +30,8 @@ mod writer;
 
 use serde::Deserialize;
 
-pub use play::{hunger_games, on_component};
-pub use stats::{MIGRATIONS, leaderboard, reset_leaderboard};
+pub use play::{HungerGames, hunger_games, on_component};
+pub use stats::{Leaderboard, MIGRATIONS, ResetLeaderboard, leaderboard, reset_leaderboard};
 
 /// `[features.games.hunger_games]` settings.
 #[derive(Debug, Clone, Deserialize)]

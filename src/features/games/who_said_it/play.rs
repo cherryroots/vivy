@@ -9,17 +9,17 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{
-    ChannelId, ComponentInteraction, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateMessage, EditMessage, GuildChannel,
-};
 use tracing::{info, warn};
+use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_model::application::interaction::InteractionChannel;
 
 use super::game::{Game, Pick, make_rounds};
 use super::sources::{self, From};
 use super::{quotes, ui};
-use crate::core::{BotCtx, Context, Result, user_error};
+use crate::core::{
+    BotCtx, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
+};
+use crate::util::discord::{ChannelId, Draft, get_channel, member_name};
 
 /// A game being played.
 struct Running {
@@ -44,28 +44,38 @@ impl Drop for Leave {
     }
 }
 
-/// Guess who wrote old messages from this channel, another one, or the whole server
-#[poise::command(slash_command, guild_only, rename = "whosaidit")]
-pub async fn who_said_it(
-    ctx: Context<'_>,
-    #[description = "How many questions (default 10)"]
-    #[min = 1]
-    #[max = 20]
-    questions: Option<usize>,
-    #[description = "Take quotes from this channel instead (everyone must be able to read it)"]
-    #[channel_types("Text", "News", "PublicThread", "NewsThread")]
-    channel: Option<GuildChannel>,
-    #[description = "Take quotes from every channel everyone can read"] whole_server: Option<bool>,
-    #[description = "How many years back quotes can come from (default: lookback_days in the config, 1 year)"]
-    #[min = 1]
-    #[max = 20]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "whosaidit",
+    desc = "Guess who wrote old messages from this channel, another one, or the whole server"
+)]
+pub struct WhoSaidIt {
+    /// How many questions (default 10)
+    #[command(min_value = 1, max_value = 20)]
+    questions: Option<i64>,
+    /// Take quotes from this channel instead (everyone must be able to read it)
+    #[command(channel_types = "guild_text guild_announcement public_thread announcement_thread")]
+    channel: Option<InteractionChannel>,
+    /// Take quotes from every channel everyone can read
+    whole_server: Option<bool>,
+    /// How many years back quotes can come from (default: lookback_days in the config, 1 year)
+    #[command(min_value = 1, max_value = 20)]
     years: Option<i64>,
-) -> Result<()> {
+}
+
+/// `/games whosaidit`
+pub async fn who_said_it(ctx: &CommandCtx, args: WhoSaidIt) -> Result<()> {
+    let WhoSaidIt {
+        questions,
+        channel,
+        whole_server,
+        years,
+    } = args;
     let guild = ctx
         .guild_id()
         .ok_or_else(|| user_error("Who said it? only works in a server."))?;
     let here = ctx.channel_id();
-    let bot = ctx.data().clone();
+    let bot = ctx.bot.clone();
     let mut settings = bot
         .config
         .feature::<crate::features::games::Settings>("games")?
@@ -77,7 +87,15 @@ pub async fn who_said_it(
         (Some(_), true) => {
             return Err(user_error("Pick a channel or the whole server, not both."));
         }
-        (Some(channel), false) => From::Channel(Box::new(channel)),
+        (Some(picked), false) => {
+            // The command only says the channel's name and type; the cache (or Discord, for
+            // an archived thread) has who may read it.
+            let channel = match bot.cache.channel(picked.id) {
+                Some(cached) => cached.clone(),
+                None => get_channel(&bot.http, picked.id).await?,
+            };
+            From::Channel(Box::new(channel))
+        }
         (None, true) => From::Server,
         (None, false) => From::Here,
     };
@@ -87,13 +105,12 @@ pub async fn who_said_it(
         From::Channel(c) => format!("<#{}>", c.id),
         From::Server => "the whole server".to_string(),
     };
-    let sources = {
-        let cached = bot
-            .cache
-            .guild(guild)
-            .ok_or_else(|| user_error("I don't know this server yet. Try again in a minute."))?;
-        sources::pick(&bot, &cached, here, from)?
-    };
+    if bot.cache.guild(guild).is_none() {
+        return Err(user_error(
+            "I don't know this server yet. Try again in a minute.",
+        ));
+    }
+    let sources = sources::pick(&bot, guild, here, from)?;
     let channel = here;
     {
         let mut games = GAMES.lock().unwrap();
@@ -107,7 +124,9 @@ pub async fn who_said_it(
     let reply = ctx
         .say(format!("🗨️ **Who said it?** Digging through {what}…"))
         .await?;
-    let count = questions.unwrap_or(settings.rounds).clamp(1, 20);
+    let count = questions
+        .map_or(settings.rounds, |questions| questions as usize)
+        .clamp(1, 20);
     let rounds = match quotes::load(&bot, &sources, &settings).await {
         Ok((quotes, people)) => make_rounds(quotes, &people, count, |list| {
             fastrand::shuffle(list);
@@ -122,9 +141,7 @@ pub async fn who_said_it(
             "🗨️ **Who said it?** There isn't enough chatter in {what} to play. Try a busier \
              channel."
         );
-        reply
-            .edit(ctx, CreateReply::default().content(text))
-            .await?;
+        reply.edit(ctx, Draft::new().content(text)).await?;
         return Ok(());
     }
     let mut rounds = rounds;
@@ -141,9 +158,7 @@ pub async fn who_said_it(
         },
         settings.answer_seconds.max(5)
     );
-    reply
-        .edit(ctx, CreateReply::default().content(text))
-        .await?;
+    reply.edit(ctx, Draft::new().content(text)).await?;
 
     let running = Arc::new(Running {
         id: fastrand::u32(..),
@@ -183,10 +198,10 @@ async fn play(
             (
                 index,
                 game.total(),
-                CreateMessage::new().embed(embed).components(buttons),
+                Draft::new().embed(embed).components(buttons),
             )
         };
-        let mut message = match channel.send_message(&bot.http, question).await {
+        let message = match question.send(&bot.http, channel).await {
             Ok(message) => message,
             Err(err) => {
                 warn!("couldn't post a Who said it? question: {err}");
@@ -209,13 +224,9 @@ async fn play(
             };
             let (embed, buttons) = ui::answer(running.id, index, total, round, &outcome);
             let more = game.next_round();
-            (
-                EditMessage::new().embed(embed).components(buttons),
-                answers,
-                more,
-            )
+            (Draft::new().embed(embed).components(buttons), answers, more)
         };
-        if let Err(err) = message.edit(&bot.http, answer).await {
+        if let Err(err) = answer.edit(&bot.http, channel, message.id).await {
             warn!("couldn't show a Who said it? answer: {err}");
         }
 
@@ -234,10 +245,7 @@ async fn play(
     }
     let standings = running.game.lock().unwrap().standings();
     let embed = ui::scores(&standings, unanswered >= 2);
-    if let Err(err) = channel
-        .send_message(&bot.http, CreateMessage::new().embed(embed))
-        .await
-    {
+    if let Err(err) = Draft::new().embed(embed).send(&bot.http, channel).await {
         warn!("couldn't post the Who said it? scores: {err}");
     }
     info!("Who said it? ended with {} players", standings.len());
@@ -260,11 +268,8 @@ pub async fn on_component(
         .flatten()
         .filter(|r| r.id == id);
     let player = interaction.user.id.get();
-    let name = interaction
-        .member
-        .as_ref()
-        .map_or(interaction.user.display_name(), |m| m.display_name())
-        .to_string();
+    let nick = interaction.member.as_ref().and_then(|m| m.nick.as_deref());
+    let name = member_name(nick, &interaction.user).to_string();
 
     let text = match running {
         None => "This game is over.".to_string(),
@@ -284,11 +289,9 @@ pub async fn on_component(
             }
         }
     };
-    let response = CreateInteractionResponseMessage::new()
-        .content(text)
-        .ephemeral(true);
+    let response = Draft::new().content(text).ephemeral();
     interaction
-        .create_response(&bot.http, CreateInteractionResponse::Message(response))
+        .create_response(bot, Response::Message(response))
         .await?;
     Ok(())
 }

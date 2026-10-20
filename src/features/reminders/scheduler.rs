@@ -9,10 +9,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::util::discord::{ChannelId, UserId, error_code, error_status};
 use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
-use crate::util::discord::{ChannelId, UserId, error_code, error_status};
 use tokio::sync::Notify;
 use tracing::{Instrument as _, error, info, info_span, warn};
 

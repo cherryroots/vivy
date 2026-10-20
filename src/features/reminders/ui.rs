@@ -1,10 +1,10 @@
 //! What reminders look like in Discord: message texts, buttons, the delete menu, and the
 //! button IDs.
 
-use twilight_model::channel::message::component::{ButtonStyle, Component, TextInputStyle};
+use twilight_model::channel::message::component::{ButtonStyle, Component};
 
 use crate::util::discord::{
-    Draft, Modal, UserId, button, buttons, menu, menu_option, menu_row, ping_users, text_input,
+    Draft, Modal, TextBox, UserId, button, buttons, menu, menu_option, menu_row, ping_users,
 };
 
 use chrono::DateTime;
@@ -161,9 +161,8 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz)
     }
 
     let id = reminder.id;
-    let snooze = |action: Action, label: &str| {
-        button(action.custom_id(), label, ButtonStyle::Secondary)
-    };
+    let snooze =
+        |action: Action, label: &str| button(action.custom_id(), label, ButtonStyle::Secondary);
     let mut row: Vec<_> = SNOOZES
         .iter()
         .map(|&(label, minutes)| snooze(Action::Snooze { id, minutes }, label))
@@ -185,10 +184,10 @@ pub fn fired_message(reminder: &Reminder, now: i64, with_images: bool, zone: Tz)
 
 /// The modal behind "Pick a time…".
 pub fn snooze_modal(id: i64) -> Modal {
-    let mut input = text_input("when", TextInputStyle::Short);
-    input.placeholder = Some("in 30m, at 18:00, tomorrow at 9am, friday".into());
-    input.max_length = Some(100);
-    input.required = Some(true);
+    let input = TextBox::short("when")
+        .placeholder("in 30m, at 18:00, tomorrow at 9am, friday")
+        .max_length(100)
+        .required(true);
     Modal::new(Action::SnoozeTo { id }.custom_id(), "Snooze until…").input("When?", input)
 }
 
@@ -267,13 +266,10 @@ pub fn list_message(
                 Some(repeat) => format!("{when} · {}", parse::repeat_for_display(repeat, zone)),
                 None => when,
             };
-            let mut option = menu_option(label, reminder.id.to_string());
-            option.description = Some(shorten(&description, 100));
-            option
+            menu_option(label, reminder.id.to_string()).description(shorten(&description, 100))
         })
-        .collect();
-    let mut delete = menu(Action::Delete.custom_id(), options);
-    delete.placeholder = Some("Delete a reminder…".into());
+        .collect::<Vec<_>>();
+    let delete = menu(Action::Delete.custom_id(), options).placeholder("Delete a reminder…");
     (text, vec![menu_row(delete)])
 }
 

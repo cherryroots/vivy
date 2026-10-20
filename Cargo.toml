@@ -41,3 +41,6 @@ tracing = "0.1.44"
 tracing-log = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
 winnow = "1.0.4"
+
+[dev-dependencies]
+twilight-validate = "0.17.0"

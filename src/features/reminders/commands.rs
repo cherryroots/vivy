@@ -9,7 +9,10 @@ use crate::core::{Command, CommandCtx, Result, settings, user_error};
 use crate::util::discord::Draft;
 
 #[derive(CommandModel, CreateCommand)]
-#[command(name = "reminders", desc = "List your pending reminders and delete them")]
+#[command(
+    name = "reminders",
+    desc = "List your pending reminders and delete them"
+)]
 pub struct RemindersCommand;
 
 pub fn reminders() -> Command {
@@ -28,7 +31,8 @@ async fn list(ctx: CommandCtx) -> Result<()> {
         .await?
         .unwrap_or(chrono_tz::Tz::UTC);
     let (text, menu) = ui::list_message(&list, None, zone);
-    ctx.send(Draft::new().content(text).components(menu)).await?;
+    ctx.send(Draft::new().content(text).components(menu))
+        .await?;
     Ok(())
 }
 

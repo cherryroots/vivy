@@ -81,7 +81,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 
 | Topic | Decision |
 |---|---|
-| Discord library | `serenity` for events and the REST API, `poise` for slash commands |
+| Discord library | Twilight: `twilight-gateway` for events, `twilight-http` for the REST API, `twilight-cache-inmemory`, and `twilight-interactions` for slash commands |
 | Structure | One crate, plain modules. Features never import each other; they work together through chat tools, chat context, bot events and the status picture. Each declares everything it adds in its `Feature` impl. A Cargo workspace with a crate per feature would let the compiler enforce that, but isn't worth the build setup yet. |
 | AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Gemini (Interactions API) can be picked as either, and watches videos and YouTube links itself. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
 | Prompt caching | The system prompt and tool list never change. Anything that changes (the time, memory's file list, Vivy's mood) comes from tools or goes after the newest question. |
@@ -199,6 +199,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #88 | | Game Boy (stage 2): code reads Pokémon Red (tile grid and sprites from video memory, dark screens, text from the font, the game's memory map checked against the screen), keeps a map of each area that fills in, and walks her to any step by pathfinding; `/games gameboy look` and `walk` (admins) |
 | #89 | | Game Boy (stage 3): a cheap model (Haiku, the `game_play` job) carries out one short task at a time through five actions (walk, explore, press, read text, finish); `/games gameboy task` (admins); the strategist's call (`OpenAi::structured`); the gate, 15 tasks from Red's opening checked in code, which Haiku passed at 96% |
 | #90 | | Game Boy (stage 4a): skills she writes herself instead of a coded battle action: know-how notes and button routines matched on the words on screen, run as one action (`write_skill`, `use_skill`), kept per game in `skills.json`; `/games gameboy skills` (admins); Red's battles as facts (both Pokémon, moves and PP); the strategist (Astra) reviews her skills in its call; the learning gate |
+| #92 | | Core: the bot moves from serenity and poise to Twilight (gateway, HTTP, in-memory cache, `twilight-interactions` commands) so messages can use Components V2; same features, `Feature` trait and gating. Commands are typed structs checked against Discord's rules in a test; Check Snail is a message command; message links in who said it? and last words name the server; voice messages go through `send_raw` |
 
 ## Not built yet
 

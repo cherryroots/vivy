@@ -7,15 +7,17 @@
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
-use serenity::all::{
-    Activity, ActivityType, ChannelId, ChannelType, GetMessages, GuildChannel, GuildId, Member,
-    Message, MessageId, OnlineStatus, Presence, ReactionType, ScheduledEventStatus, UserId,
-    content_safe,
-};
+use twilight_model::channel::message::EmojiReactionType;
+use twilight_model::gateway::presence::{Activity, ActivityType, Status};
+use twilight_model::guild::scheduled_event::Status as EventStatus;
 
 use super::{channels, search};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
+use crate::util::discord::{
+    Channel, ChannelId, ChannelType, GuildId, Member, Message, MessageId, Permissions, UserId,
+    display_name, get_channel, get_member, get_message, get_user, member_display_name, to_chrono,
+};
 use crate::util::shorten;
 
 /// Most messages `read_recent_messages` returns.
@@ -151,31 +153,30 @@ fn format_time(now: DateTime<Utc>, zone: Tz) -> String {
 }
 
 async fn channel_info(ctx: &BotCtx, asker: &Asker) -> Result<String> {
-    let channel = asker.channel.to_channel(&ctx.http).await?;
-    let Some(channel) = channel.guild() else {
+    let channel = get_channel(&ctx.http, asker.channel).await?;
+    let Some(guild_id) = channel.guild_id else {
         return Ok("A direct message conversation.".to_string());
     };
     let mut lines = vec![format!(
         "Channel: #{} ({})",
-        channel.name,
+        channel.name.as_deref().unwrap_or_default(),
         kind_name(channel.kind)
     )];
     if let Some(topic) = channel.topic.as_deref().filter(|t| !t.is_empty()) {
         lines.push(format!("Topic: {topic}"));
     }
     if let Some(parent) = channel.parent_id
-        && let Ok(parent) = parent.to_channel(&ctx.http).await
-        && let Some(parent) = parent.guild()
+        && let Ok(parent) = get_channel(&ctx.http, parent).await
     {
-        let what = if is_thread(&channel) {
+        let what = if channel.kind.is_thread() {
             "In channel"
         } else {
             "In category"
         };
-        lines.push(format!("{what}: {}", parent.name));
+        lines.push(format!("{what}: {}", parent.name.unwrap_or_default()));
     }
-    if let Some(guild) = ctx.cache.guild(channel.guild_id) {
-        lines.push(format!("Server: {}", guild.name));
+    if let Some(guild) = ctx.cache.guild(guild_id) {
+        lines.push(format!("Server: {}", guild.name()));
     }
     Ok(lines.join("\n"))
 }
@@ -187,36 +188,39 @@ struct ChannelEntry {
     kind: ChannelType,
     topic: Option<String>,
     parent: Option<u64>,
-    position: u16,
+    position: i32,
 }
 
 async fn list_channels(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     let Some(guild_id) = asker.guild else {
         return Ok("A direct message conversation has no channels.".to_string());
     };
-    let member = guild_id.member(&ctx.http, asker.user).await?;
-    let guild = ctx
+    let member = get_member(&ctx.http, guild_id, asker.user).await?;
+    let server = ctx
         .cache
         .guild(guild_id)
+        .map(|guild| guild.name().to_string())
         .ok_or_else(|| user_error("I don't know this server yet."))?;
-    let entries: Vec<ChannelEntry> = guild
-        .channels
-        .values()
-        .filter(|c| {
-            c.kind == ChannelType::Category || guild.user_permissions_in(c, &member).view_channel()
-        })
+    let can_view = |c: &Channel| {
+        ctx.permissions_in(guild_id, asker.user, &member.roles, c)
+            .is_some_and(|p| p.contains(Permissions::VIEW_CHANNEL))
+    };
+    let entries: Vec<ChannelEntry> = ctx
+        .guild_channels(guild_id)
+        .into_iter()
+        .filter(|c| !c.kind.is_thread())
+        .filter(|c| c.kind == ChannelType::GuildCategory || can_view(c))
         .map(|c| ChannelEntry {
             id: c.id.get(),
-            name: c.name.clone(),
+            name: c.name.unwrap_or_default(),
             kind: c.kind,
-            topic: c.topic.clone().filter(|t| !t.trim().is_empty()),
+            topic: c.topic.filter(|t| !t.trim().is_empty()),
             parent: c.parent_id.map(|p| p.get()),
-            position: c.position,
+            position: c.position.unwrap_or_default(),
         })
         .collect();
     Ok(format!(
-        "Server: {}\n{}",
-        guild.name,
+        "Server: {server}\n{}",
         render_channels(&entries, asker.channel.get())
     ))
 }
@@ -238,7 +242,7 @@ fn render_channels(entries: &[ChannelEntry], here: u64) -> String {
     let in_category = |parent: Option<u64>| {
         let mut list: Vec<&ChannelEntry> = entries
             .iter()
-            .filter(|c| c.kind != ChannelType::Category && c.parent == parent)
+            .filter(|c| c.kind != ChannelType::GuildCategory && c.parent == parent)
             .collect();
         by_position(&mut list);
         list
@@ -246,7 +250,7 @@ fn render_channels(entries: &[ChannelEntry], here: u64) -> String {
     let mut lines: Vec<String> = in_category(None).into_iter().map(line).collect();
     let mut categories: Vec<&ChannelEntry> = entries
         .iter()
-        .filter(|c| c.kind == ChannelType::Category)
+        .filter(|c| c.kind == ChannelType::GuildCategory)
         .collect();
     by_position(&mut categories);
     for category in categories {
@@ -262,62 +266,51 @@ fn render_channels(entries: &[ChannelEntry], here: u64) -> String {
 
 fn kind_name(kind: ChannelType) -> &'static str {
     match kind {
-        ChannelType::Text => "text channel",
-        ChannelType::Voice => "voice channel",
-        ChannelType::News => "announcement channel",
-        ChannelType::Stage => "stage channel",
-        ChannelType::Forum => "forum",
-        ChannelType::PublicThread | ChannelType::PrivateThread | ChannelType::NewsThread => {
-            "thread"
-        }
+        ChannelType::GuildText => "text channel",
+        ChannelType::GuildVoice => "voice channel",
+        ChannelType::GuildAnnouncement => "announcement channel",
+        ChannelType::GuildStageVoice => "stage channel",
+        ChannelType::GuildForum => "forum",
+        kind if kind.is_thread() => "thread",
         _ => "channel",
     }
 }
 
-fn is_thread(channel: &GuildChannel) -> bool {
-    matches!(
-        channel.kind,
-        ChannelType::PublicThread | ChannelType::PrivateThread | ChannelType::NewsThread
-    )
-}
-
 async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<String> {
     let Some(guild_id) = asker.guild else {
-        let user = asker.user.to_user(&ctx.http).await?;
+        let user = get_user(&ctx.http, asker.user).await?;
         return Ok(format!(
             "{} (@{}, ID {})",
-            user.display_name(),
+            display_name(&user),
             user.name,
             user.id
         ));
     };
 
     let member = match user {
-        None => guild_id.member(&ctx.http, asker.user).await?,
+        None => get_member(&ctx.http, guild_id, asker.user).await?,
         Some(query) => find_member(ctx, guild_id, query).await?,
     };
 
     // Presences come from the gateway (the Presence intent), so only the cache has them.
-    let (roles, presence): (Vec<String>, Vec<String>) = match ctx.cache.guild(guild_id) {
-        Some(guild) => (
-            member
-                .roles
-                .iter()
-                .filter_map(|id| guild.roles.get(id).map(|r| r.name.clone()))
-                .collect(),
-            presence_lines(guild.presences.get(&member.user.id)),
-        ),
-        None => (Vec::new(), Vec::new()),
+    let roles: Vec<String> = member
+        .roles
+        .iter()
+        .filter_map(|&id| ctx.cache.role(id).map(|r| r.resource().name.clone()))
+        .collect();
+    let presence = match ctx.cache.presence(guild_id, member.user.id) {
+        Some(presence) => presence_lines(Some((presence.status(), presence.activities()))),
+        None => presence_lines(None),
     };
     let zone = settings::timezone(&ctx.db, member.user.id).await?;
     let mut lines = vec![format!(
         "{} (@{}, ID {})",
-        member.display_name(),
+        member_display_name(&member),
         member.user.name,
         member.user.id
     )];
     if let Some(joined) = member.joined_at {
-        lines.push(format!("Joined: {}", &joined.to_string()[..10]));
+        lines.push(format!("Joined: {}", to_chrono(joined).format("%Y-%m-%d")));
     }
     if !roles.is_empty() {
         lines.push(format!("Roles: {}", roles.join(", ")));
@@ -337,8 +330,8 @@ async fn bot_owner(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     }
     let mut lines = Vec::new();
     for &user in ctx.app_owners.iter() {
-        lines.push(match user.to_user(&ctx.http).await {
-            Ok(found) => format!("{} (@{}, ID {user})", found.display_name(), found.name),
+        lines.push(match get_user(&ctx.http, user).await {
+            Ok(found) => format!("{} (@{}, ID {user})", display_name(&found), found.name),
             Err(_) => format!("ID {user}"),
         });
     }
@@ -352,19 +345,19 @@ async fn bot_owner(ctx: &BotCtx, asker: &Asker) -> Result<String> {
 
 /// "Status: online" and one line per activity. Discord only sends presences for people
 /// who are online, so no presence means offline.
-fn presence_lines(presence: Option<&Presence>) -> Vec<String> {
-    let Some(presence) = presence else {
+fn presence_lines(presence: Option<(Status, &[Activity])>) -> Vec<String> {
+    let Some((status, activities)) = presence else {
         return vec!["Status: offline".to_string()];
     };
-    let status = match presence.status {
-        OnlineStatus::Online => "online",
-        OnlineStatus::Idle => "idle",
-        OnlineStatus::DoNotDisturb => "do not disturb",
+    let status = match status {
+        Status::Online => "online",
+        Status::Idle => "idle",
+        Status::DoNotDisturb => "do not disturb",
         // Invisible people look offline to everyone else, so say the same.
         _ => "offline",
     };
     let mut lines = vec![format!("Status: {status}")];
-    lines.extend(presence.activities.iter().filter_map(activity_line));
+    lines.extend(activities.iter().filter_map(activity_line));
     lines
 }
 
@@ -399,12 +392,15 @@ fn activity_line(activity: &Activity) -> Option<String> {
 /// A server member from a mention, user ID or name.
 pub(super) async fn find_member(ctx: &BotCtx, guild: GuildId, query: &str) -> Result<Member> {
     match parse_user_id(query) {
-        Some(id) => guild
-            .member(&ctx.http, id)
+        Some(id) => get_member(&ctx.http, guild, id)
             .await
             .map_err(|_| user_error(format!("Nobody with ID {id} is in this server."))),
-        None => guild
-            .search_members(&ctx.http, query, Some(5))
+        None => ctx
+            .http
+            .search_guild_members(guild, query)
+            .limit(5)
+            .await?
+            .models()
             .await?
             .into_iter()
             .next()
@@ -426,12 +422,13 @@ pub(super) fn parse_user_id(text: &str) -> Option<UserId> {
 }
 
 async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<String> {
-    let mut messages = asker
-        .channel
-        .messages(
-            &ctx.http,
-            GetMessages::new().before(asker.message).limit(count as u8),
-        )
+    let mut messages = ctx
+        .http
+        .channel_messages(asker.channel)
+        .before(asker.message)
+        .limit(count as u16)
+        .await?
+        .models()
         .await?;
     if messages.is_empty() {
         return Ok("There are no earlier messages.".to_string());
@@ -453,7 +450,7 @@ pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> Str
 
 /// [`format_message`] with the text cut to `max_chars` characters.
 async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: usize) -> String {
-    let time = DateTime::from_timestamp(msg.timestamp.unix_timestamp(), 0)
+    let time = DateTime::from_timestamp(msg.timestamp.as_secs(), 0)
         .unwrap_or_default()
         .with_timezone(&zone)
         .format("%Y-%m-%d %H:%M");
@@ -461,13 +458,8 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
         .member
         .as_ref()
         .and_then(|m| m.nick.as_deref())
-        .unwrap_or(msg.author.display_name());
-    let text = content_safe(
-        &ctx.cache,
-        &msg.content,
-        &channels::mention_options(msg),
-        &msg.mentions,
-    );
+        .unwrap_or(display_name(&msg.author));
+    let text = channels::name_people(ctx, msg, &msg.content);
     let text = channels::name_channels(ctx, &text).await;
     let mut line = format!("[{time}] {name}: {}", shorten(&text, max_chars));
     if !msg.attachments.is_empty() {
@@ -482,11 +474,12 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
         .reactions
         .iter()
         .map(|r| {
-            let emoji = match &r.reaction_type {
-                ReactionType::Custom {
+            let emoji = match &r.emoji {
+                EmojiReactionType::Custom {
                     name: Some(name), ..
                 } => format!(":{name}:"),
-                other => other.to_string(),
+                EmojiReactionType::Custom { id, .. } => format!("<:_:{id}>"),
+                EmojiReactionType::Unicode { name } => name.clone(),
             };
             (emoji, r.count)
         })
@@ -533,7 +526,7 @@ pub(super) fn parse_link(link: &str) -> Option<(Option<u64>, u64, u64)> {
     } else {
         Some(guild.parse().ok()?)
     };
-    // Discord IDs are never 0, and serenity panics on an ID of 0.
+    // Discord IDs are never 0, and twilight panics on an ID of 0.
     let channel: u64 = channel.parse().ok().filter(|id| *id != 0)?;
     let message: u64 = message.parse().ok().filter(|id| *id != 0)?;
     Some((guild, channel, message))
@@ -574,8 +567,7 @@ pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> R
             "That message is in a place the asker can't read.",
         ));
     }
-    channel
-        .message(&ctx.http, MessageId::new(message))
+    get_message(&ctx.http, channel, MessageId::new(message))
         .await
         .map_err(|_| user_error("I couldn't load that message. It may be deleted."))
 }
@@ -608,39 +600,43 @@ pub(super) async fn can_read(
     if guild_id.get() != link_guild {
         return Ok(false);
     }
-    let Some(target) = channel.to_channel(&ctx.http).await?.guild() else {
-        return Ok(false);
-    };
+    let target = get_channel(&ctx.http, channel).await?;
     // The link's server part is just text, so check the channel really is in the
     // asker's server. Otherwise a link could reach into another server.
-    if target.guild_id != guild_id {
+    if target.guild_id != Some(guild_id) {
         return Ok(false);
     }
     // Threads use their parent channel's permissions. Private threads also need
     // membership, which isn't checked here, so they're refused.
     let target = match target.kind {
         ChannelType::PrivateThread => return Ok(false),
-        ChannelType::PublicThread | ChannelType::NewsThread => {
+        ChannelType::PublicThread | ChannelType::AnnouncementThread => {
             let Some(parent) = target.parent_id else {
                 return Ok(false);
             };
-            match parent.to_channel(&ctx.http).await?.guild() {
-                Some(parent) => parent,
-                None => return Ok(false),
-            }
+            get_channel(&ctx.http, parent).await?
         }
         _ => target,
     };
-    let member = guild_id.member(&ctx.http, asker.user).await?;
-    let Some(guild) = ctx.cache.guild(guild_id) else {
+    let member = get_member(&ctx.http, guild_id, asker.user).await?;
+    let Some(permissions) = ctx.permissions_in(guild_id, asker.user, &member.roles, &target) else {
         return Ok(false);
     };
-    let permissions = guild.user_permissions_in(&target, &member);
-    Ok(permissions.view_channel() && permissions.read_message_history())
+    Ok(permissions.contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY))
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
-    let pins = asker.channel.pins(&ctx.http).await?;
+    let pins: Vec<Message> = ctx
+        .http
+        .pins(asker.channel)
+        .limit(MAX_PINS as u16)
+        .await?
+        .model()
+        .await?
+        .items
+        .into_iter()
+        .map(|pin| pin.message)
+        .collect();
     if pins.is_empty() {
         return Ok("This channel has no pinned messages.".to_string());
     }
@@ -660,17 +656,18 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     let Some(guild) = asker.guild else {
         return Ok("Direct messages have no server events.".to_string());
     };
-    let mut events = guild.scheduled_events(&ctx.http, true).await?;
-    events.retain(|e| {
-        matches!(
-            e.status,
-            ScheduledEventStatus::Scheduled | ScheduledEventStatus::Active
-        )
-    });
+    let mut events = ctx
+        .http
+        .guild_scheduled_events(guild)
+        .with_user_count(true)
+        .await?
+        .models()
+        .await?;
+    events.retain(|e| matches!(e.status, EventStatus::Scheduled | EventStatus::Active));
     if events.is_empty() {
         return Ok("The server has no upcoming events.".to_string());
     }
-    events.sort_by_key(|e| e.start_time);
+    events.sort_by_key(|e| e.scheduled_start_time.as_micros());
     let zone = home_zone(ctx, asker.user).await;
     let local = |timestamp: i64| {
         DateTime::from_timestamp(timestamp, 0)
@@ -681,19 +678,23 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     };
     let mut blocks = Vec::new();
     for event in &events {
-        let start = event.start_time.unix_timestamp();
+        let start = event.scheduled_start_time.as_secs();
         let mut lines = vec![format!("{} (ID {})", event.name, event.id)];
         let mut when = format!("Starts: {} {} (<t:{start}:F>)", local(start), zone.name());
-        if let Some(end) = event.end_time {
-            when.push_str(&format!(", ends {}", local(end.unix_timestamp())));
+        if let Some(end) = event.scheduled_end_time {
+            when.push_str(&format!(", ends {}", local(end.as_secs())));
         }
-        if event.status == ScheduledEventStatus::Active {
+        if event.status == EventStatus::Active {
             when.push_str(", happening now");
         }
         lines.push(when);
         if let Some(channel) = event.channel_id {
             lines.push(format!("Where: {}", channels::describe(ctx, channel).await));
-        } else if let Some(place) = event.metadata.as_ref().and_then(|m| m.location.clone()) {
+        } else if let Some(place) = event
+            .entity_metadata
+            .as_ref()
+            .and_then(|m| m.location.clone())
+        {
             lines.push(format!("Where: {place}"));
         }
         if let Some(count) = event.user_count {
@@ -711,24 +712,23 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
 mod tests {
     use super::*;
 
-    fn presence(status: &str, activities: Value) -> Presence {
-        serde_json::from_value(json!({
-            "user": {"id": "1"},
-            "status": status,
-            "activities": activities,
-        }))
-        .unwrap()
+    fn presence(status: &str, activities: Value) -> (Status, Vec<Activity>) {
+        (
+            serde_json::from_value(json!(status)).unwrap(),
+            serde_json::from_value(activities).unwrap(),
+        )
     }
 
     #[test]
     fn presence_status_and_activities() {
         assert_eq!(presence_lines(None), ["Status: offline"]);
+        let (status, activities) = presence("invisible", json!([]));
         assert_eq!(
-            presence_lines(Some(&presence("invisible", json!([])))),
+            presence_lines(Some((status, &activities))),
             ["Status: offline"]
         );
 
-        let busy = presence(
+        let (status, activities) = presence(
             "dnd",
             json!([
                 {"type": 4, "name": "Custom Status", "state": "lunch", "emoji": {"name": "🍜"}, "created_at": 0},
@@ -738,7 +738,7 @@ mod tests {
             ]),
         );
         assert_eq!(
-            presence_lines(Some(&busy)),
+            presence_lines(Some((status, &activities))),
             [
                 "Status: do not disturb",
                 "Custom status: 🍜 lunch",
@@ -766,20 +766,20 @@ mod tests {
             position,
         };
         let entries = vec![
-            entry(1, "Voice", ChannelType::Category, None, None, 2),
-            entry(2, "Text", ChannelType::Category, None, None, 1),
-            entry(3, "Empty", ChannelType::Category, None, None, 3),
-            entry(4, "lounge", ChannelType::Voice, None, Some(1), 0),
+            entry(1, "Voice", ChannelType::GuildCategory, None, None, 2),
+            entry(2, "Text", ChannelType::GuildCategory, None, None, 1),
+            entry(3, "Empty", ChannelType::GuildCategory, None, None, 3),
+            entry(4, "lounge", ChannelType::GuildVoice, None, Some(1), 0),
             entry(
                 5,
                 "memes",
-                ChannelType::Text,
+                ChannelType::GuildText,
                 Some("only\nmemes"),
                 Some(2),
                 1,
             ),
-            entry(6, "general", ChannelType::Text, None, Some(2), 0),
-            entry(7, "rules", ChannelType::Text, Some("read me"), None, 0),
+            entry(6, "general", ChannelType::GuildText, None, Some(2), 0),
+            entry(7, "rules", ChannelType::GuildText, Some("read me"), None, 0),
         ];
         assert_eq!(
             render_channels(&entries, 6),

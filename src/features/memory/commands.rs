@@ -2,40 +2,69 @@
 //! the person who asked.
 
 use chrono::Utc;
-use poise::CreateReply;
-use serenity::all::{
-    AutocompleteChoice, ButtonStyle, ComponentInteraction, CreateActionRow, CreateAllowedMentions,
-    CreateAttachment, CreateAutocompleteResponse, CreateButton, CreateInteractionResponse,
-    CreateInteractionResponseMessage,
-};
 use tracing::info;
+use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_model::channel::message::component::ButtonStyle;
 
 use super::folder::{self, Folder, ROOT};
 use super::store;
-use crate::core::{BotCtx, Context, Result, user_error};
+use crate::core::interaction::{Choice, Typed, choice};
+use crate::core::{
+    BotCtx, Command, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
+};
+use crate::util::discord::{Draft, button, buttons, no_pings};
 
 /// Longest file shown in the message itself; longer ones come as an attachment.
 const MAX_INLINE: usize = 1800;
 
-/// See or wipe what Vivy remembers
-#[poise::command(
-    slash_command,
-    subcommands("show", "forget", "delete"),
-    subcommand_required
-)]
-pub async fn memory(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "memory", desc = "See or wipe what Vivy remembers")]
+pub enum MemoryCommand {
+    #[command(name = "show")]
+    Show(MemoryShow),
+    #[command(name = "forget")]
+    Forget(MemoryForget),
+    #[command(name = "delete")]
+    Delete(MemoryDelete),
 }
 
-/// Show a memory file or folder (default: what Vivy saved about you)
-#[poise::command(slash_command, ephemeral)]
-async fn show(
-    ctx: Context<'_>,
-    #[description = "A path like /memories/server/culture.md, or /memories for everything"]
-    #[autocomplete = "any_file"]
+pub fn memory() -> Command {
+    Command::slash::<MemoryCommand>(|ctx| Box::pin(run(ctx)))
+        .autocomplete(|ctx, typed| Box::pin(autocomplete(ctx, typed)))
+}
+
+/// Every answer is only visible to the person who asked.
+async fn run(ctx: CommandCtx) -> Result<()> {
+    let ctx = ctx.ephemeral();
+    match ctx.parse::<MemoryCommand>()? {
+        MemoryCommand::Show(args) => show(&ctx, args).await,
+        MemoryCommand::Forget(args) => forget(&ctx, args).await,
+        MemoryCommand::Delete(args) => delete(&ctx, args).await,
+    }
+}
+
+/// `forget` suggests only your own files; the others every file here.
+async fn autocomplete(ctx: CommandCtx, typed: Typed) -> Result<Vec<Choice>> {
+    if typed.subcommand == "forget" {
+        Ok(own_file(&ctx, &typed.value).await)
+    } else {
+        Ok(any_file(&ctx, &typed.value).await)
+    }
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "show",
+    desc = "Show a memory file or folder (default: what Vivy saved about you)"
+)]
+pub struct MemoryShow {
+    /// A path like /memories/server/culture.md, or /memories for everything
+    #[command(autocomplete = true)]
     path: Option<String>,
-) -> Result<()> {
-    let path = match path {
+}
+
+async fn show(ctx: &CommandCtx, args: MemoryShow) -> Result<()> {
+    let path = match args.path {
         Some(path) => folder::clean_path(&path).map_err(user_error)?,
         // Like forget: your folder, or in DMs everything (it's all yours).
         None => own_area(ctx),
@@ -43,30 +72,33 @@ async fn show(
     let folder = load(ctx).await?;
     let text = dump(&folder, &path);
     let reply = if text.is_empty() && path == own_area(ctx) {
-        CreateReply::default().content("I haven't saved anything about you here.")
+        Draft::new().content("I haven't saved anything about you here.")
     } else if text.is_empty() {
-        CreateReply::default().content(format!("There's nothing at {path}."))
+        Draft::new().content(format!("There's nothing at {path}."))
     } else if text.len() <= MAX_INLINE {
-        CreateReply::default().content(format!("```md\n{}\n```", fence_safe(&text)))
+        Draft::new().content(format!("```md\n{}\n```", fence_safe(&text)))
     } else {
-        CreateReply::default()
+        Draft::new()
             .content(format!("**{path}**"))
-            .attachment(CreateAttachment::bytes(text.into_bytes(), file_name(&path)))
+            .file(file_name(&path), text.into_bytes())
     };
-    ctx.send(reply.allowed_mentions(CreateAllowedMentions::new()))
-        .await?;
+    ctx.send(reply.allowed_mentions(no_pings())).await?;
     Ok(())
 }
 
-/// Delete one of your memory files, or everything Vivy remembers about you here
-#[poise::command(slash_command, ephemeral)]
-async fn forget(
-    ctx: Context<'_>,
-    #[description = "The file to delete (default: all of them)"]
-    #[autocomplete = "own_file"]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "forget",
+    desc = "Delete one of your memory files, or everything Vivy remembers about you here"
+)]
+pub struct MemoryForget {
+    /// The file to delete (default: all of them)
+    #[command(autocomplete = true)]
     file: Option<String>,
-) -> Result<()> {
-    let Some(file) = file else {
+}
+
+async fn forget(ctx: &CommandCtx, args: MemoryForget) -> Result<()> {
+    let Some(file) = args.file else {
         // Nothing picked means everything: that's easy to do by accident on a phone, so it
         // asks first. The button does the deleting (see `on_component`).
         let area = own_area(ctx);
@@ -80,22 +112,26 @@ async fn forget(
             ctx.say("There was nothing to forget.").await?;
             return Ok(());
         }
-        let user = ctx.author().id.get();
-        let buttons = CreateActionRow::Buttons(vec![
-            CreateButton::new(format!("memory:forget:{user}"))
-                .label("Forget everything")
-                .style(ButtonStyle::Danger),
-            CreateButton::new(format!("memory:keep:{user}"))
-                .label("Cancel")
-                .style(ButtonStyle::Secondary),
+        let user = ctx.author_id().get();
+        let row = buttons([
+            button(
+                format!("memory:forget:{user}"),
+                "Forget everything",
+                ButtonStyle::Danger,
+            ),
+            button(
+                format!("memory:keep:{user}"),
+                "Cancel",
+                ButtonStyle::Secondary,
+            ),
         ]);
         ctx.send(
-            CreateReply::default()
+            Draft::new()
                 .content(format!(
                     "This deletes all {} I saved about you here. Sure?",
                     crate::util::count(files, "file")
                 ))
-                .components(vec![buttons]),
+                .components(vec![row]),
         )
         .await?;
         return Ok(());
@@ -141,31 +177,27 @@ pub async fn on_component(bot: &BotCtx, i: &ComponentInteraction, action: &str) 
         }
         _ => "Kept everything.",
     };
-    let response = CreateInteractionResponseMessage::new()
-        .content(text)
-        .components(Vec::new());
-    i.create_response(
-        &bot.http,
-        CreateInteractionResponse::UpdateMessage(response),
-    )
-    .await?;
+    let response = Draft::new().content(text).components(Vec::new());
+    i.create_response(bot, Response::UpdateMessage(response))
+        .await?;
     Ok(())
 }
 
-/// Delete a memory file or folder (admins)
-#[poise::command(slash_command, ephemeral)]
-async fn delete(
-    ctx: Context<'_>,
-    #[description = "A path like /memories/users/123/games.md, or a folder"]
-    #[autocomplete = "any_file"]
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "delete", desc = "Delete a memory file or folder (admins)")]
+pub struct MemoryDelete {
+    /// A path like /memories/users/123/games.md, or a folder
+    #[command(autocomplete = true)]
     path: String,
-) -> Result<()> {
-    if !ctx.data().is_admin(ctx.author().id) {
+}
+
+async fn delete(ctx: &CommandCtx, args: MemoryDelete) -> Result<()> {
+    if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error(
             "Only admins can use /memory delete. To remove your own notes, use /memory forget.",
         ));
     }
-    let path = folder::clean_path(&path).map_err(user_error)?;
+    let path = folder::clean_path(&args.path).map_err(user_error)?;
     let count = remove(ctx, &path).await?;
     let text = match count {
         0 => format!("There's nothing at {path}."),
@@ -177,12 +209,12 @@ async fn delete(
 }
 
 /// `/memories/users/<your id>`
-fn own_folder(ctx: Context<'_>) -> String {
-    format!("{ROOT}/users/{}", ctx.author().id)
+fn own_folder(ctx: &CommandCtx) -> String {
+    format!("{ROOT}/users/{}", ctx.author_id())
 }
 
 /// What `/memory forget` may delete: your folder, or in DMs the whole private folder.
-fn own_area(ctx: Context<'_>) -> String {
+fn own_area(ctx: &CommandCtx) -> String {
     if ctx.guild_id().is_some() {
         own_folder(ctx)
     } else {
@@ -190,62 +222,57 @@ fn own_area(ctx: Context<'_>) -> String {
     }
 }
 
-fn is_own(ctx: Context<'_>, path: &str) -> bool {
+fn is_own(ctx: &CommandCtx, path: &str) -> bool {
     let area = own_area(ctx);
     path == area || path.starts_with(&format!("{area}/"))
 }
 
 /// Your own files that contain what you typed.
-async fn own_file(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
+async fn own_file(ctx: &CommandCtx, partial: &str) -> Vec<Choice> {
     let area = own_area(ctx);
     suggest(ctx, partial, |path| path.starts_with(&format!("{area}/"))).await
 }
 
 /// Every file here that contains what you typed.
-async fn any_file(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
+async fn any_file(ctx: &CommandCtx, partial: &str) -> Vec<Choice> {
     suggest(ctx, partial, |_| true).await
 }
 
-async fn suggest(
-    ctx: Context<'_>,
-    partial: &str,
-    keep: impl Fn(&str) -> bool,
-) -> CreateAutocompleteResponse {
+async fn suggest(ctx: &CommandCtx, partial: &str, keep: impl Fn(&str) -> bool) -> Vec<Choice> {
     let scope = scope(ctx);
     let files = ctx
-        .data()
+        .bot
         .db
         .call(move |conn| Ok(store::list(conn, &scope)?))
         .await
         .unwrap_or_default();
     let partial = partial.to_lowercase();
-    let choices = files
+    files
         .into_iter()
         .map(|(path, _)| path)
         // Discord allows 100 characters per choice.
         .filter(|path| path.len() <= 100 && keep(path) && path.to_lowercase().contains(&partial))
         .take(25)
-        .map(|path| AutocompleteChoice::new(path.clone(), path))
-        .collect();
-    CreateAutocompleteResponse::new().set_choices(choices)
+        .map(|path| choice(path.clone(), path))
+        .collect()
 }
 
-fn scope(ctx: Context<'_>) -> String {
-    store::scope(ctx.guild_id().map(|g| g.get()), ctx.author().id.get())
+fn scope(ctx: &CommandCtx) -> String {
+    store::scope(ctx.guild_id().map(|g| g.get()), ctx.author_id().get())
 }
 
-async fn load(ctx: Context<'_>) -> Result<Folder> {
+async fn load(ctx: &CommandCtx) -> Result<Folder> {
     let scope = scope(ctx);
-    ctx.data()
+    ctx.bot
         .db
         .call(move |conn| Ok(store::load(conn, &scope)?))
         .await
 }
 
 /// Deletes a file, or everything under a directory, and logs it. Returns how many files.
-async fn remove(ctx: Context<'_>, path: &str) -> Result<usize> {
+async fn remove(ctx: &CommandCtx, path: &str) -> Result<usize> {
     let guild = ctx.guild_id().map(|g| g.get());
-    remove_in(ctx.data(), guild, ctx.author().id.get(), path).await
+    remove_in(&ctx.bot, guild, ctx.author_id().get(), path).await
 }
 
 /// Deletes `path` (a file, or a folder with everything in it) from the memory of `guild`

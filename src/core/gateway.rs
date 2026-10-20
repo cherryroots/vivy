@@ -8,10 +8,10 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use tracing::warn;
 use twilight_gateway::{CloseFrame, MessageSender};
 use twilight_model::gateway::payload::outgoing::UpdatePresence;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
-use tracing::warn;
 
 pub struct Gateway {
     senders: Vec<MessageSender>,
@@ -23,10 +23,6 @@ impl Gateway {
     pub fn new(senders: Vec<MessageSender>) -> Gateway {
         let latencies = Mutex::new(vec![None; senders.len()]);
         Gateway { senders, latencies }
-    }
-
-    pub fn shard_count(&self) -> usize {
-        self.senders.len()
     }
 
     /// Called by the shard's task after each event.

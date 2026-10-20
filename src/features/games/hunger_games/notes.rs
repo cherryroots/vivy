@@ -8,8 +8,8 @@
 //! tool and runs `view` with it, as Vivy herself, the same way a chat answer would. With
 //! memory off in the server, or no notes, a tribute simply has none.
 
+use crate::util::discord::{ChannelId, GuildId, MessageId};
 use serde_json::json;
-use serenity::all::{ChannelId, GuildId, MessageId};
 use tracing::debug;
 
 use crate::core::{Asker, BotCtx};

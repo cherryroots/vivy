@@ -28,7 +28,7 @@ use twilight_model::application::interaction::application_command::{
 };
 use twilight_model::application::interaction::modal::ModalInteractionComponent;
 use twilight_model::application::interaction::{
-    Interaction, InteractionContextType, InteractionData,
+    Interaction, InteractionContextType, InteractionData, InteractionDataResolved,
 };
 use twilight_model::channel::message::MessageFlags;
 use twilight_model::http::interaction::{
@@ -38,8 +38,7 @@ use twilight_model::user::User;
 
 use super::{BotCtx, Result};
 use crate::util::discord::{
-    ChannelId, Draft, GuildId, InteractionId, Message, Modal, PartialMember,
-    UserId,
+    ChannelId, Draft, GuildId, InteractionId, Message, Modal, PartialMember, UserId,
 };
 
 /// A boxed future: what an `async fn` returns, in a form that fits in a struct field.
@@ -75,7 +74,10 @@ impl Command {
 
     /// A command in a message's right-click "Apps" menu.
     pub fn message(name: &str, run: CommandFn) -> Command {
-        #[allow(deprecated, reason = "dm_permission has to be given; contexts replace it")]
+        #[allow(
+            deprecated,
+            reason = "dm_permission has to be given; contexts replace it"
+        )]
         let definition = CommandDefinition {
             application_id: None,
             contexts: None,
@@ -222,11 +224,6 @@ impl CommandCtx {
         self.author().id
     }
 
-    /// The person's member info in this server. `None` in DMs.
-    pub fn member(&self) -> Option<&PartialMember> {
-        self.interaction.member.as_ref()
-    }
-
     pub fn guild_id(&self) -> Option<GuildId> {
         self.interaction.guild_id
     }
@@ -255,7 +252,13 @@ impl CommandCtx {
             kind: InteractionResponseType::DeferredChannelMessageWithSource,
             data: Some(data),
         };
-        create_response(&self.bot, self.interaction.id, &self.interaction.token, &response).await
+        create_response(
+            &self.bot,
+            self.interaction.id,
+            &self.interaction.token,
+            &response,
+        )
+        .await
     }
 
     /// Answers with a line of text.
@@ -361,6 +364,8 @@ pub struct ComponentInteraction {
     pub custom_id: String,
     /// What was picked in a menu. Empty for buttons.
     pub values: Vec<String>,
+    /// The users, members, roles or channels picked in such a menu, by ID.
+    pub resolved: Option<InteractionDataResolved>,
 }
 
 impl ComponentInteraction {
@@ -379,6 +384,7 @@ impl ComponentInteraction {
             message: interaction.message.clone()?,
             custom_id: data.custom_id.clone(),
             values: data.values.clone(),
+            resolved: data.resolved.clone(),
         })
     }
 }
@@ -391,7 +397,6 @@ pub struct ModalInteraction {
     pub guild_id: Option<GuildId>,
     pub channel_id: ChannelId,
     pub user: User,
-    pub member: Option<PartialMember>,
     /// The message whose button opened the form, if one did.
     pub message: Option<Message>,
     pub custom_id: String,
@@ -412,19 +417,10 @@ impl ModalInteraction {
             guild_id: interaction.guild_id,
             channel_id: channel_of(interaction),
             user: user_of(interaction)?,
-            member: interaction.member.clone(),
             message: interaction.message.clone(),
             custom_id: data.custom_id.clone(),
             inputs,
         })
-    }
-
-    /// The text typed in the box with this ID.
-    pub fn value(&self, custom_id: &str) -> Option<&str> {
-        self.inputs
-            .iter()
-            .find(|(id, _)| id == custom_id)
-            .map(|(_, text)| text.as_str())
     }
 
     /// The text typed in the first box, for forms with one.

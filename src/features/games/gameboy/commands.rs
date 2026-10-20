@@ -19,8 +19,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use poise::CreateReply;
-use serenity::all::{AutocompleteChoice, CreateAttachment, CreateAutocompleteResponse};
+use twilight_interactions::command::{CommandModel, CreateCommand};
 
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
@@ -29,7 +28,9 @@ use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
 use super::{Settings, files, pictures, presses, skills};
-use crate::core::{Context, Result, user_error};
+use crate::core::interaction::{Choice, Typed, choice};
+use crate::core::{CommandCtx, Result, user_error};
+use crate::util::discord::Draft;
 
 /// Pictures in GIFs are this many times the screen's size (320×288). Smaller than PNGs,
 /// since a GIF has many of them.
@@ -46,28 +47,72 @@ const TASK_ACTIONS: u32 = 30;
 /// Lines of what the supervisor did shown after a task.
 const TASK_LINES: usize = 6;
 
-/// Play the Game Boy by hand (admins)
-#[poise::command(
-    slash_command,
-    rename = "gameboy",
-    subcommands(
-        "load", "press", "wait", "screen", "gif", "look", "walk", "task", "skills", "save",
-        "restore", "off"
-    ),
-    subcommand_required
-)]
-pub async fn gameboy(_ctx: Context<'_>) -> Result<()> {
-    Ok(())
+/// `/games gameboy`: each subcommand is a variant, with a struct of its options.
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "gameboy", desc = "Play the Game Boy by hand (admins)")]
+pub enum GameboyCommand {
+    #[command(name = "load")]
+    Load(GameboyLoad),
+    #[command(name = "press")]
+    Press(GameboyPress),
+    #[command(name = "wait")]
+    Wait(GameboyWait),
+    #[command(name = "screen")]
+    Screen(GameboyScreen),
+    #[command(name = "gif")]
+    Gif(GameboyGif),
+    #[command(name = "look")]
+    Look(GameboyLook),
+    #[command(name = "walk")]
+    Walk(GameboyWalk),
+    #[command(name = "task")]
+    Task(GameboyTask),
+    #[command(name = "skills")]
+    Skills(GameboySkills),
+    #[command(name = "save")]
+    Save(GameboySave),
+    #[command(name = "restore")]
+    Restore(GameboyRestore),
+    #[command(name = "off")]
+    Off(GameboyOff),
 }
 
-/// Put a ROM in the Game Boy and switch it on
-#[poise::command(slash_command)]
-async fn load(
-    ctx: Context<'_>,
-    #[description = "A ROM from the roms folder"]
-    #[autocomplete = "rom_names"]
+pub async fn gameboy(ctx: &CommandCtx, command: GameboyCommand) -> Result<()> {
+    match command {
+        GameboyCommand::Load(args) => load(ctx, args).await,
+        GameboyCommand::Press(args) => press(ctx, args).await,
+        GameboyCommand::Wait(args) => wait(ctx, args).await,
+        GameboyCommand::Screen(_) => screen(ctx).await,
+        GameboyCommand::Gif(args) => gif(ctx, args).await,
+        GameboyCommand::Look(_) => look(ctx).await,
+        GameboyCommand::Walk(args) => walk(ctx, args).await,
+        GameboyCommand::Task(args) => task(ctx, args).await,
+        GameboyCommand::Skills(args) => skills(ctx, args).await,
+        GameboyCommand::Save(args) => save(ctx, args).await,
+        GameboyCommand::Restore(args) => restore(ctx, args).await,
+        GameboyCommand::Off(_) => off(ctx).await,
+    }
+}
+
+/// Suggestions for `load`'s ROM and the save names of `save` and `restore`.
+pub async fn autocomplete(ctx: &CommandCtx, typed: &Typed) -> Vec<Choice> {
+    match typed.option.as_str() {
+        "rom" => rom_names(ctx, &typed.value).await,
+        "name" => save_names(ctx, &typed.value).await,
+        _ => Vec::new(),
+    }
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "load", desc = "Put a ROM in the Game Boy and switch it on")]
+pub struct GameboyLoad {
+    /// A ROM from the roms folder
+    #[command(autocomplete = true)]
     rom: String,
-) -> Result<()> {
+}
+
+async fn load(ctx: &CommandCtx, args: GameboyLoad) -> Result<()> {
+    let GameboyLoad { rom } = args;
     let settings = admin(ctx)?;
     let path = files::rom_path(&settings.roms_dir(), &rom)
         .ok_or_else(|| user_error(format!("There's no ROM called `{rom}` in the roms folder.")))?;
@@ -91,36 +136,40 @@ async fn load(
         .await??;
     let title = if title.is_empty() { rom.clone() } else { title };
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(format!(
                 "🎮 **{title}** is on. Press buttons with `/games gameboy press`."
             ))
-            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
+            .file("gameboy.gif", gif),
     )
     .await?;
     Ok(())
 }
 
-/// Press buttons, one after another, and see what happened
-#[poise::command(slash_command)]
-async fn press(
-    ctx: Context<'_>,
-    #[description = "Like `a a up*3 start`: a, b, start, select, up, down, left, right, a+b together, *3 repeats, wait"]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "press",
+    desc = "Press buttons, one after another, and see what happened"
+)]
+pub struct GameboyPress {
+    /// Like `a a up*3 start`: a, b, start, select, up, down, left, right, a+b together, *3 repeats, wait
     buttons: String,
-    #[description = "Frames each press is held (default 16, one step in most games)"]
-    #[min = 1]
-    #[max = 120]
-    hold: Option<u32>,
-    #[description = "Frames with nothing pressed after each press (default 16)"]
-    #[max = 240]
-    gap: Option<u32>,
-) -> Result<()> {
+    /// Frames each press is held (default 16, one step in most games)
+    #[command(min_value = 1, max_value = 120)]
+    hold: Option<i64>,
+    /// Frames with nothing pressed after each press (default 16)
+    #[command(min_value = 0, max_value = 240)]
+    gap: Option<i64>,
+}
+
+async fn press(ctx: &CommandCtx, args: GameboyPress) -> Result<()> {
+    let GameboyPress { buttons, hold, gap } = args;
     admin(ctx)?;
     let presses = presses::parse(&buttons).map_err(user_error)?;
     let defaults = Timing::default();
     let timing = Timing {
-        hold: hold.unwrap_or(defaults.hold),
-        gap: gap.unwrap_or(defaults.gap),
+        hold: hold.map_or(defaults.hold, |frames| frames as u32),
+        gap: gap.map_or(defaults.gap, |frames| frames as u32),
     };
     ctx.defer().await?;
     let typed = presses::describe(&presses);
@@ -133,25 +182,25 @@ async fn press(
     })
     .await?;
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(format!("Pressed `{typed}`."))
-            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
+            .file("gameboy.gif", gif),
     )
     .await?;
     Ok(())
 }
 
-/// Let the game run with nothing pressed
-#[poise::command(slash_command)]
-async fn wait(
-    ctx: Context<'_>,
-    #[description = "How many seconds (default 3)"]
-    #[min = 1]
-    #[max = 60]
-    seconds: Option<u32>,
-) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "wait", desc = "Let the game run with nothing pressed")]
+pub struct GameboyWait {
+    /// How many seconds (default 3)
+    #[command(min_value = 1, max_value = 60)]
+    seconds: Option<i64>,
+}
+
+async fn wait(ctx: &CommandCtx, args: GameboyWait) -> Result<()> {
     admin(ctx)?;
-    let seconds = seconds.unwrap_or(3);
+    let seconds = args.seconds.map_or(3, |seconds| seconds as u32);
     ctx.defer().await?;
     let gif = on_machine(move |m| {
         let mark = m.recorded();
@@ -165,17 +214,19 @@ async fn wait(
         String::new()
     };
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(format!("Waited {seconds} s{shown}."))
-            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
+            .file("gameboy.gif", gif),
     )
     .await?;
     Ok(())
 }
 
-/// The screen as it is now
-#[poise::command(slash_command)]
-async fn screen(ctx: Context<'_>) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "screen", desc = "The screen as it is now")]
+pub struct GameboyScreen;
+
+async fn screen(ctx: &CommandCtx) -> Result<()> {
     admin(ctx)?;
     let (png, rom, frames) = on_machine(|m| {
         let png = pictures::png(&m.emulator.screen())?;
@@ -183,28 +234,31 @@ async fn screen(ctx: Context<'_>) -> Result<()> {
     })
     .await?;
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(format!(
                 "`{rom}`, {} of play since it was loaded.",
                 play_time(frames)
             ))
-            .attachment(CreateAttachment::bytes(png, "gameboy.png")),
+            .file("gameboy.png", png),
     )
     .await?;
     Ok(())
 }
 
-/// The last few seconds as a GIF
-#[poise::command(slash_command)]
-async fn gif(
-    ctx: Context<'_>,
-    #[description = "How many seconds (default and most: 10)"]
-    #[min = 1]
-    #[max = 10]
-    seconds: Option<u32>,
-) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "gif", desc = "The last few seconds as a GIF")]
+pub struct GameboyGif {
+    /// How many seconds (default and most: 10)
+    #[command(min_value = 1, max_value = 10)]
+    seconds: Option<i64>,
+}
+
+async fn gif(ctx: &CommandCtx, args: GameboyGif) -> Result<()> {
     admin(ctx)?;
-    let seconds = seconds.unwrap_or(RECENT_SECONDS).min(RECENT_SECONDS);
+    let seconds = args
+        .seconds
+        .map_or(RECENT_SECONDS, |seconds| seconds as u32)
+        .min(RECENT_SECONDS);
     ctx.defer().await?;
     let gif = on_machine(move |m| {
         let screens = (f64::from(seconds) * 60.0 / f64::from(RECORD_EVERY)) as u64;
@@ -217,14 +271,18 @@ async fn gif(
         pictures::gif(&shown, RECORD_EVERY, GIF_SCALE)
     })
     .await?;
-    ctx.send(CreateReply::default().attachment(CreateAttachment::bytes(gif, "gameboy.gif")))
-        .await?;
+    ctx.send(Draft::new().file("gameboy.gif", gif)).await?;
     Ok(())
 }
 
-/// What code reads from the game: where she is, the map so far, the words on screen
-#[poise::command(slash_command)]
-async fn look(ctx: Context<'_>) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "look",
+    desc = "What code reads from the game: where she is, the map so far, the words on screen"
+)]
+pub struct GameboyLook;
+
+async fn look(ctx: &CommandCtx) -> Result<()> {
     admin(ctx)?;
     let text = on_machine(|m| {
         let look = game_look(m)?;
@@ -238,13 +296,20 @@ async fn look(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Walk to a step on the map (code finds the way), or explore without one
-#[poise::command(slash_command)]
-async fn walk(
-    ctx: Context<'_>,
-    #[description = "The step's x, as `look` shows it (leave both out to explore)"] x: Option<i32>,
-    #[description = "The step's y, as `look` shows it"] y: Option<i32>,
-) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "walk",
+    desc = "Walk to a step on the map (code finds the way), or explore without one"
+)]
+pub struct GameboyWalk {
+    /// The step's x, as `look` shows it (leave both out to explore)
+    x: Option<i64>,
+    /// The step's y, as `look` shows it
+    y: Option<i64>,
+}
+
+async fn walk(ctx: &CommandCtx, args: GameboyWalk) -> Result<()> {
+    let (x, y) = (args.x.map(|x| x as i32), args.y.map(|y| y as i32));
     admin(ctx)?;
     ctx.defer().await?;
     let (text, gif) = on_machine(move |m| {
@@ -279,29 +344,29 @@ async fn walk(
         Ok((text, gif))
     })
     .await?;
-    ctx.send(
-        CreateReply::default()
-            .content(text)
-            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
-    )
-    .await?;
+    ctx.send(Draft::new().content(text).file("gameboy.gif", gif))
+        .await?;
     Ok(())
 }
 
-/// Have her carry out a short task by herself, with a cheap model choosing each action
-#[poise::command(slash_command)]
-async fn task(
-    ctx: Context<'_>,
-    #[description = "What to do, ending with \"until\" and what the screen shows when it's done"]
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "task",
+    desc = "Have her carry out a short task by herself, with a cheap model choosing each action"
+)]
+pub struct GameboyTask {
+    /// What to do, ending with "until" and what the screen shows when it's done
     task: String,
-    #[description = "Actions she may take (30)"]
-    #[min = 1]
-    #[max = 60]
-    actions: Option<u32>,
-) -> Result<()> {
+    /// Actions she may take (30)
+    #[command(min_value = 1, max_value = 60)]
+    actions: Option<i64>,
+}
+
+async fn task(ctx: &CommandCtx, args: GameboyTask) -> Result<()> {
+    let GameboyTask { task, actions } = args;
     let settings = admin(ctx)?;
     let provider = ctx
-        .data()
+        .bot
         .ai
         .chat()
         .ok_or_else(|| user_error("Tasks need a model: the bot has no AI key."))?;
@@ -316,7 +381,7 @@ async fn task(
         ))
     })
     .await?;
-    let most = actions.unwrap_or(TASK_ACTIONS);
+    let most = actions.map_or(TASK_ACTIONS, |actions| actions as u32);
     let episode = run_task(provider.as_ref(), &mut OnConsole, &game, &task, None, most).await;
     // What she wrote down is kept even when the task fails partway.
     let now_known = on_machine(|m| Ok(m.world.skills.clone())).await?;
@@ -357,21 +422,23 @@ async fn task(
     if text.chars().count() > 1990 {
         text = text.chars().take(1990).collect::<String>() + "…";
     }
-    ctx.send(
-        CreateReply::default()
-            .content(text)
-            .attachment(CreateAttachment::bytes(gif, "gameboy.gif")),
-    )
-    .await?;
+    ctx.send(Draft::new().content(text).file("gameboy.gif", gif))
+        .await?;
     Ok(())
 }
 
-/// Show the skills she has written for this game
-#[poise::command(slash_command)]
-async fn skills(
-    ctx: Context<'_>,
-    #[description = "A skill to forget, by its name"] forget: Option<String>,
-) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "skills",
+    desc = "Show the skills she has written for this game"
+)]
+pub struct GameboySkills {
+    /// A skill to forget, by its name
+    forget: Option<String>,
+}
+
+async fn skills(ctx: &CommandCtx, args: GameboySkills) -> Result<()> {
+    let GameboySkills { forget } = args;
     let settings = admin(ctx)?;
     let (rom, forgot, list) = on_machine(move |m| {
         let forgot = forget.map(|name| skills::forget(&mut m.world.skills, &name).ok_or(name));
@@ -496,14 +563,16 @@ fn describe(m: &Machine, view: &View) -> String {
     text
 }
 
-/// Save the game exactly as it is now
-#[poise::command(slash_command)]
-async fn save(
-    ctx: Context<'_>,
-    #[description = "A name for it, like `before Brock`"]
-    #[autocomplete = "save_names"]
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "save", desc = "Save the game exactly as it is now")]
+pub struct GameboySave {
+    /// A name for it, like `before Brock`
+    #[command(autocomplete = true)]
     name: String,
-) -> Result<()> {
+}
+
+async fn save(ctx: &CommandCtx, args: GameboySave) -> Result<()> {
+    let GameboySave { name } = args;
     let settings = admin(ctx)?;
     let (rom, state) = on_machine(|m| Ok((m.rom.clone(), m.emulator.save_state()?))).await?;
     let path = files::save_path(&settings.saves_dir(), &rom, &name).map_err(user_error)?;
@@ -516,14 +585,16 @@ async fn save(
     Ok(())
 }
 
-/// Go back to a saved game
-#[poise::command(slash_command)]
-async fn restore(
-    ctx: Context<'_>,
-    #[description = "One of this ROM's saves"]
-    #[autocomplete = "save_names"]
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "restore", desc = "Go back to a saved game")]
+pub struct GameboyRestore {
+    /// One of this ROM's saves
+    #[command(autocomplete = true)]
     name: String,
-) -> Result<()> {
+}
+
+async fn restore(ctx: &CommandCtx, args: GameboyRestore) -> Result<()> {
+    let GameboyRestore { name } = args;
     let settings = admin(ctx)?;
     let rom = on_machine(|m| Ok(m.rom.clone())).await?;
     let path = files::save_path(&settings.saves_dir(), &rom, &name).map_err(user_error)?;
@@ -546,20 +617,22 @@ async fn restore(
     })
     .await?;
     ctx.send(
-        CreateReply::default()
+        Draft::new()
             .content(format!(
                 "⏪ Back to `{}`.",
                 files::save_name(&name).unwrap_or(&name)
             ))
-            .attachment(CreateAttachment::bytes(png, "gameboy.png")),
+            .file("gameboy.png", png),
     )
     .await?;
     Ok(())
 }
 
-/// Take the ROM out (anything not saved is lost)
-#[poise::command(slash_command)]
-async fn off(ctx: Context<'_>) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "off", desc = "Take the ROM out (anything not saved is lost)")]
+pub struct GameboyOff;
+
+async fn off(ctx: &CommandCtx) -> Result<()> {
     admin(ctx)?;
     let rom = console()
         .with(|machine| machine.take().map(|m| m.rom))
@@ -573,15 +646,15 @@ async fn off(ctx: Context<'_>) -> Result<()> {
 }
 
 /// Only admins play by hand. Gives the settings, since every command needs a folder.
-fn admin(ctx: Context<'_>) -> Result<Settings> {
-    if !ctx.data().is_admin(ctx.author().id) {
+fn admin(ctx: &CommandCtx) -> Result<Settings> {
+    if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error("Only admins can use the Game Boy commands."));
     }
     Ok(settings(ctx))
 }
 
-fn settings(ctx: Context<'_>) -> Settings {
-    ctx.data()
+fn settings(ctx: &CommandCtx) -> Settings {
+    ctx.bot
         .config
         .feature::<crate::features::games::Settings>("games")
         .map(|s| s.gameboy)
@@ -625,12 +698,12 @@ fn play_time(frames: u64) -> String {
     }
 }
 
-async fn rom_names(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
+async fn rom_names(ctx: &CommandCtx, partial: &str) -> Vec<Choice> {
     let roms = files::roms(&settings(ctx).roms_dir());
     choices(roms, partial)
 }
 
-async fn save_names(ctx: Context<'_>, partial: &str) -> CreateAutocompleteResponse {
+async fn save_names(ctx: &CommandCtx, partial: &str) -> Vec<Choice> {
     let saves_dir = settings(ctx).saves_dir();
     let saves = console()
         .with(|machine| machine.as_ref().map(|m| m.rom.clone()))
@@ -643,16 +716,14 @@ async fn save_names(ctx: Context<'_>, partial: &str) -> CreateAutocompleteRespon
 }
 
 /// The names containing what was typed so far, at most Discord's 25.
-fn choices(names: Vec<String>, partial: &str) -> CreateAutocompleteResponse {
+fn choices(names: Vec<String>, partial: &str) -> Vec<Choice> {
     let partial = partial.to_lowercase();
-    CreateAutocompleteResponse::new().set_choices(
-        names
-            .into_iter()
-            .filter(|name| name.to_lowercase().contains(&partial))
-            .take(25)
-            .map(|name| AutocompleteChoice::new(name.clone(), name))
-            .collect(),
-    )
+    names
+        .into_iter()
+        .filter(|name| name.to_lowercase().contains(&partial))
+        .take(25)
+        .map(|name| choice(name.clone(), name))
+        .collect()
 }
 
 #[cfg(test)]

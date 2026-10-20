@@ -9,14 +9,16 @@
 
 use anyhow::Context as _;
 use chrono::Utc;
-use poise::CreateReply;
 use rusqlite::{Connection, OptionalExtension, params};
-use serenity::all::{CreateAllowedMentions, User};
+use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_model::id::Id;
+use twilight_model::id::marker::UserMarker;
 
 use super::game::{Blow, Game, Kind, PastKills};
 use super::ui;
-use crate::core::{Context, Result, user_error};
+use crate::core::{CommandCtx, Result, user_error};
 use crate::util::count;
+use crate::util::discord::{Draft, no_pings};
 
 pub const MIGRATIONS: &[&str] = &[
     // 1
@@ -347,21 +349,27 @@ fn record_of(conn: &Connection, guild: u64, user: u64) -> rusqlite::Result<Optio
     .transpose()
 }
 
-/// Hunger Games wins, kills and Octagons won in this server
-#[poise::command(slash_command, guild_only)]
-pub async fn leaderboard(
-    ctx: Context<'_>,
-    #[description = "Show one member's record instead"] member: Option<User>,
-) -> Result<()> {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "leaderboard",
+    desc = "Hunger Games wins, kills and Octagons won in this server"
+)]
+pub struct Leaderboard {
+    /// Show one member's record instead
+    member: Option<Id<UserMarker>>,
+}
+
+/// `/games leaderboard`
+pub async fn leaderboard(ctx: &CommandCtx, args: Leaderboard) -> Result<()> {
     let guild = ctx
         .guild_id()
-        .context("guild_only command without a server")?
+        .context("server-only command without a server")?
         .get();
-    let text = match member {
+    let text = match args.member {
         Some(member) => {
-            let user = member.id.get();
+            let user = member.get();
             let record = ctx
-                .data()
+                .bot
                 .db
                 .call(move |conn| Ok(record_of(conn, guild, user)?))
                 .await?;
@@ -369,7 +377,7 @@ pub async fn leaderboard(
         }
         None => {
             let (ranked, games, best) = ctx
-                .data()
+                .bot
                 .db
                 .call(move |conn| {
                     Ok((
@@ -383,12 +391,8 @@ pub async fn leaderboard(
         }
     };
     // Mentions show names without pinging anyone.
-    ctx.send(
-        CreateReply::default()
-            .content(text)
-            .allowed_mentions(CreateAllowedMentions::new()),
-    )
-    .await?;
+    ctx.send(Draft::new().content(text).allowed_mentions(no_pings()))
+        .await?;
     Ok(())
 }
 
@@ -409,21 +413,23 @@ fn reset(conn: &mut Connection, guild: u64) -> rusqlite::Result<usize> {
     Ok(games)
 }
 
-/// Start the Hunger Games leaderboard over (admins)
-#[poise::command(slash_command, guild_only, ephemeral, rename = "resetleaderboard")]
-pub async fn reset_leaderboard(ctx: Context<'_>) -> Result<()> {
-    if !ctx.data().is_admin(ctx.author().id) {
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "resetleaderboard",
+    desc = "Start the Hunger Games leaderboard over (admins)"
+)]
+pub struct ResetLeaderboard;
+
+/// `/games resetleaderboard`. Answers privately.
+pub async fn reset_leaderboard(ctx: &CommandCtx) -> Result<()> {
+    if !ctx.bot.is_admin(ctx.author_id()) {
         return Err(user_error("Only admins can use this command."));
     }
     let guild = ctx
         .guild_id()
-        .context("guild_only command without a server")?
+        .context("server-only command without a server")?
         .get();
-    let cleared = ctx
-        .data()
-        .db
-        .call(move |conn| Ok(reset(conn, guild)?))
-        .await?;
+    let cleared = ctx.bot.db.call(move |conn| Ok(reset(conn, guild)?)).await?;
     tracing::info!(guild, cleared, "Hunger Games leaderboard reset");
     ctx.say(format!(
         "Reset: deleted {}. Everyone's wins, kills and Octagons start from zero.",

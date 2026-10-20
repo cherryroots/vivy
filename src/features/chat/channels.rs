@@ -1,17 +1,18 @@
-//! Channel mentions ("<#123>") and channel links in message text, given names the model
-//! can read. serenity's `content_safe` only knows the server's channels, so it called
-//! every thread and forum post "#deleted-channel". Here threads are found too: from the
-//! cache, then from Discord (archived threads aren't in the cache).
+//! Mentions ("<@123>", "<#123>") and channel links in message text, given names the model
+//! can read. Threads are found too: from the cache, then from Discord (archived threads
+//! aren't in the cache).
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::ops::Range;
 
-use serenity::all::{Channel, ChannelId, ChannelType, ContentSafeOptions, GuildChannel, Message};
-use serenity::http::HttpError;
 use tracing::warn;
 
 use crate::core::BotCtx;
+use crate::util::discord::{
+    Channel, ChannelId, ChannelType, Message, RoleId, UserId, display_name, error_code,
+    error_status, get_channel,
+};
 
 /// A channel named somewhere in a message.
 #[derive(Debug, PartialEq)]
@@ -23,13 +24,85 @@ struct Found {
     link: bool,
 }
 
-/// How `content_safe` should treat `msg`: people by their server nickname when the cache
-/// has them, and channel mentions left for [`name_channels`].
-pub fn mention_options(msg: &Message) -> ContentSafeOptions {
-    let options = ContentSafeOptions::default().clean_channel(false);
-    match msg.guild_id {
-        Some(guild) => options.display_as_member_from(guild),
-        None => options,
+/// `text` with "<@123>" replaced by "@name" (their nickname in the server when it's
+/// known) and "<@&123>" by "@role name", so the model sees who was mentioned. Channel
+/// mentions are left for [`name_channels`].
+pub fn name_people(ctx: &BotCtx, msg: &Message, text: &str) -> String {
+    replace_mentions(text, |mentioned| match mentioned {
+        Mentioned::Person(user) => person_name(ctx, msg, user),
+        Mentioned::Role(role) => role_name(ctx, role),
+    })
+}
+
+/// Who a mention in message text points at.
+#[derive(Debug, PartialEq)]
+enum Mentioned {
+    Person(UserId),
+    Role(RoleId),
+}
+
+/// `text` with each "<@123>", "<@!123>" (an old way to write it) and "<@&123>" (a role)
+/// replaced by "@" and what `name` gives for it.
+fn replace_mentions(text: &str, mut name: impl FnMut(Mentioned) -> String) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<@") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let (role, digits) = match after.strip_prefix('&') {
+            Some(digits) => (true, digits),
+            None => (false, after.strip_prefix('!').unwrap_or(after)),
+        };
+        let id = digits.find('>').and_then(|end| {
+            let id = digits[..end].parse::<u64>().ok().filter(|&id| id > 0)?;
+            Some((end, id))
+        });
+        match id {
+            Some((end, id)) => {
+                out.push('@');
+                out.push_str(&name(if role {
+                    Mentioned::Role(RoleId::new(id))
+                } else {
+                    Mentioned::Person(UserId::new(id))
+                }));
+                rest = &digits[end + 1..];
+            }
+            None => {
+                out.push_str("<@");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// What to call someone mentioned in `msg`.
+fn person_name(ctx: &BotCtx, msg: &Message, user: UserId) -> String {
+    if let Some(guild) = msg.guild_id
+        && let Some(member) = ctx.cache.member(guild, user)
+        && let Some(nick) = member.nick()
+    {
+        return nick.to_string();
+    }
+    let mention = msg.mentions.iter().find(|m| m.id == user);
+    if let Some(nick) = mention.and_then(|m| m.member.as_ref()?.nick.clone()) {
+        return nick;
+    }
+    if let Some(cached) = ctx.cache.user(user) {
+        return display_name(&cached).to_string();
+    }
+    match mention {
+        Some(mention) => mention.name.clone(),
+        None => "invalid-user".to_string(),
+    }
+}
+
+/// What to call a mentioned role.
+fn role_name(ctx: &BotCtx, role: RoleId) -> String {
+    match ctx.cache.role(role) {
+        Some(cached) => cached.resource().name.clone(),
+        None => "deleted-role".to_string(),
     }
 }
 
@@ -68,61 +141,45 @@ pub async fn name_channels(ctx: &BotCtx, text: &str) -> String {
 pub async fn describe(ctx: &BotCtx, channel: ChannelId) -> String {
     let found = match cached(ctx, channel) {
         Some(found) => found,
-        None => match ctx.http.get_channel(channel).await {
-            Ok(Channel::Guild(found)) => found,
-            Ok(Channel::Private(_)) => return "a DM".to_string(),
+        None => match get_channel(&ctx.http, channel).await {
+            Ok(found) if found.kind == ChannelType::Private => return "a DM".to_string(),
+            Ok(found) if found.guild_id.is_some() => found,
             Ok(_) => return "#unknown-channel".to_string(),
             Err(err) => return missing(channel, &err),
         },
     };
-    let is_thread = matches!(
-        found.kind,
-        ChannelType::PublicThread | ChannelType::PrivateThread | ChannelType::NewsThread
-    );
+    let name = found.name.as_deref().unwrap_or("unknown-channel");
+    let is_thread = found.kind.is_thread();
     let parent = found
         .parent_id
         .filter(|_| is_thread)
         .and_then(|parent| cached(ctx, parent));
+    let parent_name = |parent: &Channel| parent.name.clone().unwrap_or_default();
     match parent {
-        Some(parent) if matches!(parent.kind, ChannelType::Forum) => {
-            format!("#{} (a post in #{})", found.name, parent.name)
+        Some(parent) if parent.kind == ChannelType::GuildForum => {
+            format!("#{name} (a post in #{})", parent_name(&parent))
         }
-        Some(parent) => format!("#{} (a thread in #{})", found.name, parent.name),
-        None if is_thread => format!("#{} (a thread)", found.name),
-        None => format!("#{}", found.name),
+        Some(parent) => format!("#{name} (a thread in #{})", parent_name(&parent)),
+        None if is_thread => format!("#{name} (a thread)"),
+        None => format!("#{name}"),
     }
 }
 
-/// A channel or thread from the cache, in any server the bot is in.
-fn cached(ctx: &BotCtx, channel: ChannelId) -> Option<GuildChannel> {
-    ctx.cache.guilds().into_iter().find_map(|guild| {
-        let guild = ctx.cache.guild(guild)?;
-        guild
-            .channels
-            .get(&channel)
-            .or_else(|| guild.threads.iter().find(|t| t.id == channel))
-            .cloned()
-    })
+/// A channel or thread from the cache.
+fn cached(ctx: &BotCtx, channel: ChannelId) -> Option<Channel> {
+    ctx.cache.channel(channel).map(|found| found.clone())
 }
 
 /// What to call a channel Discord wouldn't give us: gone, or there but hidden from the bot.
-fn missing(channel: ChannelId, err: &serenity::Error) -> String {
-    const UNKNOWN_CHANNEL: isize = 10003;
-    match err {
-        serenity::Error::Http(HttpError::UnsuccessfulRequest(response))
-            if response.error.code == UNKNOWN_CHANNEL =>
-        {
-            "#deleted-channel".to_string()
-        }
-        serenity::Error::Http(HttpError::UnsuccessfulRequest(response))
-            if response.status_code.as_u16() == 403 =>
-        {
-            "#hidden-channel (you can't see this one)".to_string()
-        }
-        _ => {
-            warn!("couldn't look up channel {channel}: {err}");
-            "#unknown-channel (couldn't look it up)".to_string()
-        }
+fn missing(channel: ChannelId, err: &anyhow::Error) -> String {
+    const UNKNOWN_CHANNEL: u64 = 10003;
+    if error_code(err) == Some(UNKNOWN_CHANNEL) {
+        "#deleted-channel".to_string()
+    } else if error_status(err) == Some(403) {
+        "#hidden-channel (you can't see this one)".to_string()
+    } else {
+        warn!("couldn't look up channel {channel}: {err:#}");
+        "#unknown-channel (couldn't look it up)".to_string()
     }
 }
 
@@ -185,7 +242,7 @@ fn channel_link(link: &str) -> Option<ChannelId> {
     parse_id(channel)
 }
 
-/// A Discord ID. Never 0: serenity panics on an ID of 0.
+/// A Discord ID. Never 0: twilight panics on an ID of 0.
 fn parse_id(text: &str) -> Option<ChannelId> {
     text.parse::<u64>()
         .ok()
@@ -196,6 +253,15 @@ fn parse_id(text: &str) -> Option<ChannelId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mentions_get_names() {
+        let named = replace_mentions("hi <@1> and <@!2>, <@&3> <@x> <@4", |m| match m {
+            Mentioned::Person(user) => format!("user{user}"),
+            Mentioned::Role(role) => format!("role{role}"),
+        });
+        assert_eq!(named, "hi @user1 and @user2, @role3 <@x> <@4");
+    }
 
     fn ids(text: &str) -> Vec<(u64, bool)> {
         find_channels(text)

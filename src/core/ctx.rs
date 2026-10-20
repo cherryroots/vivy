@@ -4,11 +4,12 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use tokio::sync::broadcast;
-use twilight_cache_inmemory::InMemoryCache;
-use twilight_model::oauth::team::TeamMembershipState;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::warn;
+use twilight_cache_inmemory::InMemoryCache;
+use twilight_model::oauth::team::TeamMembershipState;
+use twilight_util::permission_calculator::PermissionCalculator;
 
 use super::config::{Config, Gate};
 use super::db::Db;
@@ -16,7 +17,10 @@ use super::gateway::Gateway;
 use super::interaction::FeatureCommand;
 use super::{BotEvent, Feature, Timers};
 use crate::ai::Ai;
-use crate::util::discord::{ApplicationId, ChannelId, GuildId, Http, UserId};
+use crate::util::discord::{
+    ApplicationId, Channel, ChannelId, GuildId, Http, Permissions, Role, RoleId, UserId,
+    get_member, member_display_name, member_name,
+};
 
 /// Cheap to clone: every field is a handle to something shared.
 #[derive(Clone)]
@@ -93,7 +97,73 @@ impl BotCtx {
         channel.name.clone()
     }
 
+    /// The name a member goes by in a server, from the cache, else asked from Discord.
+    /// `None` when they aren't in the server (or Discord can't be asked).
+    pub async fn member_name(&self, guild: GuildId, user: UserId) -> Option<String> {
+        if let Some(member) = self.cache.member(guild, user)
+            && let Some(cached) = self.cache.user(user)
+        {
+            return Some(member_name(member.nick(), &cached).to_string());
+        }
+        let member = get_member(&self.http, guild, user).await.ok()?;
+        Some(member_display_name(&member).to_string())
+    }
+
     /// Sets the bot's custom status, the line under its name, on every gateway connection.
+    /// The servers the bot is in, from the cache.
+    pub fn guild_ids(&self) -> Vec<GuildId> {
+        self.cache
+            .iter()
+            .guilds()
+            .map(|guild| *guild.key())
+            .collect()
+    }
+
+    /// The server's channels and threads from the cache.
+    pub fn guild_channels(&self, guild: GuildId) -> Vec<Channel> {
+        let Some(ids) = self.cache.guild_channels(guild) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|&id| self.cache.channel(id).map(|c| c.clone()))
+            .collect()
+    }
+
+    /// The server's roles from the cache.
+    pub fn guild_roles(&self, guild: GuildId) -> Vec<Role> {
+        let Some(ids) = self.cache.guild_roles(guild) else {
+            return Vec::new();
+        };
+        ids.iter()
+            .filter_map(|&id| self.cache.role(id).map(|r| r.resource().clone()))
+            .collect()
+    }
+
+    /// What someone with `roles` may do in `channel`, worked out from the cached roles
+    /// and the channel's overwrites, the way Discord does. A thread has its parent
+    /// channel's permissions, so pass the parent. `None` when the server isn't cached.
+    pub fn permissions_in(
+        &self,
+        guild: GuildId,
+        user: UserId,
+        roles: &[RoleId],
+        channel: &Channel,
+    ) -> Option<Permissions> {
+        let owner = self.cache.guild(guild)?.owner_id();
+        // The @everyone role has the server's ID.
+        let everyone = self.cache.role(guild.cast())?.resource().permissions;
+        let roles: Vec<(RoleId, Permissions)> = roles
+            .iter()
+            .filter_map(|&id| Some((id, self.cache.role(id)?.resource().permissions)))
+            .collect();
+        let overwrites = channel.permission_overwrites.as_deref().unwrap_or_default();
+        Some(
+            PermissionCalculator::new(guild, user, everyone, &roles)
+                .owner_id(owner)
+                .in_channel(channel.kind, overwrites),
+        )
+    }
+
     pub async fn set_status(&self, text: &str) {
         self.gateway.set_status(text);
     }

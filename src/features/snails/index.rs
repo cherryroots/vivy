@@ -2,11 +2,11 @@
 
 use std::time::Duration;
 
+use crate::util::discord::{GuildId, Message};
 use anyhow::Context as _;
 use chrono::Utc;
-use image::DynamicImage;
-use serenity::all::{GuildId, Message};
 use futures::future::join_all;
+use image::DynamicImage;
 use tracing::debug;
 
 use super::collect::{self, Picture};

@@ -17,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
-use twilight_gateway::{Config as ShardConfig, Event, EventTypeFlags, Intents, Shard, StreamExt as _};
+use twilight_gateway::{
+    Config as ShardConfig, Event, EventTypeFlags, Intents, Shard, StreamExt as _,
+};
 
 use crate::core::config::Config;
 use crate::core::db::{self, Db};
@@ -223,7 +225,10 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     // panel marks itself offline, the log poster sends its last lines).
     shutdown.cancel();
     tasks.close();
-    if tokio::time::timeout(Duration::from_secs(10), tasks.wait()).await.is_err() {
+    if tokio::time::timeout(Duration::from_secs(10), tasks.wait())
+        .await
+        .is_err()
+    {
         warn!("background tasks didn't stop within 10 seconds");
     }
     bot.gateway.close();

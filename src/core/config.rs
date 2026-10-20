@@ -11,10 +11,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 
+use crate::util::discord::{ChannelId, GuildId};
 use anyhow::Context as _;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use crate::util::discord::{ChannelId, GuildId};
 use tracing::warn;
 
 #[derive(Debug, Deserialize)]
