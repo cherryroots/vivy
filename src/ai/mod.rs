@@ -184,6 +184,9 @@ pub struct ChatRequest {
     pub job: &'static str,
 }
 
+/// The Game Boy strategist's model, unless `[ai.openai.jobs.game_plan]` says otherwise.
+const STRATEGIST_MODEL: &str = "gpt-6-astra";
+
 /// How one kind of request runs: `[ai.claude.jobs.<job>]` or `[ai.openai.jobs.<job>]` in
 /// config.toml. Anything left out comes from the job's built-in default, and then from the
 /// provider's own settings, so background work can run cheaper than chat answers.
@@ -213,8 +216,10 @@ impl Job {
     ///   round is ready while people read this one, with no web or code;
     /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
     ///   with no web or code;
-    /// - "game_review": the Game Boy strategist's fresh look at its notes when she's stuck
-    ///   (OpenAI), at high effort.
+    /// - "game_plan": the Game Boy strategist (OpenAI only), on GPT-6 Astra, which shares
+    ///   the free daily data-sharing tokens and generalised best to new games;
+    /// - "game_review": its fresh look at its notes when she's stuck, the same model at
+    ///   high effort.
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
@@ -242,8 +247,14 @@ impl Job {
                 web: off,
                 code: off,
             },
+            "game_plan" => Job {
+                model: Some(STRATEGIST_MODEL.to_string()),
+                effort: None,
+                web: off,
+                code: off,
+            },
             "game_review" => Job {
-                model: None,
+                model: Some(STRATEGIST_MODEL.to_string()),
                 effort: Some("high".to_string()),
                 web: off,
                 code: off,

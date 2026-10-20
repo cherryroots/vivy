@@ -147,8 +147,8 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
 | `game_play` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | The Game Boy supervisor choosing its next action (`games/gameboy/supervisor.rs`, which runs its own loop since each tool result carries a screen), and planning once the strategist's free tokens are used up (`strategist::plan_cheaply`). Many small calls, so the cheap model. |
-| `game_plan` | main | main | no | no | The Game Boy strategist (OpenAI only, `OpenAi::structured` through `Ai::openai`), on the free daily data-sharing tokens: set `model = "gpt-6-astra"` here, otherwise it's the OpenAI section's model. The gate sets its own. |
-| `game_review` | main | high | no | no | The Game Boy strategist's fresh look at its notes when she's stuck (OpenAI only). |
+| `game_plan` | GPT-6 Astra | main | no | no | The Game Boy strategist (OpenAI only, `OpenAi::structured` through `Ai::openai`), on the free daily data-sharing tokens. The gate sets its own. |
+| `game_review` | GPT-6 Astra | high | no | no | The Game Boy strategist's fresh look at its notes when she's stuck (OpenAI only). |
 
 On Claude, a request whose job has no bot tools (emoji, mood, hunger_games) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
 
