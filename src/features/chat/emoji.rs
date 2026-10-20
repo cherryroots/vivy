@@ -5,17 +5,18 @@
 //! start and once a day ([`CHECK`]), since new emoji are rare. The `list_server_emoji` tool lists them with their descriptions.
 
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::json;
-use serenity::all::{Emoji, GuildId};
 use tracing::{Instrument as _, error, info, info_span, warn};
 
 use super::store;
 use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolDef, ToolRunner, Turn, complete};
 use crate::core::{Asker, BotCtx, Result};
+use crate::util::discord::{EmojiId, GuildId};
 use crate::util::media::{self, Media, MediaKind};
 use crate::util::shorten;
 
@@ -61,16 +62,37 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+/// A server's custom emoji, with what this file needs.
+#[derive(Clone)]
+struct Emoji {
+    id: EmojiId,
+    name: String,
+    animated: bool,
+}
+
+/// The code that shows the emoji in a message: "<:name:123>", or "<a:name:123>" when
+/// it moves.
+impl fmt::Display for Emoji {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let a = if self.animated { "a" } else { "" };
+        write!(f, "<{a}:{}:{}>", self.name, self.id)
+    }
+}
+
 /// The usable custom emoji of a server, from the cache, by name.
 fn server_emoji(ctx: &BotCtx, guild: GuildId) -> Vec<Emoji> {
-    let Some(guild) = ctx.cache.guild(guild) else {
+    let Some(ids) = ctx.cache.guild_emojis(guild) else {
         return Vec::new();
     };
-    let mut list: Vec<Emoji> = guild
-        .emojis
-        .values()
-        .filter(|e| e.available)
-        .cloned()
+    let mut list: Vec<Emoji> = ids
+        .iter()
+        .filter_map(|&id| ctx.cache.emoji(id))
+        .filter(|e| e.available())
+        .map(|e| Emoji {
+            id: e.id(),
+            name: e.name().to_string(),
+            animated: e.animated(),
+        })
         .collect();
     list.sort_by(|a, b| a.name.cmp(&b.name));
     list
@@ -120,7 +142,7 @@ async fn describe_new(ctx: &BotCtx) -> Result<()> {
     if ctx.ai.chat().is_none() {
         return Ok(());
     }
-    for guild in ctx.cache.guilds() {
+    for guild in ctx.guild_ids() {
         if !ctx.gate("chat").allows_guild(guild) {
             continue;
         }

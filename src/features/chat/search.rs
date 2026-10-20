@@ -10,13 +10,13 @@ use std::collections::HashMap;
 use chrono::{NaiveDate, TimeZone as _};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
-use serenity::all::{ChannelId, GuildId};
 
 use super::tools::{
     can_read, find_member, format_message, home_zone, message_link, parse_link, parse_user_id,
 };
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
+use crate::util::discord::{ChannelId, GuildId, get_channel};
 use crate::util::search::{self, AUTHOR_TYPES, EMBED_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
 
 /// How many results when the model doesn't say.
@@ -171,7 +171,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
     // A wrong value (an unknown `has`, too many names) goes back to the model to fix.
     search.query().map_err(user_error)?;
 
-    let found = search::search(&ctx.web, ctx.http.token(), guild, &search).await?;
+    let found = search::search(&ctx.web, ctx.token(), guild, &search).await?;
 
     // Discord searched everything the bot can see; keep what the asker can see.
     let mut readable: HashMap<ChannelId, bool> = HashMap::new();
@@ -197,7 +197,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
                         .threads
                         .iter()
                         .find(|thread| thread.id == channel)
-                        .map(|thread| thread.name.clone()))
+                        .and_then(|thread| thread.name.clone()))
                     .unwrap_or_else(|| "unknown".to_string()),
                 format_message(ctx, message, zone).await,
                 message_link(Some(guild), channel, message.id)
@@ -290,18 +290,16 @@ fn find_role(ctx: &BotCtx, guild: GuildId, text: &str) -> Option<u64> {
         return Some(id);
     }
     let name = text.trim_start_matches('@').to_lowercase();
-    let guild = ctx.cache.guild(guild)?;
-    guild
-        .roles
-        .values()
+    ctx.guild_roles(guild)
+        .into_iter()
         .find(|role| role.name.to_lowercase() == name)
         .map(|role| role.id.get())
 }
 
 /// Whether the current channel is age-restricted.
 async fn here_is_nsfw(ctx: &BotCtx, asker: &Asker) -> bool {
-    match asker.channel.to_channel(&ctx.http).await {
-        Ok(channel) => channel.guild().is_some_and(|channel| channel.nsfw),
+    match get_channel(&ctx.http, asker.channel).await {
+        Ok(channel) => channel.nsfw == Some(true),
         Err(_) => false,
     }
 }
@@ -338,12 +336,9 @@ fn find_channel(ctx: &BotCtx, asker: &Asker, guild: GuildId, text: &str) -> Opti
         return Some(ChannelId::new(id));
     }
     let name = text.trim_start_matches('#').to_lowercase();
-    let guild = ctx.cache.guild(guild)?;
-    guild
-        .channels
-        .values()
-        .chain(guild.threads.iter())
-        .find(|c| c.name.to_lowercase() == name)
+    ctx.guild_channels(guild)
+        .into_iter()
+        .find(|c| c.name.as_deref().is_some_and(|n| n.to_lowercase() == name))
         .map(|c| c.id)
 }
 

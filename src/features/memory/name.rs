@@ -3,9 +3,9 @@
 //! emoji with her mood (reflection, mood checks, `set_mood`), so it is hers like the rest
 //! of her mood file. Without `nickname` her name is left alone.
 
+use crate::util::discord::GuildId;
 use chrono::Utc;
 use serde::Deserialize;
-use serenity::all::GuildId;
 use tracing::info;
 
 use super::{face, reflect, store};
@@ -95,9 +95,10 @@ pub async fn update(ctx: &BotCtx, guild: GuildId, mood: &str) -> Result<Option<i
         }
     }
 
-    let mut body = serde_json::Map::new();
-    body.insert("nick".into(), name.clone().into());
-    ctx.http.edit_member_me(guild, &body, None).await?;
+    ctx.http
+        .update_current_member(guild)
+        .nick(Some(&name))
+        .await?;
     info!(%guild, name, "changed her nickname");
     let now = Utc::now().timestamp();
     ctx.db

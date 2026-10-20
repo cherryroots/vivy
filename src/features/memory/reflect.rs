@@ -9,8 +9,8 @@
 
 use std::time::Duration;
 
+use crate::util::discord::GuildId;
 use chrono::Utc;
-use serenity::all::GuildId;
 use tracing::{Instrument as _, error, info, info_span, warn};
 
 use super::folder::{self, Command};

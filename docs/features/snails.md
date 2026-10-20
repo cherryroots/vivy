@@ -115,7 +115,7 @@ If snails was turned off in that channel since, the failure is pushed back an ho
 
 ### The backfill (`backfill.rs`)
 
-`/snails backfill start` lists every channel with messages: text, news, voice and stage chats, active threads, and public and private archived threads (forum posts are threads). Private archived threads need the Manage Threads permission; without it they are skipped. The archived-thread pages are requested by hand (`archived_threads`) because serenity's helper sends the paging timestamp in a form Discord doesn't accept. Each channel gets a row in `snail_crawl`, and the server is marked running in `snail_backfills`.
+`/snails backfill start` lists every channel with messages: text, news, voice and stage chats, active threads, and public and private archived threads (forum posts are threads). Private archived threads need the Manage Threads permission; without it they are skipped. `archived_threads` pages through them 100 at a time, passing the oldest thread's archive time (ISO 8601) as `before`. Each channel gets a row in `snail_crawl`, and the server is marked running in `snail_backfills`.
 
 `crawl` then reads one channel at a time (lowest channel ID first), 100 messages per page (`PAGE`), from the newest back. `read_page` indexes up to 8 messages at once (`PARALLEL`) with `index::index_message`, which skips messages read before and does **not** count snails: old reposts are history, not new catches. After every page it saves its place (`before_id`), so pausing, a restart or a network failure loses nothing. A channel the bot can't read is marked finished with its error. Any other failure waits 60 seconds (`RETRY_AFTER`) and tries the page again.
 

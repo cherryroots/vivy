@@ -10,9 +10,9 @@
 
 use std::collections::HashMap;
 
+use crate::util::discord::{GuildId, Message, message_link};
 use chrono::{Duration, Utc};
-use serenity::all::{GuildId, Message};
-use serenity::futures::future::join_all;
+use futures::future::join_all;
 use tracing::{debug, info, warn};
 
 use crate::core::BotCtx;
@@ -107,7 +107,7 @@ async fn search_for(
         ..Default::default()
     };
     let run = |search: Search| async move {
-        search::search(&ctx.web, ctx.http.token(), guild, &search)
+        search::search(&ctx.web, ctx.token(), guild, &search)
             .await
             .inspect_err(|err| debug!("couldn't search {tribute}'s messages: {err:#}"))
             .ok()
@@ -121,16 +121,21 @@ async fn search_for(
             let Some(page) = run(search.clone()).await else {
                 break;
             };
-            if let Some(words) = choose(&page.messages, settings, tribute) {
+            if let Some(words) = choose(&page.messages, guild, settings, tribute) {
                 return Some(words);
             }
         }
     }
-    choose(&newest.messages, settings, tribute)
+    choose(&newest.messages, guild, settings, tribute)
 }
 
 /// A random one of `tribute`'s `messages` that makes good last words.
-fn choose(messages: &[Message], settings: &Settings, tribute: u64) -> Option<LastWords> {
+fn choose(
+    messages: &[Message],
+    guild: GuildId,
+    settings: &Settings,
+    tribute: u64,
+) -> Option<LastWords> {
     let good: Vec<LastWords> = messages
         .iter()
         .filter(|msg| msg.author.id.get() == tribute)
@@ -138,7 +143,7 @@ fn choose(messages: &[Message], settings: &Settings, tribute: u64) -> Option<Las
             let text = tidy(&quotes::quote_text(msg, settings)?)?;
             Some(LastWords {
                 text,
-                link: msg.link(),
+                link: message_link(Some(guild), msg.channel_id, msg.id),
             })
         })
         .collect();

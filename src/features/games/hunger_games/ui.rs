@@ -2,15 +2,18 @@
 //! and the victor. Everything here takes plain values and builds messages; nothing talks
 //! to Discord.
 
-use serenity::all::{
-    ButtonStyle, CreateActionRow, CreateButton, CreateEmbed, CreateSelectMenu,
-    CreateSelectMenuKind, ReactionType, UserId,
+use twilight_model::channel::message::Embed;
+use twilight_model::channel::message::component::{
+    ButtonStyle, Component, SelectDefaultValue, SelectMenuType,
 };
+use twilight_util::builder::embed::EmbedBuilder;
+use twilight_util::builder::message::SelectMenuBuilder;
 
 use super::game::{Blow, Endgame, FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
 use crate::features::games::who_said_it::ui::{COLOR, escape};
+use crate::util::discord::{UserId, button, buttons, emoji, menu_row};
 use crate::util::shorten_at_word;
 use crate::util::split::{DISCORD_LIMIT, split_message};
 
@@ -85,7 +88,7 @@ pub fn prize_vote(
     game: u32,
     votes: &[(Reward, usize)],
     closes_at: i64,
-) -> (String, Vec<CreateActionRow>) {
+) -> (String, Vec<Component>) {
     let mut text = format!(
         "## 🏟️ The Octagon opens next!\nVote for the prize its champion takes. Voting closes <t:{closes_at}:R>.\n"
     );
@@ -98,16 +101,15 @@ pub fn prize_vote(
             count_votes(count)
         ));
     }
-    let buttons = Reward::ALL
-        .into_iter()
-        .map(|r| {
-            CreateButton::new(custom_id(game, Action::Prize(r)))
-                .label(r.name())
-                .emoji(ReactionType::Unicode(r.emoji().to_string()))
-                .style(ButtonStyle::Primary)
-        })
-        .collect();
-    (text, vec![CreateActionRow::Buttons(buttons)])
+    let row = Reward::ALL.into_iter().map(|r| {
+        button(
+            custom_id(game, Action::Prize(r)),
+            r.name(),
+            ButtonStyle::Primary,
+        )
+        .emoji(emoji(r.emoji()))
+    });
+    (text, vec![buttons(row)])
 }
 
 /// The vote once it's closed: what won, and the count for each.
@@ -158,7 +160,7 @@ pub fn lobby(
     max: usize,
     closes_at: i64,
     extras: Extras,
-) -> (CreateEmbed, Vec<CreateActionRow>) {
+) -> (Embed, Vec<Component>) {
     let mut lines = vec![
         format!(
             "<@{host}> is hosting. The host picks tributes from the menu, and anyone can press \
@@ -194,80 +196,74 @@ pub fn lobby(
         "👥 Teams **off**: every tribute for themselves.".to_string()
     });
     lines.push(format!("The Reaping closes <t:{closes_at}:R>."));
-    let menu = CreateSelectMenu::new(
-        custom_id(game, Action::Pick),
-        CreateSelectMenuKind::User {
-            default_users: Some(picked.iter().map(|id| UserId::new(*id)).collect()),
-        },
-    )
-    .placeholder("Host: pick the tributes")
-    .min_values(0)
-    .max_values(max.clamp(1, 25) as u8);
+    let mut menu = SelectMenuBuilder::new(custom_id(game, Action::Pick), SelectMenuType::User)
+        .placeholder("Host: pick the tributes")
+        .min_values(0)
+        .max_values(max.clamp(1, 25) as u8);
+    if !picked.is_empty() {
+        let defaults = picked
+            .iter()
+            .map(|&id| SelectDefaultValue::User(UserId::new(id)))
+            .collect();
+        menu = menu.default_values(defaults);
+    }
     // Discord fits five buttons in a row: entering and starting in one, the host's
     // toggles in the next.
-    let buttons = vec![
-        CreateButton::new(custom_id(game, Action::Volunteer))
-            .label("Volunteer")
-            .emoji('🙋')
-            .style(ButtonStyle::Primary),
-        CreateButton::new(custom_id(game, Action::Start))
-            .label("Start")
-            .style(ButtonStyle::Success),
-        CreateButton::new(custom_id(game, Action::Cancel))
-            .label("Cancel")
-            .style(ButtonStyle::Danger),
+    let entering = [
+        button(
+            custom_id(game, Action::Volunteer),
+            "Volunteer",
+            ButtonStyle::Primary,
+        )
+        .emoji(emoji("🙋")),
+        button(
+            custom_id(game, Action::Start),
+            "Start",
+            ButtonStyle::Success,
+        ),
+        button(
+            custom_id(game, Action::Cancel),
+            "Cancel",
+            ButtonStyle::Danger,
+        ),
     ];
-    let toggles = vec![
-        CreateButton::new(custom_id(game, Action::Memories))
-            .label(if extras.memories {
-                "Memories: on"
-            } else {
-                "Memories: off"
-            })
-            .emoji('🧠')
-            .style(ButtonStyle::Secondary),
-        CreateButton::new(custom_id(game, Action::Pictures))
-            .label(if extras.pictures {
-                "Pictures: on"
-            } else {
-                "Pictures: off"
-            })
-            .emoji('🎨')
-            .style(ButtonStyle::Secondary),
-        CreateButton::new(custom_id(game, Action::Teams))
-            .label(if extras.teams {
-                "Teams: on"
-            } else {
-                "Teams: off"
-            })
-            .emoji('👥')
-            .style(ButtonStyle::Secondary),
+    let toggle = |action, emoji_text, on: bool, name: &str| {
+        let state = if on { "on" } else { "off" };
+        button(
+            custom_id(game, action),
+            format!("{name}: {state}"),
+            ButtonStyle::Secondary,
+        )
+        .emoji(emoji(emoji_text))
+    };
+    let toggles = [
+        toggle(Action::Memories, "🧠", extras.memories, "Memories"),
+        toggle(Action::Pictures, "🎨", extras.pictures, "Pictures"),
+        toggle(Action::Teams, "👥", extras.teams, "Teams"),
     ];
-    let embed = CreateEmbed::new()
+    let embed = EmbedBuilder::new()
         .title("🏹 The Hunger Games: the Reaping")
         .description(lines.join("\n"))
-        .color(COLOR);
+        .color(COLOR)
+        .build();
     (
         embed,
-        vec![
-            CreateActionRow::SelectMenu(menu),
-            CreateActionRow::Buttons(buttons),
-            CreateActionRow::Buttons(toggles),
-        ],
+        vec![menu_row(menu), buttons(entering), buttons(toggles)],
     )
 }
 
 /// The Reaping once it's over: who entered, and no more buttons.
-pub fn lobby_closed(tributes: &[(u64, String)], why: &str) -> CreateEmbed {
+pub fn lobby_closed(tributes: &[(u64, String)], why: &str) -> Embed {
     let names: Vec<String> = tributes.iter().map(|(_, n)| escape(n)).collect();
     let mut text = why.to_string();
     if !names.is_empty() {
         text.push_str(&format!("\n\n**Tributes:** {}", names.join(", ")));
     }
-    CreateEmbed::new()
+    EmbedBuilder::new()
         .title("🏹 The Hunger Games: the Reaping")
         .description(text)
         .color(COLOR)
+        .build()
 }
 
 /// A tribute as shown in game messages: their mention, which Discord shows as their name

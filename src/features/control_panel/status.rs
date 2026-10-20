@@ -16,11 +16,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
-use serenity::all::{
-    ButtonStyle, ChannelId, CreateActionRow, CreateAttachment, CreateButton, CreateEmbed,
-    CreateMessage, EditMessage, HttpError, MessageId,
-};
 use tracing::warn;
+use twilight_model::channel::message::Embed;
+use twilight_model::channel::message::component::{ButtonStyle, Component};
+use twilight_util::builder::embed::EmbedBuilder;
 
 use super::history::{self, History};
 use super::render::{
@@ -29,6 +28,9 @@ use super::render::{
 use crate::ai::{self, AdminKey, Spend, display_name};
 use crate::core::logging::error_stats;
 use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION, settings};
+use crate::util::discord::{
+    ChannelId, Draft, MessageId, button, buttons, emoji, error_code, field,
+};
 use crate::util::{shorten, svg};
 
 pub const MIGRATIONS: &[&str] = &[
@@ -53,8 +55,9 @@ const RED: u32 = 0xe74c3c;
 /// `content` is the text above it.
 struct Status {
     content: String,
-    picture: Option<CreateAttachment>,
-    embed: Option<CreateEmbed>,
+    /// The file name and the PNG.
+    picture: Option<(String, Vec<u8>)>,
+    embed: Option<Embed>,
 }
 
 pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
@@ -142,20 +145,15 @@ channel? Further tries are logged at info level until one works."
 pub const OWNER_MODE_ACTION: &str = "owner_mode";
 
 /// The owner mode button, green while it's on. Pressing it turns owner mode on or off.
-pub fn owner_mode_buttons(on: bool) -> Vec<CreateActionRow> {
-    let button = CreateButton::new(format!("control_panel:{OWNER_MODE_ACTION}"))
-        .emoji('👑')
-        .label(if on {
-            "Owner mode: on"
-        } else {
-            "Owner mode: off"
-        })
-        .style(if on {
-            ButtonStyle::Success
-        } else {
-            ButtonStyle::Secondary
-        });
-    vec![CreateActionRow::Buttons(vec![button])]
+pub fn owner_mode_buttons(on: bool) -> Vec<Component> {
+    let (label, style) = if on {
+        ("Owner mode: on", ButtonStyle::Success)
+    } else {
+        ("Owner mode: off", ButtonStyle::Secondary)
+    };
+    let owner_mode =
+        button(format!("control_panel:{OWNER_MODE_ACTION}"), label, style).emoji(emoji("👑"));
+    vec![buttons([owner_mode])]
 }
 
 /// Owner mode now, or off when it can't be read.
@@ -172,42 +170,27 @@ async fn show(
     channel: ChannelId,
     existing: Option<MessageId>,
     status: Status,
-    buttons: Vec<CreateActionRow>,
+    buttons: Vec<Component>,
 ) -> Result<MessageId> {
-    if let Some(id) = existing {
-        // Replaces whatever the message had: the old picture, or the embed.
-        let mut edit = EditMessage::new()
-            .content(status.content.clone())
-            .embeds(status.embed.clone().into_iter().collect())
-            .components(buttons.clone())
-            .remove_all_attachments();
-        if let Some(picture) = status.picture.clone() {
-            edit = edit.new_attachment(picture);
-        }
-        match channel.edit_message(&ctx.http, id, edit).await {
-            Ok(_) => return Ok(id),
-            Err(err) if is_unknown_message(&err) => {} // deleted: post a new one below
-            Err(err) => return Err(err.into()),
-        }
-    }
-    let mut create = CreateMessage::new()
+    // Replaces whatever the message had: the old picture, or the embed.
+    let mut draft = Draft::new()
         .content(status.content)
         .embeds(status.embed.into_iter().collect())
-        .components(buttons);
-    if let Some(picture) = status.picture {
-        create = create.add_file(picture);
+        .components(buttons)
+        .remove_all_files();
+    if let Some((name, png)) = status.picture {
+        draft = draft.file(name, png);
     }
-    let message = channel.send_message(&ctx.http, create).await?;
+    if let Some(id) = existing {
+        const UNKNOWN_MESSAGE: u64 = 10008;
+        match draft.edit(&ctx.http, channel, id).await {
+            Ok(_) => return Ok(id),
+            Err(err) if error_code(&err) == Some(UNKNOWN_MESSAGE) => {} // deleted: post a new one
+            Err(err) => return Err(err),
+        }
+    }
+    let message = draft.send(&ctx.http, channel).await?;
     Ok(message.id)
-}
-
-fn is_unknown_message(err: &serenity::Error) -> bool {
-    const UNKNOWN_MESSAGE: isize = 10008;
-    matches!(
-        err,
-        serenity::Error::Http(HttpError::UnsuccessfulRequest(response))
-            if response.error.code == UNKNOWN_MESSAGE
-    )
 }
 
 /// The status picture. "Updated <t:…:R>" stays as text above it: Discord keeps counting
@@ -222,7 +205,7 @@ async fn online(dashboard: Dashboard) -> Status {
     match drawn {
         Ok(Ok(png)) => Status {
             content,
-            picture: Some(CreateAttachment::bytes(png, "status.png")),
+            picture: Some(("status.png".to_string(), png)),
             embed: None,
         },
         Ok(Err(err)) => {
@@ -255,7 +238,7 @@ async fn offline(ctx: &BotCtx) -> Status {
     match drawn {
         Ok(Ok(png)) => Status {
             content,
-            picture: Some(CreateAttachment::bytes(png, "status.png")),
+            picture: Some(("status.png".to_string(), png)),
             embed: None,
         },
         _ => Status {
@@ -269,10 +252,7 @@ async fn offline(ctx: &BotCtx) -> Status {
 /// Everything the status shows, read now.
 async fn gather(ctx: &BotCtx) -> Dashboard {
     let now = Utc::now();
-    let latency = {
-        let runners = ctx.shard_manager.runners.lock().await;
-        runners.values().filter_map(|runner| runner.latency).max()
-    };
+    let latency = ctx.gateway.latencies().into_iter().flatten().max();
     let mut features = Vec::new();
     let mut panels: Vec<Panel> = Vec::new();
     for feature in ctx.features.iter() {
@@ -293,7 +273,7 @@ async fn gather(ctx: &BotCtx) -> Dashboard {
         bot_name: bot_name(ctx),
         version: version(),
         uptime: now - ctx.started_at,
-        servers: ctx.cache.guild_count(),
+        servers: ctx.guild_ids().len(),
         latency_ms: latency.map(|l| l.as_secs_f64() * 1000.0),
         memory_mb: memory_used().map(megabytes),
         database_mb: megabytes(database_size(ctx)),
@@ -362,7 +342,7 @@ async fn save_samples(ctx: &BotCtx, d: &Dashboard) -> Result<()> {
 }
 
 fn bot_name(ctx: &BotCtx) -> String {
-    ctx.cache.current_user().name.clone()
+    ctx.bot_name.clone()
 }
 
 /// "0.1.0 · abc1234"
@@ -465,46 +445,50 @@ async fn warm_cache(ctx: &BotCtx, spend: &Spend) -> Option<f64> {
 }
 
 /// The same as the picture, as an embed: shown when the picture can't be drawn.
-fn online_embed(d: &Dashboard) -> CreateEmbed {
+fn online_embed(d: &Dashboard) -> Embed {
     let errors = &d.errors;
-    let mut embed = CreateEmbed::new()
+    let mut embed = EmbedBuilder::new()
         .title("🟢 Online")
-        .colour(GREEN)
-        .field("Uptime", human_duration(d.uptime), true)
-        .field("Version", format!("{VERSION} (`{GIT_COMMIT}`)"), true)
-        .field(
+        .color(GREEN)
+        .field(field("Uptime", human_duration(d.uptime), true))
+        .field(field(
+            "Version",
+            format!("{VERSION} (`{GIT_COMMIT}`)"),
+            true,
+        ))
+        .field(field(
             "Latency",
             d.latency_ms
                 .map_or("–".to_string(), |ms| format!("{ms:.0} ms")),
             true,
-        )
-        .field("Servers", d.servers.to_string(), true)
-        .field(
+        ))
+        .field(field("Servers", d.servers.to_string(), true))
+        .field(field(
             "Memory",
             d.memory_mb
                 .map_or("–".to_string(), |mb| format!("{mb:.1} MB")),
             true,
-        )
-        .field("Database", format!("{:.1} MB", d.database_mb), true)
-        .field("AI", ai_text(d.ai.as_ref()), true)
-        .field(
+        ))
+        .field(field("Database", format!("{:.1} MB", d.database_mb), true))
+        .field(field("AI", ai_text(d.ai.as_ref()), true))
+        .field(field(
             "Errors",
             format!(
                 "{} in the last hour\n{} today",
                 errors.last_hour, errors.last_day
             ),
             true,
-        );
+        ));
     for spend in &d.spends {
         let title = format!("{} spend", display_name(spend.provider));
-        embed = embed.field(title, spend_text(&spend.view), true);
+        embed = embed.field(field(title, spend_text(&spend.view), true));
     }
     if let Some((at, text)) = &errors.last {
-        embed = embed.field(
+        embed = embed.field(field(
             "Last error",
             format!("<t:{}:R>\n{}", at.timestamp(), shorten(text, 900)),
             false,
-        );
+        ));
     }
 
     for panel in &d.panels {
@@ -514,7 +498,7 @@ fn online_embed(d: &Dashboard) -> CreateEmbed {
             .map(|row| format!("**{}:** {}", row.name, row.value))
             .collect::<Vec<_>>()
             .join("\n");
-        embed = embed.field(&panel.title, shorten(&text, 1000), false);
+        embed = embed.field(field(panel.title.as_str(), shorten(&text, 1000), false));
     }
 
     if !d.timers.is_empty() {
@@ -534,7 +518,7 @@ fn online_embed(d: &Dashboard) -> CreateEmbed {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        embed = embed.field("Timers", shorten(&text, 1000), false);
+        embed = embed.field(field("Timers", shorten(&text, 1000), false));
     }
 
     // One block per feature, from its `stats()`.
@@ -548,19 +532,28 @@ fn online_embed(d: &Dashboard) -> CreateEmbed {
                 .join("\n"),
             Err(err) => format!("couldn't load stats: {err}"),
         };
-        embed = embed.field(feature.name, shorten(&value, 1000), true);
+        embed = embed.field(field(feature.name, shorten(&value, 1000), true));
     }
-    embed
+    embed.build()
 }
 
-fn offline_embed(ctx: &BotCtx) -> CreateEmbed {
+fn offline_embed(ctx: &BotCtx) -> Embed {
     let now = Utc::now();
-    CreateEmbed::new()
+    EmbedBuilder::new()
         .title("🔴 Offline")
-        .colour(RED)
-        .field("Stopped", format!("<t:{}:f>", now.timestamp()), true)
-        .field("Was up for", human_duration(now - ctx.started_at), true)
-        .field("Version", format!("{VERSION} (`{GIT_COMMIT}`)"), true)
+        .color(RED)
+        .field(field("Stopped", format!("<t:{}:f>", now.timestamp()), true))
+        .field(field(
+            "Was up for",
+            human_duration(now - ctx.started_at),
+            true,
+        ))
+        .field(field(
+            "Version",
+            format!("{VERSION} (`{GIT_COMMIT}`)"),
+            true,
+        ))
+        .build()
 }
 
 fn ai_text(ai: Option<&AiView>) -> String {

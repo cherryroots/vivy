@@ -15,7 +15,9 @@ use anyhow::{Context as _, bail};
 use base64::Engine as _;
 use reqwest::Url;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use serenity::all::{Http, Message, MessageFlags};
+use twilight_model::channel::message::MessageFlags;
+
+use super::discord::{Http, Message, get_message};
 use tracing::warn;
 
 use super::frames;
@@ -134,11 +136,13 @@ pub fn find_media(msg: &Message) -> Vec<Media> {
         // plus a "gifv" embed: an MP4 in `video` and a still of it in `thumbnail`. Discord
         // documents gifv as a GIF rendered as a video, so its video is an MP4 even when the
         // link has no file extension.
-        let is_gifv = embed.kind.as_deref() == Some("gifv");
+        let is_gifv = embed.kind == "gifv";
         let mut has_video = false;
-        if let Some(video) = &embed.video {
-            let url = video.proxy_url.as_ref().unwrap_or(&video.url);
-            has_video = add(&video.url, url, is_gifv.then_some("video/mp4"));
+        if let Some(video) = &embed.video
+            && let Some(original) = &video.url
+        {
+            let url = video.proxy_url.as_ref().unwrap_or(original);
+            has_video = add(original, url, is_gifv.then_some("video/mp4"));
         }
         if let Some(image) = &embed.image {
             add(
@@ -236,10 +240,10 @@ pub async fn with_previews(http: &Http, msg: &Message) -> Message {
         return msg.clone();
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
-    match msg.channel_id.message(http, msg.id).await {
+    match get_message(http, msg.channel_id, msg.id).await {
         Ok(fresh) => fresh,
         Err(err) => {
-            warn!("couldn't read the message again for link previews: {err}");
+            warn!("couldn't read the message again for link previews: {err:#}");
             msg.clone()
         }
     }
@@ -574,7 +578,8 @@ mod tests {
         );
     }
     use serde_json::json;
-    use serenity::all::{Attachment, Embed};
+    use twilight_model::channel::Attachment;
+    use twilight_model::channel::message::Embed;
 
     fn attachment(url: &str, content_type: Option<&str>) -> Attachment {
         serde_json::from_value(json!({
@@ -584,7 +589,11 @@ mod tests {
         .unwrap()
     }
 
-    fn embed(value: serde_json::Value) -> Embed {
+    fn embed(mut value: serde_json::Value) -> Embed {
+        // Discord always says what kind of embed it is.
+        if value.get("type").is_none() {
+            value["type"] = json!("rich");
+        }
         serde_json::from_value(value).unwrap()
     }
 
@@ -668,7 +677,7 @@ mod tests {
 
     #[test]
     fn finds_links_that_get_previews() {
-        let mut msg = Message::default();
+        let mut msg = crate::util::discord::test_message(json!({}));
         msg.content =
             "<https://a.com/x> https://b.com/y and https://b.com/y (https://c.com)".into();
         assert_eq!(preview_links(&msg), ["https://b.com/y", "https://c.com"]);
@@ -682,7 +691,7 @@ mod tests {
 
     #[test]
     fn finds_media_everywhere_once() {
-        let mut msg = Message::default();
+        let mut msg = crate::util::discord::test_message(json!({}));
         msg.content =
             "look https://site.com/cat.png https://cdn.discordapp.com/a/1/pic.png?ex=2".into();
         msg.attachments = vec![
@@ -742,7 +751,7 @@ mod tests {
 
     #[test]
     fn finds_other_files() {
-        let mut msg = Message::default();
+        let mut msg = crate::util::discord::test_message(json!({}));
         msg.attachments = vec![
             attachment("https://cdn.discordapp.com/a/1/pic.png", Some("image/png")),
             attachment(

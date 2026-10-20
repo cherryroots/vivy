@@ -81,7 +81,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 
 | Topic | Decision |
 |---|---|
-| Discord library | `serenity` for events and the REST API, `poise` for slash commands |
+| Discord library | Twilight: `twilight-gateway` for events, `twilight-http` for the REST API, `twilight-cache-inmemory`, and `twilight-interactions` for slash commands |
 | Structure | One crate, plain modules. Features never import each other; they work together through chat tools, chat context, bot events and the status picture. Each declares everything it adds in its `Feature` impl. A Cargo workspace with a crate per feature would let the compiler enforce that, but isn't worth the build setup yet. |
 | AI | One `ChatProvider` trait in `ai`, so any feature can call a model. Claude is the main provider, through the plain Messages API over `reqwest` (no Rust Agent SDK exists, and the Agent SDK is built for coding agents). OpenAI is the fallback, since its free data-sharing tokens would train on members' messages. Gemini (Interactions API) can be picked as either, and watches videos and YouTube links itself. Each provider's built-in tools are used fully: web search, web fetch, code execution, the Files API. |
 | Prompt caching | The system prompt and tool list never change. Anything that changes (the time, memory's file list, Vivy's mood) comes from tools or goes after the newest question. |
@@ -200,6 +200,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #89 | | Game Boy (stage 3): a cheap model (Haiku, the `game_play` job) carries out one short task at a time through five actions (walk, explore, press, read text, finish); `/games gameboy task` (admins); the strategist's call (`OpenAi::structured`); the gate, 15 tasks from Red's opening checked in code, which Haiku passed at 96% |
 | #90 | | Game Boy (stage 4a): skills she writes herself instead of a coded battle action: know-how notes and button routines matched on the words on screen, run as one action (`write_skill`, `use_skill`), kept per game in `skills.json`; `/games gameboy skills` (admins); Red's battles as facts (both Pokémon, moves and PP); the strategist (Astra) reviews her skills in its call; the learning gate |
 | #93 | | Chat: pictures she sees (on the message she answers, the one it replies to, and earlier ones in the request) are copied into her code sandbox too, not only attached files, named by their bytes (`image-1a2b3c4d.png`) with a note saying the name, so she can run code on a screenshot; on Claude (`container_upload`) and the OpenAI fallback (`/mnt/data`); old Claude uploads are forgotten once so pictures get the new names |
+| #94 | | Chat prompt: `web_search` called from her code returns a JSON string to decode (Anthropic's description of it says a list) |
 
 ## Not built yet
 

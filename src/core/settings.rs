@@ -1,8 +1,8 @@
 //! Settings shared by all features: each user's timezone, and owner mode for the whole bot.
 
+use crate::util::discord::UserId;
 use chrono_tz::Tz;
 use rusqlite::{Connection, OptionalExtension};
-use serenity::all::UserId;
 
 use super::db::Db;
 
