@@ -347,6 +347,9 @@ daily_usd = 1.5
 # OpenAI's free data-sharing tokens a day, which the strategist plans on. It stops before a
 # call could cross this. Its model is [ai.openai.jobs.game_plan]'s (GPT-6 Astra).
 free_tokens = 1000000
+# While she plays, the GIF of her last 10 seconds in the live message is replaced this
+# often, in seconds (at least 5; 0: only at the end). The episodes go in a thread under it.
+live_seconds = 10
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.

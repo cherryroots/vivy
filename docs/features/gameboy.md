@@ -19,7 +19,7 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy walk x: y:` | Walks to that step of the map (code finds the way and takes it), with a GIF and the `look` after. Leave out `x` and `y` to walk to the nearest step not seen yet. Stops early when she walks into another area or something takes over the screen, like a text box. |
 | `/games gameboy task task: actions:` | A cheap model (the supervisor, below) carries out one short task by itself, like `go down the stairs, until you're on the floor below`, taking at most `actions:` actions (default 30). Posts whether it says it's done, its last actions, a GIF of the last seconds and the `look` after. Pokémon Red and Blue only for now. |
 | `/games gameboy skills forget:` | The skills she has written for the game that's in (below), each with when it's for, its notes, its rules and how its last use went. `forget:` deletes one by name. |
-| `/games gameboy play minutes: goal: episodes:` | She plays by herself from where the game is, in the background, for up to `minutes:` (default `session_minutes`, 60) or `episodes:` short tasks (200), until the day's money for playing is spent, or until she's stuck for good (below). `goal:` replaces her goal for this game and is kept (default: play through to the credits). A message in the channel follows along, a line per episode, and a summary with a GIF of the last seconds comes at the end. |
+| `/games gameboy play minutes: goal: episodes:` | She plays by herself from where the game is, in the background, for up to `minutes:` (default `session_minutes`, 60) or `episodes:` short tasks (200), until the day's money for playing is spent, or until she's stuck for good (below). `goal:` replaces her goal for this game and is kept (default: play through to the credits). The reply is the live message: a GIF of the last 10 seconds of play, replaced every `live_seconds` (10) while the game moves, with the episode she's on and its task, so you can watch. A thread under it gets a message per episode and the summary at the end, so it reads in order afterwards (in a thread already, or without permission to start one, they go in the channel). |
 | `/games gameboy stop` | Stops her playing, at once; the summary follows. |
 | `/games gameboy status` | Her goal, notes and last episodes for the game that's in, whether she's playing, and what playing used today (paid dollars and free tokens). |
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
@@ -126,7 +126,7 @@ Still to come in stage 4: notes that record their source and whether play confir
 
 ## Settings
 
-Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
+Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (10). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
 
 ## Files
 

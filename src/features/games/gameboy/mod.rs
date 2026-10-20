@@ -75,6 +75,9 @@ pub struct Settings {
     pub daily_usd: f64,
     /// OpenAI's free tokens a day for the strategist (the data-sharing tokens).
     pub free_tokens: u64,
+    /// While she plays, the GIF of the last seconds in the live message is replaced this
+    /// often, in seconds (0: only at the end).
+    pub live_seconds: u64,
 }
 
 impl Default for Settings {
@@ -85,6 +88,7 @@ impl Default for Settings {
             session_minutes: 60,
             daily_usd: 1.5,
             free_tokens: 1_000_000,
+            live_seconds: 10,
         }
     }
 }

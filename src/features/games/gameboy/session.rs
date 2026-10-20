@@ -24,7 +24,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::budget::Today;
@@ -97,6 +97,8 @@ pub struct Session<'a> {
     pub stop: CancellationToken,
     /// A line after each episode, for the channel.
     pub report: mpsc::UnboundedSender<String>,
+    /// What she's doing now ("Episode 4: go downstairs..."), for the live message.
+    pub doing: Option<watch::Sender<String>>,
     /// Shown as running on the status picture while she plays. The caller ends it.
     pub timer: Option<Timer>,
 }
@@ -249,6 +251,13 @@ pub async fn play<G: Game>(
         };
 
         let area = game.look().await?.view.area;
+        if let Some(doing) = &session.doing {
+            doing.send_replace(format!(
+                "Episode {}: {}",
+                journal.episodes + 1,
+                short(&task, 300)
+            ));
+        }
         let mut stopped = false;
         let mut failed = false;
         let episode = tokio::select! {
@@ -761,6 +770,7 @@ mod tests {
             },
             stop: CancellationToken::new(),
             report,
+            doing: None,
             timer: None,
         }
     }

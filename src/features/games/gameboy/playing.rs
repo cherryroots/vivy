@@ -1,15 +1,18 @@
 //! `/games gameboy play`, `stop` and `status`: she plays by herself (`session.rs`) in the
-//! background, and the channel sees a message after each episode and a summary with a GIF
-//! at the end. While she plays, the commands that move the game are refused, so nobody
+//! background. The reply to `play` is the live message: a GIF of the last seconds of play,
+//! replaced every `live_seconds`, with what she's doing now. A thread under it gets a
+//! message per episode and the summary at the end, so it reads in order afterwards. While she plays, the commands that move the game are refused, so nobody
 //! presses buttons under her.
 
 use std::sync::Mutex;
+use std::time::Duration;
 
 use poise::CreateReply;
 use serenity::all::{
-    ChannelId, CreateAllowedMentions, CreateAttachment, CreateMessage, EditMessage, Message,
+    AutoArchiveDuration, ChannelId, CreateAllowedMentions, CreateAttachment, CreateMessage,
+    CreateThread, EditAttachments, EditMessage, Message,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
@@ -22,8 +25,10 @@ use super::session::{self, Limits, Session, Summary};
 use super::{Settings, files, pictures};
 use crate::core::{BotCtx, Context, Result, user_error};
 
-/// Episode lines shown in the message that follows a session.
+/// Episode lines `status` shows.
 const LINES_SHOWN: usize = 8;
+/// The live GIF is replaced at most this often, in seconds.
+const LIVE_FASTEST: u64 = 5;
 /// Episodes one session plays at most.
 const EPISODES_MOST: u32 = 200;
 
@@ -107,22 +112,24 @@ pub async fn play(
     } else {
         "the cheap model plans (no OpenAI key)"
     };
-    ctx.send(
-        CreateReply::default()
-            .content(format!(
-                "▶️ She's playing **{game}** by herself for up to {} minutes; {planner}.\n\
-                 Goal: {shown_goal}\n-# A line after each episode below. \
-                 `/games gameboy stop` stops her, `/games gameboy status` shows her notes.",
-                limits.minutes
-            ))
-            .allowed_mentions(CreateAllowedMentions::new()),
-    )
-    .await?;
+    let live = ctx
+        .send(
+            CreateReply::default()
+                .content(format!(
+                    "▶️ She's playing **{game}** by herself for up to {} minutes; {planner}.\n\
+                     Goal: {shown_goal}\n-# Each episode goes in the thread below. \
+                     `/games gameboy stop` stops her, `/games gameboy status` shows her notes.",
+                    limits.minutes
+                ))
+                .allowed_mentions(CreateAllowedMentions::new()),
+        )
+        .await?
+        .into_message()
+        .await?;
     let bot = ctx.data().clone();
-    let channel = ctx.channel_id();
     ctx.data().tasks.spawn(async move {
         let _guard = guard;
-        run(bot, channel, settings, rom, game, limits, goal, stop).await;
+        run(bot, live, settings, rom, game, limits, goal, stop).await;
     });
     Ok(())
 }
@@ -202,11 +209,12 @@ pub async fn status(ctx: Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Plays the session, posting a line after each episode and the summary at the end.
+/// Plays the session: the live GIF in `live` (the reply to `play`), a line per episode
+/// and the summary in a thread under it.
 #[allow(clippy::too_many_arguments)]
 async fn run(
     bot: BotCtx,
-    channel: ChannelId,
+    live: Message,
     settings: Settings,
     rom: String,
     game: String,
@@ -217,8 +225,37 @@ async fn run(
     let Some(provider) = bot.ai.chat() else {
         return;
     };
+    let name: String = format!("{game} · {}", chrono::Utc::now().format("%-d %b %H:%M"))
+        .chars()
+        .take(100)
+        .collect();
+    // Run inside a thread already, or without the permission: the channel itself.
+    let log = match live
+        .channel_id
+        .create_thread_from_message(
+            &bot.http,
+            live.id,
+            CreateThread::new(name).auto_archive_duration(AutoArchiveDuration::OneDay),
+        )
+        .await
+    {
+        Ok(thread) => thread.id,
+        Err(err) => {
+            warn!("couldn't start a thread for the Game Boy session: {err}");
+            live.channel_id
+        }
+    };
     let (report, lines) = mpsc::unbounded_channel();
-    let forward = tokio::spawn(post_lines(bot.clone(), channel, lines));
+    let forward = tokio::spawn(post_lines(bot.clone(), log, lines));
+    let (doing, now) = watch::channel(String::new());
+    let ended = CancellationToken::new();
+    let watching = tokio::spawn(live_gif(
+        bot.clone(),
+        live,
+        now,
+        ended.clone(),
+        settings.live_seconds,
+    ));
     let timer = bot
         .timers
         .add("Game Boy", "an episode at a time while she plays");
@@ -232,12 +269,15 @@ async fn run(
         limits,
         stop,
         report,
+        doing: Some(doing),
         timer: Some(timer.clone()),
     };
     let result = session::play(&session, &mut OnConsole, goal.as_deref()).await;
     timer.ended();
     drop(session);
+    ended.cancel();
     let _ = forward.await;
+    let _ = watching.await;
     let today = Today::on(
         read(&files::today_path(&settings.saves_dir())).await,
         chrono::Utc::now(),
@@ -249,57 +289,75 @@ async fn run(
             format!("⚠️ Her session broke off: {err:#}")
         }
     };
-    let mut message = CreateMessage::new()
-        .content(short(&text, 1990))
-        .allowed_mentions(CreateAllowedMentions::new());
-    if let Some(gif) = last_seconds().await {
-        message = message.add_file(CreateAttachment::bytes(gif, "gameboy.gif"));
-    }
-    if let Err(err) = channel.send_message(&bot.http, message).await {
+    if let Err(err) = log.send_message(&bot.http, plain(&text)).await {
         warn!("couldn't post the Game Boy session's summary: {err}");
     }
 }
 
-/// One message that follows the session: the last few episode lines.
-async fn post_lines(bot: BotCtx, channel: ChannelId, mut lines: mpsc::UnboundedReceiver<String>) {
-    let mut shown: Vec<String> = Vec::new();
-    let mut message: Option<Message> = None;
-    while let Some(line) = lines.recv().await {
-        shown.push(format!("- {}", short(&line, 220)));
-        if shown.len() > LINES_SHOWN {
-            shown.remove(0);
-        }
-        let text = short(&format!("🎮 **Playing**\n{}", shown.join("\n")), 1990);
-        let posted = match &mut message {
-            Some(message) => message
-                .edit(
-                    &bot.http,
-                    EditMessage::new()
-                        .content(text)
-                        .allowed_mentions(CreateAllowedMentions::new()),
-                )
-                .await
-                .err(),
-            None => match channel
-                .send_message(
-                    &bot.http,
-                    CreateMessage::new()
-                        .content(text)
-                        .allowed_mentions(CreateAllowedMentions::new()),
-                )
-                .await
-            {
-                Ok(posted) => {
-                    message = Some(posted);
-                    None
-                }
-                Err(err) => Some(err),
-            },
+/// Keeps the live message's GIF to the last seconds of play, every `every` seconds while
+/// the game has moved, with what she's doing now; at the end, says where the summary is.
+async fn live_gif(
+    bot: BotCtx,
+    mut live: Message,
+    now: watch::Receiver<String>,
+    ended: CancellationToken,
+    every: u64,
+) {
+    let head = live.content.clone();
+    let mut shown = None;
+    loop {
+        let over = if every == 0 {
+            ended.cancelled().await;
+            true
+        } else {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(every.max(LIVE_FASTEST))) => false,
+                () = ended.cancelled() => true,
+            }
         };
-        if let Some(err) = posted {
+        let Some((mark, gif)) = last_seconds().await else {
+            if over {
+                break;
+            }
+            continue;
+        };
+        // Nothing moved since the last one (she's thinking): leave it.
+        if !over && shown == Some(mark) {
+            continue;
+        }
+        shown = Some(mark);
+        let line = if over {
+            "⏹️ Session over: the summary is in the thread.".to_string()
+        } else {
+            format!("🔴 Live · {}", now.borrow().as_str())
+        };
+        let edit = EditMessage::new()
+            .content(short(&format!("{head}\n{line}"), 1990))
+            .allowed_mentions(CreateAllowedMentions::new())
+            .attachments(EditAttachments::new().add(CreateAttachment::bytes(gif, "live.gif")));
+        if let Err(err) = live.edit(&bot.http, edit).await {
+            warn!("couldn't update the live Game Boy GIF: {err}");
+        }
+        if over {
+            break;
+        }
+    }
+}
+
+/// Each episode's line as a message of its own, so the thread reads in order.
+async fn post_lines(bot: BotCtx, log: ChannelId, mut lines: mpsc::UnboundedReceiver<String>) {
+    while let Some(line) = lines.recv().await {
+        if let Err(err) = log.send_message(&bot.http, plain(&line)).await {
             warn!("couldn't post a Game Boy episode: {err}");
         }
     }
+}
+
+/// A message that pings nobody.
+fn plain(text: &str) -> CreateMessage {
+    CreateMessage::new()
+        .content(short(text, 1990))
+        .allowed_mentions(CreateAllowedMentions::new())
 }
 
 fn summary_text(summary: &Summary, today: &Today, daily_usd: f64) -> String {
@@ -335,21 +393,25 @@ fn summary_text(summary: &Summary, today: &Today, daily_usd: f64) -> String {
     )
 }
 
-/// The last seconds of play as a GIF, if the Game Boy is still on.
-async fn last_seconds() -> Option<Vec<u8>> {
-    console()
+/// The last seconds of play as a GIF, if the Game Boy is still on, with how many screens
+/// it had recorded (to tell whether it moved since). The screens are copied on the Game
+/// Boy's thread and made into a GIF off it, so play isn't held up.
+async fn last_seconds() -> Option<(u64, Vec<u8>)> {
+    let (mark, screens) = console()
         .with(|machine| {
             let m = machine.as_ref()?;
             let screens = u64::from(RECENT_SECONDS) * 60 / u64::from(RECORD_EVERY);
             let shown = m.screens_since(m.recorded().saturating_sub(screens));
-            if shown.is_empty() {
-                return None;
-            }
-            pictures::gif(&shown, RECORD_EVERY, GIF_SCALE).ok()
+            (!shown.is_empty()).then(|| (m.recorded(), shown))
         })
         .await
         .ok()
-        .flatten()
+        .flatten()?;
+    let gif = tokio::task::spawn_blocking(move || pictures::gif(&screens, RECORD_EVERY, GIF_SCALE))
+        .await
+        .ok()?
+        .ok()?;
+    Some((mark, gif))
 }
 
 async fn read_journal(settings: &Settings, rom: &str) -> Option<Journal> {
