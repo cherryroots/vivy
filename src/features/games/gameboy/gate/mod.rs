@@ -18,7 +18,8 @@
 //!   (`gpt-6-astra,gpt-6.1-sol`), asked in one call and in two
 //! - `gate_learning`: stage 4's question, whether she gets better by writing skills. The
 //!   tasks in `VIVY_GB_LEARN` (the rival battle, then up Route 1), `VIVY_GB_RUNS` times
-//!   (5) in a row, with the skills she writes kept from one run to the next
+//!   (5) in a row, with the skills she writes kept from one run to the next; with
+//!   `VIVY_GB_REVIEWER` (an OpenAI model) reviewing her skills after each task
 //!
 //! They only run with `VIVY_GB_GATE=1`, so `cargo test gameboy -- --ignored` (the ROM
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
@@ -314,8 +315,16 @@ async fn gate_tasks() {
                 Some(openai) => {
                     let look = local.look().await.unwrap();
                     let now = local.describe(&look).await.unwrap();
-                    match strategist::plan(openai, Calls::One, task.text, &[], NOTHING_YET, &now)
-                        .await
+                    match strategist::plan(
+                        openai,
+                        Calls::One,
+                        task.text,
+                        &[],
+                        &[],
+                        NOTHING_YET,
+                        &now,
+                    )
+                    .await
                     {
                         Ok(plan) => Some(plan.task),
                         Err(err) => {
@@ -472,17 +481,26 @@ async fn gate_strategists() {
                     let look = local.look().await.unwrap();
                     let now = local.describe(&look).await.unwrap();
                     let before = spent(&db).await;
-                    let plan =
-                        match strategist::plan(&openai, calls, LONG_GOAL, &notes, &digest, &now)
-                            .await
-                        {
-                            Ok(plan) => plan,
-                            Err(err) => {
-                                writeln!(log, "The strategist failed: {err:#}\n").unwrap();
-                                break;
-                            }
-                        };
+                    let plan = match strategist::plan(
+                        &openai,
+                        calls,
+                        LONG_GOAL,
+                        &notes,
+                        &local.world.skills,
+                        &digest,
+                        &now,
+                    )
+                    .await
+                    {
+                        Ok(plan) => plan,
+                        Err(err) => {
+                            writeln!(log, "The strategist failed: {err:#}\n").unwrap();
+                            break;
+                        }
+                    };
                     tokens += plan.tokens;
+                    let reviewed =
+                        super::skills::review(&mut local.world.skills, &plan.skill_changes);
                     plan_usd += spent(&db).await - before;
                     let before = spent(&db).await;
                     let episode = run_task(
@@ -504,13 +522,14 @@ async fn gate_strategists() {
                     digest = episode.digest();
                     writeln!(
                         log,
-                        "## Episode {episodes}\n\nTask: {}\n\nNotes:\n{}\n\n{digest}",
+                        "## Episode {episodes}\n\nTask: {}\n\nNotes:\n{}\n\nSkill changes: {}\n\n{digest}",
                         plan.task,
                         plan.notes
                             .iter()
                             .map(|n| format!("- {n}"))
                             .collect::<Vec<_>>()
-                            .join("\n")
+                            .join("\n"),
+                        if reviewed.is_empty() { "none".to_string() } else { reviewed.join("; ") }
                     )
                     .unwrap();
                     notes = plan.notes;
@@ -554,13 +573,27 @@ async fn gate_learning() {
     let runs: u32 = setting("VIVY_GB_RUNS", "5").parse().unwrap();
     let cap: f64 = setting("VIVY_GB_GATE_USD", "15").parse().unwrap();
     let names = setting("VIVY_GB_LEARN", LEARN_TASKS);
-    let folder = results(&format!("learning-{}", file_name(&model)));
+    let reviewer = std::env::var("VIVY_GB_REVIEWER")
+        .ok()
+        .filter(|m| !m.trim().is_empty());
+    let openai = reviewer
+        .as_ref()
+        .map(|m| openai(&http, &db, m, &setting("VIVY_GB_PLAN_EFFORT", "medium")));
+    let reviewed_by = reviewer
+        .as_ref()
+        .map(|m| format!("-reviewed-by-{}", file_name(m)))
+        .unwrap_or_default();
+    let folder = results(&format!("learning-{}{reviewed_by}", file_name(&model)));
     let mut log = String::new();
     let mut report = format!(
-        "# Stage 4 learning: {model}\n\nEach run starts from the same state, with the skills \
+        "# Stage 4 learning: {model}{}\n\nEach run starts from the same state, with the skills \
          written in the runs before it.\n\n\
-         | Run | Task | Done | Actions | Skills written | Skills used | Cost |\n\
-         |---|---|---|---|---|---|---|\n"
+         | Run | Task | Done | Actions | Skills written | Skills used | Review | Cost |\n\
+         |---|---|---|---|---|---|---|---|\n",
+        reviewer
+            .as_ref()
+            .map(|m| format!(", skills reviewed by {m}"))
+            .unwrap_or_default()
     );
     let mut known: Vec<super::skills::Skill> = Vec::new();
     let count = |episode: &Episode, action: &str| {
@@ -594,23 +627,51 @@ async fn gate_learning() {
                 log: vec![format!("The model call failed: {err:#}")],
                 ..Episode::default()
             });
-            known = local.world.skills.clone();
             let after = local.state();
             let done = (task.done)(&Check {
                 after: &after,
                 words: &episode.words,
             });
+            // The reviewer sees what the task did, as the strategist will after each
+            // episode, and edits her skills; the next task it plans is the gate's anyway.
+            let mut reviewed = Vec::new();
+            if let Some(openai) = &openai {
+                let look = local.look().await.unwrap();
+                let now = local.describe(&look).await.unwrap();
+                match strategist::plan(
+                    openai,
+                    Calls::One,
+                    task.text,
+                    &[],
+                    &local.world.skills,
+                    &episode.digest(),
+                    &now,
+                )
+                .await
+                {
+                    Ok(plan) => {
+                        reviewed =
+                            super::skills::review(&mut local.world.skills, &plan.skill_changes)
+                    }
+                    Err(err) => reviewed.push(format!("the review failed: {err:#}")),
+                }
+            }
+            known = local.world.skills.clone();
             let mark = if done { "done" } else { "NOT done" };
             writeln!(
                 report,
-                "| {run} | {name} | {mark} | {} | {} | {} | ${:.3} |",
+                "| {run} | {name} | {mark} | {} | {} | {} | {} | ${:.3} |",
                 episode.actions,
                 count(&episode, "write_skill"),
                 count(&episode, "use_skill"),
+                reviewed.len(),
                 spent(&db).await - before
             )
             .unwrap();
             writeln!(log, "## Run {run}, {name}: {mark}\n\n{}", episode.digest()).unwrap();
+            if !reviewed.is_empty() {
+                writeln!(log, "Review: {}\n", reviewed.join("; ")).unwrap();
+            }
             save_screen(
                 &mut local,
                 folder.join(format!("{run}-{}.png", file_name(name))),

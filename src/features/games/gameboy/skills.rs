@@ -256,6 +256,37 @@ pub fn save(skills: &mut Vec<Skill>, skill: Skill) -> Result<(), String> {
     Ok(())
 }
 
+/// Applies the strategist's review of her skills: each change rewrites a skill (or adds
+/// one, under a new name) or deletes one, with `write_skill`'s arguments plus `change`.
+/// Skills it doesn't name stay as they are. Says what happened to each, for the log.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn review(skills: &mut Vec<Skill>, changes: &[Value]) -> Vec<String> {
+    changes
+        .iter()
+        .map(|change| {
+            let name = change["name"].as_str().unwrap_or("").trim();
+            if change["change"].as_str() == Some("delete") {
+                return match forget(skills, name) {
+                    Some(_) => format!("deleted {name}"),
+                    None => format!("no skill {name} to delete"),
+                };
+            }
+            match Skill::from_args(change).and_then(|skill| save(skills, skill)) {
+                Ok(()) => format!("rewrote {name}"),
+                Err(why) => format!("couldn't rewrite {name}: {why}"),
+            }
+        })
+        .collect()
+}
+
+/// Her skills in full, with how each went, for the strategist to review.
+pub fn for_review(skills: &[Skill]) -> String {
+    if skills.is_empty() {
+        return "(none yet)".to_string();
+    }
+    serde_json::to_string_pretty(skills).unwrap_or_default()
+}
+
 /// Takes out the skill called `name`, if there's one.
 pub fn forget(skills: &mut Vec<Skill>, name: &str) -> Option<Skill> {
     let at = skills
@@ -364,6 +395,44 @@ mod tests {
                 .unwrap()
                 .starts_with("\"fight run\" is a stop word")
         );
+    }
+
+    #[test]
+    fn a_review_rewrites_merges_and_deletes() {
+        let mut skills = vec![run_away()];
+        let mut copy = run_away();
+        copy.name = "run away 2".to_string();
+        skills.push(copy);
+        skills[0].uses = 5;
+        let lines = review(
+            &mut skills,
+            &[
+                json!({"name": "run away 2", "change": "delete"}),
+                json!({
+                    "name": "Run Away", "change": "rewrite", "use_when": "any wild battle",
+                    "notes": "", "rules": [{"if_words": "", "press": "down right a"}],
+                    "stop_words": [], "stop_when_free": true, "most": 10
+                }),
+                json!({"name": "ghost", "change": "delete"}),
+                json!({"name": "bad", "change": "rewrite", "use_when": "x", "rules": []}),
+            ],
+        );
+        assert_eq!(
+            lines[..3],
+            [
+                "deleted run away 2",
+                "rewrote Run Away",
+                "no skill ghost to delete"
+            ]
+        );
+        assert!(lines[3].starts_with("couldn't rewrite bad: "));
+        assert_eq!(skills.len(), 1);
+        assert_eq!(
+            (skills[0].use_when.as_str(), skills[0].uses),
+            ("any wild battle", 0)
+        );
+        assert!(for_review(&skills).contains("\"use_when\": \"any wild battle\""));
+        assert_eq!(for_review(&[]), "(none yet)");
     }
 
     #[test]
