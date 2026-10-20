@@ -16,6 +16,7 @@ use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::notes::{Milestone, Note};
 use super::skills::{self, Skill};
 use super::supervisor::finish_stream;
 use crate::ai::{ChatProvider, ChatRequest, Input, OpenAi, Part, Role, ToolDef, Turn};
@@ -37,7 +38,17 @@ use them up;
 - different from a task that just failed, unless you can name what will go differently.
 
 Notes: facts that make sense on their own (name the people, places and things), at most \
-15. Keep the useful ones, fix or drop wrong ones, add what the last task taught.
+15. Keep the useful ones, fix or drop wrong ones, add what the last task taught. Each says \
+where it came from: \"seen\" (on screen, in the text read or the facts), \"tried\" (a task \
+showed it), \"hint from\" and the name (from someone watching), or \"guess\". Code checks \
+the notes it can against its maps: [code checked: ...] means they agree, [code found it \
+WRONG: ...] means fix or drop it. Don't note what the facts show (HP, levels, money, where \
+the player stands): they change by themselves.
+
+Milestones: up to 8 steps toward the goal, next first, each one code can check: an area \
+to be in (its name as the game shows it), or a line of the facts and words in it (like \
+fact \"Badges\" has \"Boulder\"). Leave area empty for a fact, fact and has empty for an \
+area. Code keeps the reached ones; send the ones still ahead, changed as you learn more.
 
 Skills: the executor writes its own, with know-how notes and a routine code runs as one \
 action. Each round of a routine, the first rule whose if_words are on screen (any case; \
@@ -87,7 +98,9 @@ facts don't back up, and pick a task unlike the recent ones.";
 /// The strategist's answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
-    pub notes: Vec<String>,
+    pub notes: Vec<Note>,
+    /// The milestones still ahead, as it sees them now.
+    pub milestones: Vec<Milestone>,
     pub task: String,
     /// Changes to her skills, as `skills::review` takes them.
     pub skill_changes: Vec<Value>,
@@ -100,17 +113,60 @@ pub struct Plan {
 #[derive(Deserialize)]
 struct Answer {
     #[serde(default)]
-    notes: Option<Vec<String>>,
+    notes: Option<Vec<NoteAnswer>>,
+    #[serde(default)]
+    milestones: Option<Vec<Milestone>>,
     #[serde(default)]
     next_task: Option<String>,
     #[serde(default)]
     skill_changes: Option<Vec<Value>>,
 }
 
+/// A note in an answer: with its source, or (from a sloppy answer) only the text.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum NoteAnswer {
+    Full {
+        text: String,
+        #[serde(default)]
+        source: String,
+    },
+    Plain(String),
+}
+
+impl Answer {
+    fn notes(&mut self) -> Vec<Note> {
+        self.notes
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|note| match note {
+                NoteAnswer::Full { text, source } => Note::new(text, source),
+                NoteAnswer::Plain(text) => Note::new(text, ""),
+            })
+            .filter(|note| !note.text.trim().is_empty())
+            .collect()
+    }
+
+    /// The plan, with what the call used.
+    fn plan(mut self, tokens: u64, usd: f64) -> Plan {
+        Plan {
+            notes: self.notes(),
+            milestones: self.milestones.take().unwrap_or_default(),
+            task: self.next_task.take().unwrap_or_default(),
+            skill_changes: self.skill_changes.take().unwrap_or_default(),
+            tokens,
+            usd,
+        }
+    }
+}
+
 /// What the strategist is told, apart from its instructions.
 pub struct Ask<'a> {
     pub goal: &'a str,
-    pub notes: &'a [String],
+    pub notes: &'a [Note],
+    /// Steps toward the goal, the reached ones first.
+    pub milestones: &'a [Milestone],
     pub skills: &'a [Skill],
     /// What the last task did.
     pub digest: &'a str,
@@ -120,19 +176,23 @@ pub struct Ask<'a> {
 }
 
 impl Ask<'_> {
-    fn situation(&self, notes: &[String]) -> String {
-        let notes = if notes.is_empty() {
-            "(none yet)".to_string()
-        } else {
-            notes
-                .iter()
-                .map(|n| format!("- {n}"))
-                .collect::<Vec<_>>()
-                .join("\n")
+    fn situation(&self, notes: &[Note]) -> String {
+        let lines = |items: Vec<String>| {
+            if items.is_empty() {
+                "(none yet)".to_string()
+            } else {
+                items
+                    .iter()
+                    .map(|i| format!("- {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            }
         };
+        let notes = lines(notes.iter().map(Note::for_plan).collect());
+        let milestones = lines(self.milestones.iter().map(Milestone::for_plan).collect());
         let mut text = format!(
-            "Goal: {}\n\nYour notes:\n{notes}\n\nThe executor's skills:\n{}\n\n\
-             The last task:\n{}\n\nNow:\n{}",
+            "Goal: {}\n\nMilestones (code checks them):\n{milestones}\n\nYour notes:\n\
+             {notes}\n\nThe executor's skills:\n{}\n\nThe last task:\n{}\n\nNow:\n{}",
             self.goal,
             skills::for_review(self.skills),
             self.digest,
@@ -161,13 +221,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 )
                 .await?;
             let parsed: Answer = serde_json::from_value(answer.value)?;
-            Ok(Plan {
-                notes: parsed.notes.unwrap_or_default(),
-                task: parsed.next_task.unwrap_or_default(),
-                skill_changes: parsed.skill_changes.unwrap_or_default(),
-                tokens: answer.tokens,
-                usd: answer.used.usd,
-            })
+            Ok(parsed.plan(answer.tokens, answer.used.usd))
         }
         Calls::Split => {
             let first = openai
@@ -182,8 +236,8 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                     &schema(true, false),
                 )
                 .await?;
-            let first_answer = serde_json::from_value::<Answer>(first.value)?;
-            let new_notes = first_answer.notes.unwrap_or_default();
+            let mut first_answer = serde_json::from_value::<Answer>(first.value)?;
+            let new_notes = first_answer.notes();
             let second = openai
                 .structured(
                     job,
@@ -198,6 +252,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 .unwrap_or_default();
             Ok(Plan {
                 notes: new_notes,
+                milestones: first_answer.milestones.unwrap_or_default(),
                 task,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
                 tokens: first.tokens + second.tokens,
@@ -219,8 +274,9 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         }]),
         tools: vec![ToolDef {
             name: "plan",
-            description: "Your answer: your reasoning, the notes to keep, changes to the \
-                executor's skills (an empty list keeps them all) and its next task.",
+            description: "Your answer: your reasoning, the notes to keep, the milestones \
+                ahead, changes to the executor's skills (an empty list keeps them all) and \
+                its next task.",
             parameters: schema(true, true),
         }],
         cache_key: "vivy:gameboy-plan".to_string(),
@@ -233,13 +289,7 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         .find(|call| call.name == "plan")
         .context("the cheap planner answered without calling plan")?;
     let parsed: Answer = serde_json::from_value(call.args)?;
-    Ok(Plan {
-        notes: parsed.notes.unwrap_or_default(),
-        task: parsed.next_task.unwrap_or_default(),
-        skill_changes: parsed.skill_changes.unwrap_or_default(),
-        tokens: 0,
-        usd: 0.0,
-    })
+    Ok(parsed.plan(0, 0.0))
 }
 
 /// The answer's JSON schema: reasoning first, then the notes and skill changes and/or the
@@ -248,9 +298,20 @@ fn schema(notes: bool, task: bool) -> Value {
     let mut properties = json!({"reasoning": {"type": "string"}});
     let mut required = vec!["reasoning"];
     if notes {
-        properties["notes"] = json!({"type": "array", "items": {"type": "string"}});
+        let note = strict(json!({
+            "text": {"type": "string"},
+            "source": {"type": "string"}
+        }));
+        let milestone = strict(json!({
+            "name": {"type": "string"},
+            "area": {"type": "string"},
+            "fact": {"type": "string"},
+            "has": {"type": "string"}
+        }));
+        properties["notes"] = json!({"type": "array", "items": note});
+        properties["milestones"] = json!({"type": "array", "items": milestone});
         properties["skill_changes"] = json!({"type": "array", "items": skill_change()});
-        required.extend(["notes", "skill_changes"]);
+        required.extend(["notes", "milestones", "skill_changes"]);
     }
     if task {
         properties["next_task"] = json!({"type": "string"});
@@ -264,21 +325,23 @@ fn schema(notes: bool, task: bool) -> Value {
     })
 }
 
+/// An object with these properties, all required and no others (a strict schema).
+fn strict(properties: Value) -> Value {
+    let required: Vec<String> = properties
+        .as_object()
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default();
+    json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": false,
+    })
+}
+
 /// One change to a skill: `write_skill`'s arguments, all required (strict), and whether
 /// it rewrites or deletes. A delete leaves the rest empty.
 fn skill_change() -> Value {
-    let strict = |properties: Value| {
-        let required: Vec<String> = properties
-            .as_object()
-            .map(|p| p.keys().cloned().collect())
-            .unwrap_or_default();
-        json!({
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": false,
-        })
-    };
     let rule = strict(json!({
         "if_words": {"type": "string"},
         "press": {"type": "string"}
@@ -304,7 +367,13 @@ mod tests {
         let both = schema(true, true);
         assert_eq!(
             both["required"],
-            json!(["reasoning", "notes", "skill_changes", "next_task"])
+            json!([
+                "reasoning",
+                "notes",
+                "milestones",
+                "skill_changes",
+                "next_task"
+            ])
         );
         let change = &both["properties"]["skill_changes"]["items"];
         assert_eq!(change["additionalProperties"], false);
@@ -314,11 +383,39 @@ mod tests {
             json!(["if_words", "press"])
         );
         assert_eq!(both["additionalProperties"], false);
+        for (field, keys) in [("notes", 2), ("milestones", 4)] {
+            let item = &both["properties"][field]["items"];
+            assert_eq!(item["additionalProperties"], false, "{field}");
+            assert_eq!(item["required"].as_array().unwrap().len(), keys, "{field}");
+        }
         let notes = schema(true, false);
         assert!(notes["properties"].get("next_task").is_none());
         assert_eq!(
             schema(false, true)["required"],
             json!(["reasoning", "next_task"])
         );
+    }
+
+    #[test]
+    fn answers_with_or_without_sources_and_milestones_parse() {
+        let answer: Answer = serde_json::from_value(json!({
+            "notes": [{"text": "The Mart is in Viridian City.", "source": "seen"}, "Old", " "],
+            "milestones": [{"name": "Reach Viridian City", "area": "Viridian City",
+                "fact": "", "has": ""}],
+            "next_task": "go"
+        }))
+        .unwrap();
+        let plan = answer.plan(5, 0.1);
+        assert_eq!(
+            plan.notes,
+            [
+                Note::new("The Mart is in Viridian City.", "seen"),
+                Note::new("Old", "")
+            ]
+        );
+        assert_eq!(plan.milestones[0].area, "Viridian City");
+        assert_eq!(plan.task, "go");
+        let bare: Answer = serde_json::from_value(json!({"next_task": "go"})).unwrap();
+        assert!(bare.plan(0, 0.0).milestones.is_empty());
     }
 }

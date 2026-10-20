@@ -35,6 +35,7 @@ use super::budget::Today;
 use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
 use super::map::AreaMap;
+use super::notes::{self, Note, Reached};
 use super::skills::{self, Skill};
 use super::strategist::{self, Ask, Calls, Care, Plan};
 use super::supervisor::{Episode, Player, args_text, run_task};
@@ -186,7 +187,10 @@ pub struct Now {
     /// Facts from the game's memory, a line each (none for games without a memory map).
     pub facts: String,
     pub goal: String,
+    /// Her notes as people see them, with a mark for what code found.
     pub notes: Vec<String>,
+    /// How far through her milestones, like "2 of 5 · next: Reach Viridian City".
+    pub milestone: String,
     /// The last few episode lines.
     pub episodes: Vec<String>,
     /// Episodes in a row with nothing new.
@@ -205,7 +209,8 @@ impl Now {
     pub fn read(&mut self, journal: &Journal, skills: &[Skill], today: &Today) {
         self.session = journal.sessions;
         self.goal.clone_from(&journal.goal);
-        self.notes.clone_from(&journal.notes);
+        self.notes = journal.notes.iter().map(Note::shown).collect();
+        self.milestone = notes::progress(&journal.milestones);
         self.episodes = journal.recent(EPISODES_SHOWN).to_vec();
         self.stuck = journal.stuck;
         self.checkpoints = journal.checkpoints;
@@ -255,10 +260,54 @@ impl<G: Game> Player for Watched<'_, G> {
     }
 }
 
+/// Marks the milestones perception says she has reached since the last episode, and
+/// gives a line for the log for each: how many episodes and dollars it took since the one
+/// before (the checkpoint ladder).
+async fn reach_milestones<G: Game>(
+    game: &mut G,
+    journal: &mut Journal,
+) -> anyhow::Result<Vec<String>> {
+    if journal.milestones.iter().all(|m| m.reached.is_some()) {
+        return Ok(Vec::new());
+    }
+    let facts = game.look().await?.view.facts;
+    let before = journal
+        .milestones
+        .iter()
+        .filter_map(|m| m.reached)
+        .max_by_key(|r| r.episode)
+        .unwrap_or(Reached {
+            episode: 0,
+            usd: 0.0,
+        });
+    let at = Reached {
+        episode: journal.episodes,
+        usd: journal.usd,
+    };
+    let names = notes::reach(&mut journal.milestones, &journal.areas, &facts, at);
+    let episodes = at.episode - before.episode;
+    let s = if episodes == 1 { "" } else { "s" };
+    let lines: Vec<String> = names
+        .iter()
+        .map(|name| {
+            format!(
+                "🏁 **Milestone: {name}** · episode {}, {episodes} episode{s} and ${:.2} since \
+                 the last",
+                at.episode,
+                (at.usd - before.usd).max(0.0)
+            )
+        })
+        .collect();
+    for line in &lines {
+        journal.log(line.replace("**", ""));
+    }
+    Ok(lines)
+}
+
 /// The notes kept with a checkpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Checkpoint {
-    notes: Vec<String>,
+    notes: Vec<Note>,
     area: String,
     episode: u32,
 }
@@ -364,7 +413,9 @@ pub async fn play<G: Game>(
             }
         };
         journal.notes = plan.notes.clone();
+        notes::replace_ahead(&mut journal.milestones, plan.milestones.clone());
         let mut world = game.world().await?;
+        notes::check_all(&mut journal.notes, &world);
         let reviewed = skills::review(&mut world.skills, &plan.skill_changes);
         if !reviewed.is_empty() {
             game.set_skills(world.skills.clone()).await?;
@@ -458,10 +509,16 @@ pub async fn play<G: Game>(
         let now_paid = paid_so_far(session.spends).await;
         let usd = (now_paid - paid).max(0.0);
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
+        journal.usd += usd;
+        notes::check_all(&mut journal.notes, &world);
+        let reached = reach_milestones(game, &mut journal).await?;
         keep(session, game, &journal, &world, &today).await?;
         let _ = session.report.send(Report::line(line));
         if let Some(pictured) = pictured {
             let _ = session.report.send(pictured);
+        }
+        for line in reached {
+            let _ = session.report.send(Report::line(line));
         }
         if let Some(now) = &session.now {
             now.send_modify(|now| now.read(&journal, &world.skills, &today));
@@ -532,6 +589,7 @@ async fn plan<G: Game>(
     let ask = Ask {
         goal: &journal.goal,
         notes: &journal.notes,
+        milestones: &journal.milestones,
         skills: &world.skills,
         digest,
         now: &now,
@@ -824,6 +882,9 @@ mod tests {
         to: Value,
         acted: Mutex<bool>,
         plans: Mutex<Vec<String>>,
+        /// The notes and milestones each plan answers with (by default "note <n>" and none).
+        notes: Option<Value>,
+        milestones: Value,
     }
 
     impl Scripted {
@@ -833,6 +894,8 @@ mod tests {
                 to: json!({"x": 1, "y": 0}),
                 acted: Mutex::new(false),
                 plans: Mutex::new(Vec::new()),
+                notes: None,
+                milestones: json!([]),
             }
         }
     }
@@ -865,9 +928,10 @@ mod tests {
                 } else {
                     json!([])
                 };
+                let notes = self.notes.clone().unwrap_or(json!([format!("note {n}")]));
                 (
                     "plan",
-                    json!({"reasoning": "", "notes": [format!("note {n}")],
+                    json!({"reasoning": "", "notes": notes, "milestones": self.milestones,
                         "skill_changes": changes, "next_task": format!("task {n}")}),
                 )
             } else if std::mem::replace(&mut *self.acted.lock().unwrap(), true) {
@@ -996,7 +1060,8 @@ mod tests {
             .unwrap();
         assert_eq!(journal.goal, "reach the end");
         assert_eq!(journal.episodes, 13);
-        assert_eq!(journal.notes, vec!["note 13"]);
+        let notes: Vec<&str> = journal.notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(notes, vec!["note 13"]);
         assert_eq!((journal.stuck, journal.rollbacks), (1, 1));
         let skills: Vec<Skill> = read_json(&files::skills_path(dir.path(), "test.gb"))
             .await
@@ -1025,6 +1090,93 @@ mod tests {
         assert_eq!(
             (journal.goal.as_str(), journal.episodes, journal.sessions),
             ("reach the end", 14, 2)
+        );
+    }
+
+    #[tokio::test]
+    async fn code_checks_her_notes_and_milestones_against_the_maps() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut provider = Scripted::new(&[true, false, true]);
+        provider.notes = Some(json!([
+            {"text": "Room 1 has floor at (3, 0).", "source": "tried"},
+            {"text": "The sign in Room 1 is at (12, 0).", "source": "hint from Cherry"},
+            {"text": "The exit of Room 1 is at (5, 0).", "source": "guess"},
+            {"text": "She is standing at (0, 0) in Room 1.", "source": "seen"}
+        ]));
+        provider.milestones = json!([
+            {"name": "Reach Room 1", "area": "Room 1", "fact": "", "has": ""},
+            {"name": "Reach Room 2", "area": "room 2", "fact": "", "has": ""},
+            {"name": "Win", "area": "", "fact": "", "has": ""},
+            {"name": "Reach Room 9", "area": "Room 9", "fact": "", "has": ""}
+        ]);
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let mut session = session(&provider, dir.path(), 3, report);
+        let (now, watching) = watch::channel(Now::default());
+        session.now = Some(now);
+        play(&session, &mut Rooms::new(), Some("reach the end"))
+            .await
+            .unwrap();
+
+        let mut sent = Vec::new();
+        while let Ok(report) = lines.try_recv() {
+            sent.push(report.line);
+        }
+        let reached: Vec<&String> = sent.iter().filter(|l| l.starts_with("🏁")).collect();
+        assert_eq!(
+            reached,
+            [
+                "🏁 **Milestone: Reach Room 1** · episode 1, 1 episode and $0.00 since the last",
+                "🏁 **Milestone: Reach Room 2** · episode 3, 2 episodes and $0.00 since the last"
+            ],
+            "{sent:#?}"
+        );
+
+        let journal: Journal = read_json(&files::journal_path(dir.path(), "test.gb"))
+            .await
+            .unwrap()
+            .unwrap();
+        // The one code can't check is dropped; the reached ones are kept with when.
+        let names: Vec<(&str, Option<u32>)> = journal
+            .milestones
+            .iter()
+            .map(|m| (m.name.as_str(), m.reached.map(|r| r.episode)))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Reach Room 1", Some(1)),
+                ("Reach Room 2", Some(3)),
+                ("Reach Room 9", None)
+            ]
+        );
+        assert!(
+            journal
+                .log
+                .iter()
+                .any(|l| l.starts_with("🏁 Milestone: Reach Room 2"))
+        );
+        let shown: Vec<String> = journal.notes.iter().map(Note::shown).collect();
+        assert_eq!(
+            shown,
+            [
+                "✅ Room 1 has floor at (3, 0).",
+                "The sign in Room 1 is at (12, 0). (hint from Cherry)",
+                "❔ The exit of Room 1 is at (5, 0).",
+                "🔄 She is standing at (0, 0) in Room 1."
+            ]
+        );
+
+        // She is told how far she is, and what code found.
+        let now = watching.borrow().clone();
+        assert_eq!(now.milestone, "2 of 3 · next: Reach Room 9");
+        assert_eq!(now.notes, shown);
+        let plans = provider.plans.lock().unwrap();
+        assert!(plans[2].contains("Reach Room 1 (in area"), "{}", plans[2]);
+        assert!(plans[2].contains("): reached in episode 1"), "{}", plans[2]);
+        assert!(
+            plans[2].contains("[tried; code checked: (3, 0) in Room 1 is on the map]"),
+            "{}",
+            plans[2]
         );
     }
 
