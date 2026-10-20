@@ -32,7 +32,7 @@ const MOST_FAILED: u32 = 6;
 const FADE_STARTS_WITHIN: u32 = 60;
 const BACK_FOR: u32 = 20;
 
-/// When something stops her walking, how long to wait for its words.
+/// When something stops her walking, how long to wait for its words (or for it to pass).
 const WORDS_WITHIN: u32 = 120;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,15 +76,19 @@ pub fn walk_to(
     };
     loop {
         if !view.can_walk {
-            // Whatever stopped her may take a moment to put its words up.
+            // Whatever stopped her may take a moment to put its words up, or be over in
+            // a moment (the screen settling after stairs).
             for _ in 0..WORDS_WITHIN / 10 {
-                if !view.text.is_empty() {
+                if !view.text.is_empty() || view.can_walk {
                     break;
                 }
                 machine.run(10);
                 view = look(world, machine);
             }
-            return done(Walked::Interrupted(view.text.clone()), steps, view);
+            if !view.can_walk {
+                return done(Walked::Interrupted(view.text.clone()), steps, view);
+            }
+            continue;
         }
         if view.at == target {
             return done(Walked::Arrived, steps, view);
@@ -105,7 +109,9 @@ pub fn walk_to(
         if next.area != view.area {
             return done(Walked::NewArea(next.area.clone()), steps, next);
         }
-        if next.at == view.at {
+        // A step cut short by something taking over (a scene, a text box) says nothing
+        // about the way.
+        if next.at == view.at && next.can_walk {
             failed += 1;
             let map = world.area(&view.area);
             if !map.person_at(dir.step(view.at)) {

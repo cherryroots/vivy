@@ -17,6 +17,8 @@ use super::{State, char_for, tile_map};
 /// Screen steps across and down.
 const STEPS_ACROSS: i32 = 10;
 const STEPS_DOWN: i32 = 9;
+/// Map tiles are numbered below this; the font and borders are above.
+const MAP_TILES: u8 = 0x60;
 /// Where she stands on the screen, in steps.
 const PLAYER_STEP: (i32, i32) = (4, 4);
 /// The top left pixel of her sprite. Red draws people 4 pixels above the step grid.
@@ -31,8 +33,13 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let text_box = has_box(&tiles);
     let area = state.map_name();
     let at = (i32::from(state.x), i32::from(state.y));
-    let can_walk =
-        state.plausible() && screen.drawn && !text_box && state.battle == 0 && !state.walking;
+    let can_walk = state.plausible()
+        && screen.drawn
+        && on_map(&state, &tiles, &screen)
+        && !text_box
+        && state.battle == 0
+        && !state.walking
+        && !state.scripted;
     if can_walk {
         see(world.area(&area), &state, &tiles, &screen);
     }
@@ -55,6 +62,18 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
 /// the border tiles' numbers.
 pub(super) fn has_box(tiles: &[u8]) -> bool {
     tiles.contains(&0x79) && tiles.contains(&0x7e)
+}
+
+/// Whether the screen shows the map with her on it, not a page like the Pokédex or the
+/// swirl into a battle: every tile is a map tile (Red's tilesets have 0x60), her sprite is
+/// in the middle, and the tile she stands on can be walked on.
+fn on_map(state: &State, tiles: &[u8], screen: &Screen) -> bool {
+    if tiles.iter().any(|&t| t >= MAP_TILES) {
+        return false;
+    }
+    let standing = tiles[(2 * PLAYER_STEP.1 as usize + 1) * 20 + 2 * PLAYER_STEP.0 as usize];
+    let sprite = screen.sprites.iter().any(|s| (s.x, s.y) == PLAYER_PIXEL);
+    sprite && state.passable.contains(&standing)
 }
 
 /// The screen's 18 rows of text, from the game's copy of the screen.

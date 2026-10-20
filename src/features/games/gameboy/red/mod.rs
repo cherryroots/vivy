@@ -47,6 +47,8 @@ mod address {
     pub const PASSABLE_TILES: u16 = 0xd530; // wTilesetCollisionPtr
     pub const GRASS_TILE: u16 = 0xd535; // wGrassTile
     pub const EVENT_FLAGS: u16 = 0xd747; // wEventFlags
+    pub const JOY_IGNORE: u16 = 0xcd6b; // wJoyIgnore, buttons the game ignores
+    pub const STATUS_FLAGS_5: u16 = 0xd730; // wStatusFlags5
 }
 
 /// Bytes in one party Pokémon's record (`party_struct`).
@@ -99,6 +101,9 @@ pub struct State {
     pub facing: Option<Facing>,
     /// Still part-way through a step.
     pub walking: bool,
+    /// The game is moving her itself or ignoring buttons: a scene, like Oak walking her
+    /// to his lab.
+    pub scripted: bool,
     /// 0 out of battle, 1 against a wild Pokémon, 2 against a trainer.
     pub battle: u8,
     pub player_name: String,
@@ -170,6 +175,9 @@ impl State {
                 _ => None,
             },
             walking: r(emu, WALK_COUNTER) != 0,
+            // Bits 0, 5 and 7: people moved by a script, buttons off, her moved by a
+            // script.
+            scripted: r(emu, JOY_IGNORE) != 0 || r(emu, STATUS_FLAGS_5) & 0b1010_0001 != 0,
             battle: r(emu, IN_BATTLE),
             player_name: read_text(emu, PLAYER_NAME, 11),
             rival_name: read_text(emu, RIVAL_NAME, 11),
