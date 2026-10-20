@@ -41,6 +41,8 @@ pub fn to_messages(
         })
     });
     let mut messages = Vec::new();
+    // Files and pictures to copy into the code execution container, oldest first.
+    let mut container_files: Vec<&String> = Vec::new();
     for (i, turn) in turns.iter().enumerate() {
         if turn.role == Role::Assistant
             && let Some(rounds) = own_rounds(turn, model)
@@ -56,8 +58,20 @@ pub fn to_messages(
             match part {
                 Part::Text(text) if text.trim().is_empty() => {}
                 Part::Text(text) => content.push(json!({"type": "text", "text": text})),
-                Part::Image(image) => content.extend(image_blocks(image, uploaded, code_execution)),
-                Part::File(file) => content.extend(file_blocks(file, uploaded, code_execution)),
+                Part::Image(image) => {
+                    content.extend(image_blocks(image, uploaded, code_execution));
+                    remember(
+                        &mut container_files,
+                        uploaded.get(&ContentKey::of(&image.data)),
+                    );
+                }
+                Part::File(file) => {
+                    content.extend(file_blocks(file, uploaded, code_execution));
+                    remember(
+                        &mut container_files,
+                        uploaded.get(&ContentKey::of(&file.data)),
+                    );
+                }
                 Part::ToolResult {
                     call_id,
                     output,
@@ -71,6 +85,13 @@ pub fn to_messages(
         }
         if content.is_empty() {
             continue;
+        }
+        let tool_results = turn
+            .parts
+            .iter()
+            .any(|p| matches!(p, Part::ToolResult { .. }));
+        if code_execution && turn.role == Role::User && !tool_results {
+            content.extend(container_uploads(&container_files));
         }
         let role = match turn.role {
             Role::User => "user",
@@ -168,13 +189,12 @@ fn image_blocks(
         }),
     };
     let mut blocks = vec![json!({"type": "image", "source": source})];
-    if code_execution && let Some(id) = id {
+    if code_execution && id.is_some() {
         let note = format!(
             "[The picture above is copied into your code execution environment as {}]",
             image_name(image)
         );
         blocks.push(json!({"type": "text", "text": note}));
-        blocks.push(json!({"type": "container_upload", "file_id": id}));
     }
     blocks
 }
@@ -212,7 +232,38 @@ fn file_blocks(
         };
         blocks.push(json!({"type": "document", "source": source, "title": file.name}));
     }
-    if in_container && let Some(id) = id {
+    blocks
+}
+
+/// Claude copies a file into the code execution container only when the newest message
+/// lists it in a `container_upload` block, and takes at most this many in one message.
+const MAX_CONTAINER_UPLOADS: usize = 16;
+
+/// Adds an uploaded file or picture to the ones for the container. One that's there
+/// already moves to the end, as the newest.
+fn remember<'a>(files: &mut Vec<&'a String>, id: Option<&'a String>) {
+    let Some(id) = id else {
+        return;
+    };
+    files.retain(|f| *f != id);
+    files.push(id);
+}
+
+/// The `container_upload` blocks for a person's message: the newest
+/// [`MAX_CONTAINER_UPLOADS`] files and pictures up to and including it, not only its own.
+/// Claude only copies what the newest message lists, so a picture on an earlier message
+/// (like the one being replied to) would otherwise never reach the container. Every
+/// message lists them, not only the newest, so a message doesn't change when a newer one
+/// comes after it, which keeps the prompt cache.
+fn container_uploads(files: &[&String]) -> Vec<Value> {
+    let mut blocks = Vec::new();
+    let skip = files.len().saturating_sub(MAX_CONTAINER_UPLOADS);
+    if skip > 0 {
+        blocks.push(json!({"type": "text", "text": format!(
+            "[Only the newest {MAX_CONTAINER_UPLOADS} files and pictures are copied into your code execution environment; {skip} older ones may be missing]"
+        )}));
+    }
+    for id in &files[skip..] {
         blocks.push(json!({"type": "container_upload", "file_id": id}));
     }
     blocks
@@ -444,11 +495,11 @@ mod tests {
             &json!([
                 {"type": "image", "source": {"type": "file", "file_id": "file_pic"}},
                 {"type": "text", "text": "[The picture above is copied into your code execution environment as image-040c5b8c.png]"},
-                {"type": "container_upload", "file_id": "file_pic"},
                 {"type": "text", "text": "[sales.xlsx is attached, and copied into your code execution environment]"},
-                {"type": "container_upload", "file_id": "file_sheet"},
                 {"type": "text", "text": "[menu.pdf is attached]"},
                 {"type": "document", "title": "menu.pdf", "source": {"type": "base64", "media_type": "application/pdf", "data": "Aw=="}},
+                {"type": "container_upload", "file_id": "file_pic"},
+                {"type": "container_upload", "file_id": "file_sheet"},
             ])
         );
 
@@ -460,6 +511,79 @@ mod tests {
             "[sales.xlsx is attached, but you can't open this kind of file here]"
         );
         assert_eq!(content.as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn every_message_lists_the_newest_files_for_the_container() {
+        let picture = |byte: u8| {
+            Part::Image(ModelImage {
+                mime: "image/png",
+                data: vec![byte],
+            })
+        };
+        let uploads_in = |message: &Value| -> Vec<String> {
+            message["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|b| b["type"] == "container_upload")
+                .map(|b| b["file_id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        // Someone posts a picture, someone else replies about it, she answers, uses a
+        // tool, and the picture is posted again.
+        let turns = vec![
+            Turn {
+                role: Role::User,
+                parts: vec![Part::Text("a board".into()), picture(1)],
+            },
+            text(Role::User, "parse that"),
+            text(Role::Assistant, "Looking."),
+            Turn {
+                role: Role::User,
+                parts: vec![Part::ToolResult {
+                    call_id: "call_1".into(),
+                    output: "done".into(),
+                    images: Vec::new(),
+                }],
+            },
+            Turn {
+                role: Role::User,
+                parts: vec![picture(2), picture(1)],
+            },
+        ];
+        let uploaded: HashMap<ContentKey, String> = (1..=2)
+            .map(|b| (ContentKey::of(&[b]), format!("file_{b}")))
+            .collect();
+        let messages = to_messages(&turns, "m", "s", &uploaded, true);
+        assert_eq!(uploads_in(&messages[0]), ["file_1"]);
+        // The reply lists the picture it's about, so it reaches the container.
+        assert_eq!(uploads_in(&messages[1]), ["file_1"]);
+        // Tool results list nothing; the same picture again counts as the newest.
+        assert!(uploads_in(&messages[3]).is_empty());
+        assert_eq!(uploads_in(&messages[4]), ["file_2", "file_1"]);
+        // Without code execution, nothing is copied.
+        let messages = to_messages(&turns, "m", "s", &uploaded, false);
+        assert!(messages.iter().all(|m| uploads_in(m).is_empty()));
+
+        // At most 16 in a message (Claude refuses more): the newest, and a note.
+        let many: Vec<Part> = (1..=20).map(picture).collect();
+        let uploaded: HashMap<ContentKey, String> = (1..=20)
+            .map(|b| (ContentKey::of(&[b]), format!("file_{b}")))
+            .collect();
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: many,
+        }];
+        let message = &to_messages(&turns, "m", "s", &uploaded, true)[0];
+        let ids = uploads_in(message);
+        assert_eq!(ids.len(), 16);
+        assert_eq!((ids[0].as_str(), ids[15].as_str()), ("file_5", "file_20"));
+        assert!(message["content"].as_array().unwrap().iter().any(|b| {
+            b["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("[Only the newest 16"))
+        }));
     }
 
     #[test]
