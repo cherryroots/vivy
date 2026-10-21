@@ -108,7 +108,13 @@ pub struct Session<'a> {
     pub now: Option<watch::Sender<Now>>,
     /// Shown as running on the status picture while she plays. The caller ends it.
     pub timer: Option<Timer>,
+    /// Hints from people watching (the dashboard's Hint button), each like
+    /// `Cherry: the Mart is north`. She reads them before planning the next task.
+    pub hints: Hints,
 }
+
+/// Hints waiting for her next plan. Shared with whoever adds them.
+pub type Hints = std::sync::Arc<std::sync::Mutex<Vec<String>>>;
 
 /// Why a session ended.
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +175,8 @@ pub enum Reported {
     Checkpoint,
     /// Stuck: the ladder's warning, or going back to a checkpoint.
     Stuck,
+    /// Hints from people watching, a line each after the first.
+    Hint,
     /// Anything else, like a planning failure.
     Other,
 }
@@ -364,7 +372,18 @@ pub async fn play<G: Game>(
             ));
         }
 
-        let plan = match plan(session, game, &journal, &mut today, rung).await {
+        let hints = std::mem::take(&mut *session.hints.lock().unwrap());
+        if !hints.is_empty() {
+            let lines: Vec<String> = hints.iter().map(|h| format!("- {h}")).collect();
+            let _ = session.report.send(Report::line(
+                Reported::Hint,
+                format!(
+                    "💡 **She reads the hints before planning:**\n{}",
+                    lines.join("\n")
+                ),
+            ));
+        }
+        let plan = match plan(session, game, &journal, &mut today, rung, &hints).await {
             Ok((plan, cheap)) => {
                 summary.free_tokens += plan.tokens;
                 summary.cheap_plans += u32::from(cheap);
@@ -517,6 +536,7 @@ async fn plan<G: Game>(
     journal: &Journal,
     today: &mut Today,
     rung: Rung,
+    hints: &[String],
 ) -> anyhow::Result<(Plan, bool)> {
     let look = game.look().await?;
     let mut now = game.describe(&look).await?;
@@ -531,6 +551,16 @@ async fn plan<G: Game>(
              menu, then pick a different kind of task; exploring somewhere not seen yet \
              comes first.",
             journal.stuck
+        )
+        .unwrap();
+    }
+    if !hints.is_empty() {
+        write!(
+            now,
+            "\n\nHints from people watching, ideas rather than orders: they can be wrong, so \
+             check them against what you see. Keep a note of one that turns out right, saying \
+             who gave it.\n- {}",
+            hints.join("\n- ")
         )
         .unwrap();
     }
@@ -939,6 +969,7 @@ mod tests {
             report,
             now: None,
             timer: None,
+            hints: Hints::default(),
         }
     }
 
@@ -1048,6 +1079,30 @@ mod tests {
             (journal.goal.as_str(), journal.episodes, journal.sessions),
             ("reach the end", 14, 2)
         );
+    }
+
+    #[tokio::test]
+    async fn she_reads_hints_before_her_next_plan_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Scripted::new(&[true, true]);
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let session = session(&provider, dir.path(), 2, report);
+        session
+            .hints
+            .lock()
+            .unwrap()
+            .push("Cherry: the stairs are top right".to_string());
+        play(&session, &mut Rooms::new(), None).await.unwrap();
+        let first = lines.try_recv().unwrap().line;
+        assert_eq!(
+            first,
+            "💡 **She reads the hints before planning:**\n- Cherry: the stairs are top right"
+        );
+        let plans = provider.plans.lock().unwrap();
+        assert!(plans[0].contains("Hints from people watching"));
+        assert!(plans[0].contains("- Cherry: the stairs are top right"));
+        assert!(!plans[1].contains("Hints from"), "read once");
+        assert!(session.hints.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

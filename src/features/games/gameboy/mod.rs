@@ -64,7 +64,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub use commands::{GameboyCommand, autocomplete, gameboy};
-pub use playing::on_component;
+pub use playing::{on_component, on_modal};
 
 /// `[features.games.gameboy]` settings.
 #[derive(Debug, Clone, Deserialize)]
@@ -87,6 +87,8 @@ pub struct Settings {
     /// While she plays, she says something in the channel at most this often, in minutes,
     /// besides hello and a recap (0: she doesn't). See `narrate.rs`.
     pub narrate_minutes: u64,
+    /// Whether anyone can give her hints with the dashboard's Hint button, or only admins.
+    pub hints_from_anyone: bool,
 }
 
 impl Default for Settings {
@@ -99,6 +101,7 @@ impl Default for Settings {
             free_tokens: 1_000_000,
             live_seconds: 5,
             narrate_minutes: 10,
+            hints_from_anyone: true,
         }
     }
 }

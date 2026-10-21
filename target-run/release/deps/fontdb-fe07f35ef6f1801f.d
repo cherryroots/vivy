@@ -1,0 +1,12 @@
+/home/user/VoltBot/target-run/release/deps/fontdb-fe07f35ef6f1801f.d: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs
+
+/home/user/VoltBot/target-run/release/deps/libfontdb-fe07f35ef6f1801f.rlib: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs
+
+/home/user/VoltBot/target-run/release/deps/libfontdb-fe07f35ef6f1801f.rmeta: /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs
+
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/lib.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/mod.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/language.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/name.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/os2.rs:
+/root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fontdb-0.24.0/src/ttf_parser/parser.rs:

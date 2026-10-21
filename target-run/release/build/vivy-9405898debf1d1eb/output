@@ -1,0 +1,3 @@
+cargo:rustc-env=GIT_COMMIT=5a22f3f
+cargo:rerun-if-changed=.git/HEAD
+cargo:rerun-if-changed=.git/refs

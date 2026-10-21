@@ -35,6 +35,8 @@ pub const JOB: &str = "game_narrate";
 const CHECK_EVERY: Duration = Duration::from_secs(30);
 /// Times in a row she may pass before she has to say something.
 const PASSES_MOST: u32 = 2;
+/// The least time between two messages, even when a hint makes her speak sooner.
+const GAP_LEAST: Duration = Duration::from_secs(120);
 /// Her answer when nothing is worth saying.
 const PASS: &str = "PASS";
 /// Her last messages she's shown, so she doesn't repeat herself.
@@ -73,6 +75,8 @@ pub struct Since {
     pub areas: Vec<String>,
     /// Stuck warnings and going back to a checkpoint.
     pub stuck: Vec<String>,
+    /// Hints from people watching.
+    pub hints: Vec<String>,
 }
 
 impl Since {
@@ -85,6 +89,12 @@ impl Since {
                 self.areas.push(area.to_string());
             }
             Reported::Stuck => self.stuck.push(report.line.replace("**", "")),
+            Reported::Hint => {
+                // The first line is the log's heading, then "- hint" a line each.
+                let hints = report.line.lines().skip(1);
+                self.hints
+                    .extend(hints.map(|h| h.trim_start_matches("- ").to_string()));
+            }
             Reported::Other => {}
         }
     }
@@ -92,8 +102,12 @@ impl Since {
 
 /// Whether it's time to speak: `None` if not, else whether she may pass. She speaks only
 /// once `every` has passed and she has played since; a new area or being stuck means she
-/// has to, and so does having passed [`PASSES_MOST`] times in a row.
+/// has to, and so does having passed [`PASSES_MOST`] times in a row. A hint makes her
+/// answer it without waiting for `every`, just [`GAP_LEAST`] since she last spoke.
 pub fn due(since: &Since, waited: Duration, every: Duration, passes: u32) -> Option<bool> {
+    if !since.hints.is_empty() && waited >= GAP_LEAST {
+        return Some(false);
+    }
     if since.episodes.is_empty() || waited < every {
         return None;
     }
@@ -154,6 +168,13 @@ pub fn brief(
     }
     if !since.stuck.is_empty() {
         out.push_str(&format!("\nStuck:\n- {}\n", since.stuck.join("\n- ")));
+    }
+    if !since.hints.is_empty() {
+        out.push_str(&format!(
+            "\nHints from people watching, which you'll try (they can be wrong; thank them \
+             by name if one is given):\n- {}\n",
+            since.hints.join("\n- ")
+        ));
     }
     if !since.episodes.is_empty() {
         let from = since.episodes.len().saturating_sub(EPISODES_SHOWN);
@@ -409,6 +430,34 @@ mod tests {
     }
 
     #[test]
+    fn a_hint_makes_her_answer_soon() {
+        let mut since = Since::default();
+        since.add(&report(
+            Reported::Hint,
+            "💡 **She reads the hints before planning:**\n- Cherry: heal first\n- Sam: go north",
+        ));
+        assert_eq!(since.hints, ["Cherry: heal first", "Sam: go north"]);
+        let every = Duration::from_secs(600);
+        // No episode since and long before `every`: she still answers, once a short gap
+        // since her last message has passed.
+        assert_eq!(due(&since, Duration::from_secs(60), every, 0), None);
+        assert_eq!(due(&since, GAP_LEAST, every, 0), Some(false));
+        let told = brief(
+            &Moment::Check { may_pass: false },
+            "Red",
+            &Now::default(),
+            &since,
+            &[],
+            &[],
+        );
+        assert!(told.contains("Hints from people watching"), "{told}");
+        assert!(
+            told.contains("- Cherry: heal first\n- Sam: go north"),
+            "{told}"
+        );
+    }
+
+    #[test]
     fn a_pass_posts_nothing() {
         assert_eq!(message("PASS"), None);
         assert_eq!(message(" PASS. "), None);
@@ -435,6 +484,7 @@ mod tests {
             episodes: vec!["#23 Viridian Forest: beat the Bug Catcher → not done".to_string()],
             areas: vec!["Viridian Forest".to_string()],
             stuck: Vec::new(),
+            hints: Vec::new(),
         };
         let said = ["Into the forest we go!".to_string()];
         let herself = ["I love bugs, secretly.".to_string()];
