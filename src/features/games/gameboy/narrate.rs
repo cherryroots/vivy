@@ -1,7 +1,8 @@
 //! Her commentary: while she plays, Vivy herself (her own model, in her own voice) says
 //! something now and then, like a streamer talking to the people watching. She speaks in
-//! the log thread under the dashboard, so her messages don't push it out of view. The
-//! dashboard shows what's happening; this is how she feels about it.
+//! the log thread under the dashboard, so her messages don't push it out of view, and the
+//! dashboard shows her latest one ("Vivy says"). The dashboard shows what's happening;
+//! this is how she feels about it.
 //!
 //! The pace is for a couple of hours of play a day (about 300 episodes): she says
 //! something when a session starts, once it ends (a recap), and in between at most every
@@ -265,11 +266,20 @@ pub struct Narrator {
     passes: u32,
     /// Whether she said hello: a session that never got going gets no wrap-up either.
     greeted: bool,
+    /// What the dashboard shows: she puts her latest message in it.
+    now: watch::Sender<Now>,
 }
 
 impl Narrator {
-    /// `every`: the least time between her messages while she plays.
-    pub fn new(bot: BotCtx, place: Place, game: String, every: Duration) -> Narrator {
+    /// `every`: the least time between her messages while she plays. `now` is what the
+    /// session tells the dashboard.
+    pub fn new(
+        bot: BotCtx,
+        place: Place,
+        game: String,
+        every: Duration,
+        now: watch::Sender<Now>,
+    ) -> Narrator {
         Narrator {
             bot,
             place,
@@ -280,6 +290,7 @@ impl Narrator {
             spoke: Instant::now(),
             passes: 0,
             greeted: false,
+            now,
         }
     }
 
@@ -289,9 +300,9 @@ impl Narrator {
     pub async fn follow(
         mut self,
         mut reports: mpsc::UnboundedReceiver<Report>,
-        mut now: watch::Receiver<Now>,
         ended: CancellationToken,
     ) -> Narrator {
+        let mut now = self.now.subscribe();
         let started = tokio::select! {
             started = now.wait_for(|now| now.episode >= 1) => started.is_ok(),
             () = ended.cancelled() => false,
@@ -325,9 +336,10 @@ impl Narrator {
     }
 
     /// Her wrap-up once the session is over. `how` is how it went (the summary's line).
-    pub async fn recap(mut self, now: &Now, how: &str) {
+    /// Gives back what she said, for the ended dashboard.
+    pub async fn recap(mut self, now: &Now, how: &str) -> Option<String> {
         if !self.greeted {
-            return;
+            return None;
         }
         self.speak(
             Moment::End {
@@ -335,17 +347,18 @@ impl Narrator {
             },
             now,
         )
-        .await;
+        .await
     }
 
-    /// Asks her and posts what she says, with a GIF of her last seconds of play. A failed call just
-    /// means she says nothing this time.
-    async fn speak(&mut self, moment: Moment, now: &Now) {
+    /// Asks her and posts what she says, with a GIF of her last seconds of play, and puts
+    /// it on the dashboard. Gives back what she said: `None` if she passed. A failed call
+    /// just means she says nothing this time.
+    async fn speak(&mut self, moment: Moment, now: &Now) -> Option<String> {
         let answer = match self.write(&moment, now).await {
             Ok(answer) => answer,
             Err(err) => {
                 warn!("her Game Boy commentary failed: {err:#}");
-                return;
+                return None;
             }
         };
         self.spoke = Instant::now();
@@ -353,7 +366,7 @@ impl Narrator {
         let Some(text) = message(&answer) else {
             self.passes += 1;
             info!(passes = self.passes, "she passed on saying something");
-            return;
+            return None;
         };
         self.passes = 0;
         let mut draft = Draft::new().content(&text).allowed_mentions(no_pings());
@@ -365,10 +378,12 @@ impl Narrator {
         if let Err(err) = draft.send(&self.bot.http, self.place.log).await {
             warn!("couldn't post her Game Boy commentary: {err:#}");
         }
+        self.now.send_modify(|now| now.said.clone_from(&text));
         if self.said.len() == SAID_SHOWN {
             self.said.remove(0);
         }
-        self.said.push(text);
+        self.said.push(text.clone());
+        Some(text)
     }
 
     async fn write(&self, moment: &Moment, now: &Now) -> anyhow::Result<String> {

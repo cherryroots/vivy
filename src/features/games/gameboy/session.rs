@@ -229,6 +229,8 @@ pub struct Now {
     /// USD the paid models cost today, and the free tokens used.
     pub usd: f64,
     pub free_tokens: u64,
+    /// Her latest commentary (empty until she says something), for "Vivy says".
+    pub said: String,
 }
 
 impl Now {

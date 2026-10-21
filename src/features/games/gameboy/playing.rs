@@ -502,8 +502,8 @@ async fn run(
             log,
         };
         let every = Duration::from_secs(settings.narrate_minutes * 60);
-        let narrator = Narrator::new(bot.clone(), place, live.game.clone(), every);
-        tokio::spawn(narrator.follow(told, watching.clone(), ended.clone()))
+        let narrator = Narrator::new(bot.clone(), place, live.game.clone(), every, now.clone());
+        tokio::spawn(narrator.follow(told, ended.clone()))
     });
     let forward = tokio::spawn(post_reports(bot.clone(), log, reports, heard));
     let timer = bot
@@ -569,8 +569,12 @@ async fn run(
         .await;
     if let Some(narrator) = narrator
         && let Ok(narrator) = narrator.await
+        && let Some(said) = narrator.recap(&last, over).await
     {
-        narrator.recap(&last, over).await;
+        // Her wrap-up goes on the ended dashboard too.
+        let last = Now { said, ..last };
+        live.show(&mut message, &last, Some(over), last_screen().await)
+            .await;
     }
 }
 

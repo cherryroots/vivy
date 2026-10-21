@@ -149,6 +149,7 @@ When the session ends it gets short: how it went and her goal beside a small sti
 - a milestone from her notes or a blackout makes her speak soon too, 2 minutes after her last message at the least: she's told the milestone's name (not the episodes or money it took) or where she blacked out and woke up
 - a hint from the Hint button makes her answer it soon, 2 minutes after her last message at the least, without waiting for `narrate_minutes`: she's told the hints with who gave them, that they can be wrong, and to thank them by name
 - each message is plain text (no pings) with a GIF of her last seconds of play
+- the dashboard shows her latest one under its title (`> 💬 **Vivy says:** …`), replaced each time she speaks, so people see it without opening the thread; once it's over, it shows her wrap-up
 - she's told never to talk about the bookkeeping (models, tasks, episodes, coordinates, money): "I got lost in the forest", not "episode 23 ran out of actions"
 
 Her calls cost about a cent each at list prices (8 cost $0.09 on a real session's report), so about $0.15 for two hours. They show on the spend card as `game_narrate` and don't count toward `daily_usd`, which is for playing. `gate_narrate` (ignored, needs the Claude key) replays her commentary over a session's report (`VIVY_GB_REPORT`) every `VIVY_GB_NARRATE_MINUTES` (3) of its clock times and writes `narrate.md` next to it. Voice messages in her voice are left for later, since they spend ElevenLabs characters.
