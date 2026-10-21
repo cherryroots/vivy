@@ -9,6 +9,8 @@
 //!   happened since: the episodes, new areas, and being stuck or sent back.
 //! - A new area or being stuck means she speaks. Otherwise she may pass if nothing was
 //!   worth saying, but not three times in a row.
+//! - A hint, a milestone or a blackout makes her speak soon, without waiting for
+//!   `narrate_minutes`: just 2 minutes since her last message.
 //! - Each message has a GIF of her last seconds of play (the dashboard's, up to 10 s).
 //!
 //! Code decides when; what to say is hers. She gets her personality and mood notes from
@@ -77,6 +79,10 @@ pub struct Since {
     pub stuck: Vec<String>,
     /// Hints from people watching.
     pub hints: Vec<String>,
+    /// Milestones from her notes she reached, by name.
+    pub milestones: Vec<String>,
+    /// Blackouts: where she blacked out and where she woke up.
+    pub blackouts: Vec<String>,
 }
 
 impl Since {
@@ -95,6 +101,19 @@ impl Since {
                 self.hints
                     .extend(hints.map(|h| h.trim_start_matches("- ").to_string()));
             }
+            Reported::Milestone => {
+                // "🏁 **Milestone: Reach Viridian City** · episode 12, …": just the name,
+                // since she never talks about episodes or money.
+                let name = report.line.split("**").nth(1).unwrap_or_default();
+                let name = name.trim_start_matches("Milestone: ");
+                self.milestones.push(name.to_string());
+            }
+            Reported::Blackout => {
+                // "💀 **Blacked out** in Viridian Forest and woke up in Pallet Town."
+                let line = report.line.replace("**", "");
+                self.blackouts
+                    .push(line.trim_start_matches("💀 ").to_string());
+            }
             Reported::Other => {}
         }
     }
@@ -102,10 +121,13 @@ impl Since {
 
 /// Whether it's time to speak: `None` if not, else whether she may pass. She speaks only
 /// once `every` has passed and she has played since; a new area or being stuck means she
-/// has to, and so does having passed [`PASSES_MOST`] times in a row. A hint makes her
-/// answer it without waiting for `every`, just [`GAP_LEAST`] since she last spoke.
+/// has to, and so does having passed [`PASSES_MOST`] times in a row. A hint, a milestone
+/// or a blackout makes her speak without waiting for `every`, just [`GAP_LEAST`] since
+/// she last spoke.
 pub fn due(since: &Since, waited: Duration, every: Duration, passes: u32) -> Option<bool> {
-    if !since.hints.is_empty() && waited >= GAP_LEAST {
+    let soon =
+        !since.hints.is_empty() || !since.milestones.is_empty() || !since.blackouts.is_empty();
+    if soon && waited >= GAP_LEAST {
         return Some(false);
     }
     if since.episodes.is_empty() || waited < every {
@@ -164,6 +186,18 @@ pub fn brief(
         out.push_str(&format!(
             "\nPlaces you reached for the first time: {}\n",
             since.areas.join(", ")
+        ));
+    }
+    if !since.milestones.is_empty() {
+        out.push_str(&format!(
+            "\nMilestones on the way to your goal that you just reached: {}\n",
+            since.milestones.join(", ")
+        ));
+    }
+    if !since.blackouts.is_empty() {
+        out.push_str(&format!(
+            "\nYou lost and were sent back:\n- {}\n",
+            since.blackouts.join("\n- ")
         ));
     }
     if !since.stuck.is_empty() {
@@ -458,6 +492,51 @@ mod tests {
     }
 
     #[test]
+    fn a_milestone_or_a_blackout_makes_her_speak_soon() {
+        let mut since = Since::default();
+        since.add(&report(
+            Reported::Milestone,
+            "🏁 **Milestone: Reach Viridian City** · episode 12, 4 episodes and $0.010 since \
+             the last",
+        ));
+        since.add(&report(
+            Reported::Blackout,
+            "💀 **Blacked out** in Viridian Forest and woke up in Pallet Town.",
+        ));
+        assert_eq!(since.milestones, ["Reach Viridian City"]);
+        assert_eq!(
+            since.blackouts,
+            ["Blacked out in Viridian Forest and woke up in Pallet Town."]
+        );
+        let every = Duration::from_secs(600);
+        assert_eq!(due(&since, Duration::from_secs(60), every, 0), None);
+        assert_eq!(due(&since, GAP_LEAST, every, 0), Some(false));
+        let told = brief(
+            &Moment::Check { may_pass: false },
+            "Red",
+            &Now::default(),
+            &since,
+            &[],
+            &[],
+        );
+        assert!(
+            told.contains("you just reached: Reach Viridian City\n"),
+            "{told}"
+        );
+        assert!(
+            told.contains("- Blacked out in Viridian Forest and woke up in Pallet Town."),
+            "{told}"
+        );
+        assert!(!told.contains("$0.010"), "no bookkeeping: {told}");
+
+        let mut blackout = Since::default();
+        blackout
+            .blackouts
+            .push("Blacked out in Route 1.".to_string());
+        assert_eq!(due(&blackout, GAP_LEAST, every, 0), Some(false));
+    }
+
+    #[test]
     fn a_pass_posts_nothing() {
         assert_eq!(message("PASS"), None);
         assert_eq!(message(" PASS. "), None);
@@ -484,7 +563,7 @@ mod tests {
             episodes: vec!["#23 Viridian Forest: beat the Bug Catcher → not done".to_string()],
             areas: vec!["Viridian Forest".to_string()],
             stuck: Vec::new(),
-            hints: Vec::new(),
+            ..Since::default()
         };
         let said = ["Into the forest we go!".to_string()];
         let herself = ["I love bugs, secretly.".to_string()];

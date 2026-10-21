@@ -40,6 +40,7 @@ mod journal;
 mod map;
 mod moves;
 mod narrate;
+mod notes;
 mod pictures;
 mod player;
 mod playing;
