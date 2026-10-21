@@ -673,8 +673,11 @@ pub(super) fn admin(ctx: &CommandCtx) -> Result<Settings> {
 }
 
 pub(super) fn settings(ctx: &CommandCtx) -> Settings {
-    ctx.bot
-        .config
+    bot_settings(&ctx.bot)
+}
+
+pub(super) fn bot_settings(bot: &crate::core::BotCtx) -> Settings {
+    bot.config
         .feature::<crate::features::games::Settings>("games")
         .map(|s| s.gameboy)
         .unwrap_or_default()
