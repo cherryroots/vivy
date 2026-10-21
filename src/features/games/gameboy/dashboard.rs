@@ -116,6 +116,9 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
         }
     }
     let mut about = vec![format!("**Goal:** {}", short(&now.goal, 300))];
+    if !now.milestone.is_empty() {
+        about.push(format!("-# 🏁 Milestones {}", short(&now.milestone, 200)));
+    }
     if board.over.is_none() && !now.task.is_empty() {
         let stuck = match now.stuck {
             0 => String::new(),
@@ -612,6 +615,7 @@ mod tests {
             facts: "Location: Route 1 at x 5, y 20\nParty: CHARMANDER Lv6 17/21 HP".to_string(),
             goal: "Bring Oak his parcel.".to_string(),
             notes: vec!["The Mart is in Viridian City.".to_string()],
+            milestone: "1 of 3 · next: Reach Viridian City".to_string(),
             episodes: vec![
                 "#13 10-20 14:36 Route 1: keep north → done, 12 actions, a new area".to_string(),
             ],
@@ -644,6 +648,7 @@ mod tests {
             "## Vivy plays Pokémon Red\n\
              -# 🔴 Live · Session 3 · 24 of 60 min · Episode 14 · Route 1\n\n\
              **Goal:** Bring Oak his parcel.\n\
+             -# 🏁 Milestones 1 of 3 · next: Reach Viridian City\n\
              **Now:** Win the wild battle, then keep north to Viridian City.\n\
              -# Action 18 of 30\n\
              **Location:** Route 1 at x 5, y 20\n\

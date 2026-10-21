@@ -430,8 +430,23 @@ pub async fn status(ctx: &CommandCtx) -> Result<()> {
         &journal.goal
     };
     parts.push(format!("**Goal:** {goal}"));
+    if !journal.milestones.is_empty() {
+        let lines: Vec<String> = journal
+            .milestones
+            .iter()
+            .map(|m| {
+                let mark = if m.reached.is_some() { "✅" } else { "⬜" };
+                format!("- {mark} {}", m.name)
+            })
+            .collect();
+        parts.push(format!("**Milestones:**\n{}", lines.join("\n")));
+    }
     if !journal.notes.is_empty() {
-        let notes: Vec<String> = journal.notes.iter().map(|n| format!("- {n}")).collect();
+        let notes: Vec<String> = journal
+            .notes
+            .iter()
+            .map(|n| format!("- {}", n.shown()))
+            .collect();
         parts.push(format!("**Notes:**\n{}", notes.join("\n")));
     }
     if !journal.log.is_empty() {

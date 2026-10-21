@@ -327,6 +327,7 @@ async fn gate_tasks() {
                         &Ask {
                             goal: task.text,
                             notes: &[],
+                            milestones: &[],
                             skills: &[],
                             digest: NOTHING_YET,
                             now: &now,
@@ -496,6 +497,7 @@ async fn gate_strategists() {
                         &Ask {
                             goal: LONG_GOAL,
                             notes: &notes,
+                            milestones: &[],
                             skills: &local.world.skills,
                             digest: &digest,
                             now: &now,
@@ -538,7 +540,7 @@ async fn gate_strategists() {
                         plan.task,
                         plan.notes
                             .iter()
-                            .map(|n| format!("- {n}"))
+                            .map(|n| format!("- {}", n.for_plan()))
                             .collect::<Vec<_>>()
                             .join("\n"),
                         if reviewed.is_empty() { "none".to_string() } else { reviewed.join("; ") }
@@ -673,6 +675,7 @@ async fn gate_learning() {
                     &Ask {
                         goal: task.text,
                         notes: &[],
+                        milestones: &[],
                         skills: &local.world.skills,
                         digest: &episode.digest(),
                         now: &now,
@@ -900,7 +903,20 @@ Start: {}. Goal: {}.
     )
     .unwrap();
     for note in &journal.notes {
-        writeln!(out, "- {note}").unwrap();
+        writeln!(out, "- {}", note.shown()).unwrap();
+    }
+    writeln!(
+        out,
+        "
+## Her milestones at the end
+"
+    )
+    .unwrap();
+    if journal.milestones.is_empty() {
+        writeln!(out, "(none)").unwrap();
+    }
+    for milestone in &journal.milestones {
+        writeln!(out, "- {}", milestone.for_plan()).unwrap();
     }
     writeln!(
         out,
