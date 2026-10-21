@@ -56,6 +56,11 @@ impl Feature for Games {
         hunger_games::MIGRATIONS
     }
 
+    async fn start(&self, ctx: &BotCtx) -> Result<()> {
+        gameboy::start(ctx);
+        Ok(())
+    }
+
     async fn on_component(
         &self,
         ctx: &BotCtx,

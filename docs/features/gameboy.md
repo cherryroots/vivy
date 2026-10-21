@@ -141,6 +141,26 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 When the session ends it gets short: how it went and her goal beside a small still of her last screen (a thumbnail), today's use and the Open log button. The episodes, notes and skills are in the log and `status`; `/games gameboy dashboard` shows the same short panel while she isn't playing. A V2 message has no text of its own, only components, and its GIF is an attachment the panel's gallery points to (`attachment://live.gif`), so each edit uploads a GIF again. An old dashboard that moved, and the "Moving the dashboard here…" placeholder, are V2 messages too, since a message can't switch back.
 
+**The web page** (`web.rs`, `web/index.html`) shows her playing live in a browser, smoother than the dashboard's GIFs: every screen at the game's speed, and what code sees drawn over it. It's off unless `web_bind` is set (like `127.0.0.1:8787`); put a web server in front of it for the public address (it needs WebSockets) and set `web_url` to that address, and the dashboard gets a 📺 Watch live link button while she plays.
+
+With Caddy (which passes WebSockets on by itself), inside the site's block:
+
+```caddyfile
+redir /vivy /vivy/
+handle_path /vivy/* {
+	reverse_proxy 127.0.0.1:8787
+}
+```
+
+`handle_path` takes `/vivy` off before passing the request on, and the page asks for `live` relative to its own address, so it works under any path that ends in a slash.
+
+- **The screen**, scaled up with sharp pixels. Screens arrive as small PNGs over a WebSocket (`/live`) and play at 20 a second from a queue, so the game's bursts (an action in a moment, then a wait while Haiku thinks) play out evenly; a viewer that falls far behind skips ahead.
+- **What she sees**, a toggle over the screen: each step code has marked on the map (floor, wall, grass, door, sign, edge and people, in colours with a legend), her own step outlined, and a tile grid. It's drawn only over the screen it was looked at, and only when the map shows (not in battles, menus or text boxes), so it never lags behind the picture.
+- **Under it**: her latest commentary ("Vivy says", once she has said something), her task, actions used and a warning when she's stuck, the facts from the game's memory (HP as a bar), and her last actions. **Beside it**: the area's whole map so far with her on it, the words on screen, her goal, recent episodes (done in green, anything else in amber) and her notes. The colours follow the dashboard mockup.
+- **Cost.** One feed reads the Game Boy for every viewer, and only while someone is watching: it copies new screens every 150 ms and looks again once they settle, on a copy of her maps, so watching never changes what she has seen. `/state.json` has the latest look and dashboard state, for checking by hand.
+
+`gate_session` serves the page too with `VIVY_GB_WEB=127.0.0.1:8787`, to watch a test session.
+
 **Her commentary** (stage 5, `narrate.rs`): while she plays, Vivy herself talks in the log thread under the dashboard, like a streamer (there, her messages don't push the dashboard out of view): in her own model (Opus, the `game_narrate` job at low effort) and her own voice, with her personality and mood notes from memory. The dashboard says what's happening; she says how she feels about it. The pace is set for a couple of hours of play a day, about 300 episodes, so about a dozen messages a session:
 
 - hello once the first episode starts, and a wrap-up once the session is over
@@ -158,7 +178,7 @@ Still to come in stage 4: the puzzle helper.
 
 ## Settings
 
-Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (5), `hints_from_anyone` (true), `narrate_minutes` (10; 0: she doesn't talk). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
+Under `[features.games.gameboy]`, each explained in `config.example.toml`: `roms_dir` (`"roms"`), `saves_dir` (`"gameboy"`), `session_minutes` (60), `daily_usd` (1.5), `free_tokens` (1000000), `live_seconds` (5), `hints_from_anyone` (true), `narrate_minutes` (10; 0: she doesn't talk), `web_bind` and `web_url` (empty: no web page). The strategist's model is `[ai.openai.jobs.game_plan]` (GPT-6 Astra) and `game_review` for its reviews (the same, at high effort). The gate keys are `[features.games]`'s, shared with the other games.
 
 ## Files
 
@@ -195,7 +215,8 @@ All under `src/features/games/gameboy/`.
 | `commands.rs` | `/games gameboy ...` |
 | `playing.rs` | `/games gameboy play`, `stop`, `status` and `dashboard`, the dashboard's buttons, and the log thread |
 | `dashboard.rs` | The dashboard: its text from `Now` (pure), its buttons, and keeping it up to date while she plays |
-| `narrate.rs` | Her commentary in the channel: when she speaks (pure), what she's told, and posting it |
+| `narrate.rs` | Her commentary in the log thread, and her latest line on the dashboard: when she speaks (pure), what she's told, and posting it |
+| `web.rs`, `web/index.html` | The live web page: her screen as it plays, what code sees drawn over it, the area's map, and the dashboard's state |
 | `gate/mod.rs` | The gate (tests only): the key check, the task runs, the strategist runs, the learning runs, their reports |
 | `gate/tasks.rs` | The task states, made by playing Red by script; the 15 tasks and their checks; the long goal |
 | `gate/player.rs` | The gate's own Game Boy for the supervisor |

@@ -11,7 +11,7 @@ use super::super::console::Machine;
 use super::super::map::{AreaMap, Kind, Pos};
 use super::super::screen::Screen;
 use super::super::text::words_of;
-use super::super::world::{View, World};
+use super::super::world::{Grid, View, World};
 use super::{State, char_for, tile_map};
 
 /// Screen steps across and down.
@@ -61,6 +61,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             String::new()
         },
         facts,
+        grid: can_walk.then_some(Grid {
+            pixels: 16,
+            across: STEPS_ACROSS,
+            down: STEPS_DOWN,
+            player: PLAYER_STEP,
+        }),
     }
 }
 

@@ -137,7 +137,7 @@ On a hit, `speak`:
 
 Nobody asked and the line is public, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). The `Runner` keeps `get_message` and `search_messages` to the current channel (`here_only`). Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
 
-A posted line is saved as a question turn (the transcript, exactly as the model read it) and an answer turn, so replying to her line continues the conversation. The question's author is the bot, so nobody can 🔁 or ❌ her line as if it were their answer.
+A posted line is saved (`save`) as a question turn (the transcript, exactly as the model read it) and an answer turn, so replying to her line continues the conversation. The question's author is the bot, so nobody can 🔁 or ❌ her line as if it were their answer. A reaction is saved the same way, with a note as the answer (`(reacted 🐄 to RickyWL: "I Am One Of…")`, `reaction_note`) and no Discord message linked to it, so `look_back_at_answers` lists it as a chime-in. Before this she once denied a 🐄 her account had put on someone's message, since nothing she could look at showed it.
 
 ### Follow-ups
 
@@ -197,6 +197,8 @@ Lines in chime-in transcripts and `read_recent_messages` (`format_message`) are 
 ### Looking back at her own answers
 
 `look_back_at_answers` lets her check what she actually did in an earlier answer instead of guessing, for example when someone asks why she said something or says something went wrong. The system prompt has one general line about it ("check what actually happened instead of guessing"); the tool's description says when to use it.
+
+Chime-ins are saved with her answers, reactions included, and show as `(chime-in)` in the list. The system prompt tells her she sometimes reads along and posts or reacts on her own, and that those are hers even if she doesn't remember them. In `format_message` (chime-in transcripts, `read_recent_messages`, `get_message`, `search_messages`) a reaction she added herself says so: `[reactions: 🐄 2 (one is yours)]`, from Discord's `me` flag on the reaction.
 
 - **Without `answer`** it lists her recent answers in this channel, newest first, one line each: the answer number, time (in the asker's timezone), how long it took, the provider, the tools she called (`web_search ×2`), how it ended if it didn't finish, and the first words of the question and the answer. `channel` picks another channel, or `"all"` for every channel in the server the asker can read (it looks through the newest 200 answers). `before` pages back, `count` is 1 to 20 (default 10).
 - **With `answer`** (a number from the list, a link to or ID of one of her messages or of the question, or `"replied"` for the answer the current message replies to) it shows that answer step by step: the question, the context features added to it, then each round with what she thought (when the provider gives thinking text), wrote and called, each call with its input and what came back, errors included. Then what she sent and, for an answer that didn't finish, the error or that ❌ stopped it.

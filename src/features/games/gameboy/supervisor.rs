@@ -425,6 +425,7 @@ mod tests {
                     can_walk: false,
                     text: "Hello".to_string(),
                     facts: String::new(),
+                    grid: None,
                 },
                 words: vec!["Hello".to_string()],
             })
@@ -462,6 +463,7 @@ mod tests {
                     can_walk: true,
                     text: String::new(),
                     facts: String::new(),
+                    grid: None,
                 },
                 words: Vec::new(),
             })

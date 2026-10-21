@@ -198,7 +198,7 @@ impl Report {
 
 /// What she's doing now, and what the journal and the day say: everything the dashboard
 /// shows. The session sends it before each episode and after each action.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Now {
     /// When the session started, in seconds since 1970.
     pub started: i64,
@@ -932,6 +932,7 @@ mod tests {
                     can_walk: true,
                     text: String::new(),
                     facts: String::new(),
+                    grid: None,
                 },
                 words: Vec::new(),
             }

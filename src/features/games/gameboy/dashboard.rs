@@ -249,7 +249,7 @@ fn list(title: &str, items: &[String]) -> String {
 /// the middle and the foot between dividers, and the buttons. `log` is a link to the log.
 ///
 /// Once it's `over`, the picture is a small still of her last screen beside the text.
-pub fn panel(parts: &Parts, picture: bool, log: Option<String>, over: bool) -> Vec<Component> {
+pub fn panel(parts: &Parts, picture: bool, links: Links, over: bool) -> Vec<Component> {
     let mut inside = Vec::new();
     match (over, picture) {
         (true, true) => inside.push(Component::Section(Section {
@@ -284,7 +284,7 @@ pub fn panel(parts: &Parts, picture: bool, log: Option<String>, over: bool) -> V
     }
     inside.push(divider());
     inside.push(text(&parts.foot));
-    if let Some(row) = buttons(log, over) {
+    if let Some(row) = buttons(links, over) {
         inside.push(row);
     }
     let colour = if over { OVER_COLOUR } else { LIVE_COLOUR };
@@ -322,9 +322,9 @@ fn draft(components: Vec<Component>, picture: Option<(&str, Vec<u8>)>) -> Draft 
 
 /// The dashboard as a message to send or edit with. `picture` is a GIF ([`clip`]) while
 /// she plays, and a PNG ([`last_screen`]) once it's `over`.
-pub fn message(parts: &Parts, picture: Option<Vec<u8>>, log: Option<String>, over: bool) -> Draft {
+pub fn message(parts: &Parts, picture: Option<Vec<u8>>, links: Links, over: bool) -> Draft {
     let name = if over { STILL_NAME } else { GIF_NAME };
-    let components = panel(parts, picture.is_some(), log, over);
+    let components = panel(parts, picture.is_some(), links, over);
     draft(components, picture.map(|bytes| (name, bytes)))
 }
 
@@ -353,8 +353,18 @@ fn divider() -> Component {
     })
 }
 
-/// Stop and Skills while she plays, and a link to the log, as a row (if there's any).
-fn buttons(log: Option<String>, over: bool) -> Option<Component> {
+/// Where the dashboard's link buttons go.
+#[derive(Debug, Clone, Default)]
+pub struct Links {
+    /// The log thread.
+    pub log: Option<String>,
+    /// The live web page (`web_url`).
+    pub watch: Option<String>,
+}
+
+/// Stop and Skills while she plays, and links to the log and the live page, as a row (if
+/// there's any).
+fn buttons(links: Links, over: bool) -> Option<Component> {
     let mut row: Vec<Button> = Vec::new();
     if !over {
         row.push(discord::button(STOP, "Stop", ButtonStyle::Danger).build());
@@ -365,7 +375,16 @@ fn buttons(log: Option<String>, over: bool) -> Option<Component> {
         );
         row.push(discord::button(SKILLS, "Skills", ButtonStyle::Secondary).build());
     }
-    if let Some(log) = log {
+    if let Some(watch) = links.watch.filter(|_| !over) {
+        row.push(
+            ButtonBuilder::new(ButtonStyle::Link)
+                .label("Watch live")
+                .emoji(discord::emoji("📺"))
+                .url(watch)
+                .build(),
+        );
+    }
+    if let Some(log) = links.log {
         row.push(
             ButtonBuilder::new(ButtonStyle::Link)
                 .label("Open log")
@@ -390,6 +409,8 @@ pub struct Live {
     pub free_tokens: u64,
     pub guild: GuildId,
     pub log: ChannelId,
+    /// The live web page's address, if there is one.
+    pub watch: Option<String>,
 }
 
 impl Live {
@@ -412,8 +433,11 @@ impl Live {
             over,
         };
         let parts = parts(&board, Utc::now().timestamp());
-        let log = Some(channel_link(self.guild, self.log));
-        let edit = self::message(&parts, picture, log, over.is_some());
+        let links = Links {
+            log: Some(channel_link(self.guild, self.log)),
+            watch: self.watch.clone(),
+        };
+        let edit = self::message(&parts, picture, links, over.is_some());
         match edit
             .edit(&self.bot.http, message.channel_id, message.id)
             .await
@@ -720,7 +744,10 @@ mod tests {
     fn the_panel_has_the_gif_and_the_buttons() {
         let now = now();
         let parts = parts(&board(&now, None), 0);
-        let log = Some("https://discord.com/channels/1/2".to_string());
+        let log = Links {
+            log: Some("https://discord.com/channels/1/2".to_string()),
+            watch: Some("https://kirei.moe/vivy".to_string()),
+        };
         let live = message(&parts, Some(vec![1, 2, 3]), log.clone(), false);
         assert_eq!(live.flags, Some(MessageFlags::IS_COMPONENTS_V2));
         assert!(
@@ -732,11 +759,16 @@ mod tests {
         assert!(json.starts_with(r#"[{"type":17,"#), "one container: {json}");
         assert!(json.contains("attachment://live.gif"));
         assert!(json.contains(STOP) && json.contains(SKILLS) && json.contains("Open log"));
+        assert!(json.contains("Watch live") && json.contains("https://kirei.moe/vivy"));
 
         let over = message(&parts, Some(vec![4, 5]), log.clone(), true);
         assert_eq!(over.files.len(), 1);
         let json = serde_json::to_string(&over.components).unwrap();
         assert!(!json.contains(STOP) && json.contains("Open log"));
+        assert!(
+            !json.contains("Watch live"),
+            "nothing to watch once it's over"
+        );
         assert!(json.contains(r#""type":11"#), "a thumbnail: {json}");
         assert!(json.contains("attachment://last.png") && !json.contains("live.gif"));
 

@@ -349,6 +349,7 @@ mod tests {
             can_walk,
             text: text.to_string(),
             facts: String::new(),
+            grid: None,
         }
     }
 

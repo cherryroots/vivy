@@ -361,7 +361,9 @@ fn render_detail(
 
     match question {
         Some(q) if q.author_id == bot_id => {
-            lines.push("A chime-in: nobody asked; you read along and spoke up.".to_string());
+            lines.push(
+                "A chime-in: nobody asked; you read along and spoke up or reacted.".to_string(),
+            );
             lines.push(format!(
                 "What you read: {}",
                 shorten(&turn_text(q), MAX_QUESTION)
@@ -641,7 +643,8 @@ fn plain_question(text: &str) -> String {
     format!("{name}: {}{after}", inside.trim())
 }
 
-fn one_line(text: &str) -> String {
+/// `text` on one line, its whitespace squeezed to single spaces.
+pub(super) fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
