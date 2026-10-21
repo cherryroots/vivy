@@ -45,6 +45,12 @@ pub fn maps_path(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_folder(saves_dir, rom).join("maps.json")
 }
 
+/// What the look with no memory map has learned of the game (`any/`): where it keeps
+/// things, and what each step's picture is.
+pub fn sight_path(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("sight.json")
+}
+
 /// The session's checkpoints, `<n>.state` with `<n>.json` (the notes at the time). In a
 /// folder of their own, so they stay out of the saves list.
 pub fn checkpoints_folder(saves_dir: &Path, rom: &str) -> PathBuf {

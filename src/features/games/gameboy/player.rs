@@ -9,6 +9,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::actions::{self, Acted, SCREEN_SCALE};
+use super::any::Sight;
 use super::console::{Machine, console};
 use super::map::AreaMap;
 use super::pictures::png_at;
@@ -74,6 +75,10 @@ impl Game for OnConsole {
 
     async fn set_areas(&mut self, areas: HashMap<String, AreaMap>) -> anyhow::Result<()> {
         on_game(move |world, _, _| world.areas = areas).await
+    }
+
+    async fn set_sight(&mut self, sight: Sight) -> anyhow::Result<()> {
+        on_game(move |world, _, _| world.sight = sight).await
     }
 
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {
