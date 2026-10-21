@@ -350,16 +350,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     if let Some((step, before)) = stepped {
         let pressed = offset(step.direction.button()).unwrap_or((0, 0));
         let from = sight.live.at;
-        if after_step(
-            sight,
-            &mut world.areas,
-            step,
-            &before,
-            &memory,
-            &seen,
-            dark,
-            free,
-        ) {
+        if after_step(sight, &mut world.areas, step, &before, &memory, dark, free) {
             left = Some(((from.0 + pressed.0, from.1 + pressed.1), dark));
         }
     } else if let Some(at) = at {
@@ -375,17 +366,6 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 .is_some_and(|p| looks_different(p, &seen))
         {
             left = Some((sight.live.at, true));
-            if std::env::var("VIVY_GB_TRACE").is_ok() {
-                let p = &sight.pictures[&sight.live.area];
-                println!(
-                    "TRACE no step, looks different in {} at {:?}: {:?} {:?} of {}",
-                    sight.live.area,
-                    at,
-                    compare(p, &seen),
-                    shared_pictures(p, &seen),
-                    p.0.len()
-                );
-            }
         }
         sight.live.at = at;
     }
@@ -461,14 +441,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
 
 /// Learns from one step: what the step ahead was and where she is now. Says whether she
 /// went somewhere new.
-#[allow(clippy::too_many_arguments)]
 fn after_step(
     sight: &mut Sight,
     areas: &mut HashMap<String, AreaMap>,
     step: Stepped,
     before: &Memory,
     after: &Memory,
-    seen: &[(Pos, u64)],
     dark: bool,
     free: bool,
 ) -> bool {
@@ -481,24 +459,12 @@ fn after_step(
     let jumped = sight
         .finder()
         .stepped(before, after, pressed, step.scrolled, dark);
-    // With the bytes picked now, which may have just been picked.
-    let was = sight.position(before);
     let now = sight.position(after);
-    // A dark screen that leaves her where the step took her is the swirl into a battle,
-    // unless the screen around her looks quite different, or memory says she never left
-    // her step (stairs to the same spot a floor up: a battle only starts once she's moved).
-    let new_place = match jumped {
-        Some(true) => true,
-        Some(false) => {
-            dark && free
-                && (now == was
-                    || sight
-                        .pictures
-                        .get(&sight.live.area)
-                        .is_some_and(|p| looks_different(p, seen)))
-        }
-        None => dark && free,
-    };
+    // Memory put her somewhere the step couldn't have, or the step went dark and left her
+    // free to walk: a door, even to the same numbers (Red's stairs land on the same spot
+    // a floor down, in a room much like the one above). The swirl into a battle goes
+    // dark too, but she isn't free after it.
+    let new_place = jumped == Some(true) || (dark && free);
 
     // What the step ahead turned out to be, by its picture.
     let ahead = |n: i32| (pressed.0 * n, pressed.1 * n);
@@ -606,14 +572,6 @@ fn arrive(
             .or_else(|| sight.known_place(seen).filter(|name| *name != old_area))
             .unwrap_or_else(|| sight.new_place()),
     };
-    if std::env::var("VIVY_GB_TRACE").is_ok() {
-        println!(
-            "TRACE arrive {old_area} -> {name} (dark {dark}, gone {gone:?}, byte {:?}, others {}, d35e {})",
-            sight.area_byte(),
-            others.len(),
-            memory.get(0xd35e)
-        );
-    }
     let map = areas.entry(old_area).or_default();
     map.see(gone, if dark { Kind::Door } else { Kind::Edge });
     map.doors.insert(gone, name.clone());

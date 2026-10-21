@@ -586,6 +586,43 @@ fn a_step_she_presses_herself_leaves_her_free_to_walk() {
     m.run(4);
     m.emulator.release();
     m.run(30);
-    assert_eq!(m.emulator.read(test_game::X_PIXELS), 4 * 16, "she walked a step");
+    assert_eq!(
+        m.emulator.read(test_game::X_PIXELS),
+        4 * 16,
+        "she walked a step"
+    );
     assert!(look(&mut world, &mut m).can_walk);
+}
+
+/// Red's stairs land on the same numbers a floor down, in a room much like the one above:
+/// once her position is known, the step onto them must still count as somewhere new.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM"]
+fn stairs_to_the_same_spot_are_somewhere_new() {
+    let mut m = red::tests::new_game();
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    // Walk about the bedroom until code knows where she stands, away from the stairs.
+    use crate::features::games::gameboy::map::Dir::{Down, Left, Right, Up};
+    use crate::features::games::gameboy::walk::take_step;
+    for dir in [
+        Up, Up, Left, Left, Down, Right, Right, Right, Up, Up, Left, Down, Right, Down,
+    ] {
+        let view = look(&mut world, &mut m);
+        take_step(&mut world, &mut m, look, &view, dir);
+    }
+    assert!(world.sight.found.x.is_some() && world.sight.found.y.is_some());
+    let before = look(&mut world, &mut m);
+    assert_eq!(m.emulator.read(RED_MAP), 38, "still upstairs");
+    walk_to(&mut world, &mut m, look, (6, 1), 20);
+    let walk = walk_to(&mut world, &mut m, look, (7, 1), 5);
+    assert_eq!(m.emulator.read(RED_MAP), 37, "downstairs");
+    assert!(
+        matches!(walk.result, Walked::NewArea(_)),
+        "{:?} in {} (was {})",
+        walk.result,
+        walk.view.area,
+        before.area
+    );
 }
