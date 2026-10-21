@@ -115,6 +115,9 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
             top.push(short(how, 1000));
         }
     }
+    if !now.said.is_empty() {
+        top.push(said(&now.said));
+    }
     let mut about = vec![format!("**Goal:** {}", short(&now.goal, 300))];
     if !now.milestone.is_empty() {
         about.push(format!("-# 🏁 Milestones {}", short(&now.milestone, 200)));
@@ -188,6 +191,12 @@ pub fn parts(board: &Board<'_>, at: i64) -> Parts {
         parts = fitted(&middle);
     }
     parts
+}
+
+/// "Vivy says": her latest commentary as a quote, each line of it quoted.
+fn said(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    format!("> 💬 **Vivy says:** {}", lines.join("\n> "))
 }
 
 /// A fact from the game's memory, like `Money: ¥3175`, as a line of its own with the
@@ -625,6 +634,7 @@ mod tests {
             newest_skill: Some("win a wild battle".to_string()),
             usd: 0.384,
             free_tokens: 212_400,
+            said: String::new(),
         }
     }
 
@@ -686,6 +696,20 @@ mod tests {
             assert!(!text.contains(gone), "{gone}: {text}");
         }
         assert!(text.ends_with("log: <#42>"));
+    }
+
+    #[test]
+    fn her_latest_commentary_is_under_the_title() {
+        let mut now = now();
+        now.said = "Viridian at last! 🌳\n\nNow, where's that Mart?".to_string();
+        let said = "> 💬 **Vivy says:** Viridian at last! 🌳\n> Now, where's that Mart?";
+        let live = parts(&board(&now, None), 1_000).top;
+        assert!(live.ends_with(&format!("Route 1\n{said}")), "{live}");
+        let over = parts(&board(&now, Some("**Session over.**")), 0).top;
+        assert!(
+            over.ends_with(&format!("**Session over.**\n{said}")),
+            "{over}"
+        );
     }
 
     #[test]

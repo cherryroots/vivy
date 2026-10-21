@@ -161,14 +161,35 @@ pub struct Summary {
 /// A line for the log, with a picture of the screen for a checkpoint.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
+    pub kind: Reported,
     pub line: String,
     /// A PNG.
     pub picture: Option<Vec<u8>>,
 }
 
+/// What a [`Report`] is about, for her commentary (`narrate.rs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reported {
+    /// An episode's line.
+    Episode,
+    /// A checkpoint: she reached an area for the first time.
+    Checkpoint,
+    /// Stuck: the ladder's warning, or going back to a checkpoint.
+    Stuck,
+    /// Hints from people watching, a line each after the first.
+    Hint,
+    /// A milestone from her notes reached: "🏁 **Milestone: Reach Viridian City** · …".
+    Milestone,
+    /// She blacked out: "💀 **Blacked out** in Viridian Forest and woke up in Pallet Town."
+    Blackout,
+    /// Anything else, like a planning failure.
+    Other,
+}
+
 impl Report {
-    fn line(line: String) -> Report {
+    fn line(kind: Reported, line: String) -> Report {
         Report {
+            kind,
             line,
             picture: None,
         }
@@ -208,6 +229,8 @@ pub struct Now {
     /// USD the paid models cost today, and the free tokens used.
     pub usd: f64,
     pub free_tokens: u64,
+    /// Her latest commentary (empty until she says something), for "Vivy says".
+    pub said: String,
 }
 
 impl Now {
@@ -419,6 +442,7 @@ pub async fn play<G: Game>(
         if rung == Rung::Rollback && roll_back(session, game, &mut journal).await? {
             summary.rollbacks += 1;
             let _ = session.report.send(Report::line(
+                Reported::Stuck,
                 journal.log.last().cloned().unwrap_or_default(),
             ));
             rung = journal.rung();
@@ -427,19 +451,25 @@ pub async fn play<G: Game>(
             timer.running();
         }
         if rung == Rung::Change && journal.stuck == CHANGE_AT {
-            let _ = session.report.send(Report::line(format!(
-                "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
+            let _ = session.report.send(Report::line(
+                Reported::Stuck,
+                format!(
+                    "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
                  of task, exploring first."
-            )));
+                ),
+            ));
         }
 
         let hints = std::mem::take(&mut *session.hints.lock().unwrap());
         if !hints.is_empty() {
             let lines: Vec<String> = hints.iter().map(|h| format!("- {h}")).collect();
-            let _ = session.report.send(Report::line(format!(
-                "💡 **She reads the hints before planning:**\n{}",
-                lines.join("\n")
-            )));
+            let _ = session.report.send(Report::line(
+                Reported::Hint,
+                format!(
+                    "💡 **She reads the hints before planning:**\n{}",
+                    lines.join("\n")
+                ),
+            ));
         }
         let plan = match plan(session, game, &journal, &mut today, rung, &hints).await {
             Ok((plan, cheap)) => {
@@ -451,7 +481,7 @@ pub async fn play<G: Game>(
                 failures += 1;
                 let line = format!("Planning failed: {err:#}");
                 journal.log(line.clone());
-                let _ = session.report.send(Report::line(line));
+                let _ = session.report.send(Report::line(Reported::Other, line));
                 if failures >= FAILURES_MOST {
                     break Ended::Failing(format!("{err:#}"));
                 }
@@ -557,6 +587,7 @@ pub async fn play<G: Game>(
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
             pictured = Some(Report {
+                kind: Reported::Checkpoint,
                 line: format!("📍 **Checkpoint {}** · {at}", journal.checkpoints),
                 picture: game.screen().await.ok(),
             });
@@ -568,15 +599,17 @@ pub async fn play<G: Game>(
         notes::check_all(&mut journal.notes, &world);
         let reached = reach_milestones(game, &mut journal, &episode.entered).await?;
         keep(session, game, &journal, &world, &today).await?;
-        let _ = session.report.send(Report::line(line));
+        let _ = session.report.send(Report::line(Reported::Episode, line));
         if let Some(blackout) = blackout {
-            let _ = session.report.send(Report::line(blackout));
+            let _ = session
+                .report
+                .send(Report::line(Reported::Blackout, blackout));
         }
         if let Some(pictured) = pictured {
             let _ = session.report.send(pictured);
         }
         for line in reached {
-            let _ = session.report.send(Report::line(line));
+            let _ = session.report.send(Report::line(Reported::Milestone, line));
         }
         if let Some(now) = &session.now {
             now.send_modify(|now| now.read(&journal, &world.skills, &today));
@@ -803,7 +836,9 @@ async fn paid_so_far(spends: &[Spend]) -> f64 {
         for (job, cost) in month.jobs {
             let free =
                 spend.provider() == "openai" && matches!(job.as_str(), "game_plan" | "game_review");
-            if job == "game_play" || (job.starts_with("game_") && job != "game_art" && !free) {
+            // Her commentary isn't playing: it's her voice, like a chat answer.
+            let talk = matches!(job.as_str(), "game_art" | super::narrate::JOB);
+            if job == "game_play" || (job.starts_with("game_") && !talk && !free) {
                 usd += cost;
             }
         }

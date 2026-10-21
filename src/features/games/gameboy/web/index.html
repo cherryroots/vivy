@@ -54,6 +54,9 @@
   .facts b { color: var(--teal); font-weight: 600; }
   #map { width: 100%; image-rendering: pixelated; background: #0b0d0e; border-radius: 6px; }
   .foot { color: var(--muted); font-size: 13px; }
+  /* "Vivy says": her latest commentary, like the dashboard's quote. */
+  .said { display: none; border-left: 3px solid var(--teal); }
+  .said p { margin: 0; white-space: pre-wrap; }
   .badge { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 6px; font-size: 12px; background: rgba(0,0,0,.65); color: #fff; display: none; }
 </style>
 </head>
@@ -76,6 +79,10 @@
         <label><input type="checkbox" id="showTiles"> Tile grid</label>
       </div>
       <div class="legend" id="legend"></div>
+      <div class="card said" id="saidCard" style="margin-top:12px">
+        <h2>💬 Vivy says</h2>
+        <p id="said"></p>
+      </div>
       <div class="card" style="margin-top:12px">
         <h2>Now</h2>
         <div class="task" id="task">—</div>
@@ -310,6 +317,8 @@ function showLive() {
   const stuck = $("stuck");
   stuck.style.display = live.playing && n.stuck >= 3 ? "block" : "none";
   stuck.innerHTML = `⚠️ <b>Nothing new for ${n.stuck} episodes.</b> <span>She's asked to try a different kind of task, exploring first.</span>`;
+  $("saidCard").style.display = n.said ? "block" : "none";
+  $("said").textContent = n.said || "";
   $("goal").textContent = n.goal || "—";
   $("episodes").innerHTML = n.episodes.length ? n.episodes.map((e) => `<li>${episodeLine(e)}</li>`).join("") : '<li class="sub">None yet.</li>';
   $("notes").innerHTML = n.notes.length ? n.notes.map((t) => `<li>${esc(t)}</li>`).join("") : '<li class="sub">None yet.</li>';

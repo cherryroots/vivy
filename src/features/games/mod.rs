@@ -8,11 +8,14 @@
 //! - `gameboy/`: `/games gameboy ...`, a Game Boy emulator admins play by hand, and Vivy
 //!   plays by herself in sessions
 //!
+//! - `herself.rs`: what a game needs to have her speak as herself (her memory notes)
+//!
 //! Each game's buttons start with `games:<game>:`, and `on_component` hands a press to its
 //! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
 //! words and the arena.
 
 mod gameboy;
+mod herself;
 mod hunger_games;
 mod who_said_it;
 

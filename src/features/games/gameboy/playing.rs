@@ -20,6 +20,7 @@ use super::budget::Today;
 use super::commands::{admin, bot_settings, game_look, game_name, on_machine};
 use super::dashboard::{self, Board, Links, Live, Parts, last_screen, last_seconds};
 use super::journal::{DEFAULT_GOAL, Journal};
+use super::narrate::{Narrator, Place};
 use super::player::OnConsole;
 use super::session::{self, Hints, Limits, Now, Report, Session, Summary};
 use super::skills::Skill;
@@ -502,10 +503,25 @@ async fn run(
     let live = Live { log, ..live };
     live.show(&mut message, &first, None, None).await;
     let (report, reports) = mpsc::unbounded_channel();
-    let forward = tokio::spawn(post_reports(bot.clone(), log, reports));
     let (now, watching) = watch::channel(first);
     tokio::spawn(web::follow(live.game.clone(), watching.clone()));
     let ended = CancellationToken::new();
+    // Her commentary hears every report the log gets, and speaks in the log too.
+    let mut heard = None;
+    let narrator = (settings.narrate_minutes > 0).then(|| {
+        let (tell, told) = mpsc::unbounded_channel();
+        heard = Some(tell);
+        let place = Place {
+            guild: message.guild_id,
+            channel: message.channel_id,
+            message: message.id,
+            log,
+        };
+        let every = Duration::from_secs(settings.narrate_minutes * 60);
+        let narrator = Narrator::new(bot.clone(), place, live.game.clone(), every, now.clone());
+        tokio::spawn(narrator.follow(told, ended.clone()))
+    });
+    let forward = tokio::spawn(post_reports(bot.clone(), log, reports, heard));
     let timer = bot
         .timers
         .add("Game Boy", "an episode at a time while she plays");
@@ -567,6 +583,15 @@ async fn run(
     let over = text.trim_start_matches("⏹️ ");
     live.show(&mut message, &last, Some(over), last_screen().await)
         .await;
+    if let Some(narrator) = narrator
+        && let Ok(narrator) = narrator.await
+        && let Some(said) = narrator.recap(&last, over).await
+    {
+        // Her wrap-up goes on the ended dashboard too.
+        let last = Now { said, ..last };
+        live.show(&mut message, &last, Some(over), last_screen().await)
+            .await;
+    }
 }
 
 /// A thread under the dashboard, for the log.
@@ -581,9 +606,18 @@ async fn start_thread(bot: &BotCtx, message: &Message, name: &str) -> Result<Cha
     Ok(thread.id)
 }
 
-/// Each report as a message of its own, so the log reads in order.
-async fn post_reports(bot: BotCtx, log: ChannelId, mut reports: mpsc::UnboundedReceiver<Report>) {
+/// Each report as a message of its own, so the log reads in order. Each also goes to
+/// `heard`, her commentary, if she talks.
+async fn post_reports(
+    bot: BotCtx,
+    log: ChannelId,
+    mut reports: mpsc::UnboundedReceiver<Report>,
+    heard: Option<mpsc::UnboundedSender<Report>>,
+) {
     while let Some(report) = reports.recv().await {
+        if let Some(heard) = &heard {
+            let _ = heard.send(report.clone());
+        }
         let mut message = plain(&report.line);
         if let Some(picture) = report.picture {
             message = message.file("checkpoint.png", picture);

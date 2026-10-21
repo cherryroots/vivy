@@ -5,7 +5,8 @@
 //! The memory feature keeps her notes about a person in `/memories/users/<user id>/`, and
 //! about the channels in `/memories/server/channels.md`. This
 //! file doesn't import that feature: it finds whichever feature offers the `memory` chat
-//! tool and runs `view` with it, as Vivy herself, the same way a chat answer would. With
+//! tool and runs `view` with it, as Vivy herself, the same way a chat answer would (see
+//! `games/herself.rs`). With
 //! memory off in the server, or no notes, a tribute simply has none.
 
 use crate::util::discord::{ChannelId, GuildId, MessageId};
@@ -13,6 +14,7 @@ use serde_json::json;
 use tracing::debug;
 
 use crate::core::{Asker, BotCtx};
+use crate::features::games::herself::{file_text, memory_file};
 
 /// The most of one tribute's notes she's given, in characters.
 const MOST: usize = 800;
@@ -31,28 +33,7 @@ pub async fn channels(
     channel: ChannelId,
     message: MessageId,
 ) -> Option<String> {
-    if !ctx.allows("memory", Some(guild), channel) {
-        return None;
-    }
-    let memory = ctx
-        .features
-        .iter()
-        .find(|f| f.tools().iter().any(|t| t.name == "memory"))?;
-    let herself = Asker {
-        user: ctx.bot_id,
-        guild: Some(guild),
-        channel,
-        message,
-        posted: Default::default(),
-    };
-    let args = json!({"command": "view", "path": CHANNELS});
-    match memory.run_tool(ctx, &herself, "memory", &args).await {
-        Ok(view) => file_text(&view).map(|text| crate::util::shorten_at_word(&text, MOST_CHANNELS)),
-        Err(err) => {
-            debug!("couldn't read the note about the channels: {err:#}");
-            None
-        }
-    }
+    memory_file(ctx, guild, channel, message, CHANNELS, MOST_CHANNELS).await
 }
 
 /// Her notes about each of `tributes`, in the same order: `None` for someone she has no
@@ -129,21 +110,6 @@ fn files_in(listing: &str, dir: &str) -> Vec<String> {
         .collect()
 }
 
-/// A file's text from what `view` answered, without the header and line numbers. `None`
-/// when it isn't a file's content (a directory, a missing path).
-fn file_text(view: &str) -> Option<String> {
-    let mut lines = view.lines();
-    if !lines.next()?.starts_with("Here's the content of") {
-        return None;
-    }
-    let body: Vec<&str> = lines
-        .map(|line| line.split_once('\t').map_or(line, |(_, text)| text))
-        .collect();
-    let body = body.join("\n");
-    let body = body.trim();
-    (!body.is_empty()).then(|| body.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,15 +131,5 @@ mod tests {
             )
             .is_empty()
         );
-    }
-
-    #[test]
-    fn a_file_view_loses_its_line_numbers() {
-        let view = "Here's the content of /memories/users/7/games.md with line numbers:\n     1\tPlays chess\n     2\tHates losing";
-        assert_eq!(
-            file_text(view).as_deref(),
-            Some("Plays chess\nHates losing")
-        );
-        assert_eq!(file_text("Here're the files ..."), None);
     }
 }
