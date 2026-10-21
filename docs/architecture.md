@@ -180,7 +180,7 @@ Messages are built with `Draft` (`util/discord.rs`): `Draft::new().content(..).e
 |---|---|
 | `http` | Discord's REST API (`twilight-http`): send, edit, delete, respond to interactions |
 | `cache` | What the gateway told us about servers, channels, roles, members, emoji and presences (`twilight-cache-inmemory`). Messages aren't kept. |
-| `gateway` | The gateway connections (`core/gateway.rs`): latency on the status picture, and the bot's custom status |
+| `gateway` | The gateway connections (`core/gateway.rs`): latency on the status picture, the bot's custom status, and which drops and reconnects are worth a warning |
 | `application_id`, `commands` | The bot's application, and every feature's commands (for the dispatcher) |
 | `db` | The SQLite database (see below) |
 | `config` | `config.toml` |
@@ -256,7 +256,7 @@ Since features never import each other, the core gives them four ways to work to
 `tracing` everywhere: `info!`, `warn!`, `error!`. Because the dispatcher opens a span per handler, every line inside one already says which feature, server, channel and message it came from.
 
 - **stdout** gets short readable lines (or JSON with `LOG_FORMAT=json`). `RUST_LOG` picks the level, for example `RUST_LOG=info,vivy::features::chat=debug`. Under systemd, `journalctl -u vivy -f` shows them. They're written to a copy of stdout taken at start, so `logging::drop_prints` can silence crates that `println!` instead of logging (the Game Boy emulator) without losing log lines.
-- **The log channel** (`[logging]` in config.toml) gets warnings and errors (or the level in `log_level`), with a link to the message that triggered them, posted every 5 seconds. The same line repeated is grouped as "×12". Lines with the target `"lifecycle"` (🟢 Started, 🔴 Shutting down, 🔌 Reconnected) are always posted. This is part of the core, so it works with the control panel turned off.
+- **The log channel** (`[logging]` in config.toml) gets warnings and errors (or the level in `log_level`), with a link to the message that triggered them, posted every 5 seconds. The same line repeated is grouped as "×12". Lines with the target `"lifecycle"` (🟢 Started, 🔴 Shutting down) are always posted. Routine drops and reconnects stay on stdout; only many drops in an hour, a long time away, or a close for good reach the channel (see `Reconnects` in `core/gateway.rs`). This is part of the core, so it works with the control panel turned off.
 - **Errors keep their cause.** Add `.context("what we were doing")` where an error happens, and the log reads "sending reminder 12: Missing Access" instead of only "Missing Access".
 
 ## Shared helpers (`util`)

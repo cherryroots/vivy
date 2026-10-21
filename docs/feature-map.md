@@ -213,6 +213,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #102 | | Repo: removes a scratch build folder (`target-run/`, about 1 GB) that #96's commit picked up by mistake, and ignores `target-*/` |
 | #103 | | Chat: her own reactions are visible to her: chime-in reactions are saved like her lines (`look_back_at_answers` lists them as chime-ins), message lists mark a reaction she added with "(one is yours)", and the prompt says she sometimes reacts on her own, so she stops denying reactions her account made |
 | #104 | | Game Boy (stage 4): the puzzle helper. For a spot walking can't reach, the strategist asks for help; a fresh GPT-6 Astra call (`game_puzzle`, high effort, free tokens) gets the area's whole map and the steps that surprised code, and answers with moves and where she'll stand after each; code checks them against the map, presses them one at a time and stops at the first that ends somewhere else. Tested on a ledge on Route 1 and a maze of arrows Astra solved first try |
+| #105 | | Core: Discord's routine drops (close code 4000, every few hours) and the reconnects after them stay out of the log channel; it warns only on 5 drops in an hour, more than 2 minutes away, or a close for good, with a readable reason ("4000 Unknown Error") instead of a printed `CloseFrame` |
 
 ## Not built yet
 
