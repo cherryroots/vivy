@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::notes::{Milestone, Note};
+use super::puzzle::Wanted;
 use super::skills::{self, Skill};
 use super::supervisor::finish_stream;
 use crate::ai::{ChatProvider, ChatRequest, Input, OpenAi, Part, Role, ToolDef, Turn};
@@ -36,6 +37,12 @@ use them up;
 \"until you're in\" and its name as the game shows it, like \"until you're in Route 1\" \
 (code checks it);
 - different from a task that just failed, unless you can name what will go differently.
+
+Puzzle help: when the way on in this area needs more than walking (steps that carry the \
+player somewhere else, things to push, switches) and walking or exploring has failed, \
+ask for it: the spot to reach here as x and y, and in what, how you think it works. A \
+solver gets the whole map and the steps that surprised code, and code follows its moves \
+before the next task, checking each. Leave what empty for no help.
 
 Notes: facts that make sense on their own (name the people, places and things), at most \
 15. Keep the useful ones, fix or drop wrong ones, add what the last task taught. Each says \
@@ -107,6 +114,8 @@ pub struct Plan {
     /// The milestones still ahead, as it sees them now.
     pub milestones: Vec<Milestone>,
     pub task: String,
+    /// Puzzle help it asked for, to follow before the task (`puzzle.rs`).
+    pub puzzle: Option<Wanted>,
     /// Changes to her skills, as `skills::review` takes them.
     pub skill_changes: Vec<Value>,
     /// Tokens used, for the free daily tokens.
@@ -123,6 +132,8 @@ struct Answer {
     milestones: Option<Vec<Milestone>>,
     #[serde(default)]
     next_task: Option<String>,
+    #[serde(default)]
+    puzzle: Option<Wanted>,
     #[serde(default)]
     skill_changes: Option<Vec<Value>>,
 }
@@ -159,6 +170,7 @@ impl Answer {
             notes: self.notes(),
             milestones: self.milestones.take().unwrap_or_default(),
             task: self.next_task.take().unwrap_or_default(),
+            puzzle: self.puzzle.take().filter(|p| !p.what.trim().is_empty()),
             skill_changes: self.skill_changes.take().unwrap_or_default(),
             tokens,
             usd,
@@ -252,16 +264,19 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                     &schema(false, true),
                 )
                 .await?;
-            let task = serde_json::from_value::<Answer>(second.value)?
-                .next_task
-                .unwrap_or_default();
+            let (tokens, usd) = (
+                first.tokens + second.tokens,
+                first.used.usd + second.used.usd,
+            );
+            let second = serde_json::from_value::<Answer>(second.value)?.plan(0, 0.0);
             Ok(Plan {
                 notes: new_notes,
                 milestones: first_answer.milestones.unwrap_or_default(),
-                task,
+                task: second.task,
+                puzzle: second.puzzle,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
-                tokens: first.tokens + second.tokens,
-                usd: first.used.usd + second.used.usd,
+                tokens,
+                usd,
             })
         }
     }
@@ -320,7 +335,12 @@ fn schema(notes: bool, task: bool) -> Value {
     }
     if task {
         properties["next_task"] = json!({"type": "string"});
-        required.push("next_task");
+        properties["puzzle"] = strict(json!({
+            "what": {"type": "string"},
+            "x": {"type": "integer"},
+            "y": {"type": "integer"}
+        }));
+        required.extend(["next_task", "puzzle"]);
     }
     json!({
         "type": "object",
@@ -377,7 +397,8 @@ mod tests {
                 "notes",
                 "milestones",
                 "skill_changes",
-                "next_task"
+                "next_task",
+                "puzzle"
             ])
         );
         let change = &both["properties"]["skill_changes"]["items"];
@@ -397,8 +418,11 @@ mod tests {
         assert!(notes["properties"].get("next_task").is_none());
         assert_eq!(
             schema(false, true)["required"],
-            json!(["reasoning", "next_task"])
+            json!(["reasoning", "next_task", "puzzle"])
         );
+        let puzzle = &both["properties"]["puzzle"];
+        assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
+        assert_eq!(puzzle["additionalProperties"], false);
     }
 
     #[test]

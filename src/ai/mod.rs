@@ -221,7 +221,8 @@ impl Job {
     /// - "game_plan": the Game Boy strategist (OpenAI only), on GPT-6 Astra, which shares
     ///   the free daily data-sharing tokens and generalised best to new games;
     /// - "game_review": its fresh look at its notes when she's stuck, the same model at
-    ///   high effort.
+    ///   high effort;
+    /// - "game_puzzle": the Game Boy puzzle helper, the same.
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
@@ -255,7 +256,7 @@ impl Job {
                 web: off,
                 code: off,
             },
-            "game_review" => Job {
+            "game_review" | "game_puzzle" => Job {
                 model: Some(STRATEGIST_MODEL.to_string()),
                 effort: Some("high".to_string()),
                 web: off,
