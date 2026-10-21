@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #0e1113; --panel: #171b1e; --line: #2a3034; --text: #e6e9ea; --muted: #8b9599;
-    --teal: #2bb3a3; --red: #e5484d; --amber: #f5b83d;
+    --teal: #2bb3a3; --red: #f23f43; --amber: #f0b232; --green: #57d38c; --dim: #b5bac1;
   }
   * { box-sizing: border-box; }
   body {
@@ -36,6 +36,15 @@
   .bar > div { height: 100%; width: 0; background: var(--teal); transition: width .3s; }
   pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
   pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  /* The dashboard's colours: how an episode went, being stuck, health. */
+  .done { color: var(--green); font-weight: 600; }
+  .notdone { color: var(--amber); font-weight: 600; }
+  .num { color: var(--muted); }
+  .verb { color: var(--teal); }
+  .out { color: var(--dim); }
+  .warn { display: none; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--amber); font-size: 14px; }
+  .warn span { color: var(--text); }
+  .hp { display: inline-block; font-size: 15px; line-height: 1; margin: 0 4px; white-space: nowrap; }
   ul { margin: 0; padding-left: 18px; }
   li { margin: 2px 0; }
   .words { min-height: 2.6em; padding: 8px 10px; background: #f4f4ef; color: #111; border-radius: 6px; font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
@@ -72,6 +81,7 @@
         <div class="task" id="task">—</div>
         <div class="bar"><div id="actionsBar"></div></div>
         <div class="sub" id="actionsText"></div>
+        <div class="warn" id="stuck"></div>
       </div>
       <div class="card">
         <h2>Last actions</h2>
@@ -213,7 +223,7 @@ function showSeen() {
   $("facts").innerHTML = seen.facts.length
     ? seen.facts.map((f) => {
         const i = f.indexOf(": ");
-        return i > 0 ? `<div><b>${esc(f.slice(0, i))}</b> ${esc(f.slice(i + 2))}</div>` : `<div>${esc(f)}</div>`;
+        return i > 0 ? `<div><b>${esc(f.slice(0, i))}</b> ${withHealth(esc(f.slice(i + 2)))}</div>` : `<div>${esc(f)}</div>`;
       }).join("")
     : '<span class="sub">Nothing read from memory here.</span>';
   drawMap();
@@ -247,16 +257,41 @@ function drawMap() {
   $("mapNote").textContent = `${known} steps seen · she's at x ${seen.at[0]}, y ${seen.at[1]}`;
 }
 
+// "17/21 HP" gets a bar like the dashboard mockup's: green, amber under half, red under a fifth.
+function withHealth(text) {
+  return text.replace(/(\d+)\/(\d+) HP/g, (all, hp, most) => {
+    const part = Math.max(0, Math.min(1, Number(hp) / Math.max(1, Number(most))));
+    const filled = Math.round(part * 10);
+    const colour = part < 0.2 ? "var(--red)" : part < 0.5 ? "var(--amber)" : "var(--green)";
+    return `<span class="hp" style="color:${colour}">${"▰".repeat(filled)}${"▱".repeat(10 - filled)}</span>${all}`;
+  });
+}
+
+// "press "a": The text moved on." with the action and what happened in their own colours.
+function actionLine(line) {
+  const i = line.indexOf(": ");
+  if (i < 0) return esc(line);
+  return `<span class="verb">${esc(line.slice(0, i))}</span> <span class="out">${esc(line.slice(i + 2))}</span>`;
+}
+
+// "#13 10-20 14:36 Route 1: keep north → done, 12 actions, ..." with the number grey,
+// the area bold, and how it went green (done) or amber (anything else).
 function episodeLine(line) {
   const i = line.lastIndexOf(" → ");
   if (i < 0) return esc(line);
+  const head = line.slice(0, i).match(/^(#\d+)( \S+ \S+)? ([^:]+):(.*)$/s);
+  const before = head
+    ? `<span class="num">${esc(head[1])}</span> <b>${esc(head[3])}</b>:${esc(head[4])}`
+    : esc(line.slice(0, i));
   const after = line.slice(i + 3);
   let depth = 0, end = after.length;
   for (let k = 0; k < after.length; k++) {
     const c = after[k];
     if (c === "(") depth++; else if (c === ")") depth--; else if (c === "," && depth === 0) { end = k; break; }
   }
-  return `${esc(line.slice(0, i))} → <b>${esc(after.slice(0, end))}</b>${esc(after.slice(end))}`;
+  const outcome = after.slice(0, end);
+  const how = outcome.startsWith("done") ? "done" : "notdone";
+  return `${before} <span class="${how}">→ ${esc(outcome)}</span>${esc(after.slice(end))}`;
 }
 
 function showLive() {
@@ -270,8 +305,11 @@ function showLive() {
   $("task").textContent = live.playing && n.task ? n.task : "—";
   $("actionsBar").style.width = live.playing ? `${Math.min(100, n.actions / 30 * 100)}%` : "0";
   $("actionsText").textContent = live.playing && n.task
-    ? `Action ${n.actions} of 30${n.stuck ? ` · nothing new for ${n.stuck} episodes` : ""}` : "";
-  $("actions").textContent = n.last_actions.length ? n.last_actions.join("\n") : "—";
+    ? `Action ${n.actions} of 30 · ${n.stuck ? `stuck ${n.stuck}` : "not stuck"}` : "";
+  $("actions").innerHTML = n.last_actions.length ? n.last_actions.map(actionLine).join("\n") : "—";
+  const stuck = $("stuck");
+  stuck.style.display = live.playing && n.stuck >= 3 ? "block" : "none";
+  stuck.innerHTML = `⚠️ <b>Nothing new for ${n.stuck} episodes.</b> <span>She's asked to try a different kind of task, exploring first.</span>`;
   $("goal").textContent = n.goal || "—";
   $("episodes").innerHTML = n.episodes.length ? n.episodes.map((e) => `<li>${episodeLine(e)}</li>`).join("") : '<li class="sub">None yet.</li>';
   $("notes").innerHTML = n.notes.length ? n.notes.map((t) => `<li>${esc(t)}</li>`).join("") : '<li class="sub">None yet.</li>';
