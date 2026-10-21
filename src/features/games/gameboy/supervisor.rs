@@ -63,6 +63,9 @@ pub struct Episode {
     pub words: Vec<String>,
     /// One line per action: what was asked and what happened.
     pub log: Vec<String>,
+    /// The areas she went into, in order, once each (not the one she started in, unless
+    /// she left it and came back).
+    pub entered: Vec<String>,
     /// Model requests made.
     pub requests: u32,
 }
@@ -206,6 +209,9 @@ pub async fn run_task(
             }
             let acted = player.act(&call.name, &call.args).await?;
             text_up = !acted.view.can_walk && !acted.view.text.is_empty();
+            if acted.view.area != area && !episode.entered.contains(&acted.view.area) {
+                episode.entered.push(acted.view.area.clone());
+            }
             area.clone_from(&acted.view.area);
             episode.actions += 1;
             keep_words(&mut episode.words, &acted.words);
@@ -668,6 +674,7 @@ mod tests {
             words: vec!["MOM: Right.\nAll boys leave home".to_string()],
             log: vec!["walk_to (7, 1): Walked into Red's House 1F after 9 steps.".to_string()],
             requests: 2,
+            entered: vec!["Red's House 1F".to_string()],
         };
         let digest = episode.digest();
         assert!(digest.starts_with("Finished, done: went downstairs"));

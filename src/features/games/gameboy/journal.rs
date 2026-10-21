@@ -1,5 +1,5 @@
-//! Her game memory between episodes and sessions: the goal, the strategist's notes, a line
-//! for each episode, and what code counts as progress. Pure; the session keeps it in
+//! Her game memory between episodes and sessions: the goal, the strategist's notes and
+//! milestones (`notes.rs`), a line for each episode, and what code counts as progress. Pure; the session keeps it in
 //! `saves_dir/<rom>/journal.json`, next to her skills.
 //!
 //! Progress is what code sees, never what she claims: a new area, at least
@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::notes::{Milestone, Note};
 use super::world::World;
 
 /// Episode lines kept.
@@ -33,8 +34,12 @@ pub const DEFAULT_GOAL: &str =
 #[serde(default)]
 pub struct Journal {
     pub goal: String,
-    /// The strategist's notes, as it last wrote them.
-    pub notes: Vec<String>,
+    /// The strategist's notes, as it last wrote them, with what code found checking them.
+    pub notes: Vec<Note>,
+    /// Steps toward the goal, reached ones first, checked by code after each episode.
+    pub milestones: Vec<Milestone>,
+    /// What the paid models have cost while she played this game, ever (USD).
+    pub usd: f64,
     /// Sessions started, ever.
     pub sessions: u32,
     /// Episodes played, ever.
@@ -80,7 +85,8 @@ impl Found {
             parts.push(self.areas.join(", "));
         }
         if self.steps > 0 {
-            parts.push(format!("{} steps", self.steps));
+            let s = if self.steps == 1 { "" } else { "s" };
+            parts.push(format!("{} step{s}", self.steps));
         }
         if self.texts > 0 {
             let s = if self.texts == 1 { "" } else { "s" };
