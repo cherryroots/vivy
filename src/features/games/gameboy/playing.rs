@@ -5,7 +5,9 @@
 //! at the end, so it reads in order afterwards. While she plays, the commands that move the
 //! game are refused, so nobody presses buttons under her.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::{mpsc, watch};
@@ -15,21 +17,25 @@ use twilight_interactions::command::{CommandModel, CreateCommand};
 use twilight_model::channel::thread::AutoArchiveDuration;
 
 use super::budget::Today;
-use super::commands::{admin, game_look, game_name, on_machine};
+use super::commands::{admin, bot_settings, game_look, game_name, on_machine};
 use super::dashboard::{self, Board, Live, Parts, last_screen, last_seconds};
 use super::journal::{DEFAULT_GOAL, Journal};
 use super::player::OnConsole;
-use super::session::{self, Limits, Now, Report, Session, Summary};
+use super::session::{self, Hints, Limits, Now, Report, Session, Summary};
 use super::skills::Skill;
 use super::{Settings, files};
-use crate::core::interaction::{ComponentInteraction, Respond, Response};
+use crate::core::interaction::{ComponentInteraction, ModalInteraction, Respond, Response};
 use crate::core::{BotCtx, CommandCtx, Result, user_error};
-use crate::util::discord::{ChannelId, Draft, Message, no_pings};
+use crate::util::discord::{self, ChannelId, Draft, Message, Modal, TextBox, UserId, no_pings};
 
 /// Episode lines `status` shows.
 const LINES_SHOWN: usize = 8;
 /// Episodes one session plays at most.
 const EPISODES_MOST: u32 = 200;
+/// How often one person can give her a hint.
+const HINT_EVERY: Duration = Duration::from_secs(120);
+/// Characters a hint can have.
+const HINT_CHARS: u16 = 200;
 /// What a dashboard says while she isn't playing.
 const RESTING: &str = "⏸️ She isn't playing. `/games gameboy play` starts her.";
 
@@ -40,6 +46,10 @@ static PLAYING: Mutex<Option<Running>> = Mutex::new(None);
 struct Running {
     stop: CancellationToken,
     moves: mpsc::UnboundedSender<Message>,
+    /// Hints for her next plan, from the Hint button.
+    hints: Hints,
+    /// When each person last gave a hint, so nobody floods her.
+    hinted: HashMap<UserId, Instant>,
 }
 
 /// Clears [`PLAYING`] when the session ends, however it ends.
@@ -109,6 +119,7 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
     })
     .await?;
     let (moves, moved) = mpsc::unbounded_channel();
+    let hints = Hints::default();
     let stop = {
         let mut playing = PLAYING.lock().unwrap();
         if playing.is_some() {
@@ -120,6 +131,8 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
         *playing = Some(Running {
             stop: stop.clone(),
             moves,
+            hints: hints.clone(),
+            hinted: HashMap::new(),
         });
         stop
     };
@@ -174,7 +187,7 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
     ctx.bot.tasks.spawn(async move {
         let _guard = guard;
         run(
-            live, message, moved, first, settings, rom, limits, goal, stop,
+            live, message, moved, first, settings, rom, limits, goal, stop, hints,
         )
         .await;
     });
@@ -256,8 +269,12 @@ async fn resting(settings: &Settings) -> Result<(Parts, Option<Vec<u8>>)> {
     Ok((parts, last_screen().await))
 }
 
-/// The dashboard's buttons: Stop, and Skills (her skills, for the one who pressed).
+/// The dashboard's buttons: Stop, Skills (her skills, for the one who pressed) and Hint
+/// (a form for a hint).
 pub async fn on_component(bot: &BotCtx, i: &ComponentInteraction, action: &str) -> Result<()> {
+    if action == "hint" {
+        return ask_for_hint(bot, i).await;
+    }
     let text = if !bot.is_admin(i.user.id) {
         "Only admins can use the Game Boy buttons.".to_string()
     } else if action == "stop" {
@@ -275,6 +292,68 @@ pub async fn on_component(bot: &BotCtx, i: &ComponentInteraction, action: &str) 
         .allowed_mentions(no_pings())
         .ephemeral();
     i.create_response(bot, Response::Message(answer)).await
+}
+
+/// Opens the hint form, for anyone when `hints_from_anyone` is on, else admins.
+async fn ask_for_hint(bot: &BotCtx, i: &ComponentInteraction) -> Result<()> {
+    if !bot_settings(bot).hints_from_anyone && !bot.is_admin(i.user.id) {
+        let answer = Draft::new()
+            .content("Only admins can give her hints here.")
+            .ephemeral();
+        return i.create_response(bot, Response::Message(answer)).await;
+    }
+    let modal = Modal::new(dashboard::HINT, "A hint for Vivy").input(
+        "Your hint (she may not take it)",
+        TextBox::short("hint")
+            .placeholder("The Mart is north of the Pokémon Center")
+            .max_length(HINT_CHARS)
+            .required(true),
+    );
+    i.create_response(bot, Response::Modal(modal)).await
+}
+
+/// A hint sent with the form: kept for her next plan.
+pub async fn on_modal(bot: &BotCtx, i: &ModalInteraction, action: &str) -> Result<()> {
+    if action != "hint" {
+        return Ok(());
+    }
+    let hint = i
+        .first_value()
+        .unwrap_or_default()
+        .trim()
+        .replace('\n', " ");
+    let name = discord::display_name(&i.user);
+    let answer = add_hint(i.user.id, name, &hint, Instant::now());
+    let draft = Draft::new()
+        .content(answer)
+        .allowed_mentions(no_pings())
+        .ephemeral();
+    i.create_response(bot, Response::Message(draft)).await
+}
+
+/// Keeps `hint` from `name` for her next plan, unless she isn't playing or they gave one
+/// a moment ago. Says what happened.
+fn add_hint(user: UserId, name: &str, hint: &str, at: Instant) -> String {
+    if hint.is_empty() {
+        return "That hint was empty.".to_string();
+    }
+    let mut playing = PLAYING.lock().unwrap();
+    let Some(running) = playing.as_mut() else {
+        return "She isn't playing right now.".to_string();
+    };
+    if let Some(last) = running.hinted.get(&user)
+        && at.duration_since(*last) < HINT_EVERY
+    {
+        let wait = (HINT_EVERY - at.duration_since(*last)).as_secs().max(1);
+        return format!("You gave her a hint a moment ago. Try again in {wait} s.");
+    }
+    running.hinted.insert(user, at);
+    running
+        .hints
+        .lock()
+        .unwrap()
+        .push(format!("{name}: {}", short(hint, usize::from(HINT_CHARS))));
+    "💡 Thanks! She'll read it before she plans her next task.".to_string()
 }
 
 /// Her skills, a line each: the name, when she uses it, and how often she has.
@@ -372,6 +451,7 @@ async fn run(
     limits: Limits,
     goal: Option<String>,
     stop: CancellationToken,
+    hints: Hints,
 ) {
     let bot = live.bot.clone();
     let Some(provider) = bot.ai.chat() else {
@@ -410,6 +490,7 @@ async fn run(
         report,
         now: Some(now),
         timer: Some(timer.clone()),
+        hints,
     };
     let playing = async {
         let result = session::play(&session, &mut OnConsole, goal.as_deref()).await;
@@ -542,6 +623,37 @@ fn short(text: &str, most: usize) -> String {
 mod tests {
     use super::*;
     use crate::features::games::gameboy::session::Ended;
+
+    #[test]
+    fn hints_wait_for_her_next_plan_one_every_two_minutes_each() {
+        let cherry = UserId::new(1);
+        let at = Instant::now();
+        assert_eq!(
+            add_hint(cherry, "Cherry", "go north", at),
+            "She isn't playing right now."
+        );
+        let hints = Hints::default();
+        let (moves, _moved) = mpsc::unbounded_channel();
+        *PLAYING.lock().unwrap() = Some(Running {
+            stop: CancellationToken::new(),
+            moves,
+            hints: hints.clone(),
+            hinted: HashMap::new(),
+        });
+        let _guard = Playing;
+        assert!(add_hint(cherry, "Cherry", "go north", at).starts_with("💡 Thanks"));
+        assert!(
+            add_hint(cherry, "Cherry", "again", at + Duration::from_secs(30)).contains("in 90 s")
+        );
+        assert!(add_hint(UserId::new(2), "Rene", "talk to mom", at).starts_with("💡"));
+        assert!(add_hint(cherry, "Cherry", "", at).contains("empty"));
+        let later = at + HINT_EVERY;
+        assert!(add_hint(cherry, "Cherry", "the Mart", later).starts_with("💡"));
+        assert_eq!(
+            *hints.lock().unwrap(),
+            vec!["Cherry: go north", "Rene: talk to mom", "Cherry: the Mart"]
+        );
+    }
 
     #[test]
     fn the_summary_says_why_it_ended_and_what_it_cost() {
