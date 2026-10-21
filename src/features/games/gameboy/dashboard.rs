@@ -33,6 +33,7 @@ use crate::util::discord::{self, ChannelId, Draft, GuildId, Message, no_pings};
 /// The buttons' IDs.
 pub const STOP: &str = "games:gameboy:stop";
 pub const SKILLS: &str = "games:gameboy:skills";
+pub const HINT: &str = "games:gameboy:hint";
 /// The dashboard is edited at most this often, in seconds.
 const FASTEST: u64 = 5;
 /// Under Discord's 4000 characters for a whole Components V2 message.
@@ -355,6 +356,11 @@ fn buttons(links: Links, over: bool) -> Option<Component> {
     let mut row: Vec<Button> = Vec::new();
     if !over {
         row.push(discord::button(STOP, "Stop", ButtonStyle::Danger).build());
+        row.push(
+            discord::button(HINT, "Hint", ButtonStyle::Primary)
+                .emoji(discord::emoji("💡"))
+                .build(),
+        );
         row.push(discord::button(SKILLS, "Skills", ButtonStyle::Secondary).build());
     }
     if let Some(watch) = links.watch.filter(|_| !over) {

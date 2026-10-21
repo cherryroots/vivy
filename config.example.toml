@@ -351,10 +351,13 @@ free_tokens = 1000000
 # doing) is updated this often, in seconds (at least 5; 0: only at the end). The log goes in
 # a thread under it.
 live_seconds = 5
+# Whether anyone can give her a hint with the dashboard's Hint button (one every 2 minutes
+# each, read before her next plan), or only admins.
+hints_from_anyone = true
 # The live web page: her screen at game speed, with what code sees drawn over it (the
 # steps she can walk, the words, the area's map). It listens here, and only while someone
-# watches does it look at the game. Put it behind your web server (it needs WebSockets);
-# empty: no page.
+# watches does it look at the game. Put it behind your web server (it needs WebSockets;
+# docs/features/gameboy.md has a Caddy block); empty: no page.
 # web_bind = "127.0.0.1:8787"
 # The page's public address, for the dashboard's 📺 Watch live button (empty: no button).
 # web_url = "https://kirei.moe/vivy/"

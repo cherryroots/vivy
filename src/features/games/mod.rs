@@ -21,7 +21,9 @@ use serde::Deserialize;
 use twilight_interactions::command::{CommandModel, CreateCommand};
 
 use crate::core::interaction::{Choice, Typed};
-use crate::core::{BotCtx, Command, CommandCtx, ComponentInteraction, Feature, Result};
+use crate::core::{
+    BotCtx, Command, CommandCtx, ComponentInteraction, Feature, ModalInteraction, Result,
+};
 
 /// `[features.games]` settings: one table per game.
 #[derive(Debug, Default, Deserialize)]
@@ -70,6 +72,18 @@ impl Feature for Games {
         }
         if let Some(action) = action.strip_prefix("gameboy:") {
             return gameboy::on_component(ctx, interaction, action).await;
+        }
+        Ok(())
+    }
+
+    async fn on_modal(
+        &self,
+        ctx: &BotCtx,
+        interaction: &ModalInteraction,
+        action: &str,
+    ) -> Result<()> {
+        if let Some(action) = action.strip_prefix("gameboy:") {
+            return gameboy::on_modal(ctx, interaction, action).await;
         }
         Ok(())
     }

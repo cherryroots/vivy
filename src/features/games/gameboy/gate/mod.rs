@@ -794,6 +794,7 @@ async fn gate_session() {
         report,
         now: web.is_some().then_some(now),
         timer: None,
+        hints: Default::default(),
     };
     // Each line as it comes, so a long run can be followed.
     let printer = tokio::spawn(async move {
