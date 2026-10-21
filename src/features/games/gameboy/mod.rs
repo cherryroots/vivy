@@ -62,7 +62,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 pub use commands::{GameboyCommand, autocomplete, gameboy};
-pub use playing::on_component;
+pub use playing::{on_component, on_modal};
 
 /// `[features.games.gameboy]` settings.
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +82,8 @@ pub struct Settings {
     /// While she plays, the dashboard (a GIF of her play since the last update, and what
     /// she's doing) is updated this often, in seconds (at least 5; 0: only at the end).
     pub live_seconds: u64,
+    /// Whether anyone can give her hints with the dashboard's Hint button, or only admins.
+    pub hints_from_anyone: bool,
 }
 
 impl Default for Settings {
@@ -93,6 +95,7 @@ impl Default for Settings {
             daily_usd: 1.5,
             free_tokens: 1_000_000,
             live_seconds: 5,
+            hints_from_anyone: true,
         }
     }
 }
