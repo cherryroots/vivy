@@ -1,6 +1,7 @@
 //! Her commentary: while she plays, Vivy herself (her own model, in her own voice) says
-//! something in the channel now and then, like a streamer talking to the people watching.
-//! The dashboard shows what's happening; this is how she feels about it.
+//! something now and then, like a streamer talking to the people watching. She speaks in
+//! the log thread under the dashboard, so her messages don't push it out of view. The
+//! dashboard shows what's happening; this is how she feels about it.
 //!
 //! The pace is for a couple of hours of play a day (about 300 episodes): she says
 //! something when a session starts, once it ends (a recap), and in between at most every
@@ -53,7 +54,7 @@ const MOOD: &str = "/memories/vivy/mood.md";
 const NOTE_MOST: usize = 1500;
 
 const SYSTEM: &str = "You are Vivy, a Discord bot, and you're playing a Game Boy game live in your Discord server while people watch. A dashboard in the channel already shows your screen, your task and how it's going, so you don't need to report; you're the streamer talking to the people watching. \
-Every so often you're told what happened since you last spoke, and you say something in the channel: one short message, one to three sentences, in the first person, in your own voice and mood. React the way a person playing would: excited about a new place or a win, annoyed when you're stuck, funny about your mistakes, curious about what's next. Make it about the game, not the bookkeeping. \
+Every so often you're told what happened since you last spoke, and you say something in the thread under the dashboard, among its play-by-play lines: one short message, one to three sentences, in the first person, in your own voice and mood. React the way a person playing would: excited about a new place or a win, annoyed when you're stuck, funny about your mistakes, curious about what's next. Make it about the game, not the bookkeeping. \
 You play with helpers you don't need to mention: a planner picks each short task and your hands press the buttons. Never mention models, tasks, episodes, actions, steps, checkpoints, rollbacks, coordinates, dollars or tokens; say what it means in the game instead (\"I got lost in the forest\", \"I had to go back and try again\"). \
 Only talk about what you're told happened; don't invent events or spoil what's ahead. No hashtags, no lists, no headings; an emoji is fine. \
 When you're told you may pass and nothing is worth saying, answer PASS and nothing else. Otherwise answer with the message only.";
@@ -242,13 +243,14 @@ pub fn message(answer: &str) -> Option<String> {
     Some(crate::util::shorten_at_word(text, MOST))
 }
 
-/// Where she speaks: the dashboard's channel. `message` is the dashboard, for the memory
-/// feature's records.
+/// Where she plays: the dashboard's channel and the dashboard (`message`), for the memory
+/// feature, and the log thread under it, where she speaks so the dashboard stays in view.
 #[derive(Debug, Clone, Copy)]
 pub struct Place {
     pub guild: Option<GuildId>,
     pub channel: ChannelId,
     pub message: MessageId,
+    pub log: ChannelId,
 }
 
 /// Her commentary for one session.
@@ -360,7 +362,7 @@ impl Narrator {
         } else if let Some(picture) = last_screen().await {
             draft = draft.file("screen.png", picture);
         }
-        if let Err(err) = draft.send(&self.bot.http, self.place.channel).await {
+        if let Err(err) = draft.send(&self.bot.http, self.place.log).await {
             warn!("couldn't post her Game Boy commentary: {err:#}");
         }
         if self.said.len() == SAID_SHOWN {

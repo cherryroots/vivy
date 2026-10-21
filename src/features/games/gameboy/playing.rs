@@ -490,7 +490,7 @@ async fn run(
     let (report, reports) = mpsc::unbounded_channel();
     let (now, watching) = watch::channel(first);
     let ended = CancellationToken::new();
-    // Her commentary hears every report the log gets, and speaks in the dashboard's channel.
+    // Her commentary hears every report the log gets, and speaks in the log too.
     let mut heard = None;
     let narrator = (settings.narrate_minutes > 0).then(|| {
         let (tell, told) = mpsc::unbounded_channel();
@@ -499,6 +499,7 @@ async fn run(
             guild: message.guild_id,
             channel: message.channel_id,
             message: message.id,
+            log,
         };
         let every = Duration::from_secs(settings.narrate_minutes * 60);
         let narrator = Narrator::new(bot.clone(), place, live.game.clone(), every);
