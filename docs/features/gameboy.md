@@ -140,7 +140,7 @@ When the session ends it gets short: how it went and her goal beside a small sti
 
 - **The screen**, scaled up with sharp pixels. Screens arrive as small PNGs over a WebSocket (`/live`) and play at 20 a second from a queue, so the game's bursts (an action in a moment, then a wait while Haiku thinks) play out evenly; a viewer that falls far behind skips ahead.
 - **What she sees**, a toggle over the screen: each step code has marked on the map (floor, wall, grass, door, sign, edge and people, in colours with a legend), her own step outlined, and a tile grid. It's drawn only over the screen it was looked at, and only when the map shows (not in battles, menus or text boxes), so it never lags behind the picture.
-- **Beside it**: the area's whole map so far with her on it, the words on screen, the facts from the game's memory, and what the dashboard shows (goal, task, actions used, stuck, last actions, episodes, notes).
+- **Under it**: her task, actions used and a warning when she's stuck, the facts from the game's memory (HP as a bar), and her last actions. **Beside it**: the area's whole map so far with her on it, the words on screen, her goal, recent episodes (done in green, anything else in amber) and her notes. The colours follow the dashboard mockup.
 - **Cost.** One feed reads the Game Boy for every viewer, and only while someone is watching: it copies new screens every 150 ms and looks again once they settle, on a copy of her maps, so watching never changes what she has seen. `/state.json` has the latest look and dashboard state, for checking by hand.
 
 `gate_session` serves the page too with `VIVY_GB_WEB=127.0.0.1:8787`, to watch a test session.
