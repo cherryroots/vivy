@@ -351,6 +351,9 @@ free_tokens = 1000000
 # doing) is updated this often, in seconds (at least 5; 0: only at the end). The log goes in
 # a thread under it.
 live_seconds = 5
+# Whether anyone can give her a hint with the dashboard's Hint button (one every 2 minutes
+# each, read before her next plan), or only admins.
+hints_from_anyone = true
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.
