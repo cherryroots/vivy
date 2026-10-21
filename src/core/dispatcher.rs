@@ -47,11 +47,10 @@ pub async fn handle_event(bot: &BotCtx, event: Event) {
         }
         Event::InteractionCreate(interaction) => on_interaction(bot, interaction.0).await,
         Event::Ready(_) => {
-            // The first Ready is the start itself; later ones are full reconnects.
+            // The first Ready is the start itself; later ones are full reconnects, which
+            // `main.rs` logs.
             static SEEN: AtomicBool = AtomicBool::new(false);
-            if SEEN.swap(true, Ordering::Relaxed) {
-                info!(target: "lifecycle", "🔌 Reconnected to Discord with a new session");
-            } else {
+            if !SEEN.swap(true, Ordering::Relaxed) {
                 // The config is read before logging starts, so its warnings wait until now.
                 let names: Vec<&str> = bot.features.iter().map(|f| f.name()).collect();
                 for warning in bot.config.startup_warnings(&names) {
@@ -59,7 +58,6 @@ pub async fn handle_event(bot: &BotCtx, event: Event) {
                 }
             }
         }
-        Event::Resumed => info!(target: "lifecycle", "🔌 Reconnected to Discord"),
         _ => {}
     }
 }

@@ -212,6 +212,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #99 | | Game Boy (stage 5): her commentary while she plays: Vivy herself (her own model and voice, with her personality and mood notes) talks in the log thread under the dashboard (so the dashboard stays in view) like a streamer, hello at the start, a wrap-up at the end, and in between at most every `narrate_minutes` (10) when something happened, passing when nothing's worth saying; a GIF with each message; her latest one on the dashboard ("Vivy says"); the `game_narrate` job, not counted in `daily_usd`; `gate_narrate` replays it over a session's report; a hint from #96's Hint button, a milestone (#98) or a blackout (#101) makes her speak soon. Hunger Games' memory reading moves to `games/herself.rs` for both |
 | #102 | | Repo: removes a scratch build folder (`target-run/`, about 1 GB) that #96's commit picked up by mistake, and ignores `target-*/` |
 | #103 | | Chat: her own reactions are visible to her: chime-in reactions are saved like her lines (`look_back_at_answers` lists them as chime-ins), message lists mark a reaction she added with "(one is yours)", and the prompt says she sometimes reacts on her own, so she stops denying reactions her account made |
+| #105 | | Core: Discord's routine drops (close code 4000, every few hours) and the reconnects after them stay out of the log channel; it warns only on 5 drops in an hour, more than 2 minutes away, or a close for good, with a readable reason ("4000 Unknown Error") instead of a printed `CloseFrame` |
 
 ## Not built yet
 

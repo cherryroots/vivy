@@ -6,9 +6,10 @@ mod core;
 mod features;
 mod util;
 
+use std::error::Error as _;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use chrono::Utc;
@@ -17,13 +18,14 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{error, info, warn};
 use twilight_cache_inmemory::{DefaultInMemoryCache, ResourceType};
+use twilight_gateway::error::ReceiveMessageErrorType;
 use twilight_gateway::{
     Config as ShardConfig, Event, EventTypeFlags, Intents, Shard, StreamExt as _,
 };
 
 use crate::core::config::Config;
 use crate::core::db::{self, Db};
-use crate::core::gateway::Gateway;
+use crate::core::gateway::{self, Gateway, Reconnects};
 use crate::core::interaction::FeatureCommand;
 use crate::core::legacy::{self, Outcome};
 use crate::core::logging::{self, LogLine};
@@ -248,21 +250,58 @@ async fn run_shard(
     number: usize,
     started: Arc<std::sync::Mutex<Option<String>>>,
 ) {
+    let mut reconnects = Reconnects::default();
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
         let event = match item {
             Ok(event) => event,
+            // Twilight tries again with a growing wait; a long outage gets a warning once
+            // the bot is back (see `Reconnects`).
+            Err(err) if matches!(err.kind(), ReceiveMessageErrorType::Reconnect) => {
+                let cause = err.source().map(|e| format!(": {e}")).unwrap_or_default();
+                info!("couldn't reconnect to Discord yet{cause}");
+                continue;
+            }
             Err(err) => {
                 warn!("error from the Discord connection: {err}");
                 continue;
             }
         };
-        if let Event::GatewayClose(frame) = &event {
-            if bot.shutdown.is_cancelled() {
-                break;
+        match &event {
+            Event::GatewayClose(frame) => {
+                if bot.shutdown.is_cancelled() {
+                    break;
+                }
+                let reason = gateway::close_reason(frame.as_ref());
+                if gateway::is_fatal(frame.as_ref()) {
+                    error!("Discord closed the connection for good: {reason}");
+                } else {
+                    // Routine: Discord does this every few hours and Twilight resumes.
+                    info!("Discord closed the connection ({reason}), reconnecting");
+                    if let Some(drops) = reconnects.dropped(Instant::now()) {
+                        warn!(
+                            "Discord dropped the connection {drops} times in the last hour \
+(last: {reason})"
+                        );
+                    }
+                }
             }
-            // Most closes are followed by a reconnect. 4014 means an intent (message
-            // content or presences) isn't turned on in the Developer Portal.
-            warn!("Discord closed the connection: {frame:?}");
+            Event::Ready(_) | Event::Resumed => {
+                // Resumed picks up where it left off; a new session (Ready) missed the
+                // events in between.
+                let how = match &event {
+                    Event::Resumed => "",
+                    _ => " with a new session",
+                };
+                match reconnects.back(Instant::now()) {
+                    None => {}
+                    Some(away) if gateway::long_away(away) => warn!(
+                        "🔌 Reconnected to Discord{how} after {} minutes away",
+                        away.as_secs().div_ceil(60)
+                    ),
+                    Some(_) => info!("🔌 Reconnected to Discord{how}"),
+                }
+            }
+            _ => {}
         }
         bot.cache.update(&event);
         bot.gateway

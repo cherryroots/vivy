@@ -45,7 +45,12 @@ Lifecycle lines:
 
 - 🟢 **Started**: version, git commit, the bot's name, the features that started, and what was imported from voltgpt's `old.db` (`src/main.rs`).
 - 🔴 **Shutting down** (`src/main.rs`).
-- 🔌 **Reconnected to Discord** after a resume, or "with a new session" after a full reconnect (`src/core/dispatcher.rs`).
+
+Drops and reconnects are not lifecycle lines. Discord drops every bot's connection every few hours (usually close code 4000) and Twilight resumes a second later, so `run_shard` in `src/main.rs` only writes those to stdout ("Discord closed the connection (4000 Unknown Error), reconnecting", "🔌 Reconnected to Discord"). `Reconnects` in `src/core/gateway.rs` decides when the log channel hears about it:
+
+- ⚠️ the connection dropped 5 times within an hour (at most one warning an hour);
+- ⚠️ "🔌 Reconnected to Discord after 7 minutes away" when it was gone longer than 2 minutes ("with a new session" when it couldn't resume, so the events in between were missed);
+- ❌ "Discord closed the connection for good" with a readable reason and a hint (4004: the token; 4014: the intents in the Developer Portal).
 
 Panics are logged as errors too (target `"panic"`), with the file and line.
 
