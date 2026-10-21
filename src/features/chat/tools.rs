@@ -470,7 +470,7 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
             line.push_str(&format!(" [embed: {}]", shorten(title, 100)));
         }
     }
-    let reactions: Vec<(String, u64)> = msg
+    let reactions: Vec<(String, u64, bool)> = msg
         .reactions
         .iter()
         .map(|r| {
@@ -481,21 +481,25 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
                 EmojiReactionType::Custom { id, .. } => format!("<:_:{id}>"),
                 EmojiReactionType::Unicode { name } => name.clone(),
             };
-            (emoji, r.count)
+            (emoji, r.count, r.me)
         })
         .collect();
     line.push_str(&reaction_text(&reactions));
     line
 }
 
-/// " [reactions: 😂 3, :pog: 1]", or nothing without reactions.
-fn reaction_text(reactions: &[(String, u64)]) -> String {
+/// " [reactions: 😂 3, :pog: 1 (one is yours)]", or nothing without reactions. Her own
+/// reactions are marked, since some come from chiming in and she may not remember them.
+fn reaction_text(reactions: &[(String, u64, bool)]) -> String {
     if reactions.is_empty() {
         return String::new();
     }
     let list: Vec<String> = reactions
         .iter()
-        .map(|(emoji, count)| format!("{emoji} {count}"))
+        .map(|(emoji, count, mine)| {
+            let mine = if *mine { " (one is yours)" } else { "" };
+            format!("{emoji} {count}{mine}")
+        })
         .collect();
     format!(" [reactions: {}]", list.join(", "))
 }
@@ -751,8 +755,11 @@ mod tests {
     #[test]
     fn reactions_after_the_message() {
         assert_eq!(reaction_text(&[]), "");
-        let list = [("😂".to_string(), 3), (":pog:".to_string(), 1)];
-        assert_eq!(reaction_text(&list), " [reactions: 😂 3, :pog: 1]");
+        let list = [("😂".to_string(), 3, false), (":pog:".to_string(), 1, true)];
+        assert_eq!(
+            reaction_text(&list),
+            " [reactions: 😂 3, :pog: 1 (one is yours)]"
+        );
     }
 
     #[test]
