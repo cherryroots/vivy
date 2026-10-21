@@ -204,6 +204,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #93 | | Chat: pictures she sees (on the message she answers, the one it replies to, and earlier ones in the request) are copied into her code sandbox too, not only attached files, named by their bytes (`image-1a2b3c4d.png`) with a note saying the name, so she can run code on a screenshot; on Claude (`container_upload`) and the OpenAI fallback (`/mnt/data`); old Claude uploads are forgotten once so pictures get the new names |
 | #94 | | Chat prompt: `web_search` called from her code returns a JSON string to decode (Anthropic's description of it says a list) |
 | #95 | | Chat: pictures and files on earlier messages (like the one she's replying to) really reach her code sandbox: Claude only copies what the newest message lists, at most 16, so every message lists the newest 16 files and pictures so far (#93 listed each only on its own message) |
+| #101 | | Game Boy: a blackout is its own line in the log (`💀 **Blacked out** in Viridian Forest and woke up in Pallet Town.`), read from the words on screen ("blacked out" or "whited out"), and kept in her journal for the strategist |
 
 ## Not built yet
 

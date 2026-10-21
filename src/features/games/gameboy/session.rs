@@ -216,16 +216,25 @@ impl Now {
     }
 }
 
-/// The game as the supervisor plays it: each action is also told to the dashboard.
+/// The game as the supervisor plays it: each action is also told to the dashboard, and a
+/// blackout is noticed.
 struct Watched<'a, G> {
     game: &'a mut G,
     now: Option<&'a watch::Sender<Now>>,
+    /// The area she was in before the last action.
+    area: String,
+    /// The area she blacked out in, if she did.
+    blacked_out: Option<String>,
 }
 
 #[async_trait]
 impl<G: Game> Player for Watched<'_, G> {
     async fn act(&mut self, name: &str, args: &Value) -> anyhow::Result<Acted> {
         let acted = self.game.act(name, args).await?;
+        if blacked_out(&acted.words) {
+            self.blacked_out = Some(self.area.clone());
+        }
+        self.area.clone_from(&acted.view.area);
         if let Some(now) = self.now {
             let line = format!("{name} {}", args_text(args));
             let line = format!("{}: {}", line.trim(), short(&acted.outcome, 70));
@@ -252,6 +261,29 @@ impl<G: Game> Player for Watched<'_, G> {
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
         self.game.screen().await
+    }
+}
+
+/// What Pokémon games say when all her Pokémon faint and she's sent back to heal: "blacked
+/// out" in Red and Blue, "whited out" in the later ones. Other games never say it, so for
+/// them nothing happens.
+const BLACKED_OUT: [&str; 2] = ["blacked out", "whited out"];
+
+/// Whether the words on screen said she blacked out, ignoring case and line breaks.
+fn blacked_out(words: &[String]) -> bool {
+    words.iter().any(|words| {
+        let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
+        let words = words.to_lowercase();
+        BLACKED_OUT.iter().any(|said| words.contains(said))
+    })
+}
+
+/// The log line for a blackout: where it happened and where she woke up.
+fn blackout_line(from: &str, to: &str) -> String {
+    if from == to {
+        format!("💀 **Blacked out** in {from}.")
+    } else {
+        format!("💀 **Blacked out** in {from} and woke up in {to}.")
     }
 }
 
@@ -392,6 +424,8 @@ pub async fn play<G: Game>(
         let mut watched = Watched {
             game: &mut *game,
             now: session.now.as_ref(),
+            area: area.clone(),
+            blacked_out: None,
         };
         let episode = tokio::select! {
             episode = run_task(session.provider, &mut watched, &session.game, &task, None, EPISODE_ACTIONS) => episode,
@@ -400,6 +434,7 @@ pub async fn play<G: Game>(
                 Ok(Episode::default())
             }
         };
+        let blacked_out = watched.blacked_out.take();
         let episode = match episode {
             Ok(episode) => {
                 failures = 0;
@@ -442,12 +477,16 @@ pub async fn play<G: Game>(
             write!(line, "; skills: {}", reviewed.join(", ")).unwrap();
         }
         journal.log(line.clone());
+        let at = game.look().await?.view.area;
+        let blackout = blacked_out.map(|from| blackout_line(&from, &at));
+        if let Some(blackout) = &blackout {
+            journal.log(blackout.clone());
+        }
         for new in &found.areas {
             summary.new_areas.push(new.clone());
         }
         let mut pictured = None;
         if !found.areas.is_empty() {
-            let at = game.look().await?.view.area;
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
             pictured = Some(Report {
@@ -460,6 +499,9 @@ pub async fn play<G: Game>(
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
         keep(session, game, &journal, &world, &today).await?;
         let _ = session.report.send(Report::line(line));
+        if let Some(blackout) = blackout {
+            let _ = session.report.send(Report::line(blackout));
+        }
         if let Some(pictured) = pictured {
             let _ = session.report.send(pictured);
         }
@@ -739,6 +781,8 @@ mod tests {
     struct Rooms {
         room: u32,
         world: World,
+        /// Whether a press blacks her out, back to the first room.
+        faints: bool,
     }
 
     impl Rooms {
@@ -746,6 +790,7 @@ mod tests {
             let mut rooms = Rooms {
                 room: 0,
                 world: World::default(),
+                faints: false,
             };
             rooms.see();
             rooms
@@ -780,6 +825,15 @@ mod tests {
                 self.room += 1;
                 self.see();
                 return Ok(self.acted("Walked into the next room."));
+            }
+            if self.faints {
+                self.room = 0;
+                let mut acted = self.acted("Pressed A.");
+                acted.words = vec![
+                    "BLUE is out of useable POKéMON!".to_string(),
+                    "BLUE blacked\nout!".to_string(),
+                ];
+                return Ok(acted);
             }
             Ok(self.acted("Nothing changed."))
         }
@@ -918,6 +972,50 @@ mod tests {
             now: None,
             timer: None,
         }
+    }
+
+    #[test]
+    fn blackouts_are_read_from_the_words() {
+        let words = |w: &[&str]| w.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert!(blacked_out(&words(&[
+            "BLUE is out of",
+            "BLUE blacked\nout!"
+        ])));
+        assert!(blacked_out(&words(&["GOLD whited out!"])));
+        assert!(!blacked_out(&words(&["The wild PIDGEY fainted!"])));
+        assert_eq!(
+            blackout_line("Viridian Forest", "Pallet Town"),
+            "💀 **Blacked out** in Viridian Forest and woke up in Pallet Town."
+        );
+        assert_eq!(
+            blackout_line("Route 1", "Route 1"),
+            "💀 **Blacked out** in Route 1."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_blackout_is_its_own_line_in_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        // She walks into Room 1, then a press blacks her out back to Room 0.
+        let provider = Scripted::new(&[true, false]);
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let session = session(&provider, dir.path(), 2, report);
+        let mut game = Rooms::new();
+        game.faints = true;
+        play(&session, &mut game, None).await.unwrap();
+        let mut sent = Vec::new();
+        while let Ok(report) = lines.try_recv() {
+            sent.push(report.line);
+        }
+        let blackouts: Vec<_> = sent.iter().filter(|l| l.starts_with("💀")).collect();
+        assert_eq!(
+            blackouts,
+            ["💀 **Blacked out** in Room 1 and woke up in Room 0."],
+            "{sent:#?}"
+        );
+        // It comes right after its episode's line.
+        let at = sent.iter().position(|l| l.starts_with("💀")).unwrap();
+        assert!(sent[at - 1].starts_with("#2 "), "{sent:#?}");
     }
 
     #[tokio::test]
