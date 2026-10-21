@@ -209,6 +209,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #100 | | Game Boy: a task finished in an area it didn't start in or name is checked once (she's asked whether something sent her there, like losing a battle), since she once called a lost battle done after waking up at home |
 | #101 | | Game Boy: a blackout is its own line in the log (`💀 **Blacked out** in Viridian Forest and woke up in Pallet Town.`), read from the words on screen ("blacked out" or "whited out"), and kept in her journal for the strategist |
 | #102 | | Repo: removes a scratch build folder (`target-run/`, about 1 GB) that #96's commit picked up by mistake, and ignores `target-*/` |
+| #103 | | Chat: her own reactions are visible to her: chime-in reactions are saved like her lines (`look_back_at_answers` lists them as chime-ins), message lists mark a reaction she added with "(one is yours)", and the prompt says she sometimes reacts on her own, so she stops denying reactions her account made |
 
 ## Not built yet
 

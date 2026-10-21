@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::util::discord::{
-    ChannelId, Draft, GuildId, Message, UserId, mentions_user, no_pings, ping_users, react,
+    ChannelId, Draft, GuildId, Message, UserId, display_name, mentions_user, no_pings, ping_users,
+    react,
 };
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -28,6 +29,7 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
+use super::look_back::one_line;
 use super::store::{self, NewTurn, StoredPart, Written};
 use super::tools::{format_message, parse_link};
 use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete};
@@ -310,12 +312,34 @@ pub async fn speak(
         info!("read along without posting");
         return Ok(());
     }
-    let (line, reply_to) = match (decide(&done.text), last) {
+    let decision = decide(&done.text);
+    // What she read and how, saved with whatever she does below.
+    let mut stored = vec![StoredPart::Text { text: question }];
+    stored.extend(context.into_iter().map(|text| StoredPart::Context { text }));
+    let written = Written {
+        provider: provider.name().to_string(),
+        model: provider.model().to_string(),
+        continuation_id: done.continuation,
+        native_json: serde_json::to_string(&done.rounds).ok(),
+    };
+    let (line, reply_to) = match (decision, last) {
         (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => (line, reply_to),
         (Decision::React(emoji), Some(msg)) => {
             react(&ctx.http, msg.channel_id, msg.id, &emoji).await?;
             info!("reacted with {emoji}");
-            return Ok(());
+            // Saved too, so `look_back_at_answers` lists it when someone asks why she
+            // reacted. There's no message of hers to link it to.
+            let note = reaction_note(&emoji, display_name(&msg.author), &msg.content);
+            return save(
+                ctx,
+                asker.channel,
+                stored,
+                written,
+                started_at,
+                note,
+                Vec::new(),
+            )
+            .await;
         }
         _ => {
             info!("read along and passed");
@@ -338,33 +362,58 @@ pub async fn speak(
         message = message.reply_to(target.id);
     }
     let sent = message.send(&ctx.http, asker.channel).await?;
-    let ids = vec![sent.id.get()];
     match target {
         Some(target) => info!("spoke up on her own, replying to {}", target.id),
         None => info!("spoke up on her own"),
     }
-    // Saved like a question and its answer, exactly as the model read it, so a reply to
-    // her line continues the same conversation.
-    let mut stored = vec![StoredPart::Text { text: question }];
-    stored.extend(context.into_iter().map(|text| StoredPart::Context { text }));
+    // Linked to her message, so a reply to her line continues the same conversation.
+    save(
+        ctx,
+        asker.channel,
+        stored,
+        written,
+        started_at,
+        line,
+        vec![sent.id.get()],
+    )
+    .await
+}
+
+/// What a chime-in reaction is saved as: `(reacted 🐄 to RickyWL: "I Am One Of…")`.
+fn reaction_note(emoji: &str, author: &str, text: &str) -> String {
+    let text = one_line(text);
+    let quote = if text.is_empty() {
+        String::new()
+    } else {
+        format!(": \"{}\"", shorten_at_word(&text, 80))
+    };
+    format!("(reacted {emoji} to {author}{quote})")
+}
+
+/// Saves a chime-in like a question and its answer: what she read, exactly as the model
+/// read it, and `said`, what she posted (or a note on her reaction). `messages` are her
+/// Discord messages, so a reply to one continues the conversation.
+async fn save(
+    ctx: &BotCtx,
+    channel: ChannelId,
+    stored: Vec<StoredPart>,
+    written: Written,
+    started_at: i64,
+    said: String,
+    messages: Vec<u64>,
+) -> Result<()> {
     let question = NewTurn {
         parent_id: None,
         role: Role::User,
         // Saved as the bot's own, because nobody asked: nobody can 🔁 or ❌ her line as
         // if it were their answer (🔁 would run it as a normal answer and post "PASS").
         author_id: ctx.bot_id.get(),
-        channel_id: asker.channel.get(),
+        channel_id: channel.get(),
         parts: stored,
         written: None,
         started_at: None,
         error: None,
         created_at: Utc::now().timestamp(),
-    };
-    let written = Written {
-        provider: provider.name().to_string(),
-        model: provider.model().to_string(),
-        continuation_id: done.continuation,
-        native_json: serde_json::to_string(&done.rounds).ok(),
     };
     let bot_id = ctx.bot_id.get();
     ctx.db
@@ -375,16 +424,16 @@ pub async fn speak(
                 role: Role::Assistant,
                 author_id: bot_id,
                 channel_id: question.channel_id,
-                parts: vec![StoredPart::Text { text: line }],
+                parts: vec![StoredPart::Text { text: said }],
                 written: Some(written),
                 started_at: Some(started_at),
                 error: None,
                 created_at: Utc::now().timestamp(),
             };
-            store::add_turn(conn, &answer, &ids)
+            store::add_turn(conn, &answer, &messages)
         })
         .await
-        .context("saving what she said")?;
+        .context("saving what she did")?;
     Ok(())
 }
 
@@ -604,6 +653,15 @@ mod tests {
             line: line.into(),
             reply_to: None,
         }
+    }
+
+    #[test]
+    fn reactions_are_saved_as_a_note() {
+        assert_eq!(
+            reaction_note("🐄", "RickyWL", "I Am One Of\nThe People"),
+            "(reacted 🐄 to RickyWL: \"I Am One Of The People\")"
+        );
+        assert_eq!(reaction_note("😂", "Cherry", ""), "(reacted 😂 to Cherry)");
     }
 
     #[test]
