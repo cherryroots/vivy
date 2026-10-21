@@ -54,6 +54,10 @@ const KNOWN_SHARE: f32 = 0.9;
 const OTHER_KINDS: usize = 6;
 const OTHER_SHARE: f32 = 0.25;
 
+/// Steps seen before in the same places that, three in four the same, say it's the same
+/// place whatever else is on screen.
+const VOUCHED_BY: usize = 4;
+
 /// What code has learned about a game it has no memory map for. Saved with the maps.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Sight {
@@ -115,6 +119,8 @@ struct Live {
     at: Pos,
     /// The screen the last time she could walk, to tell when something covers it.
     calm: Option<Calm>,
+    /// Directions pressed by the last look (`Emulator::directions_pressed`).
+    pressed: u64,
     /// The last look she could walk at: each step's picture and who stood there, by
     /// steps from her.
     around: HashMap<Pos, u64>,
@@ -209,16 +215,6 @@ impl Sight {
             .map(|(_, name)| name)
     }
 
-    /// Whether these steps look like what was seen in `area` at the same places. With too
-    /// few seen before to tell, they do.
-    fn looks_like(&self, area: &str, seen: &[(Pos, u64)]) -> bool {
-        let Some(pictures) = self.pictures.get(area) else {
-            return false;
-        };
-        let (same, both) = compare(pictures, seen);
-        both < KNOWN_AFTER || same as f32 >= both as f32 * KNOWN_SHARE
-    }
-
     /// Names the places by the area byte, when it has just been found or a better one has
     /// replaced it.
     /// Two places the byte would give one name are checked first: if they look different,
@@ -287,12 +283,15 @@ fn compare(pictures: &Pictures, seen: &[(Pos, u64)]) -> (usize, usize) {
 }
 
 /// Whether these steps look like somewhere else than a place: different where both were
-/// seen, or made of pictures hardly ever seen there (a shop beside a route).
+/// seen, or made of pictures hardly ever seen there (a shop beside a route), unless the
+/// steps seen there before mostly look the same.
 fn looks_different(pictures: &Pictures, seen: &[(Pos, u64)]) -> bool {
     let (same, both) = compare(pictures, seen);
     let (shared, kinds) = shared_pictures(pictures, seen);
+    let vouched = both >= VOUCHED_BY && same * 4 >= both * 3;
     (both >= KNOWN_AFTER && (same as f32) < both as f32 * 0.5)
-        || (pictures.0.len() >= KNOWN_AFTER
+        || (!vouched
+            && pictures.0.len() >= KNOWN_AFTER
             && kinds >= OTHER_KINDS
             && (shared as f32) < kinds as f32 * OTHER_SHARE)
 }
@@ -365,13 +364,28 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
     } else if let Some(at) = at {
         // No step, but the game may have moved her: a scene, or a checkpoint loaded. If
-        // the screen doesn't look like where she last walked, it's somewhere else.
+        // the screen looks unlike where she last walked, it's somewhere else (a little
+        // unlike says nothing: flowers and water move).
         if free
             && sight.live.free.is_some()
             && sight.live.left.is_none()
-            && !sight.looks_like(&sight.live.area, &seen)
+            && sight
+                .pictures
+                .get(&sight.live.area)
+                .is_some_and(|p| looks_different(p, &seen))
         {
             left = Some((sight.live.at, true));
+            if std::env::var("VIVY_GB_TRACE").is_ok() {
+                let p = &sight.pictures[&sight.live.area];
+                println!(
+                    "TRACE no step, looks different in {} at {:?}: {:?} {:?} of {}",
+                    sight.live.area,
+                    at,
+                    compare(p, &seen),
+                    shared_pictures(p, &seen),
+                    p.0.len()
+                );
+            }
         }
         sight.live.at = at;
     }
@@ -392,9 +406,6 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
     }
     sight.name_places(&mut world.areas);
-    if free && let Some(area) = sight.area_byte() {
-        sight.live.area = format!("Area {}", memory.get(area));
-    }
     if let Some((x, y)) = sight.live.finder.as_ref().and_then(|f| f.position.found()) {
         sight.found.x = Some(x);
         sight.found.y = Some(y);
@@ -474,11 +485,18 @@ fn after_step(
     let was = sight.position(before);
     let now = sight.position(after);
     // A dark screen that leaves her where the step took her is the swirl into a battle,
-    // unless the screen around her looks different, or memory says she never left her
-    // step (stairs to the same spot a floor up: a battle only starts once she's moved).
+    // unless the screen around her looks quite different, or memory says she never left
+    // her step (stairs to the same spot a floor up: a battle only starts once she's moved).
     let new_place = match jumped {
         Some(true) => true,
-        Some(false) => dark && free && (now == was || !sight.looks_like(&sight.live.area, seen)),
+        Some(false) => {
+            dark && free
+                && (now == was
+                    || sight
+                        .pictures
+                        .get(&sight.live.area)
+                        .is_some_and(|p| looks_different(p, seen)))
+        }
         None => dark && free,
     };
 
@@ -588,6 +606,14 @@ fn arrive(
             .or_else(|| sight.known_place(seen).filter(|name| *name != old_area))
             .unwrap_or_else(|| sight.new_place()),
     };
+    if std::env::var("VIVY_GB_TRACE").is_ok() {
+        println!(
+            "TRACE arrive {old_area} -> {name} (dark {dark}, gone {gone:?}, byte {:?}, others {}, d35e {})",
+            sight.area_byte(),
+            others.len(),
+            memory.get(0xd35e)
+        );
+    }
     let map = areas.entry(old_area).or_default();
     map.see(gone, if dark { Kind::Door } else { Kind::Edge });
     map.doors.insert(gone, name.clone());
@@ -658,6 +684,11 @@ fn calm(
     dark: bool,
     stepped: bool,
 ) -> bool {
+    // A direction pressed since the last look: she may have walked without a step code
+    // took (a press she asked for).
+    let pressed = machine.emulator.directions_pressed();
+    let stepped = stepped || pressed != sight.live.pressed;
+    sight.live.pressed = pressed;
     let video = machine.emulator.video().clone();
     let rgb = machine.emulator.screen();
     if frame_look(video.drawn, &video.registers, &rgb, video.color) != FrameLook::Picture
@@ -856,15 +887,22 @@ mod tests {
             Pictures(room.iter().copied().collect()),
         );
         assert_eq!(sight.known_place(&room), Some("Place 1".to_string()));
-        assert!(sight.looks_like("Place 1", &room));
+        let place = &sight.pictures["Place 1"];
+        assert!(!looks_different(place, &room));
+        // A few steps different (flowers that move): still the same place.
+        let moved: Vec<(Pos, u64)> = room
+            .iter()
+            .map(|&(p, k)| (p, if k < 4 { k + 100 } else { k }))
+            .collect();
+        assert_eq!(sight.known_place(&moved), None);
+        assert!(!looks_different(place, &moved));
         // Most steps different: somewhere else.
         let other: Vec<(Pos, u64)> = room.iter().map(|&(p, k)| (p, k + 100)).collect();
         assert_eq!(sight.known_place(&other), None);
-        assert!(!sight.looks_like("Place 1", &other));
+        assert!(looks_different(place, &other));
         // Too little seen before to tell.
         assert_eq!(sight.known_place(&room[..5]), None);
-        assert!(sight.looks_like("Place 1", &room[..5]));
-        assert!(!sight.looks_like("Place 2", &room));
+        assert!(!looks_different(place, &room[..5]));
     }
 
     #[test]

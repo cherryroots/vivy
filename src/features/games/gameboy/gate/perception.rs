@@ -273,7 +273,13 @@ fn both(world: &mut World, machine: &mut Machine) -> View {
     let mut shadow = SHADOW.lock().unwrap();
     let shadow = shadow.get_or_insert_with(World::default);
     shadow.stepped = world.stepped;
-    let any = crate::features::games::gameboy::any::look(shadow, machine);
+    let mut any = crate::features::games::gameboy::any::look(shadow, machine);
+    // A look again a little later with no step between, as she often does: the screen
+    // has moved on (tiles that animate, like flowers and water), but she hasn't.
+    if shadow.stepped.take().is_some() {
+        machine.run(37);
+        any = crate::features::games::gameboy::any::look(shadow, machine);
+    }
     let red = red::look(world, machine);
     let mut compared = COMPARED.lock().unwrap();
     let c = compared.get_or_insert_with(Compared::default);
@@ -563,4 +569,23 @@ fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
     assert_eq!(rooms.len(), 3, "{report}");
     assert_eq!(places.len(), 3, "one name for each room: {report}");
     assert!(agree > 150 && differ * 20 <= agree, "{report}");
+}
+
+/// Walking by pressing a direction herself (not a step code took) scrolls the screen too,
+/// and she's still free to walk after it: only the game moving her (a scene) isn't.
+#[test]
+fn a_step_she_presses_herself_leaves_her_free_to_walk() {
+    use crate::features::games::gameboy::emulator::Button;
+    let rom = test_game::build();
+    let look = look_for(&RomInfo::read(&rom).unwrap());
+    let mut m = Machine::new("rooms.gb", &rom).unwrap();
+    m.run(120);
+    let mut world = World::default();
+    assert!(look(&mut world, &mut m).can_walk);
+    m.emulator.hold(&[Button::Right]);
+    m.run(4);
+    m.emulator.release();
+    m.run(30);
+    assert_eq!(m.emulator.read(test_game::X_PIXELS), 4 * 16, "she walked a step");
+    assert!(look(&mut world, &mut m).can_walk);
 }

@@ -340,6 +340,15 @@ impl Areas {
     /// A step inside the area.
     pub fn walked(&mut self, before: &Memory, after: &Memory) {
         self.walked += 1;
+        // The area's byte never changes while she walks around in one area.
+        if let Some(chosen) = self.chosen
+            && before.get(chosen) != after.get(chosen)
+        {
+            if std::env::var("VIVY_GB_TRACE").is_ok() {
+                println!("TRACE chosen {chosen:04X} changed while walking");
+            }
+            self.chosen = None;
+        }
         for i in 0..Memory::LEN {
             if before.0[i] != after.0[i] {
                 self.restless[i] += 1;
@@ -393,6 +402,9 @@ impl Areas {
     /// as she went somewhere new gave two places one name, so it's dropped.
     fn choose(&mut self) {
         if self.guesses.is_empty() {
+            if std::env::var("VIVY_GB_TRACE").is_ok() {
+                println!("TRACE every guess dropped: starting again");
+            }
             self.guesses = every_byte();
             self.drop_restless();
         }
@@ -406,6 +418,14 @@ impl Areas {
             .and_then(|c| self.guesses.iter().find(|g| g.address == c))
             .is_some_and(|g| best.is_some_and(|b| g.stayed == b.stayed));
         if !kept {
+            if std::env::var("VIVY_GB_TRACE").is_ok() && self.chosen != best.map(|g| g.address) {
+                println!(
+                    "TRACE choose {:?} -> {:?} ({} guesses)",
+                    self.chosen,
+                    best.map(|g| g.address),
+                    self.guesses.len()
+                );
+            }
             self.chosen = best.map(|g| g.address);
         }
     }
