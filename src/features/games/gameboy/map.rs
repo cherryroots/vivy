@@ -323,10 +323,52 @@ impl AreaMap {
     pub fn person_at(&self, pos: Pos) -> bool {
         self.people.contains(&pos)
     }
+
+    /// The same map with every step moved by `(dx, dy)`: for when code learns where the
+    /// game counts steps from, after counting from where she started.
+    pub fn shifted(&self, (dx, dy): Pos) -> AreaMap {
+        let by = |(x, y): Pos| (x + dx, y + dy);
+        AreaMap {
+            kinds: self.kinds.iter().map(|(&p, &k)| (by(p), k)).collect(),
+            blocked: self.blocked.iter().map(|&(p, d)| (by(p), d)).collect(),
+            walked: self.walked.iter().map(|&p| by(p)).collect(),
+            doors: self
+                .doors
+                .iter()
+                .map(|(&p, a)| (by(p), a.clone()))
+                .collect(),
+            markers: self
+                .markers
+                .iter()
+                .map(|(&p, m)| (by(p), m.clone()))
+                .collect(),
+            people: self.people.iter().map(|&p| by(p)).collect(),
+            size: self.size,
+        }
+    }
+
+    /// Adds what another map of the same area knows: for when code learns two names were
+    /// one place. What this map already knows stays.
+    pub fn merge(&mut self, other: AreaMap) {
+        for (pos, kind) in other.kinds {
+            self.kinds.entry(pos).or_insert(kind);
+        }
+        self.blocked.extend(other.blocked);
+        for pos in other.walked {
+            self.walked(pos);
+        }
+        for (pos, area) in other.doors {
+            self.doors.entry(pos).or_insert(area);
+        }
+        for (pos, marker) in other.markers {
+            self.markers.entry(pos).or_insert(marker);
+        }
+        self.size = self.size.or(other.size);
+    }
 }
 
 /// JSON keys must be strings, so maps keyed by a position are saved as lists of pairs.
-mod as_list {
+pub(super) mod as_list {
     use std::collections::HashMap;
     use std::hash::Hash;
 
@@ -357,6 +399,31 @@ S sign, > edge (walk on to the next area), P person, ! your marker, ? not seen y
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shifted_map_moves_everything_and_a_merge_keeps_what_was_known() {
+        let mut map = AreaMap::default();
+        map.see((0, 0), Kind::Wall);
+        map.walked((1, 0));
+        map.blocked((1, 0), Dir::Left);
+        map.doors.insert((2, 0), "Outside".to_string());
+        map.markers.insert((1, 0), "start".to_string());
+        let moved = map.shifted((5, 7));
+        assert_eq!(moved.kind((5, 7)), Some(Kind::Wall));
+        assert_eq!(moved.kind((6, 7)), Some(Kind::Floor));
+        assert_eq!(moved.kind((0, 0)), None);
+        assert!(!moved.can_step((6, 7), Dir::Left, true));
+        assert_eq!(moved.doors[&(7, 7)], "Outside");
+        assert_eq!(moved.markers[&(6, 7)], "start");
+
+        let mut other = AreaMap::default();
+        other.see((5, 7), Kind::Floor);
+        other.see((5, 8), Kind::Grass);
+        let mut merged = moved.clone();
+        merged.merge(other);
+        assert_eq!(merged.kind((5, 7)), Some(Kind::Wall), "what it knew stays");
+        assert_eq!(merged.kind((5, 8)), Some(Kind::Grass));
+    }
 
     /// A map from rows of letters, with (0, 0) at the top left.
     fn map_of(rows: &[&str]) -> AreaMap {

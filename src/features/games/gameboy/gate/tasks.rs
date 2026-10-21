@@ -8,7 +8,7 @@ use crate::features::games::gameboy::emulator::Button;
 use crate::features::games::gameboy::map::{Dir, Pos};
 use crate::features::games::gameboy::presses::Press;
 use crate::features::games::gameboy::red::{self, State};
-use crate::features::games::gameboy::walk::{Walked, take_step, walk_to};
+use crate::features::games::gameboy::walk::{Look, Walked, take_step, walk_to};
 use crate::features::games::gameboy::world::{View, World};
 
 /// Where the states go: `VIVY_GB_TASKS`, or the project's shared folder.
@@ -22,11 +22,21 @@ pub fn folder() -> PathBuf {
 pub struct Driver {
     pub m: Machine,
     pub world: World,
+    /// How code looks at the game: `red::look`, or another look to measure.
+    pub look: Look,
 }
 
 impl Driver {
+    pub fn new(m: Machine) -> Driver {
+        Driver {
+            m,
+            world: World::default(),
+            look: red::look,
+        }
+    }
+
     pub fn view(&mut self) -> View {
-        red::look(&mut self.world, &mut self.m)
+        (self.look)(&mut self.world, &mut self.m)
     }
 
     fn tap(&mut self, button: Button) {
@@ -61,7 +71,7 @@ impl Driver {
     pub fn go(&mut self, target: Pos) -> View {
         let start = self.view().area;
         for _ in 0..40 {
-            let walk = walk_to(&mut self.world, &mut self.m, red::look, target, 80);
+            let walk = walk_to(&mut self.world, &mut self.m, self.look, target, 80);
             match walk.result {
                 Walked::Arrived => return walk.view,
                 Walked::NewArea(_) => return walk.view,
@@ -81,7 +91,7 @@ impl Driver {
     /// One step in `dir`, then presses through anything it starts.
     pub fn step(&mut self, dir: Dir) -> View {
         let view = self.view();
-        let (next, _) = take_step(&mut self.world, &mut self.m, red::look, &view, dir);
+        let (next, _) = take_step(&mut self.world, &mut self.m, self.look, &view, dir);
         if next.can_walk { next } else { self.free() }
     }
 
@@ -100,20 +110,23 @@ impl Driver {
 
 /// Plays from a new game to Viridian City with Oak's Parcel, saving a state at each start.
 pub fn build(folder: &Path) {
-    let mut d = Driver {
-        m: red::tests::new_game(),
-        world: World::default(),
-    };
-    d.save(folder, "bedroom");
+    let mut d = Driver::new(red::tests::new_game());
+    play_to_the_parcel(&mut d, |d, name| d.save(folder, name));
+}
+
+/// Plays from her bedroom to Viridian City with Oak's Parcel, calling `reached` at each
+/// task's start.
+pub fn play_to_the_parcel(d: &mut Driver, mut reached: impl FnMut(&mut Driver, &str)) {
+    reached(d, "bedroom");
 
     let view = d.go((7, 1));
     assert_eq!(view.area, "Red's House 1F");
-    d.save(folder, "downstairs");
+    reached(d, "downstairs");
 
     d.go((3, 7));
     let view = d.step(Dir::Down);
     assert_eq!(view.area, "Pallet Town", "{view:?}");
-    d.save(folder, "pallet");
+    reached(d, "pallet");
 
     // North into the grass: Oak stops her and takes her to his lab.
     let view = d.go((10, 1));
@@ -128,7 +141,7 @@ pub fn build(folder: &Path) {
         d.free()
     };
     assert_eq!(view.area, "Oak's Lab", "{view:?}");
-    d.save(folder, "lab");
+    reached(d, "lab");
 
     // Charmander's ball is on the table at (6, 3).
     d.go((6, 4));
@@ -136,7 +149,7 @@ pub fn build(folder: &Path) {
     d.tap(Button::A);
     d.free();
     assert_eq!(d.state().party.len(), 1, "no starter");
-    d.save(folder, "starter");
+    reached(d, "starter");
 
     // Leaving, the rival stops her for a battle.
     let view = d.go((5, 10));
@@ -146,12 +159,12 @@ pub fn build(folder: &Path) {
         d.state().story.contains(&"BATTLED_RIVAL_IN_OAKS_LAB"),
         "{view:?}"
     );
-    d.save(folder, "after_rival");
+    reached(d, "after_rival");
 
     d.go((5, 11));
     let view = d.step(Dir::Down);
     assert_eq!(view.area, "Pallet Town", "{view:?}");
-    d.save(folder, "pallet_starter");
+    reached(d, "pallet_starter");
 
     let view = d.go((10, 0));
     let view = if view.area == "Pallet Town" {
@@ -160,7 +173,7 @@ pub fn build(folder: &Path) {
         view
     };
     assert_eq!(view.area, "Route 1", "{view:?}");
-    d.save(folder, "route1");
+    reached(d, "route1");
 
     let mut view = view;
     for _ in 0..20 {
@@ -173,7 +186,7 @@ pub fn build(folder: &Path) {
         }
     }
     assert_eq!(view.area, "Viridian City", "{view:?}");
-    d.save(folder, "viridian");
+    reached(d, "viridian");
 
     let view = d.go((29, 19));
     let view = if view.area == "Viridian Mart" {
@@ -182,7 +195,7 @@ pub fn build(folder: &Path) {
         view
     };
     assert!(d.state().story.contains(&"GOT_OAKS_PARCEL"), "{view:?}");
-    d.save(folder, "parcel");
+    reached(d, "parcel");
 }
 
 /// One task of the gate: where it starts, what the supervisor is told, and how code checks

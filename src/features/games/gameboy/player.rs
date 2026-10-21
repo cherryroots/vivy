@@ -32,8 +32,7 @@ where
             let m = machine
                 .as_mut()
                 .ok_or_else(|| anyhow!("the Game Boy was turned off"))?;
-            let look =
-                look_for(m.emulator.info()).ok_or_else(|| anyhow!("code can't read this game"))?;
+            let look = look_for(m.emulator.info());
             let mut world = std::mem::take(&mut m.world);
             let out = job(&mut world, m, look);
             m.world = world;

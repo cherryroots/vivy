@@ -26,6 +26,7 @@
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
 //! `VIVY_GB_RESULTS` (the project's shared folder).
 
+mod perception;
 pub(super) mod player;
 mod puzzles;
 mod tasks;
