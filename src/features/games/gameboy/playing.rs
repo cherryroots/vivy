@@ -18,11 +18,12 @@ use twilight_model::channel::thread::AutoArchiveDuration;
 
 use super::budget::Today;
 use super::commands::{admin, bot_settings, game_look, game_name, on_machine};
-use super::dashboard::{self, Board, Live, Parts, last_screen, last_seconds};
+use super::dashboard::{self, Board, Links, Live, Parts, last_screen, last_seconds};
 use super::journal::{DEFAULT_GOAL, Journal};
 use super::player::OnConsole;
 use super::session::{self, Hints, Limits, Now, Report, Session, Summary};
 use super::skills::Skill;
+use super::web;
 use super::{Settings, files};
 use crate::core::interaction::{ComponentInteraction, ModalInteraction, Respond, Response};
 use crate::core::{BotCtx, CommandCtx, Result, user_error};
@@ -69,6 +70,11 @@ pub fn not_playing() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// The live web page's address, if it's set.
+fn watch_url(settings: &Settings) -> Option<String> {
+    Some(settings.web_url.clone()).filter(|url| !url.is_empty())
 }
 
 /// Stops her, if she's playing.
@@ -171,7 +177,15 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
     };
     let parts = dashboard::parts(&board, first.started);
     let message = ctx
-        .send(dashboard::message(&parts, None, None, false))
+        .send(dashboard::message(
+            &parts,
+            None,
+            Links {
+                log: None,
+                watch: watch_url(&settings),
+            },
+            false,
+        ))
         .await?
         .message(ctx)
         .await?;
@@ -183,6 +197,7 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
         free_tokens: settings.free_tokens,
         guild,
         log: message.channel_id,
+        watch: watch_url(&settings),
     };
     ctx.bot.tasks.spawn(async move {
         let _guard = guard;
@@ -223,14 +238,14 @@ pub async fn dashboard(ctx: &CommandCtx) -> Result<()> {
         // She stopped meanwhile: this one shows how she left it.
         if let Err(SendError(message)) = moves.send(message) {
             let (parts, gif) = resting(&settings).await?;
-            dashboard::message(&parts, gif, None, true)
+            dashboard::message(&parts, gif, Links::default(), true)
                 .edit(&ctx.bot.http, message.channel_id, message.id)
                 .await?;
         }
         return Ok(());
     }
     let (parts, gif) = resting(&settings).await?;
-    ctx.send(dashboard::message(&parts, gif, None, true))
+    ctx.send(dashboard::message(&parts, gif, Links::default(), true))
         .await?;
     Ok(())
 }
@@ -489,6 +504,7 @@ async fn run(
     let (report, reports) = mpsc::unbounded_channel();
     let forward = tokio::spawn(post_reports(bot.clone(), log, reports));
     let (now, watching) = watch::channel(first);
+    tokio::spawn(web::follow(live.game.clone(), watching.clone()));
     let ended = CancellationToken::new();
     let timer = bot
         .timers

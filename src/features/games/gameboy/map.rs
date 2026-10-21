@@ -36,7 +36,7 @@ pub enum Kind {
 
 impl Kind {
     /// The letter on the map text.
-    fn symbol(self) -> char {
+    pub fn symbol(self) -> char {
         match self {
             Kind::Floor => '.',
             Kind::Wall => '#',
@@ -289,20 +289,34 @@ impl AreaMap {
         for y in min_y..=max_y {
             out.push_str(&format!("{y:>3} "));
             for x in min_x..=max_x {
-                let pos = (x, y);
-                out.push(if pos == at {
-                    '@'
-                } else if self.people.contains(&pos) {
-                    'P'
-                } else if self.markers.contains_key(&pos) {
-                    '!'
-                } else {
-                    self.kind(pos).map(Kind::symbol).unwrap_or('?')
-                });
+                out.push(self.letter((x, y), at));
             }
             out.push('\n');
         }
         out
+    }
+
+    /// The letter for `pos` on the map text, with her at `at`.
+    pub fn letter(&self, pos: Pos, at: Pos) -> char {
+        if pos == at {
+            '@'
+        } else if self.people.contains(&pos) {
+            'P'
+        } else if self.markers.contains_key(&pos) {
+            '!'
+        } else {
+            self.kind(pos).map(Kind::symbol).unwrap_or('?')
+        }
+    }
+
+    /// The top left and bottom right steps seen so far, if any.
+    pub fn bounds(&self) -> Option<(Pos, Pos)> {
+        let xs = self.kinds.keys().map(|p| p.0);
+        let ys = self.kinds.keys().map(|p| p.1);
+        Some((
+            (xs.clone().min()?, ys.clone().min()?),
+            (xs.max()?, ys.max()?),
+        ))
     }
 
     /// Whether someone was standing at `pos` on the last screen.

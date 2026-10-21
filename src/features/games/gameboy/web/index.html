@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vivy plays</title>
+<style>
+  :root {
+    --bg: #0e1113; --panel: #171b1e; --line: #2a3034; --text: #e6e9ea; --muted: #8b9599;
+    --teal: #2bb3a3; --red: #f23f43; --amber: #f0b232; --green: #57d38c; --dim: #b5bac1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 12px; }
+  h1 { font-size: 22px; margin: 0; }
+  .pill { padding: 2px 10px; border-radius: 99px; font-size: 13px; font-weight: 600; background: var(--line); }
+  .pill.live { background: rgba(229,72,77,.18); color: #ff8a8d; }
+  .pill.thinking { background: rgba(245,184,61,.16); color: var(--amber); }
+  .sub { color: var(--muted); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 480px) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
+  .screen { position: relative; width: 100%; aspect-ratio: 10 / 9; background: #000; border-radius: 8px; overflow: hidden; border: 3px solid var(--teal); }
+  .screen canvas { position: absolute; inset: 0; width: 100%; height: 100%; image-rendering: pixelated; }
+  .toggles { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
+  .toggles label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 99px; cursor: pointer; font-size: 13px; user-select: none; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .task { font-size: 16px; }
+  .bar { height: 6px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 8px 0 4px; }
+  .bar > div { height: 100%; width: 0; background: var(--teal); transition: width .3s; }
+  pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; }
+  pre { margin: 0; white-space: pre-wrap; word-break: break-word; }
+  /* The dashboard's colours: how an episode went, being stuck, health. */
+  .done { color: var(--green); font-weight: 600; }
+  .notdone { color: var(--amber); font-weight: 600; }
+  .num { color: var(--muted); }
+  .verb { color: var(--teal); }
+  .out { color: var(--dim); }
+  .warn { display: none; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--amber); font-size: 14px; }
+  .warn span { color: var(--text); }
+  .hp { display: inline-block; font-size: 15px; line-height: 1; margin: 0 4px; white-space: nowrap; }
+  ul { margin: 0; padding-left: 18px; }
+  li { margin: 2px 0; }
+  .words { min-height: 2.6em; padding: 8px 10px; background: #f4f4ef; color: #111; border-radius: 6px; font-family: ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  .words.none { background: transparent; color: var(--muted); padding: 0; font-family: inherit; }
+  .facts div { padding: 2px 0; border-bottom: 1px solid var(--line); }
+  .facts div:last-child { border-bottom: 0; }
+  .facts b { color: var(--teal); font-weight: 600; }
+  #map { width: 100%; image-rendering: pixelated; background: #0b0d0e; border-radius: 6px; }
+  .foot { color: var(--muted); font-size: 13px; }
+  .badge { position: absolute; top: 8px; right: 8px; padding: 2px 8px; border-radius: 6px; font-size: 12px; background: rgba(0,0,0,.65); color: #fff; display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="title">Vivy plays</h1>
+    <span id="status" class="pill">Connecting…</span>
+    <span id="session" class="sub"></span>
+  </header>
+  <div class="grid">
+    <section>
+      <div class="screen">
+        <canvas id="game" width="160" height="144"></canvas>
+        <canvas id="over" width="480" height="432"></canvas>
+        <span id="badge" class="badge">her last look</span>
+      </div>
+      <div class="toggles">
+        <label><input type="checkbox" id="showSeen" checked> What code sees</label>
+        <label><input type="checkbox" id="showTiles"> Tile grid</label>
+      </div>
+      <div class="legend" id="legend"></div>
+      <div class="card" style="margin-top:12px">
+        <h2>Now</h2>
+        <div class="task" id="task">—</div>
+        <div class="bar"><div id="actionsBar"></div></div>
+        <div class="sub" id="actionsText"></div>
+        <div class="warn" id="stuck"></div>
+      </div>
+      <div class="card">
+        <h2>From the game's memory</h2>
+        <div class="facts" id="facts"><span class="sub">Nothing read yet.</span></div>
+      </div>
+      <div class="card">
+        <h2>Last actions</h2>
+        <pre id="actions">—</pre>
+      </div>
+    </section>
+    <section>
+      <div class="card">
+        <h2 id="mapTitle">Map</h2>
+        <canvas id="map" width="300" height="200"></canvas>
+        <div class="sub" id="mapNote"></div>
+      </div>
+      <div class="card">
+        <h2>On screen</h2>
+        <div class="words none" id="words">No text box.</div>
+      </div>
+      <div class="card">
+        <h2>Goal</h2>
+        <div id="goal">—</div>
+      </div>
+      <div class="card">
+        <h2>Recent episodes</h2>
+        <ul id="episodes"><li class="sub">None yet.</li></ul>
+      </div>
+      <div class="card">
+        <h2>Her notes</h2>
+        <ul id="notes"><li class="sub">None yet.</li></ul>
+      </div>
+      <div class="foot" id="foot"></div>
+    </section>
+  </div>
+</main>
+<script>
+"use strict";
+// What each letter of the map means, and how it's drawn over the screen and on the map.
+const KINDS = {
+  ".": ["floor", "rgba(43,179,163,0.16)", "#1f5f58"],
+  "#": ["wall", "rgba(229,72,77,0.38)", "#5c2a2c"],
+  '"': ["tall grass", "rgba(80,200,90,0.42)", "#2f7a38"],
+  "D": ["door or stairs", "rgba(80,140,255,0.6)", "#4f86f7"],
+  "S": ["sign", "rgba(255,205,60,0.6)", "#e0b13a"],
+  ">": ["edge", "rgba(170,100,255,0.45)", "#8a5ad6"],
+  "P": ["person", "rgba(255,150,40,0.6)", "#f08a24"],
+  "!": ["her marker", "rgba(255,90,200,0.6)", "#e55bc0"],
+  "?": ["not seen yet", "rgba(120,120,120,0.45)", "#24292c"],
+  "@": ["her", "rgba(0,0,0,0)", "#ffffff"],
+};
+const FRAME_MS = 3 * 1000 / 59.7275; // a screen is kept every 3 frames
+const MOST_BEHIND = 200;              // screens (10 s); past this it skips ahead
+const $ = (id) => document.getElementById(id);
+const game = $("game").getContext("2d");
+const over = $("over").getContext("2d");
+let queue = [];
+let shownMark = 0;
+let idleSince = performance.now();
+let seen = null;
+let live = null;
+let decoding = Promise.resolve(); // keeps the screens in order while they decode
+
+$("legend").innerHTML = Object.entries(KINDS)
+  .filter(([k]) => k !== "@")
+  .map(([, [name, , colour]]) => `<span><i style="background:${colour}"></i>${name}</span>`)
+  .join("");
+
+function esc(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// Plays the screens at the game's speed. She plays in bursts (an action takes a moment,
+// then she thinks), so the queue empties between actions and the last screen stays up.
+setInterval(() => {
+  if (queue.length > MOST_BEHIND) queue = queue.slice(queue.length - MOST_BEHIND / 2);
+  const next = queue.shift();
+  if (next) {
+    game.drawImage(next.picture, 0, 0);
+    next.picture.close?.();
+    shownMark = next.mark;
+    idleSince = performance.now();
+  }
+  drawOver();
+  showStatus();
+}, FRAME_MS);
+
+function settled() {
+  return queue.length === 0 && performance.now() - idleSince > 250;
+}
+
+function drawOver() {
+  over.clearRect(0, 0, 480, 432);
+  const s = 3;
+  if ($("showTiles").checked) {
+    over.strokeStyle = "rgba(255,255,255,0.12)";
+    over.lineWidth = 1;
+    for (let x = 8; x < 160; x += 8) { over.beginPath(); over.moveTo(x * s + 0.5, 0); over.lineTo(x * s + 0.5, 432); over.stroke(); }
+    for (let y = 8; y < 144; y += 8) { over.beginPath(); over.moveTo(0, y * s + 0.5); over.lineTo(480, y * s + 0.5); over.stroke(); }
+  }
+  // What code saw at her last look, while the screen still shows that moment.
+  const show = $("showSeen").checked && seen && seen.grid && settled() && shownMark >= seen.mark;
+  $("badge").style.display = show ? "block" : "none";
+  if (!show) return;
+  const g = seen.grid;
+  const size = g.pixels * s;
+  seen.on_screen.forEach((row, j) => {
+    [...row].forEach((letter, i) => {
+      const x = i * size, y = j * size;
+      if (letter === "@") {
+        over.strokeStyle = "#2bb3a3"; over.lineWidth = 3;
+        over.strokeRect(x + 2, y + 2, size - 4, size - 4);
+        return;
+      }
+      const kind = KINDS[letter];
+      if (!kind) return;
+      over.fillStyle = kind[1];
+      over.fillRect(x + 1, y + 1, size - 2, size - 2);
+    });
+  });
+}
+
+function showStatus() {
+  const status = $("status");
+  if (!live || !live.playing) {
+    status.className = "pill"; status.textContent = "⏸️ Not playing";
+  } else if (settled()) {
+    status.className = "pill thinking"; status.textContent = "🤔 Thinking";
+  } else {
+    status.className = "pill live"; status.textContent = "🔴 Live";
+  }
+}
+
+function showSeen() {
+  if (!seen) return;
+  const words = $("words");
+  if (seen.text) { words.className = "words"; words.textContent = seen.text; }
+  else { words.className = "words none"; words.textContent = seen.can_walk ? "No text box: she can walk." : "No words read."; }
+  $("facts").innerHTML = seen.facts.length
+    ? seen.facts.map((f) => {
+        const i = f.indexOf(": ");
+        return i > 0 ? `<div><b>${esc(f.slice(0, i))}</b> ${withHealth(esc(f.slice(i + 2)))}</div>` : `<div>${esc(f)}</div>`;
+      }).join("")
+    : '<span class="sub">Nothing read from memory here.</span>';
+  drawMap();
+}
+
+function drawMap() {
+  const canvas = $("map");
+  const rows = seen.map;
+  $("mapTitle").textContent = seen.area ? `Map · ${seen.area}` : "Map";
+  if (!rows.length) { canvas.height = 60; canvas.getContext("2d").clearRect(0, 0, canvas.width, 60); $("mapNote").textContent = "Nothing mapped here yet."; return; }
+  const across = rows[0].length, down = rows.length;
+  const cell = Math.max(3, Math.min(14, Math.floor(300 / across)));
+  canvas.width = across * cell; canvas.height = down * cell;
+  const ctx = canvas.getContext("2d");
+  let known = 0;
+  rows.forEach((row, y) => [...row].forEach((letter, x) => {
+    const kind = KINDS[letter] || KINDS["?"];
+    if (letter !== "?") known++;
+    ctx.fillStyle = kind[2];
+    ctx.fillRect(x * cell, y * cell, cell, cell);
+  }));
+  // Her, and what's on screen around her.
+  const me = [seen.at[0] - seen.map_from[0], seen.at[1] - seen.map_from[1]];
+  if (seen.grid) {
+    const g = seen.grid;
+    ctx.strokeStyle = "rgba(255,255,255,0.55)"; ctx.lineWidth = 1;
+    ctx.strokeRect((me[0] - g.player[0]) * cell + 0.5, (me[1] - g.player[1]) * cell + 0.5, g.across * cell - 1, g.down * cell - 1);
+  }
+  ctx.fillStyle = "#2bb3a3";
+  ctx.beginPath(); ctx.arc(me[0] * cell + cell / 2, me[1] * cell + cell / 2, Math.max(2, cell / 2), 0, 7); ctx.fill();
+  $("mapNote").textContent = `${known} steps seen · she's at x ${seen.at[0]}, y ${seen.at[1]}`;
+}
+
+// "17/21 HP" gets a bar like the dashboard mockup's: green, amber under half, red under a fifth.
+function withHealth(text) {
+  return text.replace(/(\d+)\/(\d+) HP/g, (all, hp, most) => {
+    const part = Math.max(0, Math.min(1, Number(hp) / Math.max(1, Number(most))));
+    const filled = Math.round(part * 10);
+    const colour = part < 0.2 ? "var(--red)" : part < 0.5 ? "var(--amber)" : "var(--green)";
+    return `<span class="hp" style="color:${colour}">${"▰".repeat(filled)}${"▱".repeat(10 - filled)}</span>${all}`;
+  });
+}
+
+// "press "a": The text moved on." with the action and what happened in their own colours.
+function actionLine(line) {
+  const i = line.indexOf(": ");
+  if (i < 0) return esc(line);
+  return `<span class="verb">${esc(line.slice(0, i))}</span> <span class="out">${esc(line.slice(i + 2))}</span>`;
+}
+
+// "#13 10-20 14:36 Route 1: keep north → done, 12 actions, ..." with the number grey,
+// the area bold, and how it went green (done) or amber (anything else).
+function episodeLine(line) {
+  const i = line.lastIndexOf(" → ");
+  if (i < 0) return esc(line);
+  const head = line.slice(0, i).match(/^(#\d+)( \S+ \S+)? ([^:]+):(.*)$/s);
+  const before = head
+    ? `<span class="num">${esc(head[1])}</span> <b>${esc(head[3])}</b>:${esc(head[4])}`
+    : esc(line.slice(0, i));
+  const after = line.slice(i + 3);
+  let depth = 0, end = after.length;
+  for (let k = 0; k < after.length; k++) {
+    const c = after[k];
+    if (c === "(") depth++; else if (c === ")") depth--; else if (c === "," && depth === 0) { end = k; break; }
+  }
+  const outcome = after.slice(0, end);
+  const how = outcome.startsWith("done") ? "done" : "notdone";
+  return `${before} <span class="${how}">→ ${esc(outcome)}</span>${esc(after.slice(end))}`;
+}
+
+function showLive() {
+  const n = live.now;
+  $("title").textContent = `Vivy plays ${live.game || "the Game Boy"}`;
+  document.title = live.playing ? `🔴 Vivy plays ${live.game}` : `Vivy plays ${live.game || ""}`;
+  const minutes = n.started ? Math.max(0, Math.floor((Date.now() / 1000 - n.started) / 60)) : 0;
+  $("session").textContent = live.playing
+    ? `Session ${n.session} · ${minutes} min · ${n.episode ? "episode " + n.episode : "planning the first episode"}${n.area ? " · " + n.area : ""}`
+    : (n.session ? `Session ${n.session} ended` : "");
+  $("task").textContent = live.playing && n.task ? n.task : "—";
+  $("actionsBar").style.width = live.playing ? `${Math.min(100, n.actions / 30 * 100)}%` : "0";
+  $("actionsText").textContent = live.playing && n.task
+    ? `Action ${n.actions} of 30 · ${n.stuck ? `stuck ${n.stuck}` : "not stuck"}` : "";
+  $("actions").innerHTML = n.last_actions.length ? n.last_actions.map(actionLine).join("\n") : "—";
+  const stuck = $("stuck");
+  stuck.style.display = live.playing && n.stuck >= 3 ? "block" : "none";
+  stuck.innerHTML = `⚠️ <b>Nothing new for ${n.stuck} episodes.</b> <span>She's asked to try a different kind of task, exploring first.</span>`;
+  $("goal").textContent = n.goal || "—";
+  $("episodes").innerHTML = n.episodes.length ? n.episodes.map((e) => `<li>${episodeLine(e)}</li>`).join("") : '<li class="sub">None yet.</li>';
+  $("notes").innerHTML = n.notes.length ? n.notes.map((t) => `<li>${esc(t)}</li>`).join("") : '<li class="sub">None yet.</li>';
+  $("foot").textContent = `Today $${n.usd.toFixed(2)} on paid models · ${Math.round(n.free_tokens / 1000)}k free tokens · ${n.checkpoints} checkpoints · ${n.skills} skills${n.newest_skill ? " (newest: " + n.newest_skill + ")" : ""}`;
+}
+
+function connect(wait = 1000) {
+  const url = new URL("live", location.href);
+  url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  const socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+  socket.onopen = () => { wait = 1000; };
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string") {
+      const { kind, value } = JSON.parse(event.data);
+      if (kind === "seen") { seen = value; showSeen(); }
+      if (kind === "live") { live = value; showLive(); }
+      return;
+    }
+    const view = new DataView(event.data);
+    const mark = Number(view.getBigUint64(0, true));
+    const png = new Blob([event.data.slice(8)], { type: "image/png" });
+    decoding = decoding.then(async () => queue.push({ mark, picture: await createImageBitmap(png) }));
+  };
+  socket.onclose = () => {
+    $("status").className = "pill"; $("status").textContent = "Reconnecting…";
+    setTimeout(() => connect(Math.min(wait * 2, 15000)), wait);
+  };
+}
+connect();
+setInterval(() => { if (live) showLive(); }, 30000);
+</script>
+</body>
+</html>

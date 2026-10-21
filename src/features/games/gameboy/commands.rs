@@ -780,6 +780,7 @@ mod tests {
             can_walk: false,
             text: String::new(),
             facts: String::new(),
+            grid: None,
         };
         assert!(describe(&m, &view).starts_with("Code can't see her on a map"));
 
