@@ -205,6 +205,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #94 | | Chat prompt: `web_search` called from her code returns a JSON string to decode (Anthropic's description of it says a list) |
 | #95 | | Chat: pictures and files on earlier messages (like the one she's replying to) really reach her code sandbox: Claude only copies what the newest message lists, at most 16, so every message lists the newest 16 files and pictures so far (#93 listed each only on its own message) |
 | #96 | | Game Boy: a 💡 Hint button on the dashboard opens a one-line form; hints wait for her next plan, go to the log and to the strategist as ideas that can be wrong (good ones kept as notes with who gave them); anyone can give one (`hints_from_anyone`), once every 2 minutes each |
+| #102 | | Repo: removes a scratch build folder (`target-run/`, about 1 GB) that #96's commit picked up by mistake, and ignores `target-*/` |
 | #101 | | Game Boy: a blackout is its own line in the log (`💀 **Blacked out** in Viridian Forest and woke up in Pallet Town.`), read from the words on screen ("blacked out" or "whited out"), and kept in her journal for the strategist |
 
 ## Not built yet
