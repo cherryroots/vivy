@@ -205,6 +205,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #94 | | Chat prompt: `web_search` called from her code returns a JSON string to decode (Anthropic's description of it says a list) |
 | #95 | | Chat: pictures and files on earlier messages (like the one she's replying to) really reach her code sandbox: Claude only copies what the newest message lists, at most 16, so every message lists the newest 16 files and pictures so far (#93 listed each only on its own message) |
 | #96 | | Game Boy: a 💡 Hint button on the dashboard opens a one-line form; hints wait for her next plan, go to the log and to the strategist as ideas that can be wrong (good ones kept as notes with who gave them); anyone can give one (`hints_from_anyone`), once every 2 minutes each |
+| #102 | | Repo: removes a scratch build folder (`target-run/`, about 1 GB) that #96's commit picked up by mistake, and ignores `target-*/` |
 | #99 | | Game Boy (stage 5): her commentary while she plays: Vivy herself (her own model and voice, with her personality and mood notes) talks to the dashboard's channel like a streamer, hello at the start, a wrap-up at the end, and in between at most every `narrate_minutes` (10) when something happened, passing when nothing's worth saying; a GIF with each message; the `game_narrate` job, not counted in `daily_usd`; `gate_narrate` replays it over a session's report; a hint from #96's Hint button makes her answer it soon. Hunger Games' memory reading moves to `games/herself.rs` for both |
 
 ## Not built yet
