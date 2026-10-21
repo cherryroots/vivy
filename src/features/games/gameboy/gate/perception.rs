@@ -1,16 +1,22 @@
-//! Perception with no memory map, measured on Pokémon Red, where the answers are known:
-//! the cheat finder (`any/memory.rs`) watches Red's opening played by script, and is
-//! checked against Red's own addresses (wXCoord, wYCoord, wCurMap).
+//! Perception with no memory map, measured where the answers are known: on Pokémon Red,
+//! the cheat finder (`any/memory.rs`) watches Red's opening played by script and is
+//! checked against Red's own addresses (wXCoord, wYCoord, wCurMap), and the look
+//! (`any/`) is checked against Red's own look; on the test game (`test_game.rs`), the
+//! look explores rooms it was never told about.
 
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
 use super::results;
 use super::tasks::{Driver, play_to_the_parcel};
-use crate::features::games::gameboy::any::memory::{Finder, Memory};
+use crate::features::games::gameboy::any::memory::{Byte, Finder, Memory};
 use crate::features::games::gameboy::console::Machine;
+use crate::features::games::gameboy::emulator::RomInfo;
+use crate::features::games::gameboy::map::Kind;
 use crate::features::games::gameboy::moves::{Outcome, offset};
 use crate::features::games::gameboy::red::{self, State};
+use crate::features::games::gameboy::test_game;
+use crate::features::games::gameboy::walk::{Walked, explore, look_for, walk_to};
 use crate::features::games::gameboy::world::{Stepped, View, World};
 
 /// Red's own addresses, from the disassembly.
@@ -454,4 +460,107 @@ fn the_look_with_no_map_agrees_with_reds() {
     let maps: std::collections::HashSet<u8> = places.iter().map(|(_, m)| m.get(RED_MAP)).collect();
     assert_eq!(maps.len(), places.len(), "{report}");
     assert!(places.len() >= 7, "{report}");
+}
+
+/// The test game, explored with the look that has no memory map: through every door, and
+/// back. It must find where the game keeps her x (in pixels), her y and the room, give
+/// each room one name, and draw the rooms' walls where they are.
+#[test]
+fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
+    let rom = test_game::build();
+    let look = look_for(&RomInfo::read(&rom).unwrap());
+    let mut m = Machine::new("rooms.gb", &rom).unwrap();
+    m.run(120);
+    let mut world = World::default();
+    let (mut steps, mut doors) = (0, 0);
+    // Through the doors in turn, the one gone through least first.
+    let mut used: std::collections::HashMap<(String, (i32, i32)), u32> = Default::default();
+    while steps < 900 && doors < 12 {
+        let walk = explore(&mut world, &mut m, look, 900 - steps);
+        steps += walk.steps.max(1);
+        let area = walk.view.area.clone();
+        match walk.result {
+            Walked::NewArea(_) => doors += 1,
+            Walked::NoWay => {
+                let map = world.area(&area);
+                let Some(&door) = map
+                    .doors
+                    .keys()
+                    .min_by_key(|&&pos| (used.get(&(area.clone(), pos)).copied(), pos))
+                else {
+                    break;
+                };
+                *used.entry((area.clone(), door)).or_default() += 1;
+                let walk = walk_to(&mut world, &mut m, look, door, 60);
+                steps += walk.steps.max(1);
+                if matches!(walk.result, Walked::NewArea(_)) {
+                    doors += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let found = world.sight.found;
+    let mut report = format!(
+        "{steps} steps, {doors} doors. Found x {:?}, y {:?}, area {:?}\n",
+        found.x, found.y, found.area
+    );
+    let places = world.sight.places();
+    let mut rooms = std::collections::HashSet::new();
+    let (mut agree, mut differ) = (0, 0);
+    for (name, memory) in &places {
+        let number = memory.get(test_game::ROOM);
+        rooms.insert(number);
+        let room = test_game::ROOMS.iter().position(|r| r.0 == number).unwrap();
+        let map = world.area(name);
+        let (mut a, mut d) = (0, 0);
+        for y in 0..12 {
+            for x in 0..16 {
+                let Some(kind) = map.kind((x, y)) else {
+                    continue;
+                };
+                let truth = test_game::step_byte(room, (x as usize, y as usize));
+                let right = match truth {
+                    3 => kind == Kind::Wall,
+                    0x80.. => kind == Kind::Door,
+                    _ => kind.walkable(),
+                };
+                if right {
+                    a += 1;
+                } else {
+                    d += 1;
+                }
+            }
+        }
+        writeln!(
+            report,
+            "- {name}: room {number:02X}, {a} steps right, {d} wrong"
+        )
+        .unwrap();
+        writeln!(report, "{}", map.draw((8, 6), 8)).unwrap();
+        agree += a;
+        differ += d;
+    }
+    println!("{report}");
+    assert_eq!(
+        found.x,
+        Some(Byte {
+            address: test_game::X_PIXELS,
+            per_step: 16
+        }),
+        "{report}"
+    );
+    assert_eq!(
+        found.y,
+        Some(Byte {
+            address: test_game::Y,
+            per_step: 1
+        }),
+        "{report}"
+    );
+    assert_eq!(found.area, Some(test_game::ROOM), "{report}");
+    assert_eq!(rooms.len(), 3, "{report}");
+    assert_eq!(places.len(), 3, "one name for each room: {report}");
+    assert!(agree > 150 && differ * 20 <= agree, "{report}");
 }
