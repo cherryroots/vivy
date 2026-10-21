@@ -181,6 +181,25 @@ pub async fn run_task(
                     });
                     continue;
                 }
+                // Done somewhere the task didn't start or name: often something sent her
+                // there (a lost battle, a warp). Once per task she's asked to check.
+                if until.is_none()
+                    && finished
+                    && !told_where
+                    && !same_area(&area, &start.view.area)
+                    && !task.to_lowercase().contains(&area.to_lowercase())
+                {
+                    told_where = true;
+                    results.push(ToolOutput {
+                        call_id: call.id.clone(),
+                        output: format!(
+                            "You're in {area} now, but this task started in {} and doesn't                              say to go to {area}. Did something send you here, like losing a                              battle? Check the task is really done; if it isn't, finish with                              done: false and say what happened.",
+                            start.view.area
+                        ),
+                        images: vec![png(player.screen().await?)],
+                    });
+                    continue;
+                }
                 episode.finished = Some((finished, summary));
                 return Ok(episode);
             }
@@ -416,6 +435,85 @@ mod tests {
         async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
             Ok(vec![1, 2, 3])
         }
+    }
+
+    /// Starts in a room and ends up somewhere else after its first action, like losing a
+    /// battle and waking up at home.
+    struct Moved {
+        acted: bool,
+    }
+
+    #[async_trait]
+    impl Player for Moved {
+        async fn act(&mut self, _name: &str, _args: &Value) -> anyhow::Result<Acted> {
+            self.acted = true;
+            Ok(Acted {
+                outcome: "Pressed a.".to_string(),
+                ..self.look().await?
+            })
+        }
+        async fn look(&mut self) -> anyhow::Result<Acted> {
+            let area = if self.acted { "Home" } else { "Forest" };
+            Ok(Acted {
+                outcome: String::new(),
+                view: View {
+                    area: area.to_string(),
+                    at: (1, 1),
+                    can_walk: true,
+                    text: String::new(),
+                    facts: String::new(),
+                },
+                words: Vec::new(),
+            })
+        }
+        async fn describe(&mut self, _acted: &Acted) -> anyhow::Result<String> {
+            Ok("Place: somewhere.".to_string())
+        }
+        async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
+            Ok(vec![1, 2, 3])
+        }
+    }
+
+    #[tokio::test]
+    async fn done_somewhere_the_task_never_said_is_checked_once() {
+        let press = || Some(("press", serde_json::json!({"buttons": "a"})));
+        let finish = |done: bool| {
+            Some((
+                "finish",
+                serde_json::json!({"done": done, "summary": "the battle is over"}),
+            ))
+        };
+        let provider = Scripted {
+            answers: Mutex::new(vec![press(), finish(true), finish(false)]),
+            asked: Mutex::new(Vec::new()),
+        };
+        let mut moved = Moved { acted: false };
+        let task = "Beat the Bug Catcher until the battle is over.";
+        let episode = run_task(&provider, &mut moved, "Test Game", task, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            episode.finished,
+            Some((false, "the battle is over".to_string()))
+        );
+        let asked = texts(&provider.asked.lock().unwrap()[2]);
+        assert!(
+            asked.contains("You're in Home now, but this task started in Forest"),
+            "{asked}"
+        );
+
+        // A task that names where she ends up is believed.
+        let provider = Scripted {
+            answers: Mutex::new(vec![press(), finish(true)]),
+            asked: Mutex::new(Vec::new()),
+        };
+        let mut moved = Moved { acted: false };
+        let task = "Go back Home and talk to Mom.";
+        let episode = run_task(&provider, &mut moved, "Test Game", task, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(episode.finished.map(|f| f.0), Some(true));
+        assert_eq!(episode.requests, 2);
     }
 
     fn texts(input: &Input) -> String {
