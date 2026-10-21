@@ -45,6 +45,7 @@ mod pictures;
 mod player;
 mod playing;
 mod presses;
+mod puzzle;
 mod red;
 mod screen;
 mod session;

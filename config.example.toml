@@ -118,7 +118,8 @@ show_job_costs = true
 
 # The Game Boy strategist, on the free daily data-sharing tokens (/games gameboy play).
 # GPT-6 Astra unless set here; "gpt-6.1-sol" is the other free choice. Its reviews when
-# she's stuck are [ai.openai.jobs.game_review] (the same model, effort "high").
+# she's stuck are [ai.openai.jobs.game_review] and its puzzle helper is
+# [ai.openai.jobs.game_puzzle] (both the same model, effort "high").
 [ai.openai.jobs.game_plan]
 model = "gpt-6-astra"
 

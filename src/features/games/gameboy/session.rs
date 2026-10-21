@@ -26,7 +26,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +36,7 @@ use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
 use super::map::AreaMap;
 use super::notes::{self, Note, Reached};
+use super::puzzle::{self, Move, Wanted};
 use super::skills::{self, Skill};
 use super::strategist::{self, Ask, Calls, Care, Plan};
 use super::supervisor::{Episode, Player, args_text, run_task};
@@ -503,6 +504,36 @@ pub async fn play<G: Game>(
             plan.task.clone()
         };
 
+        // Puzzle help comes before the task, which then carries on from where it left her.
+        let mut helped = None;
+        if let Some(wanted) = &plan.puzzle {
+            if let Some(now) = &session.now {
+                now.send_modify(|now| {
+                    now.task = format!(
+                        "Following the puzzle helper's moves to ({}, {})",
+                        wanted.x, wanted.y
+                    );
+                    now.actions = 0;
+                });
+            }
+            let area = game.look().await?.view.area;
+            let free_before = today.free_tokens;
+            let how = match help_with_puzzle(session, game, &journal, &mut today, wanted).await {
+                Ok(how) => how,
+                Err(err) => format!("it failed: {err:#}"),
+            };
+            summary.free_tokens += today.free_tokens - free_before;
+            let line = format!(
+                "🧩 Puzzle help to ({}, {}) in {area}: {how}",
+                wanted.x, wanted.y
+            );
+            journal.log(line.clone());
+            let _ = session
+                .report
+                .send(Report::line(Reported::Other, line.clone()));
+            helped = Some(line);
+        }
+
         let look = game.look().await?;
         let area = look.view.area;
         if let Some(now) = &session.now {
@@ -524,7 +555,7 @@ pub async fn play<G: Game>(
             blacked_out: None,
         };
         let episode = tokio::select! {
-            episode = run_task(session.provider, &mut watched, &session.game, &task, None, EPISODE_ACTIONS) => episode,
+            episode = run_task(session.provider, &mut watched, &session.game, &task, helped.as_deref(), EPISODE_ACTIONS) => episode,
             () = session.stop.cancelled() => {
                 stopped = true;
                 Ok(Episode::default())
@@ -550,7 +581,10 @@ pub async fn play<G: Game>(
         let world = game.world().await?;
         let done = !stopped && !failed && matches!(episode.finished, Some((true, _)));
         let found = journal.found(&world, &episode.words, done);
-        journal.digest = episode.digest();
+        journal.digest = match &helped {
+            Some(line) => format!("Before the task: {line}\n{}", episode.digest()),
+            None => episode.digest(),
+        };
         let outcome = match (&episode.finished, stopped) {
             (_, true) => "stopped partway".to_string(),
             _ if failed => format!("the model failed ({})", short(&episode.log[0], 120)),
@@ -719,6 +753,61 @@ async fn plan<G: Game>(
     ))
 }
 
+/// The puzzle helper (`puzzle.rs`), when the strategist asked for it: the solver's moves,
+/// asked for again once if code turns them down, then followed. Says how it went.
+async fn help_with_puzzle<G: Game>(
+    session: &Session<'_>,
+    game: &mut G,
+    journal: &Journal,
+    today: &mut Today,
+    wanted: &Wanted,
+) -> anyhow::Result<String> {
+    let Some(openai) = session.openai else {
+        return Ok("it needs the strategist's model, and OpenAI isn't set up".to_string());
+    };
+    let world = game.world().await?;
+    let view = game.look().await?.view;
+    let map = world.areas.get(&view.area).cloned().unwrap_or_default();
+    let to = (wanted.x, wanted.y);
+    let surprises = puzzle::surprises(&world.log, &view.area, &map);
+    let asked = puzzle::ask(
+        &view.area,
+        &map,
+        view.at,
+        wanted,
+        &surprises,
+        &journal.notes,
+    );
+    let mut rejected: Option<(Vec<Move>, String)> = None;
+    for _ in 0..2 {
+        if !today.free_call_fits(session.limits.free_tokens, true) {
+            return Ok("there weren't enough free tokens left today to ask".to_string());
+        }
+        let last = rejected
+            .as_ref()
+            .map(|(m, why)| (m.as_slice(), why.as_str()));
+        let solution = puzzle::solve(openai, &asked, last).await?;
+        today.used_free(solution.tokens, true);
+        match puzzle::check(&solution.moves, &map, view.at, to) {
+            Ok(()) => {
+                let moves = match solution.moves.len() {
+                    1 => "1 move".to_string(),
+                    n => format!("{n} moves"),
+                };
+                let acted = game
+                    .act("follow_moves", &json!({ "moves": solution.moves }))
+                    .await?;
+                return Ok(format!("{moves}. {}", acted.outcome));
+            }
+            Err(why) => rejected = Some((solution.moves, why)),
+        }
+    }
+    let why = rejected.map(|(_, why)| why).unwrap_or_default();
+    Ok(format!(
+        "code turned its moves down twice; the last time {why}"
+    ))
+}
+
 /// Saves a checkpoint of where the game is now, with the notes, and drops old ones.
 async fn checkpoint<G: Game>(
     session: &Session<'_>,
@@ -834,8 +923,8 @@ async fn paid_so_far(spends: &[Spend]) -> f64 {
             continue;
         };
         for (job, cost) in month.jobs {
-            let free =
-                spend.provider() == "openai" && matches!(job.as_str(), "game_plan" | "game_review");
+            let free = spend.provider() == "openai"
+                && matches!(job.as_str(), "game_plan" | "game_review" | puzzle::JOB);
             // Her commentary isn't playing: it's her voice, like a chat answer.
             let talk = matches!(job.as_str(), "game_art" | super::narrate::JOB);
             if job == "game_play" || (job.starts_with("game_") && !talk && !free) {
@@ -1002,6 +1091,8 @@ mod tests {
         /// The notes and milestones each plan answers with (by default "note <n>" and none).
         notes: Option<Value>,
         milestones: Value,
+        /// The puzzle help each plan asks for (by default none).
+        puzzle: Value,
     }
 
     impl Scripted {
@@ -1013,6 +1104,7 @@ mod tests {
                 plans: Mutex::new(Vec::new()),
                 notes: None,
                 milestones: json!([]),
+                puzzle: json!({"what": "", "x": 0, "y": 0}),
             }
         }
     }
@@ -1049,7 +1141,8 @@ mod tests {
                 (
                     "plan",
                     json!({"reasoning": "", "notes": notes, "milestones": self.milestones,
-                        "skill_changes": changes, "next_task": format!("task {n}")}),
+                        "skill_changes": changes, "next_task": format!("task {n}"),
+                        "puzzle": self.puzzle}),
                 )
             } else if std::mem::replace(&mut *self.acted.lock().unwrap(), true) {
                 ("finish", json!({"done": true, "summary": "ok"}))
@@ -1339,6 +1432,29 @@ mod tests {
             plans[2].contains("[tried; code checked: (3, 0) in Room 1 is on the map]"),
             "{}",
             plans[2]
+        );
+    }
+
+    #[tokio::test]
+    async fn puzzle_help_comes_before_the_task_and_is_told() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut provider = Scripted::new(&[true, true]);
+        provider.puzzle = json!({"what": "arrows push you along", "x": 3, "y": 0});
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let session = session(&provider, dir.path(), 2, report);
+        play(&session, &mut Rooms::new(), None).await.unwrap();
+        // With no OpenAI there's no solver: she's told so, and plays the task anyway.
+        let first = lines.try_recv().unwrap().line;
+        assert_eq!(
+            first,
+            "🧩 Puzzle help to (3, 0) in Room 0: it needs the strategist's model, and OpenAI \
+             isn't set up"
+        );
+        let plans = provider.plans.lock().unwrap();
+        assert!(
+            plans[1].contains("Before the task: 🧩 Puzzle help to (3, 0)"),
+            "{}",
+            plans[1]
         );
     }
 

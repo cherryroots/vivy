@@ -12,8 +12,9 @@ use super::console::{Machine, Timing};
 use super::emulator::Button;
 use super::map::{Kind, LEGEND};
 use super::presses::{self, Press};
+use super::puzzle::Move;
 use super::skills::{self, Skill};
-use super::walk::{Look, Walked, explore, walk_to};
+use super::walk::{Look, Walked, explore, take_step, walk_to};
 use super::world::{View, World};
 use crate::ai::ToolDef;
 
@@ -243,6 +244,11 @@ pub fn run(
             }
         }
         "use_skill" => use_skill(world, machine, look, args["name"].as_str().unwrap_or("")),
+        // Only code calls it, with the puzzle helper's moves: it isn't one of her tools.
+        "follow_moves" => match serde_json::from_value::<Vec<Move>>(args["moves"].clone()) {
+            Ok(moves) => follow_moves(world, machine, look, &moves),
+            Err(err) => told(world, machine, look, &format!("Unreadable moves: {err}")),
+        },
         _ => told(
             world,
             machine,
@@ -404,6 +410,94 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
         format!("Read the text ({presses} presses). It's gone; you can walk.")
     } else {
         format!("Pressed A {presses} times and the screen still isn't free.")
+    };
+    Acted {
+        outcome,
+        view,
+        words,
+    }
+}
+
+/// Presses the puzzle helper's moves (`puzzle.rs`) one at a time, learning the map as
+/// walking does, and checks after each move that she stands where it said. Stops at the
+/// first one that doesn't, when she leaves the area, or when a choice comes up; text that
+/// comes up along the way is read through.
+fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[Move]) -> Acted {
+    let mut view = look(world, machine);
+    let mut words = Vec::new();
+    let area = view.area.clone();
+    let all = moves.len();
+    let a = Press(vec![Button::A]);
+    for (i, one) in moves.iter().enumerate() {
+        let n = i + 1;
+        for _ in 0..one.times {
+            if !view.can_walk {
+                let read = read_text(world, machine, look);
+                words.extend(read.words);
+                view = read.view;
+                if !view.can_walk {
+                    let outcome = format!(
+                        "Stopped at move {n} of {all} ({}): a choice or menu is up.",
+                        one.line()
+                    );
+                    return Acted {
+                        outcome,
+                        view,
+                        words,
+                    };
+                }
+            }
+            match one.dir() {
+                Some(dir) => {
+                    let (next, outcome) = take_step(world, machine, look, &view, dir);
+                    let map = world.area(&view.area);
+                    if next.area == view.area && next.at == view.at && next.can_walk {
+                        if !map.person_at(dir.step(view.at)) {
+                            map.blocked(view.at, dir);
+                        }
+                    } else if matches!(outcome, super::moves::Outcome::Moved(_))
+                        && next.area == view.area
+                    {
+                        map.walked(next.at);
+                    }
+                    view = settle(world, machine, look, &mut words);
+                }
+                None => {
+                    machine.press(std::slice::from_ref(&a), Timing::default());
+                    view = settle(world, machine, look, &mut words);
+                }
+            }
+            if view.area != area {
+                let outcome = format!(
+                    "Move {n} of {all} ({}) took her into {}.",
+                    one.line(),
+                    view.area
+                );
+                return Acted {
+                    outcome,
+                    view,
+                    words,
+                };
+            }
+        }
+        if view.at != one.spot() {
+            let outcome = format!(
+                "Move {n} of {all} ({}) ended at ({}, {}) instead. Stopped there.",
+                one.line(),
+                view.at.0,
+                view.at.1
+            );
+            return Acted {
+                outcome,
+                view,
+                words,
+            };
+        }
+    }
+    let (x, y) = view.at;
+    let outcome = match all {
+        1 => format!("Followed the move; she's at ({x}, {y})."),
+        _ => format!("Followed all {all} moves; she's at ({x}, {y})."),
     };
     Acted {
         outcome,

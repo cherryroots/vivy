@@ -27,6 +27,7 @@
 //! `VIVY_GB_RESULTS` (the project's shared folder).
 
 pub(super) mod player;
+mod puzzles;
 mod tasks;
 
 use std::collections::HashMap;
@@ -120,7 +121,8 @@ fn job(model: &str, effort: &str) -> HashMap<String, Job> {
     HashMap::from([
         ("game_play".to_string(), job.clone()),
         ("game_plan".to_string(), job),
-        ("game_review".to_string(), review),
+        ("game_review".to_string(), review.clone()),
+        ("game_puzzle".to_string(), review),
     ])
 }
 
