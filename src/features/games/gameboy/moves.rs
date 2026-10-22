@@ -612,9 +612,12 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
     } else {
         STEP_PIXELS - part
     };
-    if let Some(spot) = her
-        .filter(|_| !new_area && !against_wall && rest != 0 && (walks_across || walked != (0, 0)))
-    {
+    // Not walked back over the edge of a screen that slid on: back there the screen slides
+    // back again (Link's Awakening's village), and the step undoes itself.
+    let slid_on = walks_across && scrolled != (0, 0) && rest < 0;
+    if let Some(spot) = her.filter(|_| {
+        !new_area && !against_wall && !slid_on && rest != 0 && (walks_across || walked != (0, 0))
+    }) {
         let (more, rolled, now) = finish_step(machine, &mut screen, direction, spot, coast, rest);
         walked.0 += more.0;
         walked.1 += more.1;

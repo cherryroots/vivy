@@ -683,9 +683,19 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         .unwrap_or_default();
     // Where she left the last place: the step she went into, and whether it was dark.
     let mut left = None;
-    if let Some((step, before)) = stepped {
+    if let Some((mut step, before)) = stepped {
         let pressed = offset(step.direction.button()).unwrap_or((0, 0));
         let from = sight.live.at;
+        // Where she walks across the screen, her steps are counted on the screen's own
+        // grid from where her sprite was and is, as her own presses are, so what she
+        // sees is marked where she stands (rounding a step's pixels can disagree with
+        // the grid by one when she stands between two steps).
+        if let (Some(was), Some(now), Outcome::Moved(_)) = (spot, sight.live.spot, step.outcome) {
+            let counted = pressed_steps((was, scroll_was), (now, scroll));
+            if counted != (0, 0) {
+                step.scrolled = counted;
+            }
+        }
         if after_step(sight, &mut world.areas, step, &before, &memory, dark, free) {
             left = Some(((from.0 + pressed.0, from.1 + pressed.1), dark));
         }

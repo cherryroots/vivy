@@ -5,7 +5,7 @@
 //! `VIVY_GB_REPLAY` is a replay's `<n>.json` from a session's `replays` folder, or the
 //! folder for every episode in it; `VIVY_GB_ROM` is the game. Each action prints `=` when
 //! it says what it said then and `≠` with both when not, and a screen after each goes to a
-//! new folder in `VIVY_GB_RESULTS`. A test session's episodes play back exactly; the
+//! new folder in `VIVY_GB_RESULTS`; with `VIVY_GB_STEPS_LOG` set, every step each took. A test session's episodes play back exactly; the
 //! bot's keep running while she thinks, so theirs are close. What code knew of her sprite
 //! isn't saved, so the first step may find it again.
 
@@ -54,7 +54,14 @@ async fn replay_episodes() {
             start.view.area, start.view.at, replay.task
         );
         for (i, played) in replay.actions.iter().enumerate() {
+            local.world.log.clear();
             let acted = local.act(&played.name, &played.args).await.unwrap();
+            // With `VIVY_GB_STEPS_LOG`, every step the action took.
+            if std::env::var("VIVY_GB_STEPS_LOG").is_ok() {
+                for step in &local.world.log {
+                    println!("      {step}");
+                }
+            }
             let same = acted.outcome == played.outcome;
             actions += 1;
             differed += usize::from(!same);
