@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::features::games::gameboy::actions::{self, Acted};
+use crate::features::games::gameboy::any::{self, Sight};
 use crate::features::games::gameboy::console::Machine;
 use crate::features::games::gameboy::map::AreaMap;
 use crate::features::games::gameboy::pictures::png_at;
@@ -13,18 +14,27 @@ use crate::features::games::gameboy::red::{self, State};
 use crate::features::games::gameboy::session::Game;
 use crate::features::games::gameboy::skills::Skill;
 use crate::features::games::gameboy::supervisor::Player;
+use crate::features::games::gameboy::walk::Look;
 use crate::features::games::gameboy::world::World;
 
 pub struct Local {
     pub machine: Machine,
     pub world: World,
+    /// Red's own look, or with `VIVY_GB_LOOK=any` the look with no memory map, to see how
+    /// she plays on perception alone.
+    pub look: Look,
 }
 
 impl Local {
     pub fn new(machine: Machine) -> Local {
+        let look: Look = match std::env::var("VIVY_GB_LOOK").as_deref() {
+            Ok("any") => any::look,
+            _ => red::look,
+        };
         Local {
             machine,
             world: World::default(),
+            look,
         }
     }
 
@@ -39,14 +49,14 @@ impl Player for Local {
         Ok(actions::run(
             &mut self.world,
             &mut self.machine,
-            red::look,
+            self.look,
             name,
             args,
         ))
     }
 
     async fn look(&mut self) -> anyhow::Result<Acted> {
-        Ok(actions::look(&mut self.world, &mut self.machine, red::look))
+        Ok(actions::look(&mut self.world, &mut self.machine, self.look))
     }
 
     async fn describe(&mut self, acted: &Acted) -> anyhow::Result<String> {
@@ -71,6 +81,11 @@ impl Game for Local {
 
     async fn set_areas(&mut self, areas: HashMap<String, AreaMap>) -> anyhow::Result<()> {
         self.world.areas = areas;
+        Ok(())
+    }
+
+    async fn set_sight(&mut self, sight: Sight) -> anyhow::Result<()> {
+        self.world.sight = sight;
         Ok(())
     }
 

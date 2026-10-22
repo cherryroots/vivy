@@ -194,11 +194,11 @@ pub fn check(moves: &[Move], map: &AreaMap, at: Pos, to: Pos) -> Result<(), Stri
         if !map.inside(one.spot()) {
             return Err(format!("move {n} ends at ({x}, {y}), outside the area"));
         }
-        if let Some(kind @ (Kind::Wall | Kind::Sign)) = map.kind(one.spot()) {
-            let what = if kind == Kind::Wall {
-                "a wall"
-            } else {
-                "a sign"
+        if let Some(kind @ (Kind::Wall | Kind::Sign | Kind::OneWay(_))) = map.kind(one.spot()) {
+            let what = match kind {
+                Kind::Wall => "a wall",
+                Kind::Sign => "a sign",
+                _ => "a one-way step (hopped over, never stood on)",
             };
             return Err(format!(
                 "move {n} ends at ({x}, {y}), which the map shows as {what}"

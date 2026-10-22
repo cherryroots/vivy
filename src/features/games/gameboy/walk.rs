@@ -7,21 +7,26 @@
 //! map got wrong are learned by bumping into them. Walking stops when she gets there, when
 //! the area changes, or when something else takes over the screen: a text box, a battle.
 
+use super::any;
 use super::change::{Transitions, look as frame_look};
 use super::console::Machine;
 use super::emulator::RomInfo;
 use super::map::{Dir, Pos};
 use super::moves::{Outcome, STEP_PIXELS, step};
 use super::red;
-use super::world::{Logged, View, World};
+use super::world::{Logged, Stepped, View, World};
 
-/// How a game is looked at: `red::look` for Pokémon Red.
+/// How a game is looked at: `red::look` for Pokémon Red, `any::look` for the rest.
 pub type Look = fn(&mut World, &mut Machine) -> View;
 
-/// The way to look at this game, if code knows one. Only Pokémon Red and Blue so far;
-/// other games need the tile classifier of a later stage.
-pub fn look_for(info: &RomInfo) -> Option<Look> {
-    red::is_red(info).then_some(red::look as Look)
+/// The way to look at this game: Pokémon Red and Blue have a memory map; every other
+/// game is looked at with none (`any/`).
+pub fn look_for(info: &RomInfo) -> Look {
+    if red::is_red(info) {
+        red::look
+    } else {
+        any::look
+    }
 }
 
 /// Steps that fail before walking gives up.
@@ -133,22 +138,44 @@ pub fn take_step(
     view: &View,
     dir: Dir,
 ) -> (View, Outcome) {
-    let mut taken = step(machine, dir.button());
+    let her = world.sight.her_spot();
+    let mut taken = step(machine, dir.button(), her);
     if taken.outcome == Outcome::Turned {
-        taken = step(machine, dir.button());
+        taken = step(machine, dir.button(), taken.her.or(her));
     }
+    let faded = taken.outcome == Outcome::NewArea;
+    if faded {
+        settle(machine);
+    }
+    let moved = taken.moved();
+    let scrolled = (
+        (moved.0 as f32 / STEP_PIXELS as f32).round() as i32,
+        (moved.1 as f32 / STEP_PIXELS as f32).round() as i32,
+    );
+    world.stepped = Some(Stepped {
+        direction: dir,
+        outcome: taken.outcome,
+        scrolled,
+        her: taken.her,
+    });
     let mut next = look(world, machine);
-    if next.area != view.area || taken.outcome == Outcome::NewArea {
+    world.stepped = None;
+    if next.area != view.area && !faded {
         settle(machine);
         next = look(world, machine);
+    }
+    // Where the step took her, if not onto the next step: over a ledge, or carried along
+    // (the step waits until the screen stops scrolling, so a ride is over by now).
+    if let Outcome::Moved(_) = taken.outcome
+        && next.area == view.area
+        && next.can_walk
+    {
+        world.area(&view.area).landed(view.at, dir, next.at);
     }
     if let Outcome::Moved(n) = taken.outcome
         && next.area == view.area
     {
-        let screen = (
-            (taken.scrolled.0 as f32 / STEP_PIXELS as f32).round() as i32,
-            (taken.scrolled.1 as f32 / STEP_PIXELS as f32).round() as i32,
-        );
+        let screen = scrolled;
         let memory = (next.at.0 - view.at.0, next.at.1 - view.at.1);
         // A scroll of n steps that memory saw as n steps the same way.
         if screen.0.abs().max(screen.1.abs()) == n {
@@ -168,8 +195,8 @@ pub fn take_step(
 
 /// Lets an area change finish. Red changes its map number as the step ends, about 20
 /// frames before the screen fades, and loads the new area's doors and tiles while it's
-/// dark; towns and routes join with no fade at all.
-fn settle(machine: &mut Machine) {
+/// dark; towns and routes join with no fade at all. Says whether the screen went dark.
+pub(super) fn settle(machine: &mut Machine) -> bool {
     let mut transitions = Transitions::default();
     let mut was_dark = false;
     let mut back = 0;
@@ -184,12 +211,13 @@ fn settle(machine: &mut Machine) {
         } else if was_dark {
             back += 1;
             if back >= BACK_FOR {
-                return;
+                return true;
             }
         } else if frame >= FADE_STARTS_WITHIN {
-            return;
+            return false;
         }
     }
+    was_dark
 }
 
 /// Walks toward the nearest step she hasn't seen yet, to fill in the map, until it's been

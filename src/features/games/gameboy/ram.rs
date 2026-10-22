@@ -415,7 +415,7 @@ mod tests {
         use super::super::walk::look_for;
         use super::super::world::World;
         let mut m = super::super::gate::tasks::load("viridian");
-        let look = look_for(m.emulator.info()).unwrap();
+        let look = look_for(m.emulator.info());
         let mut world = World::default();
         let act = |world: &mut World, m: &mut Machine, name: &str, args: Value| {
             actions::run(world, m, look, name, &args)

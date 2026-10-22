@@ -26,6 +26,8 @@
 //! tests) never spends money. `VIVY_GB_GATE_USD` caps what one run spends at list prices (15). Results go in
 //! `VIVY_GB_RESULTS` (the project's shared folder).
 
+mod other_games;
+mod perception;
 pub(super) mod player;
 mod puzzles;
 pub(super) mod tasks;
@@ -815,7 +817,11 @@ async fn gate_session() {
         None => session::play(&session, &mut local, goal.as_deref()).await,
         Some(bind) => {
             use super::console::console;
-            let Local { mut machine, world } = local;
+            let Local {
+                mut machine,
+                world,
+                look,
+            } = local;
             machine.world = world;
             console().with(move |m| *m = Some(machine)).await.unwrap();
             let stop = tokio_util::sync::CancellationToken::new();
@@ -826,7 +832,11 @@ async fn gate_session() {
                 session::play(&session, &mut super::player::OnConsole, goal.as_deref()).await;
             let mut machine = console().with(|m| m.take()).await.unwrap().unwrap();
             let world = std::mem::take(&mut machine.world);
-            local = Local { machine, world };
+            local = Local {
+                machine,
+                world,
+                look,
+            };
             stop.cancel();
             result
         }

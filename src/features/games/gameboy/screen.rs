@@ -65,17 +65,43 @@ pub struct Screen {
     /// Whether the background sits exactly on the 8-pixel grid. While it scrolls between
     /// tiles each cell straddles two, and the grid shows the one under its top left pixel.
     pub aligned: bool,
+    /// Pixels right and down from each cell's top left to where its background tile
+    /// starts: none, or with `read_steady` whatever the scroll leaves over.
+    pub phase: (i32, i32),
 }
 
 impl Screen {
     pub fn read(video: &Video) -> Screen {
+        Screen::read_with(video, (0, 0))
+    }
+
+    /// The screen with each background cell a whole tile of the map, wherever the scroll
+    /// stops (games that scroll a pixel at a time and stop anywhere): a cell is the tile
+    /// that starts in it. The window doesn't scroll, so its cells are read as usual.
+    pub fn read_steady(video: &Video) -> Screen {
+        let r = video.registers;
+        let phase = (
+            (8 - i32::from(r.scx) % 8) % 8,
+            (8 - i32::from(r.scy) % 8) % 8,
+        );
+        let mut screen = Screen::read_with(video, phase);
+        screen.aligned = true;
+        screen
+    }
+
+    fn read_with(video: &Video, phase: (i32, i32)) -> Screen {
         let r = video.registers;
         let drawn = video.drawn && r.lcdc & 0x80 != 0 && !video.vram.is_empty();
         let mut cells = Vec::with_capacity(COLS * ROWS);
         for row in 0..ROWS {
             for col in 0..COLS {
                 cells.push(if drawn {
-                    read_cell(video, col * 8, row * 8)
+                    let (x, y) = (col * 8, row * 8);
+                    if in_window(&r, x, y) {
+                        read_cell(video, x, y, true)
+                    } else {
+                        read_cell(video, x + phase.0 as usize, y + phase.1 as usize, false)
+                    }
                 } else {
                     Cell {
                         layer: Layer::Off,
@@ -91,6 +117,7 @@ impl Screen {
             registers: r,
             drawn,
             aligned: r.scx.is_multiple_of(8) && r.scy.is_multiple_of(8),
+            phase,
         }
     }
 
@@ -117,10 +144,10 @@ fn in_window(r: &Registers, x: usize, y: usize) -> bool {
     r.lcdc & 0x20 != 0 && r.wx <= 166 && r.wy <= 143 && y >= r.wy as usize && x + 7 >= r.wx as usize
 }
 
-/// The cell whose top left pixel is at screen pixel `(x, y)`.
-fn read_cell(video: &Video, x: usize, y: usize) -> Cell {
+/// The cell whose top left pixel is at screen pixel `(x, y)`, in the window or the
+/// background.
+fn read_cell(video: &Video, x: usize, y: usize, window: bool) -> Cell {
     let r = &video.registers;
-    let window = in_window(r, x, y);
     // The original Game Boy blanks both layers when bit 0 is off. (On a Game Boy Color it
     // only gives sprites priority, so the layers still show.)
     if r.lcdc & 0x01 == 0 && !video.color {
