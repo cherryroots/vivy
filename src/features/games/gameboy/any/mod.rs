@@ -696,15 +696,19 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // still showed since she last walked (a menu may have covered it), she walked
         // through a door by her own presses (Red's stairs look much like the room she
         // left); a battle ends dark too, but its own screen was up.
+        // Where she walks across the screen, only a door counts, as for a step code takes:
+        // a screen sliding on to the next room is the same place, and one that looked
+        // unlike what was seen there had split Link's Awakening's village into five.
         let through_door = faded && (sight.live.was_free || sight.live.on_map);
         if free
             && sight.live.free.is_some()
             && sight.live.left.is_none()
             && (through_door
-                || sight
-                    .pictures
-                    .get(&sight.live.area)
-                    .is_some_and(|p| looks_different(p, &seen)))
+                || (sight.live.spot.is_none()
+                    && sight
+                        .pictures
+                        .get(&sight.live.area)
+                        .is_some_and(|p| looks_different(p, &seen))))
         {
             left = Some((sight.live.at, true));
         }

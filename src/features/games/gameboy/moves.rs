@@ -177,11 +177,18 @@ fn follow(
 /// Frames each way is held while finding which sprite is hers, and waited after.
 const PROBE_HOLD: u32 = 10;
 const PROBE_WAIT: u32 = 6;
+/// The most pixels across and down that the sprites that did as pressed can cover and
+/// still be her alone.
+const HELD_TOGETHER: i32 = 24;
+/// Frames watched with nothing pressed, before each round of presses.
+const PROBE_STILL: u32 = 16;
 
 /// Which sprite is hers on a screen that stays still under her, found the way a cheat
-/// finder narrows down bytes: each way is pressed in turn (right, left, down, up, so she
-/// ends about where she began), every sprite is followed frame by frame, and only those
-/// that went the way pressed whenever they moved, and moved at least twice, are kept.
+/// finder narrows down bytes: nothing is pressed for a moment, then each way in turn
+/// (right, left, down, up, so she ends about where she began), every sprite is followed
+/// frame by frame, and only those that stood still while nothing was pressed and went
+/// the way pressed whenever they moved, at least twice, are kept. If that leaves more
+/// than one, or none, it goes round once more.
 /// Children and animals wandering about go some other way sooner or later. Where her
 /// sprites are, or `None` if no one sprite (with those touching it) is left, or the
 /// screen scrolled.
@@ -195,11 +202,32 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
         .iter()
         .map(|s| ((s.x, s.y), 0, false))
         .collect();
-    for direction in [Button::Right, Button::Left, Button::Down, Button::Up] {
-        let along = offset(direction).unwrap_or((0, 0));
+    // Nothing pressed first, then each way; a second time round if that didn't leave
+    // one sprite.
+    let round = [
+        None,
+        Some(Button::Right),
+        Some(Button::Left),
+        Some(Button::Down),
+        Some(Button::Up),
+    ];
+    for (n, press) in round.iter().chain(&round).enumerate() {
+        if n == round.len()
+            && let Some(her) = only_one(&tracks, &screen)
+        {
+            return Some(her);
+        }
+        let along = press.and_then(offset).unwrap_or((0, 0));
         let from: Vec<(i32, i32)> = tracks.iter().map(|t| t.0).collect();
-        machine.emulator.hold(&[direction]);
-        for frame in 0..PROBE_HOLD + PROBE_WAIT {
+        // With nothing pressed she stands still: anyone moving then is somebody else
+        // (a chicken pecking about in Link's Awakening was taken for Link).
+        let frames = if press.is_some() {
+            PROBE_HOLD + PROBE_WAIT
+        } else {
+            PROBE_STILL
+        };
+        machine.emulator.hold(press.as_slice());
+        for frame in 0..frames {
             if frame == PROBE_HOLD {
                 machine.emulator.release();
             }
@@ -231,26 +259,45 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
             let d = (track.0.0 - from.0, track.0.1 - from.1);
             let ahead = d.0 * along.0 + d.1 * along.1;
             let across = (d.0 * along.1).abs() + (d.1 * along.0).abs();
-            if ahead >= 4 && across <= 2 {
+            if press.is_some() && ahead >= 4 && across <= 2 {
                 track.1 += 1;
             } else if d.0.abs() + d.1.abs() > 1 {
                 track.2 = true;
             }
         }
     }
+    machine.emulator.release();
+    only_one(&tracks, &screen)
+}
+
+/// The one sprite (with those touching it) that went the way pressed at least twice and
+/// never another way, if there's one.
+fn only_one(tracks: &[((i32, i32), u32, bool)], screen: &Screen) -> Option<(i32, i32)> {
     let kept: Vec<Sprite> = screen
         .sprites
         .iter()
         .filter(|s| tracks.iter().any(|t| t.1 >= 2 && !t.2 && t.0 == (s.x, s.y)))
         .copied()
         .collect();
-    let her = touching(&kept[..1.min(kept.len())], &screen.sprites);
     // Every sprite kept must be part of her: two that did as she was pressed are too many
-    // to tell apart.
-    if kept.iter().any(|k| !her.contains(k)) {
-        return None;
+    // to tell apart, unless they're within a step and a half of each other (what she
+    // holds over her head moves just as she does).
+    let span = |of: fn(&Sprite) -> (i32, i32)| {
+        let low = kept.iter().map(|s| of(s).0).min()?;
+        let high = kept.iter().map(|s| of(s).1).max()?;
+        Some(high - low)
+    };
+    let together = span(|s| (s.x, s.x + 8))? <= HELD_TOGETHER
+        && span(|s| (s.y, s.y + s.height))? <= HELD_TOGETHER;
+    if !together {
+        let her = touching(&kept[..1], &screen.sprites);
+        return kept
+            .iter()
+            .all(|k| her.contains(k))
+            .then(|| middle_of(&her))
+            .flatten();
     }
-    middle_of(&her)
+    middle_of(&kept)
 }
 
 /// Her sprites, each followed from frame to frame to the nearest sprite a frame on: once
