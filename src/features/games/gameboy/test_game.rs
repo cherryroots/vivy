@@ -537,9 +537,9 @@ mod tests {
     /// Through the first door into the second room, at (1, 4).
     pub fn in_the_second_room() -> Machine {
         let mut m = started();
-        step(&mut m, Button::Down);
+        step(&mut m, Button::Down, None);
         for _ in 0..12 {
-            step(&mut m, Button::Right);
+            step(&mut m, Button::Right, None);
         }
         m.run(60);
         assert_eq!(m.emulator.read(ROOM), 0x35);
@@ -558,19 +558,19 @@ mod tests {
             Button::Down,
             Button::Down,
         ] {
-            step(&mut m, button);
+            step(&mut m, button, None);
         }
         assert_eq!(at(&mut m), (4, 6), "above the ledge");
-        let hop = step(&mut m, Button::Down);
+        let hop = step(&mut m, Button::Down, None);
         assert_eq!(hop.outcome, Outcome::Moved(2));
         assert_eq!(at(&mut m), (4, 8), "over it");
-        assert_eq!(step(&mut m, Button::Up).outcome, Outcome::Blocked);
+        assert_eq!(step(&mut m, Button::Up, None).outcome, Outcome::Blocked);
         // Onto the first arrow from the left: carried to the step past the last.
-        step(&mut m, Button::Left);
-        step(&mut m, Button::Left);
-        step(&mut m, Button::Down);
+        step(&mut m, Button::Left, None);
+        step(&mut m, Button::Left, None);
+        step(&mut m, Button::Down, None);
         assert_eq!(at(&mut m), (2, 9));
-        let carried = step(&mut m, Button::Right);
+        let carried = step(&mut m, Button::Right, None);
         assert_eq!(at(&mut m), (7, 9));
         assert_eq!(carried.outcome, Outcome::Moved(5));
     }
@@ -586,15 +586,15 @@ mod tests {
             )
         };
         assert_eq!(read(&mut m), (3 * 16, 3, 0x21));
-        let right = step(&mut m, Button::Right);
+        let right = step(&mut m, Button::Right, None);
         assert_eq!(right.outcome, Outcome::Moved(1));
         assert_eq!(right.scrolled, (16, 0));
         assert_eq!(read(&mut m), (4 * 16, 3, 0x21));
         // Up twice, to the top row; the wall above stops her.
-        step(&mut m, Button::Up);
-        step(&mut m, Button::Up);
+        step(&mut m, Button::Up, None);
+        step(&mut m, Button::Up, None);
         assert_eq!(read(&mut m), (4 * 16, 1, 0x21));
-        let blocked = step(&mut m, Button::Up);
+        let blocked = step(&mut m, Button::Up, None);
         assert_eq!(blocked.outcome, Outcome::Blocked);
         assert_eq!(read(&mut m), (4 * 16, 1, 0x21));
     }
@@ -603,10 +603,10 @@ mod tests {
     fn a_door_fades_into_the_next_room() {
         let mut m = started();
         // From (3, 3): down to row 4, then right along it to the door at (15, 4).
-        step(&mut m, Button::Down);
+        step(&mut m, Button::Down, None);
         let mut last = None;
         for _ in 0..12 {
-            last = Some(step(&mut m, Button::Right));
+            last = Some(step(&mut m, Button::Right, None));
         }
         assert_eq!(last.unwrap().outcome, Outcome::NewArea);
         m.run(60);

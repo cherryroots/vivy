@@ -37,8 +37,11 @@ use memory::{Areas, Byte, Finder, Memory, Position};
 /// Pixels in a step.
 const STEP: i32 = 16;
 
-/// The screen pixel her sprite's middle is nearest.
-const MIDDLE: (i32, i32) = (72, 68);
+/// The screen pixel her sprite's middle is nearest, in games that scroll under her.
+use super::moves::{MIDDLE, middle_of, touching};
+
+/// Pixels from her spot a sprite can be and still be hers.
+const HER_NEAR: i32 = 12;
 
 /// Tiles that may change with no scroll while she can still walk (a clock, a counter).
 /// Tile numbers are compared, so tiles whose pictures move (water, flowers) don't count.
@@ -64,6 +67,9 @@ const TELLING_AFTER: usize = 4;
 /// than this share were ever seen there.
 const OTHER_KINDS: usize = 6;
 const OTHER_SHARE: f32 = 0.25;
+
+/// Shifts tried when knowing a place again from steps counted from somewhere else.
+const SHIFTS_TRIED: usize = 5;
 
 /// Steps seen before in the same places that, three in four the same, say it's the same
 /// place whatever else is on screen.
@@ -157,9 +163,14 @@ struct Live {
     /// Memory when she first came into each place: to name the places by the area byte
     /// once it's found, and to check the byte when she comes back through a door.
     arrived: HashMap<String, Memory>,
-    /// Her sprite's pictures, from the middle of the screen whenever a press of hers
-    /// scrolled it: a battle's pictures near the middle aren't her.
+    /// Her sprite's pictures, from where she stands whenever a press of hers moved her:
+    /// a battle's pictures near the middle aren't her.
     her: HashSet<u64>,
+    /// Where her sprite is on the screen, in games where it moves across a still screen
+    /// (the middle of the sprites a step moved her way). `None`: in the middle.
+    spot: Option<(i32, i32)>,
+    /// Where the sprites were at the last look, to see which moved when she pressed.
+    sprites: Vec<(i32, i32)>,
     /// Whether she could walk at the last look, and the screens recorded by then
     /// (`Machine::recorded`), to see whether it went dark in between.
     was_free: bool,
@@ -217,10 +228,14 @@ impl Sight {
         })
     }
 
+    /// Where memory says she is. Not in a game where she walks across a still screen:
+    /// there her steps are counted from her sprite, which beats a byte that may count
+    /// pixels (and wrap every 16 steps) or miss the part steps against walls.
     fn position(&self, memory: &Memory) -> Option<Pos> {
         self.live
             .finder
             .as_ref()
+            .filter(|_| self.live.spot.is_none())
             .and_then(|f| f.position.at(memory))
     }
 
@@ -261,6 +276,11 @@ impl Sight {
             .collect()
     }
 
+    /// Where her sprite is on the screen, once a step has shown it moves across it.
+    pub fn her_spot(&self) -> Option<(i32, i32)> {
+        self.live.spot
+    }
+
     /// The place these steps look like, other than the one she just left (Red's stairs
     /// lead to a room that looks much like the one above: she isn't where she was).
     /// A picture that covers much of the screen (plain floor, the dark past a room's walls)
@@ -282,6 +302,43 @@ impl Sight {
             })
             .max()
             .map(|(_, name)| name)
+    }
+
+    /// The same, for steps counted from wherever she came in (a game she walks across):
+    /// the place, and how far its steps are from the ones she counted. Each picture seen
+    /// before at some step suggests a shift; the ones most suggested are tried.
+    fn known_place_shifted(&self, seen: &[(Pos, u64)], left: &str) -> Option<(String, Pos)> {
+        let telling = without_common(seen);
+        let shifted = |seen: &[(Pos, u64)], by: Pos| -> Vec<(Pos, u64)> {
+            seen.iter()
+                .map(|&((x, y), key)| ((x + by.0, y + by.1), key))
+                .collect()
+        };
+        let mut best: Option<(usize, String, Pos)> = None;
+        for (name, pictures) in self.pictures.iter().filter(|(name, _)| *name != left) {
+            let mut votes: HashMap<Pos, usize> = HashMap::new();
+            for &((x, y), key) in &telling {
+                for (&(px, py), _) in pictures.0.iter().filter(|(_, k)| **k == key) {
+                    *votes.entry((px - x, py - y)).or_default() += 1;
+                }
+            }
+            let mut shifts: Vec<(usize, Pos)> = votes.into_iter().map(|(by, n)| (n, by)).collect();
+            shifts.sort_unstable_by(|a, b| b.cmp(a));
+            for &(_, by) in shifts.iter().take(SHIFTS_TRIED) {
+                let alike = |(same, both): (usize, usize), after| {
+                    both < after || same as f32 >= both as f32 * KNOWN_SHARE
+                };
+                let (same, both) = compare(pictures, &shifted(seen, by));
+                if both >= KNOWN_AFTER
+                    && alike((same, both), 0)
+                    && alike(compare(pictures, &shifted(&telling, by)), TELLING_AFTER)
+                    && best.as_ref().is_none_or(|(most, _, _)| same > *most)
+                {
+                    best = Some((same, name.clone(), by));
+                }
+            }
+        }
+        best.map(|(_, name, by)| (name, by))
     }
 
     /// Names the places by the area byte, when it has just been found or a better one has
@@ -419,7 +476,10 @@ fn shared_pictures(pictures: &Pictures, seen: &[(Pos, u64)]) -> (usize, usize) {
 /// area's map.
 pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let sight = &mut world.sight;
-    let mut screen = Screen::read(machine.emulator.video());
+    // A sprite that walks across the screen: the camera can stop anywhere, so the screen
+    // is read in whole tiles of the map.
+    let steady = sight.live.spot.is_some() || world.stepped.is_some_and(|s| s.her.is_some());
+    let mut screen = screen_of(machine.emulator.video(), steady);
     let mut memory = Memory::read(&mut machine.emulator);
 
     if sight.live.memory.is_none() {
@@ -448,20 +508,42 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 .is_some_and(|l| l.doors == 0 && l.walked > 0);
             if !floor && settle(machine) {
                 dark = true;
-                screen = Screen::read(machine.emulator.video());
+                screen = screen_of(machine.emulator.video(), steady);
                 memory = Memory::read(&mut machine.emulator);
             }
         }
     }
     let faded = went_dark(machine, sight.live.recorded);
-    // Her sprite, when a press of hers just scrolled the screen (a step code took, or
-    // one she pressed herself).
+    // Where her sprite is, in a game where it walks across a still screen: where the
+    // step left it, or found again by its pictures near where it was (her own presses
+    // may have moved it).
+    let spot = sight.live.spot;
+    let pressed = machine.emulator.directions_pressed() != sight.live.pressed;
+    match &stepped {
+        Some((step, _)) if step.her.is_some() => sight.live.spot = step.her,
+        _ => match spot {
+            Some(last) => sight.live.spot = find_her(&sight.live.her, &screen, last).or(spot),
+            // Nothing stands in the middle, and her own presses moved sprites across a
+            // still screen: those are her.
+            None if pressed
+                && screen.drawn
+                && (screen.registers.scx, screen.registers.scy) == sight.live.scroll
+                && steps_of(&screen, None).is_none() =>
+            {
+                sight.live.spot = moved_together(&sight.live.sprites, &screen);
+            }
+            None => {}
+        },
+    }
+    sight.live.sprites = screen.sprites.iter().map(|s| (s.x, s.y)).collect();
+    // Her sprite, when a press of hers just moved her (a step code took, or one she
+    // pressed herself).
     let scroll = (screen.registers.scx, screen.registers.scy);
     let walked = match &stepped {
         Some((step, _)) => matches!(step.outcome, Outcome::Moved(_)),
         None => {
             machine.emulator.directions_pressed() != sight.live.pressed
-                && scroll != sight.live.scroll
+                && (scroll != sight.live.scroll || sight.live.spot != spot)
         }
     };
     let stood_still = stepped.is_none()
@@ -484,13 +566,16 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
     // Only a look she can walk at: a battle's moves press directions and scroll too.
     if walked && free {
-        sight.live.her.extend(middle_sprites(&screen));
+        sight
+            .live
+            .her
+            .extend(her_sprites(&screen, sight.live.spot).collect::<Vec<_>>());
     }
     #[cfg(test)]
     let stepped_at_all = stepped.as_ref().map(|(s, _)| (s.direction, s.outcome));
     let at = sight.position(&memory);
-    let seen = at
-        .map(|at| sight.steady(seen_steps(&screen, at)))
+    let mut seen = at
+        .map(|at| sight.steady(seen_steps(&screen, at, sight.live.spot)))
         .unwrap_or_default();
     // Where she left the last place: the step she went into, and whether it was dark.
     let mut left = None;
@@ -521,6 +606,10 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
         sight.live.at = at;
     }
+    // Where she walks across the screen, places are known by the steps she counted.
+    if sight.live.spot.is_some() {
+        seen = sight.steady(seen_steps(&screen, sight.live.at, sight.live.spot));
+    }
     // Somewhere new is only looked at once she can walk there: a text box or a scene can
     // cover it as she comes in.
     if left.is_some() {
@@ -545,14 +634,20 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
     }
     sight.name_places(&mut world.areas);
-    if let Some((x, y)) = sight.live.finder.as_ref().and_then(|f| f.position.found()) {
+    if let Some((x, y)) = sight
+        .live
+        .finder
+        .as_ref()
+        .filter(|_| sight.live.spot.is_none())
+        .and_then(|f| f.position.found())
+    {
         sight.found.x = Some(x);
         sight.found.y = Some(y);
     }
 
     let area = sight.live.area.clone();
     let at = sight.live.at;
-    let steps = steps_of(&screen).filter(|_| free);
+    let steps = steps_of(&screen, sight.live.spot).filter(|_| free);
     if let Some(steps) = steps {
         let around = pictures_around(&screen, steps);
         let numbers = numbers_around(&screen, steps);
@@ -580,7 +675,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             }
         }
         sight.live.numbers = numbers;
-        sight.live.people = people(&screen, steps);
+        sight.live.people = people(&screen, steps, sight.live.spot);
         let map = world.areas.entry(area.clone()).or_default();
         let pictures = sight.pictures.entry(area.clone()).or_default();
         for (&(dx, dy), &key) in &around {
@@ -643,9 +738,16 @@ fn after_step(
         sight.live.at.0 + step.scrolled.0,
         sight.live.at.1 + step.scrolled.1,
     );
-    let jumped = sight
-        .finder()
-        .stepped(before, after, pressed, step.scrolled, dark);
+    // Where she walks across a still screen, her steps are counted from her sprite
+    // (`position`), and somewhere new is through a door: a screen that slides on to the
+    // next room is just a long way walked.
+    let jumped = if sight.live.spot.is_some() {
+        None
+    } else {
+        sight
+            .finder()
+            .stepped(before, after, pressed, step.scrolled, dark)
+    };
     let now = sight.position(after);
     // Memory put her somewhere the step couldn't have, or the step went dark and left her
     // free to walk: a door, even to the same numbers (Red's stairs land on the same spot
@@ -777,11 +879,20 @@ fn arrive(
         .get(&old_area)
         .and_then(|map| map.doors.get(&gone))
         .cloned();
+    // Where she walks across the screen, her steps in a place she knows are counted on
+    // from where she was there before.
+    let shifted = (sight.live.spot.is_some() && led.is_none())
+        .then(|| sight.known_place_shifted(seen, &old_area))
+        .flatten();
+    if let Some((_, by)) = shifted {
+        sight.live.at = (sight.live.at.0 + by.0, sight.live.at.1 + by.1);
+    }
     let name = match sight.area_byte() {
         // The byte can't name the place she just left: she stepped somewhere new.
         Some(byte) => sight
             .place_by(byte, memory)
             .filter(|name| *name != old_area),
+        None if shifted.is_some() => shifted.map(|(name, _)| name),
         None => led.or_else(|| sight.known_place(seen, &old_area)),
     }
     .unwrap_or_else(|| sight.new_place());
@@ -868,7 +979,8 @@ fn calm(
     {
         return false;
     }
-    let Some(steps) = steps_of(screen) else {
+    let spot = sight.live.spot;
+    let Some(steps) = steps_of(screen, spot) else {
         return false;
     };
     let r = screen.registers;
@@ -887,14 +999,23 @@ fn calm(
         // Nothing calm to compare with (just after a fade, or all through a battle or a
         // scene): it must hold still a moment with her sprite where it is. A battle's
         // moves are sprites near the middle too, but they don't stay put.
-        if !is_her(&sight.live.her, screen) || !holds_still(machine, &now, steps) {
+        if !is_her(&sight.live.her, screen, spot) || !holds_still(machine, &now, steps, spot) {
             return false;
         }
         sight.live.calm = Some(now);
         sight.live.jumped = false;
         return true;
     };
-    let moved = |a: u8, b: u8| i32::from(b.wrapping_sub(a) as i8) / 8;
+    // Cells the scroll moved by: whole tiles of the map, read steady.
+    let moved = |a: u8, b: u8| {
+        if spot.is_some() {
+            let tile = |v: u8| (i32::from(v) + 7) / 8;
+            let d = (tile(b) - tile(a)).rem_euclid(32);
+            if d >= 16 { d - 32 } else { d }
+        } else {
+            i32::from(b.wrapping_sub(a) as i8) / 8
+        }
+    };
     let by = (
         moved(last.scroll.0, now.scroll.0),
         moved(last.scroll.1, now.scroll.1),
@@ -909,7 +1030,7 @@ fn calm(
     }
     let free = (by == (0, 0) || stepped)
         && (!near || changed_since(last, &now, by) <= CALM_CHANGES)
-        && (!sight.live.jumped || is_her(&sight.live.her, screen));
+        && (!sight.live.jumped || is_her(&sight.live.her, screen, spot));
     if free {
         sight.live.jumped = false;
     }
@@ -922,18 +1043,77 @@ fn calm(
     free
 }
 
-/// The pictures of the sprites in the middle of the screen, where she stands.
-fn middle_sprites(screen: &Screen) -> impl Iterator<Item = u64> + '_ {
+/// The pictures of the sprites where she stands: the middle of the screen, or her spot.
+fn her_sprites(screen: &Screen, spot: Option<(i32, i32)>) -> impl Iterator<Item = u64> + '_ {
+    let at = spot.unwrap_or(MIDDLE);
     screen
         .sprites
         .iter()
-        .filter(|s| (s.x + 4 - MIDDLE.0).abs() + (s.y + s.height / 2 - MIDDLE.1).abs() <= 12)
-        .map(|s| s.key ^ u64::from(s.flags & 0x20))
+        .filter(move |s| (s.x + 4 - at.0).abs() + (s.y + s.height / 2 - at.1).abs() <= HER_NEAR)
+        .map(picture_of)
 }
 
-/// Whether a sprite in the middle is one of hers, or nothing of hers is known yet.
-fn is_her(her: &HashSet<u64>, screen: &Screen) -> bool {
-    her.is_empty() || middle_sprites(screen).any(|key| her.contains(&key))
+/// A sprite's picture, the same facing left or right.
+fn picture_of(s: &super::screen::Sprite) -> u64 {
+    s.key ^ u64::from(s.flags & 0x20)
+}
+
+/// Whether a sprite where she stands is one of hers, or nothing of hers is known yet.
+fn is_her(her: &HashSet<u64>, screen: &Screen, spot: Option<(i32, i32)>) -> bool {
+    her.is_empty() || her_sprites(screen, spot).any(|key| her.contains(&key))
+}
+
+/// The sprites that all moved the same way since `then` (two or more, a step's worth or
+/// less), the most that did: the middle of them.
+fn moved_together(then: &[(i32, i32)], screen: &Screen) -> Option<(i32, i32)> {
+    // A sprite that stayed put explains itself better than a move.
+    let still: HashSet<(i32, i32)> = then.iter().copied().collect();
+    let mut counts: HashMap<(i32, i32), usize> = HashMap::new();
+    for s in screen
+        .sprites
+        .iter()
+        .filter(|s| !still.contains(&(s.x, s.y)))
+    {
+        let mut moves: Vec<(i32, i32)> = then
+            .iter()
+            .map(|t| (s.x - t.0, s.y - t.1))
+            .filter(|d| *d != (0, 0) && d.0.abs() <= 2 * STEP && d.1.abs() <= 2 * STEP)
+            .collect();
+        moves.sort_unstable();
+        moves.dedup();
+        for d in moves {
+            *counts.entry(d).or_default() += 1;
+        }
+    }
+    let (&d, &n) = counts
+        .iter()
+        .max_by_key(|&(d, n)| (*n, -(d.0.abs() + d.1.abs())))?;
+    if n < 2 {
+        return None;
+    }
+    let group: Vec<_> = screen
+        .sprites
+        .iter()
+        .filter(|s| !still.contains(&(s.x, s.y)) && then.contains(&(s.x - d.0, s.y - d.1)))
+        .copied()
+        .collect();
+    if group.len() < 2 {
+        return None;
+    }
+    middle_of(&touching(&group, &screen.sprites))
+}
+
+/// Her sprites near where they last were: the middle of them (and the sprites that touch
+/// them), if any are there.
+fn find_her(her: &HashSet<u64>, screen: &Screen, last: (i32, i32)) -> Option<(i32, i32)> {
+    let hers: Vec<_> = screen
+        .sprites
+        .iter()
+        .filter(|s| her.contains(&picture_of(s)))
+        .filter(|s| (s.x + 4 - last.0).abs() + (s.y + s.height / 2 - last.1).abs() <= 2 * STEP)
+        .copied()
+        .collect();
+    middle_of(&touching(&hers, &screen.sprites))
 }
 
 /// Whether any screen recorded after `mark` was all one colour: a fade, or the screen off.
@@ -973,6 +1153,15 @@ fn trace_new_place(
     );
 }
 
+/// The screen, in whole tiles of the map if `steady`.
+fn screen_of(video: &super::emulator::Video, steady: bool) -> Screen {
+    if steady {
+        Screen::read_steady(video)
+    } else {
+        Screen::read(video)
+    }
+}
+
 /// The screen as `calm` compares it.
 fn calm_of(screen: &Screen) -> Calm {
     Calm {
@@ -983,11 +1172,11 @@ fn calm_of(screen: &Screen) -> Calm {
 
 /// Whether the screen is the same a moment later: still a picture, her sprite on the same
 /// step, and no more than a few tiles changed.
-fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps) -> bool {
+fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps, spot: Option<(i32, i32)>) -> bool {
     machine.run(STILL_FRAMES);
     let video = machine.emulator.video().clone();
     let rgb = machine.emulator.screen();
-    let screen = Screen::read(&video);
+    let screen = screen_of(&video, spot.is_some());
     if frame_look(video.drawn, &video.registers, &rgb, video.color) != FrameLook::Picture
         || !screen.drawn
         || !screen.aligned
@@ -995,7 +1184,7 @@ fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps) -> bool {
         return false;
     }
     let again = calm_of(&screen);
-    steps_of(&screen).is_some_and(|s| s.player == steps.player && s.origin == steps.origin)
+    steps_of(&screen, spot).is_some_and(|s| s.player == steps.player && s.origin == steps.origin)
         && again.scroll == now.scroll
         && changed_since(now, &again, (0, 0)) <= CALM_CHANGES
 }
@@ -1025,8 +1214,9 @@ fn changed_since(last: &Calm, now: &Calm, by: (i32, i32)) -> usize {
 }
 
 /// How the screen's steps sit, from the scroll and her sprite: `None` when no sprite
-/// stands in the middle of the screen.
-fn steps_of(screen: &Screen) -> Option<Steps> {
+/// stands in the middle of the screen (or at her spot, in a game where she walks across
+/// it).
+fn steps_of(screen: &Screen, spot: Option<(i32, i32)>) -> Option<Steps> {
     let r = screen.registers;
     let origin = (
         (STEP - i32::from(r.scx) % STEP) % STEP,
@@ -1034,12 +1224,16 @@ fn steps_of(screen: &Screen) -> Option<Steps> {
     );
     // Her sprite is the one nearest the middle: just left of it and a little up, where
     // games with an even number of steps across put the player.
-    let centre = screen
+    let at = spot.unwrap_or(MIDDLE);
+    let nearest = screen
         .sprites
         .iter()
         .map(|s| (s.x + 4, s.y + s.height / 2))
-        .min_by_key(|&(x, y)| (x - MIDDLE.0).abs() + (y - MIDDLE.1).abs())
-        .filter(|&(x, y)| (x - MIDDLE.0).abs() + (y - MIDDLE.1).abs() <= 12)?;
+        .min_by_key(|&(x, y)| (x - at.0).abs() + (y - at.1).abs())
+        .filter(|&(x, y)| (x - at.0).abs() + (y - at.1).abs() <= HER_NEAR)?;
+    // Her spot is the middle of all her sprites; in the middle of the screen, the sprite
+    // nearest it.
+    let centre = if spot.is_some() { at } else { nearest };
     Some(Steps {
         origin,
         across: (COLS as i32 * 8 - origin.0) / STEP,
@@ -1057,8 +1251,8 @@ fn pictures_around(screen: &Screen, steps: Steps) -> HashMap<Pos, u64> {
     let mut found = HashMap::new();
     for j in 0..steps.down {
         for i in 0..steps.across {
-            let col = ((steps.origin.0 + i * STEP) / 8) as usize;
-            let row = ((steps.origin.1 + j * STEP) / 8) as usize;
+            let col = ((steps.origin.0 + i * STEP - screen.phase.0) / 8) as usize;
+            let row = ((steps.origin.1 + j * STEP - screen.phase.1) / 8) as usize;
             let cells = [
                 screen.cell(col, row),
                 screen.cell(col + 1, row),
@@ -1080,8 +1274,8 @@ fn numbers_around(screen: &Screen, steps: Steps) -> HashMap<Pos, [u8; 4]> {
     let mut found = HashMap::new();
     for j in 0..steps.down {
         for i in 0..steps.across {
-            let col = ((steps.origin.0 + i * STEP) / 8) as usize;
-            let row = ((steps.origin.1 + j * STEP) / 8) as usize;
+            let col = ((steps.origin.0 + i * STEP - screen.phase.0) / 8) as usize;
+            let row = ((steps.origin.1 + j * STEP - screen.phase.1) / 8) as usize;
             let numbers = [
                 screen.cell(col, row).index,
                 screen.cell(col + 1, row).index,
@@ -1095,8 +1289,8 @@ fn numbers_around(screen: &Screen, steps: Steps) -> HashMap<Pos, [u8; 4]> {
 }
 
 /// The screen's steps where they are in the area, with her at `at`.
-fn seen_steps(screen: &Screen, at: Pos) -> Vec<(Pos, u64)> {
-    let Some(steps) = steps_of(screen) else {
+fn seen_steps(screen: &Screen, at: Pos, spot: Option<(i32, i32)>) -> Vec<(Pos, u64)> {
+    let Some(steps) = steps_of(screen, spot) else {
         return Vec::new();
     };
     pictures_around(screen, steps)
@@ -1106,11 +1300,17 @@ fn seen_steps(screen: &Screen, at: Pos) -> Vec<(Pos, u64)> {
         .collect()
 }
 
-/// Where the other people stand, by steps from her, from the sprites away from hers.
-fn people(screen: &Screen, steps: Steps) -> Vec<Pos> {
+/// Where the other people stand, by steps from her, from the sprites away from hers (a
+/// sprite that walks across the screen is drawn in parts that can sit on two steps).
+fn people(screen: &Screen, steps: Steps, spot: Option<(i32, i32)>) -> Vec<Pos> {
     let mut found: Vec<Pos> = screen
         .sprites
         .iter()
+        .filter(|s| {
+            spot.is_none_or(|at| {
+                (s.x + 4 - at.0).abs() + (s.y + s.height / 2 - at.1).abs() > HER_NEAR
+            })
+        })
         .map(|s| {
             (
                 (s.x + 4 - steps.origin.0).div_euclid(STEP) - steps.player.0,

@@ -46,8 +46,11 @@ pub struct World {
 pub struct Stepped {
     pub direction: Dir,
     pub outcome: Outcome,
-    /// How far the screen scrolled, in steps (x, y).
+    /// How far she went, in steps (x, y): the screen's scroll, plus her sprite's own move
+    /// in games where it walks across a still screen.
     pub scrolled: (i32, i32),
+    /// Where her sprite ended up on the screen, when it moved across it.
+    pub her: Option<(i32, i32)>,
 }
 
 /// One step in the movement log.

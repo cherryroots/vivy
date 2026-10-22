@@ -138,22 +138,25 @@ pub fn take_step(
     view: &View,
     dir: Dir,
 ) -> (View, Outcome) {
-    let mut taken = step(machine, dir.button());
+    let her = world.sight.her_spot();
+    let mut taken = step(machine, dir.button(), her);
     if taken.outcome == Outcome::Turned {
-        taken = step(machine, dir.button());
+        taken = step(machine, dir.button(), taken.her.or(her));
     }
     let faded = taken.outcome == Outcome::NewArea;
     if faded {
         settle(machine);
     }
+    let moved = taken.moved();
     let scrolled = (
-        (taken.scrolled.0 as f32 / STEP_PIXELS as f32).round() as i32,
-        (taken.scrolled.1 as f32 / STEP_PIXELS as f32).round() as i32,
+        (moved.0 as f32 / STEP_PIXELS as f32).round() as i32,
+        (moved.1 as f32 / STEP_PIXELS as f32).round() as i32,
     );
     world.stepped = Some(Stepped {
         direction: dir,
         outcome: taken.outcome,
         scrolled,
+        her: taken.her,
     });
     let mut next = look(world, machine);
     world.stepped = None;
