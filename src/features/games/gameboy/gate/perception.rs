@@ -359,6 +359,15 @@ fn the_look_with_no_map_agrees_with_reds() {
     writeln!(report, "- found: {:?}", shadow.sight.found).unwrap();
     writeln!(
         report,
+        "- moving pictures: {}",
+        shadow.sight.moving_pictures()
+    )
+    .unwrap();
+    // Flowers and water: a few pictures, not the town (a live run once learned most of
+    // them as moving, and then every place looked like every other).
+    assert!(shadow.sight.moving_pictures() <= 16, "{report}");
+    writeln!(
+        report,
         "- can walk: both {}, only Red's {}, only the other {}",
         c.both_walk, c.only_red, c.only_any
     )

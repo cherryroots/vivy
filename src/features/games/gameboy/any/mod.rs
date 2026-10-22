@@ -44,6 +44,9 @@ const MIDDLE: (i32, i32) = (72, 68);
 /// Tile numbers are compared, so tiles whose pictures move (water, flowers) don't count.
 const CALM_CHANGES: usize = 8;
 
+/// Steps seen to change picture at once, at most, for them to be pictures moving.
+const MOVING_MOST: usize = 12;
+
 /// How long a screen must hold still to count as calm when there's no calm screen to
 /// compare it with.
 const STILL_FRAMES: u32 = 20;
@@ -159,6 +162,11 @@ struct Live {
     recorded: u64,
     /// The scroll at the last look.
     scroll: (u8, u8),
+    /// The tile numbers of each step at the last look she could walk at, by steps from
+    /// her, to tell a picture moving from a tile changed.
+    numbers: HashMap<Pos, [u8; 4]>,
+    /// How often each change of picture was seen on a step while she stood still.
+    moving: HashMap<(u64, u64), u32>,
     /// Her map has shown at every look since the last one she could walk at.
     on_map: bool,
     /// The screen scrolled further than steps go, or while she couldn't walk, since she
@@ -234,6 +242,12 @@ impl Sight {
             .collect();
         places.sort_by(|a, b| a.0.cmp(&b.0));
         places
+    }
+
+    /// How many pictures are known to move.
+    #[cfg(test)]
+    pub fn moving_pictures(&self) -> usize {
+        self.lively.len()
     }
 
     /// The steps without the pictures that move.
@@ -426,7 +440,11 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 && scroll != sight.live.scroll
         }
     };
-    let stood_still = stepped.is_none() && !walked && scroll == sight.live.scroll && !faded;
+    let stood_still = stepped.is_none()
+        && !walked
+        && scroll == sight.live.scroll
+        && !faded
+        && sight.live.was_free;
     let was = (sight.live.area.clone(), sight.live.at);
     sight.live.scroll = scroll;
     // Whether her map still shows under whatever covers it (a menu, a text box), since
@@ -513,15 +531,31 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let steps = steps_of(&screen).filter(|_| free);
     if let Some(steps) = steps {
         let around = pictures_around(&screen, steps);
+        let numbers = numbers_around(&screen, steps);
+        // A step whose tiles kept their numbers but not their pictures while she stood
+        // still is a picture moving (flowers, water). Many at once is the game loading
+        // other pictures, which says nothing.
         if stood_still && was == (sight.live.area.clone(), sight.live.at) {
-            for (offset, key) in &around {
-                if let Some(&old) = sight.live.around.get(offset)
-                    && old != *key
-                {
-                    sight.lively.extend([old, *key]);
+            let moving: Vec<(u64, u64)> = around
+                .iter()
+                .filter_map(|(offset, &key)| {
+                    let old = *sight.live.around.get(offset)?;
+                    (old != key && sight.live.numbers.get(offset) == numbers.get(offset))
+                        .then_some((old, key))
+                })
+                .collect();
+            if moving.len() <= MOVING_MOST {
+                // Twice the same change: a picture loaded late changes once.
+                for pair in moving {
+                    let seen = sight.live.moving.entry(pair).or_default();
+                    *seen += 1;
+                    if *seen >= 2 {
+                        sight.lively.extend([pair.0, pair.1]);
+                    }
                 }
             }
         }
+        sight.live.numbers = numbers;
         sight.live.people = people(&screen, steps);
         let map = world.areas.entry(area.clone()).or_default();
         let pictures = sight.pictures.entry(area.clone()).or_default();
@@ -1014,6 +1048,25 @@ fn pictures_around(screen: &Screen, steps: Steps) -> HashMap<Pos, u64> {
     found
 }
 
+/// Each step's four tile numbers, by steps from her, like `pictures_around`.
+fn numbers_around(screen: &Screen, steps: Steps) -> HashMap<Pos, [u8; 4]> {
+    let mut found = HashMap::new();
+    for j in 0..steps.down {
+        for i in 0..steps.across {
+            let col = ((steps.origin.0 + i * STEP) / 8) as usize;
+            let row = ((steps.origin.1 + j * STEP) / 8) as usize;
+            let numbers = [
+                screen.cell(col, row).index,
+                screen.cell(col + 1, row).index,
+                screen.cell(col, row + 1).index,
+                screen.cell(col + 1, row + 1).index,
+            ];
+            found.insert((i - steps.player.0, j - steps.player.1), numbers);
+        }
+    }
+    found
+}
+
 /// The screen's steps where they are in the area, with her at `at`.
 fn seen_steps(screen: &Screen, at: Pos) -> Vec<(Pos, u64)> {
     let Some(steps) = steps_of(screen) else {
@@ -1091,6 +1144,43 @@ mod tests {
             sight.known_place(&sight.steady(seen), "Place 2"),
             Some("Place 1".to_string())
         );
+    }
+
+    /// Red's bedroom, with the trainer card opened and closed between looks while she
+    /// stands still: its pictures load into the map's tiles and back, which isn't the
+    /// room moving, so nothing in it is learned as moving.
+    #[test]
+    #[ignore = "needs a ROM in VIVY_GB_ROM"]
+    fn a_menu_s_pictures_are_not_the_room_moving() {
+        use super::super::console::Timing;
+        use super::super::emulator::Button;
+        use super::super::presses::Press;
+        let mut m = super::super::red::tests::new_game();
+        let mut world = World::default();
+        let press = |m: &mut Machine, button: Button| {
+            m.press(&[Press(vec![button])], Timing { hold: 4, gap: 30 });
+        };
+        for button in [Button::Left, Button::Right, Button::Left, Button::Right] {
+            press(&mut m, button);
+            m.run(30);
+            look(&mut world, &mut m);
+        }
+        for _ in 0..3 {
+            for button in [Button::Start, Button::Down, Button::A] {
+                press(&mut m, button);
+                look(&mut world, &mut m);
+            }
+            for _ in 0..3 {
+                press(&mut m, Button::B);
+                m.run(20);
+                look(&mut world, &mut m);
+            }
+            for _ in 0..4 {
+                m.run(40);
+                assert!(look(&mut world, &mut m).can_walk);
+            }
+        }
+        assert!(world.sight.lively.is_empty(), "{:?}", world.sight.lively);
     }
 
     #[test]
