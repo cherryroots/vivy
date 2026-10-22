@@ -733,3 +733,98 @@ fn up_and_down_the_stairs_keeps_one_name_for_each_floor() {
     assert_eq!(places.len(), 2, "{places:?}");
     assert_eq!(maps.len(), 2, "{places:?}");
 }
+
+/// Wild battles in Route 1's grass, fought by pressing A between looks as she does: the
+/// battle's screens (her back, the other Pokémon sliding in) are never somewhere she can
+/// walk, so a battle is never a place, and she's back where she was after it.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and the task states"]
+fn a_battle_is_not_a_place() {
+    use crate::features::games::gameboy::console::Timing;
+    use crate::features::games::gameboy::emulator::Button;
+    use crate::features::games::gameboy::map::Dir::{Down, Up};
+    use crate::features::games::gameboy::presses::Press;
+    use crate::features::games::gameboy::walk::take_step;
+    let mut m = super::tasks::load("route1");
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    let mut battles = 0;
+    let mut in_battle = false;
+    for i in 0..400 {
+        let view = look(&mut world, &mut m);
+        if m.emulator.read(0xD057) != 0 {
+            if !in_battle {
+                battles += 1;
+                in_battle = true;
+                // Walking waits for whatever stopped her, looking every 10 frames, as
+                // the battle slides in.
+                for _ in 0..12 {
+                    m.run(10);
+                    look(&mut world, &mut m);
+                }
+            }
+            m.press(
+                &[Press(vec![Button::A])],
+                Timing {
+                    hold: 4,
+                    gap: 20 + i % 30,
+                },
+            );
+            continue;
+        }
+        in_battle = false;
+        if battles >= 3 {
+            break;
+        }
+        take_step(
+            &mut world,
+            &mut m,
+            look,
+            &view,
+            if i % 2 == 0 { Up } else { Down },
+        );
+    }
+    assert!(battles >= 2, "only {battles} battles");
+    let places = world.sight.places();
+    assert_eq!(places.len(), 1, "{places:?}");
+}
+
+/// Red's stairs, taken by pressing the way herself (not a step code took): the fade
+/// between two looks she could walk at is a door, though the room below looks much like
+/// hers, and back up is her bedroom again.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM"]
+fn stairs_taken_by_her_own_presses_are_somewhere_new() {
+    use crate::features::games::gameboy::console::Timing;
+    use crate::features::games::gameboy::emulator::Button;
+    use crate::features::games::gameboy::map::Dir::{Down, Left, Right, Up};
+    use crate::features::games::gameboy::presses::Press;
+    use crate::features::games::gameboy::walk::take_step;
+    let mut m = red::tests::new_game();
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    for dir in [
+        Up, Up, Left, Left, Down, Right, Right, Right, Up, Up, Left, Down, Right, Down,
+    ] {
+        let view = look(&mut world, &mut m);
+        take_step(&mut world, &mut m, look, &view, dir);
+    }
+    walk_to(&mut world, &mut m, look, (6, 1), 20);
+    let upstairs = look(&mut world, &mut m).area;
+    let press = |m: &mut Machine, button: Button| {
+        m.press(&[Press(vec![button])], Timing { hold: 16, gap: 16 });
+        m.run(90);
+    };
+    press(&mut m, Button::Right);
+    assert_eq!(m.emulator.read(RED_MAP), 37, "downstairs");
+    let downstairs = look(&mut world, &mut m);
+    assert!(downstairs.can_walk);
+    assert_ne!(downstairs.area, upstairs);
+    press(&mut m, Button::Left);
+    look(&mut world, &mut m);
+    press(&mut m, Button::Right);
+    assert_eq!(m.emulator.read(RED_MAP), 38, "upstairs");
+    assert_eq!(look(&mut world, &mut m).area, upstairs);
+}
