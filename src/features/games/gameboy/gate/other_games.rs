@@ -279,6 +279,15 @@ fn steps_by_hand() {
             _ => Dir::Right,
         };
         let (next, outcome) = match button {
+            // F finds her the way walking does when it doesn't know her yet.
+            _ if word == "F" => {
+                let found = crate::features::games::gameboy::moves::which_is_her(&mut m);
+                println!("which is her: {found:?}");
+                if let Some(spot) = found {
+                    world.sight.found_her_at(spot);
+                }
+                (look(&mut world, &mut m), None)
+            }
             Some(button) => {
                 tap(&mut m, button, 30);
                 (look(&mut world, &mut m), None)
@@ -296,6 +305,15 @@ fn steps_by_hand() {
             world.sight.her_spot(),
             world.sight.found
         );
+        if std::env::var("VIVY_GB_SPRITES").is_ok() {
+            let s = crate::features::games::gameboy::screen::Screen::read(m.emulator.video());
+            let list: Vec<String> = s
+                .sprites
+                .iter()
+                .map(|s| format!("({},{} h{} t{})", s.x, s.y, s.height, s.tile))
+                .collect();
+            println!("    sprites: {}", list.join(" "));
+        }
         let screen = m.emulator.screen();
         std::fs::write(
             folder.join(format!("{:03}-{word}.png", i + 1)),

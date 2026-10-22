@@ -172,6 +172,10 @@ struct Live {
     /// Where her sprite is on the screen, in games where it moves across a still screen
     /// (the middle of the sprites a step moved her way). `None`: in the middle.
     spot: Option<(i32, i32)>,
+    /// Her sprite was lost and her pictures weren't anywhere: found again by pressing.
+    lost: bool,
+    /// Where a sprite that moved her way once is, until it does again (see `confirmed`).
+    candidate: Option<(i32, i32)>,
     /// Where the sprites were at the last look, to see which moved when she pressed.
     sprites: Vec<(i32, i32)>,
     /// Whether she could walk at the last look, and the screens recorded by then
@@ -283,6 +287,13 @@ impl Sight {
     /// she isn't free to walk, so walking takes the step anyway.
     pub fn finding_her(&self) -> bool {
         self.live.finding
+    }
+
+    /// Her sprite is the one at `spot` (`moves::which_is_her` found it).
+    pub fn found_her_at(&mut self, spot: (i32, i32)) {
+        self.live.spot = Some(spot);
+        self.live.candidate = None;
+        self.live.lost = false;
     }
 
     /// Where her sprite is on the screen, once a step has shown it moves across it.
@@ -529,7 +540,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let spot = sight.live.spot;
     let pressed = machine.emulator.directions_pressed() != sight.live.pressed;
     match &stepped {
-        Some((step, _)) if step.her.is_some() => sight.live.spot = step.her,
+        Some((step, _)) if step.her.is_some() => {
+            sight.live.spot = match spot {
+                Some(_) => step.her,
+                None => confirmed(&mut sight.live, step.her),
+            };
+        }
         _ => match spot {
             Some(last) => sight.live.spot = find_her(&sight.live.her, &screen, last).or(spot),
             // Nothing stands in the middle, and her own presses moved sprites across a
@@ -539,10 +555,25 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 && (screen.registers.scx, screen.registers.scy) == sight.live.scroll
                 && steps_of(&screen, None).is_none() =>
             {
-                sight.live.spot = moved_together(&sight.live.sprites, &screen);
+                let found = moved_together(&sight.live.sprites, &screen);
+                sight.live.spot = confirmed(&mut sight.live, found);
             }
             None => {}
         },
+    }
+    // No sprite where she's thought to be: lost (a screen sliding faster than she can be
+    // followed, a scene moving her). Found again by pressing, the way she was at first.
+    if let Some(at) = sight.live.spot
+        && screen.drawn
+        && !screen.sprites.iter().any(|s| {
+            (s.x + 4 - at.0).abs() <= HER_NEAR && (s.y + s.height / 2 - at.1).abs() <= HER_NEAR
+        })
+    {
+        sight.live.spot = her_anywhere(&sight.live.her, &screen, at);
+        sight.live.lost = sight.live.spot.is_none();
+    }
+    if sight.live.spot.is_some() {
+        sight.live.lost = false;
     }
     sight.live.sprites = screen.sprites.iter().map(|s| (s.x, s.y)).collect();
     // Her sprite, when a press of hers just moved her (a step code took, or one she
@@ -575,7 +606,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
     sight.live.finding = !free
         && sight.live.spot.is_none()
-        && sight.live.her.is_empty()
+        && (sight.live.her.is_empty() || sight.live.lost)
         && screen.drawn
         && !screen.sprites.is_empty()
         && steps_of(&screen, None).is_none();
@@ -774,7 +805,11 @@ fn after_step(
     let ahead = |n: i32| (pressed.0 * n, pressed.1 * n);
     match step.outcome {
         // Two steps the way she pressed: she hopped over the step ahead (a ledge).
-        Outcome::Moved(2) if !new_place && step.scrolled == ahead(2) => {
+        Outcome::Moved(2)
+            if !new_place
+                && step.scrolled == ahead(2)
+                && !(step.slid && sight.live.spot.is_some()) =>
+        {
             if let Some(&key) = sight.live.around.get(&ahead(1)) {
                 sight.steps.entry(key).or_default().over = Some(step.direction);
             }
@@ -783,7 +818,11 @@ fn after_step(
             }
         }
         // Anywhere else but the next step: the step ahead carried her on.
-        Outcome::Moved(_) if !new_place && step.scrolled != ahead(1) => {
+        Outcome::Moved(_)
+            if !new_place
+                && step.scrolled != ahead(1)
+                && !(step.slid && sight.live.spot.is_some()) =>
+        {
             if let Some(&key) = sight.live.around.get(&ahead(1)) {
                 sight.steps.entry(key).or_default().carried += 1;
             }
@@ -1058,6 +1097,18 @@ fn calm(
     free
 }
 
+/// A sprite that moved her way is hers once it does it twice running, from where it
+/// went the first time: a dog or a child wandering about can move her way once (in
+/// Link's Awakening's village, a fox was followed as her and she never got free).
+fn confirmed(live: &mut Live, found: Option<(i32, i32)>) -> Option<(i32, i32)> {
+    let found = found?;
+    let again = live
+        .candidate
+        .is_some_and(|c| (c.0 - found.0).abs() + (c.1 - found.1).abs() <= STEP + HER_NEAR);
+    live.candidate = Some(found);
+    again.then_some(found)
+}
+
 /// The pictures of the sprites where she stands: the middle of the screen, or her spot.
 fn her_sprites(screen: &Screen, spot: Option<(i32, i32)>) -> impl Iterator<Item = u64> + '_ {
     let at = spot.unwrap_or(MIDDLE);
@@ -1073,9 +1124,14 @@ fn picture_of(s: &super::screen::Sprite) -> u64 {
     s.key ^ u64::from(s.flags & 0x20)
 }
 
-/// Whether a sprite where she stands is one of hers, or nothing of hers is known yet.
+/// Whether a sprite where she stands is one of hers, or nothing of hers is known yet. In
+/// a game where she walks across the screen, her spot follows her own sprites, so a
+/// sprite there is her, whichever way she faces (a way she hasn't faced yet has
+/// pictures not seen before).
 fn is_her(her: &HashSet<u64>, screen: &Screen, spot: Option<(i32, i32)>) -> bool {
-    her.is_empty() || her_sprites(screen, spot).any(|key| her.contains(&key))
+    her.is_empty()
+        || (spot.is_some() && her_sprites(screen, spot).next().is_some())
+        || her_sprites(screen, spot).any(|key| her.contains(&key))
 }
 
 /// The sprites that all moved the same way since `then` (two or more, a step's worth or
@@ -1129,6 +1185,17 @@ fn find_her(her: &HashSet<u64>, screen: &Screen, last: (i32, i32)) -> Option<(i3
         .copied()
         .collect();
     middle_of(&touching(&hers, &screen.sprites))
+}
+
+/// Her sprites anywhere on the screen, the group nearest `last`: where she went when a
+/// slide or a scene carried her off where she was followed.
+fn her_anywhere(her: &HashSet<u64>, screen: &Screen, last: (i32, i32)) -> Option<(i32, i32)> {
+    let nearest = screen
+        .sprites
+        .iter()
+        .filter(|s| her.contains(&picture_of(s)))
+        .min_by_key(|s| (s.x + 4 - last.0).abs() + (s.y + s.height / 2 - last.1).abs())?;
+    middle_of(&touching(&[*nearest], &screen.sprites))
 }
 
 /// Whether any screen recorded after `mark` was all one colour: a fade, or the screen off.

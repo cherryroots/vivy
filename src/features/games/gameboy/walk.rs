@@ -100,6 +100,16 @@ pub fn walk_to(
                 && finding < 4
                 && steps < most
             {
+                // First by pressing each way and seeing which sprite does as pressed;
+                // failing that (the screen scrolled, or two did), by steps.
+                if finding == 0
+                    && let Some(spot) = super::moves::which_is_her(machine)
+                {
+                    finding += 1;
+                    world.sight.found_her_at(spot);
+                    view = look(world, machine);
+                    continue;
+                }
                 let dirs = [Dir::Down, Dir::Right, Dir::Up, Dir::Left];
                 let towards = [
                     (target.1 > view.at.1, Dir::Down),
@@ -183,6 +193,7 @@ pub fn take_step(
         outcome: taken.outcome,
         scrolled,
         her: taken.her,
+        slid: taken.scrolled != (0, 0),
     });
     let mut next = look(world, machine);
     world.stepped = None;

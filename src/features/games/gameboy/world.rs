@@ -58,6 +58,9 @@ pub struct Stepped {
     pub scrolled: (i32, i32),
     /// Where her sprite ended up on the screen, when it moved across it.
     pub her: Option<(i32, i32)>,
+    /// Whether the screen itself scrolled: where she walks across a still screen, it only
+    /// does to slide on to the next room, which is no ledge however far it took her.
+    pub slid: bool,
 }
 
 /// One step in the movement log.
