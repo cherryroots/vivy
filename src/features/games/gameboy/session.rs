@@ -34,7 +34,7 @@ use super::actions::Acted;
 use super::any::Sight;
 use super::budget::Today;
 use super::files;
-use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
+use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
 use super::map::AreaMap;
 use super::notes::{self, Note, Reached};
 use super::puzzle::{self, Move, Wanted};
@@ -666,7 +666,9 @@ pub async fn play<G: Game>(
             summary.new_areas.push(new.clone());
         }
         let mut pictured = None;
-        if !found.areas.is_empty() {
+        if !found.areas.is_empty()
+            || journal.seen >= journal.seen_at_checkpoint + STEPS_FOR_CHECKPOINT
+        {
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
             pictured = Some(Report {
@@ -871,6 +873,7 @@ async fn checkpoint<G: Game>(
 ) -> anyhow::Result<()> {
     let folder = files::checkpoints_folder(&session.saves_dir, &session.rom);
     journal.checkpoints += 1;
+    journal.seen_at_checkpoint = journal.seen;
     let n = journal.checkpoints;
     write_file(
         &folder.join(format!("{n}.state")),
