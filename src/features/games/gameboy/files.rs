@@ -34,6 +34,11 @@ pub fn skills_path(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_folder(saves_dir, rom).join("skills.json")
 }
 
+/// The values she named in a ROM's game's memory (`ram.rs`), kept like her skills.
+pub fn watches_path(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("watches.json")
+}
+
 /// Her journal for a ROM's game (`journal.rs`): the goal, notes and episode log.
 pub fn journal_path(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_folder(saves_dir, rom).join("journal.json")

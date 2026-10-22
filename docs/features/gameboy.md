@@ -109,6 +109,14 @@ The gate's one weak spot was battles: she plays each turn as separate actions, s
 
 **With the fixes, and with the review (20 October 2026).** Without the review she did all 10 tasks (up from 6), ending with 2 battle skills and no near-copies. With Astra reviewing after each task she did 9 of 10; the miss was Claude overloaded before her first action, which the gate now plays again once. Astra changed her skills twice in 10 reviews, merging them into one battle skill that won the rival battle in one action, and it dropped a stop word, `RED`, that had stopped every wild battle after one press. That was a matching bug, `RED` inside "appeared", now fixed by matching whole words. Haiku cost about $0.03 a gate run; each review about $0.03 at list prices, on the free daily tokens. Up Route 1's action counts mostly show whether the same path from the same state meets a wild Pokémon, so they say little about skills; longer play will. That run also found exploring could loop forever at the top of a route, now fixed.
 
+## Her own cheat finder
+
+Code reads Red's memory through a map made from the disassembly, and finds where any other game keeps her position by itself. Everything else a game keeps (HP, money, a counter in a puzzle) she can find herself, the way cheat finders do it (`ram.rs`). Code only keeps the candidates and reads the bytes; when to search and what for is hers, and the strategist can make it a task.
+
+- **`ram_search`.** `start` begins with every byte of work RAM (C000 to DFFF) and high RAM (FF80 to FFFE) read five ways: one byte, two bytes either way round (`le16`, `be16`), and two or three bytes of decimal digits (`bcd2`, `bcd3`, as Red keeps money). Then she does something in the game and says what the number did since the last search: `changed`, `same`, `up`, `down`, or `equals` a value she can see on screen (which starts a search by itself). Each round keeps what did that and answers with how many are left, listing up to 8 as `D347 bcd3 = 3175`.
+- **`ram_watch`.** Names an address and format, like `money`, `D347`, `bcd3`. Watched values are a line of the facts after every action (`Watched: money 3175`), at most 8. The same name replaces one; an empty address stops it. They're kept in `watches.json` next to her skills, read when the ROM is loaded and written after each `task` that changed them and with each session's saves.
+- **On Red** (`a_search_finds_reds_money_and_her_x`, needs the ROM): `equals` with the money on screen finds `D347 bcd3` (Red's `wPlayerMoney`) in one round; walking left and right keeps Red's x (`D362`) among the few hundred bytes that move with her (her sprite and the screen keep copies), which is why position stays code's job.
+
 ## Playing by herself (stage 4)
 
 `/games gameboy play` hands her the game (`session.rs`). Each episode the strategist reads her journal and picks one short task, the supervisor carries it out in at most 30 actions, and code counts what was new. She plays from wherever the game is, so `restore latest` first carries on from the last session.
@@ -204,7 +212,8 @@ All under `src/features/games/gameboy/`.
 | `red/look.rs` | Looking at Red: marking the screen's steps on the area map from the game's own walkable list |
 | `red/names.rs` | Species, item and map names, made from the disassembly |
 | `red/story.rs` | The story flags worth knowing |
-| `actions.rs` | What the supervisor can do, as tools: walk, explore, press, read text, write and use skills; settling the screen after each; where she is, as text for the model |
+| `actions.rs` | What the supervisor can do, as tools: walk, explore, press, read text, write and use skills, search memory and watch values; settling the screen after each; where she is, as text for the model |
+| `ram.rs` | Her cheat finder: `ram_search` and `ram_watch`, candidates kept between rounds, watched values for the facts |
 | `skills.rs` | Her skills: checking one she writes, which rule fits a screen, when it stops, her list as prompt lines (pure) |
 | `supervisor.rs` | `run_task`: the supervisor carrying out one task; the `Player` trait; `Episode` and its digest |
 | `player.rs` | The supervisor's player in the bot, and the session's game: the Game Boy on its thread |

@@ -33,6 +33,7 @@ then press a.
 - When you catch yourself pressing the same things again and again (battles, menus), write \
 a skill for it with write_skill, then run it with use_skill. Skills stay for this game. \
 After using one, check how it went, and rewrite it if it didn't do what you meant.
+- A number that matters and isn't in the facts (HP, money, a counter): find where the game keeps it with ram_search (start, change it in the game, say what it did, again until one or two are left), then name it with ram_watch. Watched values are in the facts from then on.
 - Judge the screen, not your own claims. When nothing changes, check which way you're \
 facing and try something different.
 - When the screen shows the task is done, call finish with done: true. If it can't be done \

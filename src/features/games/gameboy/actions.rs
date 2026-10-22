@@ -13,6 +13,7 @@ use super::emulator::Button;
 use super::map::{Kind, LEGEND};
 use super::presses::{self, Press};
 use super::puzzle::Move;
+use super::ram;
 use super::skills::{self, Skill};
 use super::walk::{Look, Walked, explore, take_step, walk_to};
 use super::world::{View, World};
@@ -134,6 +135,8 @@ pub fn tools() -> Vec<ToolDef> {
                 "required": ["name"]
             }),
         },
+        ram::search_tool(),
+        ram::watch_tool(),
         ToolDef {
             name: "finish",
             description: "End the task. done: whether the screen shows the task is \
@@ -162,6 +165,7 @@ pub struct Acted {
 }
 
 /// Runs one action by its tool name. `finish` isn't an action: the caller handles it.
+/// The values she watches are added to the facts.
 pub fn run(
     world: &mut World,
     machine: &mut Machine,
@@ -169,6 +173,23 @@ pub fn run(
     name: &str,
     args: &Value,
 ) -> Acted {
+    let mut acted = act(world, machine, look, name, args);
+    add_watched(world, machine, &mut acted.view);
+    acted
+}
+
+fn add_watched(world: &World, machine: &mut Machine, view: &mut View) {
+    let watched = ram::watched(&world.watches, machine);
+    if watched.is_empty() {
+        return;
+    }
+    if !view.facts.is_empty() {
+        view.facts.push('\n');
+    }
+    view.facts.push_str(&watched);
+}
+
+fn act(world: &mut World, machine: &mut Machine, look: Look, name: &str, args: &Value) -> Acted {
     match name {
         "walk_to" => {
             let (Some(x), Some(y)) = (args["x"].as_i64(), args["y"].as_i64()) else {
@@ -244,6 +265,14 @@ pub fn run(
             }
         }
         "use_skill" => use_skill(world, machine, look, args["name"].as_str().unwrap_or("")),
+        "ram_search" => {
+            let found = ram::search(&mut world.search, machine, args);
+            told(world, machine, look, &found)
+        }
+        "ram_watch" => {
+            let line = ram::watch(&mut world.watches, args).unwrap_or_else(|why| why);
+            told(world, machine, look, &line)
+        }
         // Only code calls it, with the puzzle helper's moves: it isn't one of her tools.
         "follow_moves" => match serde_json::from_value::<Vec<Move>>(args["moves"].clone()) {
             Ok(moves) => follow_moves(world, machine, look, &moves),
@@ -260,7 +289,8 @@ pub fn run(
 
 /// Looks without doing anything.
 pub fn look(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
-    let view = look(world, machine);
+    let mut view = look(world, machine);
+    add_watched(world, machine, &mut view);
     Acted {
         outcome: String::new(),
         words: words_of(&view),
@@ -656,7 +686,7 @@ mod tests {
     #[test]
     fn the_tools_have_object_schemas() {
         let tools = tools();
-        assert_eq!(tools.len(), 7);
+        assert_eq!(tools.len(), 9);
         for tool in &tools {
             assert_eq!(tool.parameters["type"], "object", "{}", tool.name);
         }

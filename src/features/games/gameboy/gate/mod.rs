@@ -28,7 +28,7 @@
 
 pub(super) mod player;
 mod puzzles;
-mod tasks;
+pub(super) mod tasks;
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
