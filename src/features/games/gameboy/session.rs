@@ -31,6 +31,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::actions::Acted;
+use super::any::Sight;
 use super::budget::Today;
 use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
@@ -74,6 +75,10 @@ pub trait Game: Player {
     async fn world(&mut self) -> anyhow::Result<World>;
     async fn set_skills(&mut self, skills: Vec<Skill>) -> anyhow::Result<()>;
     async fn set_areas(&mut self, areas: HashMap<String, AreaMap>) -> anyhow::Result<()>;
+    /// What the look with no memory map learned before (games other than Red use it).
+    async fn set_sight(&mut self, _sight: Sight) -> anyhow::Result<()> {
+        Ok(())
+    }
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>;
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()>;
 }
@@ -396,6 +401,9 @@ pub async fn play<G: Game>(
         && let Some(areas) = read_json(&files::maps_path(dir, rom)).await?
     {
         game.set_areas(areas).await?;
+        if let Some(sight) = read_json(&files::sight_path(dir, rom)).await? {
+            game.set_sight(sight).await?;
+        }
     }
     let mut today = Today::on(read_json(&files::today_path(dir)).await?, Utc::now());
     if let Some(now) = &session.now {
@@ -908,6 +916,7 @@ async fn keep<G: Game>(
     let (dir, rom) = (session.saves_dir.as_path(), session.rom.as_str());
     write_json(&files::journal_path(dir, rom), journal).await?;
     write_json(&files::maps_path(dir, rom), &world.areas).await?;
+    write_json(&files::sight_path(dir, rom), &world.sight).await?;
     write_json(&files::skills_path(dir, rom), &world.skills).await?;
     write_json(&files::today_path(dir), today).await?;
     let latest = files::save_path(dir, rom, LATEST).map_err(anyhow::Error::msg)?;
@@ -1328,6 +1337,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(maps.len(), 3);
+        let sight: Option<Sight> = read_json(&files::sight_path(dir.path(), "test.gb"))
+            .await
+            .unwrap();
+        assert!(sight.is_some());
         let folder = files::checkpoints_folder(dir.path(), "test.gb");
         assert_eq!(checkpoints(&folder).await, vec![1, 2]);
         let latest = files::save_path(dir.path(), "test.gb", LATEST).unwrap();

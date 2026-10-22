@@ -48,6 +48,14 @@ pub enum Button {
 }
 
 impl Button {
+    /// Whether it's on the d-pad.
+    pub fn is_direction(self) -> bool {
+        matches!(
+            self,
+            Button::Up | Button::Down | Button::Left | Button::Right
+        )
+    }
+
     pub const ALL: [Button; 8] = [
         Button::A,
         Button::B,
@@ -170,6 +178,9 @@ pub struct Emulator {
     frames: u64,
     /// The buttons held down right now.
     held: Vec<Button>,
+    /// How many times a direction has been pressed: a look can tell the screen scrolled
+    /// because she walked, not because the game moved her.
+    directions_pressed: u64,
 }
 
 impl Emulator {
@@ -203,6 +214,7 @@ impl Emulator {
             video,
             frames: 0,
             held: Vec::new(),
+            directions_pressed: 0,
         })
     }
 
@@ -288,6 +300,9 @@ impl Emulator {
             let now = buttons.contains(&button);
             if now && !was {
                 self.gb.key_press(button.key());
+                if button.is_direction() {
+                    self.directions_pressed += 1;
+                }
             } else if was && !now {
                 self.gb.key_lift(button.key());
             }
@@ -296,6 +311,11 @@ impl Emulator {
     }
 
     /// Lets go of every button.
+    /// How many times a direction has been pressed since the Game Boy started.
+    pub fn directions_pressed(&self) -> u64 {
+        self.directions_pressed
+    }
+
     pub fn release(&mut self) {
         self.hold(&[]);
     }

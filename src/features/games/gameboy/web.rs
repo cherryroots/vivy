@@ -291,7 +291,7 @@ async fn look(mark: u64) -> Option<Seen> {
     console()
         .with(move |machine| {
             let m = machine.as_mut()?;
-            let look = look_for(m.emulator.info())?;
+            let look = look_for(m.emulator.info());
             // A copy, so watching never changes what she has seen: the page only looks.
             let mut world = m.world.clone();
             let view = look(&mut world, m);

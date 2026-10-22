@@ -11,6 +11,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
+use super::any::Sight;
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
 use super::red::Trust;
@@ -31,6 +32,25 @@ pub struct World {
     pub trust: Trust,
     /// The routines she has written for this game.
     pub skills: Vec<Skill>,
+    /// What code has learned about a game with no memory map (`any/`).
+    #[serde(default)]
+    pub sight: Sight,
+    /// The step just taken, for the look right after it (`walk::take_step` leaves it
+    /// here; a look that learns from steps takes it).
+    #[serde(skip)]
+    pub stepped: Option<Stepped>,
+}
+
+/// A step, as the look after it is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stepped {
+    pub direction: Dir,
+    pub outcome: Outcome,
+    /// How far she went, in steps (x, y): the screen's scroll, plus her sprite's own move
+    /// in games where it walks across a still screen.
+    pub scrolled: (i32, i32),
+    /// Where her sprite ended up on the screen, when it moved across it.
+    pub her: Option<(i32, i32)>,
 }
 
 /// One step in the movement log.

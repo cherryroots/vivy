@@ -521,11 +521,10 @@ pub(super) fn game_name(title: &str) -> String {
     }
 }
 
-/// How code looks at this game, or a friendly no.
+/// How code looks at this game (see `walk::look_for`). Every game can be looked at now;
+/// it's a `Result` so the commands read the same either way.
 pub(super) fn game_look(m: &Machine) -> Result<Look> {
-    look_for(m.emulator.info()).ok_or_else(|| {
-        user_error("Code can only read Pokémon Red and Blue so far. Other games come later.")
-    })
+    Ok(look_for(m.emulator.info()))
 }
 
 /// A look as a message: the facts, the map around her, the words on screen, the last
