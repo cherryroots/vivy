@@ -55,6 +55,10 @@ const STILL_FRAMES: u32 = 20;
 /// before, and how many of them must look the same.
 const KNOWN_AFTER: usize = 12;
 const KNOWN_SHARE: f32 = 0.9;
+/// A picture on a fifth of the steps or more is too common to tell places apart.
+const COMMON_SHARE: usize = 5;
+/// The fewest of the other pictures that must also look the same, when that many were seen.
+const TELLING_AFTER: usize = 4;
 
 /// A place is another one when, of at least this many different pictures on screen, less
 /// than this share were ever seen there.
@@ -259,14 +263,22 @@ impl Sight {
 
     /// The place these steps look like, other than the one she just left (Red's stairs
     /// lead to a room that looks much like the one above: she isn't where she was).
+    /// A picture that covers much of the screen (plain floor, the dark past a room's walls)
+    /// says nothing: rooms built alike share it at the same steps.
     fn known_place(&self, seen: &[(Pos, u64)], left: &str) -> Option<String> {
+        let telling = without_common(seen);
         self.pictures
             .iter()
             .filter(|(name, _)| *name != left)
             .filter_map(|(name, pictures)| {
+                let alike = |(same, both): (usize, usize), after| {
+                    both < after || same as f32 >= both as f32 * KNOWN_SHARE
+                };
                 let (same, both) = compare(pictures, seen);
-                (both >= KNOWN_AFTER && same as f32 >= both as f32 * KNOWN_SHARE)
-                    .then(|| (same, name.clone()))
+                (both >= KNOWN_AFTER
+                    && alike((same, both), 0)
+                    && alike(compare(pictures, &telling), TELLING_AFTER))
+                .then(|| (same, name.clone()))
             })
             .max()
             .map(|(_, name)| name)
@@ -351,6 +363,18 @@ impl Sight {
         }
         None
     }
+}
+
+/// The steps without the pictures that cover a fifth of them or more.
+fn without_common(seen: &[(Pos, u64)]) -> Vec<(Pos, u64)> {
+    let mut counts: HashMap<u64, usize> = HashMap::new();
+    for (_, key) in seen {
+        *counts.entry(*key).or_default() += 1;
+    }
+    seen.iter()
+        .filter(|(_, key)| counts[key] * COMMON_SHARE < seen.len())
+        .copied()
+        .collect()
 }
 
 /// The number in a place's name, for keeping the oldest name.
@@ -754,7 +778,10 @@ fn arrive(
         .and_then(|map| map.doors.get(&gone))
         .cloned();
     let name = match sight.area_byte() {
-        Some(byte) => sight.place_by(byte, memory),
+        // The byte can't name the place she just left: she stepped somewhere new.
+        Some(byte) => sight
+            .place_by(byte, memory)
+            .filter(|name| *name != old_area),
         None => led.or_else(|| sight.known_place(seen, &old_area)),
     }
     .unwrap_or_else(|| sight.new_place());
@@ -1112,6 +1139,30 @@ fn join_keys(keys: [u64; 4]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rooms_alike_but_for_their_walls_are_not_one_place() {
+        let mut sight = Sight::default();
+        // Two 8×8 rooms with the same floor at the same steps; only the walls and things
+        // along the top differ.
+        let room = |wall: u64| -> Vec<(Pos, u64)> {
+            (0..64)
+                .map(|i| {
+                    let pos = (i % 8, i / 8);
+                    (pos, if pos.1 < 2 { wall + i as u64 } else { 1 })
+                })
+                .collect()
+        };
+        sight.pictures.insert(
+            "Place 1".to_string(),
+            Pictures(room(100).into_iter().collect()),
+        );
+        assert_eq!(sight.known_place(&room(500), "Place 2"), None);
+        assert_eq!(
+            sight.known_place(&room(100), "Place 2"),
+            Some("Place 1".to_string())
+        );
+    }
 
     #[test]
     fn pictures_that_move_dont_make_a_place_look_different() {
