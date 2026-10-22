@@ -626,3 +626,57 @@ fn stairs_to_the_same_spot_are_somewhere_new() {
         before.area
     );
 }
+
+/// Up and down Red's stairs a few times: the bedroom is known again each time she comes
+/// back up (the room downstairs looks much like it, but it's where she just was), and
+/// each floor keeps one name.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM"]
+fn up_and_down_the_stairs_keeps_one_name_for_each_floor() {
+    let mut m = red::tests::new_game();
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    use crate::features::games::gameboy::map::Dir::{Down, Left, Right, Up};
+    use crate::features::games::gameboy::walk::take_step;
+    let steps = |world: &mut World, m: &mut Machine, dirs: &[_]| {
+        for &dir in dirs {
+            let view = look(world, m);
+            take_step(world, m, look, &view, dir);
+        }
+    };
+    steps(
+        &mut world,
+        &mut m,
+        &[
+            Up, Up, Left, Left, Down, Right, Right, Right, Up, Up, Left, Down, Right, Down,
+        ],
+    );
+    let mut names: std::collections::HashMap<u8, std::collections::HashSet<String>> =
+        Default::default();
+    for _ in 0..3 {
+        for _ in 0..2 {
+            walk_to(&mut world, &mut m, look, (6, 1), 20);
+            let walk = walk_to(&mut world, &mut m, look, (7, 1), 5);
+            assert!(
+                matches!(walk.result, Walked::NewArea(_)),
+                "{:?}",
+                walk.result
+            );
+            steps(&mut world, &mut m, &[Down, Left, Down]);
+            let view = look(&mut world, &mut m);
+            names
+                .entry(m.emulator.read(RED_MAP))
+                .or_default()
+                .insert(view.area);
+        }
+    }
+    // Names may change once, when the area byte is found; never back and forth.
+    for (map, seen) in &names {
+        assert!(seen.len() <= 2, "map {map} was called {seen:?}");
+    }
+    let places = world.sight.places();
+    let maps: std::collections::HashSet<u8> = places.iter().map(|(_, m)| m.get(RED_MAP)).collect();
+    assert_eq!(places.len(), 2, "{places:?}");
+    assert_eq!(maps.len(), 2, "{places:?}");
+}

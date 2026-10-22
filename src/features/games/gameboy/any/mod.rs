@@ -183,7 +183,7 @@ impl Sight {
         self.live.finder.as_ref().and_then(|f| f.areas.found())
     }
 
-    /// A new place's name while no area byte is known.
+    /// A new place's name.
     fn new_place(&mut self) -> String {
         self.places += 1;
         format!("Place {}", self.places)
@@ -203,9 +203,12 @@ impl Sight {
         places
     }
 
-    fn known_place(&self, seen: &[(Pos, u64)]) -> Option<String> {
+    /// The place these steps look like, other than the one she just left (Red's stairs
+    /// lead to a room that looks much like the one above: she isn't where she was).
+    fn known_place(&self, seen: &[(Pos, u64)], left: &str) -> Option<String> {
         self.pictures
             .iter()
+            .filter(|(name, _)| *name != left)
             .filter_map(|(name, pictures)| {
                 let (same, both) = compare(pictures, seen);
                 (both >= KNOWN_AFTER && same as f32 >= both as f32 * KNOWN_SHARE)
@@ -229,12 +232,7 @@ impl Sight {
                 self.found.area = None;
                 return;
             };
-            let names: HashMap<String, String> = self
-                .live
-                .arrived
-                .iter()
-                .map(|(name, memory)| (name.clone(), format!("Area {}", memory.get(byte))))
-                .collect();
+            let names = self.names_by(byte);
             if let Some((a, b)) = self.different_but_named_alike(&names) {
                 let (a, b) = (self.live.arrived[&a].clone(), self.live.arrived[&b].clone());
                 self.finder().areas.different_place(&a, &b);
@@ -244,6 +242,35 @@ impl Sight {
             rename(self, areas, &names);
             return;
         }
+    }
+
+    /// Each place's name once this byte says the area: places it gives one value become
+    /// one, under the oldest name, and every other name stays as it was (her notes use
+    /// them).
+    fn names_by(&self, byte: u16) -> HashMap<String, String> {
+        let mut oldest: HashMap<u8, &String> = HashMap::new();
+        for (name, memory) in &self.live.arrived {
+            let first = oldest.entry(memory.get(byte)).or_insert(name);
+            if place_number(name) < place_number(first) {
+                *first = name;
+            }
+        }
+        self.live
+            .arrived
+            .iter()
+            .map(|(name, memory)| (name.clone(), oldest[&memory.get(byte)].clone()))
+            .collect()
+    }
+
+    /// The place the area byte says she's in, if she's been there.
+    fn place_by(&self, byte: u16, memory: &Memory) -> Option<String> {
+        self.live
+            .arrived
+            .iter()
+            .filter(|(_, then)| then.get(byte) == memory.get(byte))
+            .map(|(name, _)| name)
+            .min_by_key(|name| place_number(name))
+            .cloned()
     }
 
     /// Two places that would get one name but look different.
@@ -270,6 +297,12 @@ impl Sight {
         }
         None
     }
+}
+
+/// The number in a place's name, for keeping the oldest name.
+fn place_number(name: &str) -> (u32, String) {
+    let number = name.rsplit(' ').next().and_then(|n| n.parse().ok());
+    (number.unwrap_or(u32::MAX), name.to_string())
 }
 
 /// How many of these steps were seen at the same places before, and how many of those
@@ -539,7 +572,9 @@ fn arrive(
         .cloned();
     // Back through a door she came through before: the area byte holds what it held
     // the first time she came in.
-    if let Some(then) = led.as_ref().and_then(|name| sight.live.arrived.get(name)) {
+    // Or a place she knows by its look: the same.
+    let back = led.or_else(|| sight.known_place(seen, &old_area));
+    if let Some(then) = back.as_ref().and_then(|name| sight.live.arrived.get(name)) {
         let then = then.clone();
         sight.finder().areas.same_place(&then, memory);
     }
@@ -567,11 +602,10 @@ fn arrive(
         .and_then(|map| map.doors.get(&gone))
         .cloned();
     let name = match sight.area_byte() {
-        Some(byte) => format!("Area {}", memory.get(byte)),
-        None => led
-            .or_else(|| sight.known_place(seen).filter(|name| *name != old_area))
-            .unwrap_or_else(|| sight.new_place()),
-    };
+        Some(byte) => sight.place_by(byte, memory),
+        None => led.or_else(|| sight.known_place(seen, &old_area)),
+    }
+    .unwrap_or_else(|| sight.new_place());
     let map = areas.entry(old_area).or_default();
     map.see(gone, if dark { Kind::Door } else { Kind::Edge });
     map.doors.insert(gone, name.clone());
@@ -844,7 +878,7 @@ mod tests {
             "Place 1".to_string(),
             Pictures(room.iter().copied().collect()),
         );
-        assert_eq!(sight.known_place(&room), Some("Place 1".to_string()));
+        assert_eq!(sight.known_place(&room, ""), Some("Place 1".to_string()));
         let place = &sight.pictures["Place 1"];
         assert!(!looks_different(place, &room));
         // A few steps different (flowers that move): still the same place.
@@ -852,15 +886,17 @@ mod tests {
             .iter()
             .map(|&(p, k)| (p, if k < 4 { k + 100 } else { k }))
             .collect();
-        assert_eq!(sight.known_place(&moved), None);
+        assert_eq!(sight.known_place(&moved, ""), None);
         assert!(!looks_different(place, &moved));
         // Most steps different: somewhere else.
         let other: Vec<(Pos, u64)> = room.iter().map(|&(p, k)| (p, k + 100)).collect();
-        assert_eq!(sight.known_place(&other), None);
+        assert_eq!(sight.known_place(&other, ""), None);
         assert!(looks_different(place, &other));
         // Too little seen before to tell.
-        assert_eq!(sight.known_place(&room[..5]), None);
+        assert_eq!(sight.known_place(&room[..5], ""), None);
         assert!(!looks_different(place, &room[..5]));
+        // Not the place she just left, however alike.
+        assert_eq!(sight.known_place(&room, "Place 1"), None);
     }
 
     #[test]
