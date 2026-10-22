@@ -236,7 +236,7 @@ pub async fn solve(
         ));
     }
     let answer = openai
-        .structured(JOB, PROMPT, &input, "puzzle", &schema())
+        .structured(JOB, PROMPT, &input, None, "puzzle", &schema())
         .await?;
     let moves = serde_json::from_value(answer.value["moves"].clone())?;
     Ok(Solution {

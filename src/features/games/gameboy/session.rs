@@ -44,6 +44,7 @@ use super::supervisor::{Episode, Player, args_text, run_task};
 use super::world::World;
 use crate::ai::{ChatProvider, OpenAi, Spend};
 use crate::core::timers::Timer;
+use crate::util::media::ModelImage;
 
 /// Actions in one episode.
 pub const EPISODE_ACTIONS: u32 = 30;
@@ -730,6 +731,10 @@ async fn plan<G: Game>(
     } else {
         &journal.digest
     };
+    let screen = game.screen().await.ok().map(|data| ModelImage {
+        mime: "image/png",
+        data,
+    });
     let ask = Ask {
         goal: &journal.goal,
         notes: &journal.notes,
@@ -737,6 +742,7 @@ async fn plan<G: Game>(
         skills: &world.skills,
         digest,
         now: &now,
+        screen: screen.as_ref(),
         care,
     };
     if let Some(openai) = session.openai

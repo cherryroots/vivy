@@ -273,21 +273,27 @@ impl OpenAi {
 
     /// One answer that must fit a JSON schema (OpenAI's structured outputs), with no tools
     /// and nothing stored: for planning jobs whose answer code reads, like the Game Boy
-    /// strategist's. The job picks the model and effort (`[ai.openai.jobs.<job>]`).
+    /// strategist's. The job picks the model and effort (`[ai.openai.jobs.<job>]`). A
+    /// picture, if given, goes after the text.
     #[cfg_attr(not(test), allow(dead_code))]
     pub async fn structured(
         &self,
         job: &'static str,
         system: &str,
         input: &str,
+        picture: Option<&ModelImage>,
         schema_name: &str,
         schema: &Value,
     ) -> anyhow::Result<Structured> {
         let settings = job_settings(&self.config.jobs, job, None);
+        let mut content = vec![json!({"type": "input_text", "text": input})];
+        if let Some(picture) = picture {
+            content.push(json!({"type": "input_image", "image_url": picture.data_url()}));
+        }
         let body = json!({
             "model": settings.model.as_deref().unwrap_or(&self.config.model),
             "instructions": system,
-            "input": [{"role": "user", "content": [{"type": "input_text", "text": input}]}],
+            "input": [{"role": "user", "content": content}],
             "reasoning": {"effort": settings.effort.as_deref().unwrap_or(&self.config.reasoning_effort)},
             "text": {"format": {
                 "type": "json_schema",

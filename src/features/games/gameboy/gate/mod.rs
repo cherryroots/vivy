@@ -272,6 +272,7 @@ async fn gate_keys_work() {
             "game_plan",
             "Answer as asked.",
             "Is this ok?",
+            None,
             "check",
             &schema,
         )
@@ -335,6 +336,7 @@ async fn gate_tasks() {
                             skills: &[],
                             digest: NOTHING_YET,
                             now: &now,
+                            screen: None,
                             care: Care::Routine,
                         },
                     )
@@ -505,6 +507,7 @@ async fn gate_strategists() {
                             skills: &local.world.skills,
                             digest: &digest,
                             now: &now,
+                            screen: None,
                             care: Care::Routine,
                         },
                     )
@@ -683,6 +686,7 @@ async fn gate_learning() {
                         skills: &local.world.skills,
                         digest: &episode.digest(),
                         now: &now,
+                        screen: None,
                         care: Care::Routine,
                     },
                 )
@@ -769,10 +773,35 @@ async fn gate_session() {
     let goal = std::env::var("VIVY_GB_GOAL").ok();
     let folder = results(&format!("session-{}", file_name(&planner)));
     let saves = folder.join("saves");
+    // A path is a state of any game, for the ROM in VIVY_GB_ROM; a bare name is one of
+    // the gate's Red task states.
     let mut local = if start.is_empty() {
         Local::new(super::red::tests::new_game())
+    } else if start.contains('/') {
+        let rom = super::emulator::tests::real_rom();
+        let mut m = super::console::Machine::new("game.gb", &rom).unwrap();
+        m.emulator
+            .load_state(&std::fs::read(&start).unwrap())
+            .unwrap();
+        m.run(5);
+        Local::new(m)
     } else {
         Local::new(load(&start))
+    };
+    // The name she knows it by, from the cartridge the way the bot names it, unless
+    // VIVY_GB_GAME says.
+    let info = local.machine.emulator.info().clone();
+    let game = std::env::var("VIVY_GB_GAME").unwrap_or_else(|_| {
+        if super::red::is_red(&info) {
+            GAME.to_string()
+        } else {
+            super::commands::game_name(&info.title)
+        }
+    });
+    let rom = if super::red::is_red(&info) {
+        "red.gb".to_string()
+    } else {
+        format!("{}.gb", file_name(&info.title.trim().to_lowercase()))
     };
     let spends = [
         Spend::new(db.clone(), "claude", 0.0),
@@ -788,9 +817,9 @@ async fn gate_session() {
         provider: provider.as_ref(),
         openai: Some(&strategist),
         spends: &spends,
-        game: GAME.to_string(),
+        game: game.clone(),
         saves_dir: saves.clone(),
-        rom: "red.gb".to_string(),
+        rom: rom.clone(),
         limits: Limits {
             minutes: setting("VIVY_GB_MINUTES", "30").parse().unwrap(),
             episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
@@ -827,7 +856,7 @@ async fn gate_session() {
             let stop = tokio_util::sync::CancellationToken::new();
             let (bind, serving) = (bind.clone(), stop.clone());
             tokio::spawn(async move { super::web::serve(&bind, serving).await.unwrap() });
-            tokio::spawn(super::web::follow(GAME.to_string(), watching));
+            tokio::spawn(super::web::follow(game.clone(), watching));
             let result =
                 session::play(&session, &mut super::player::OnConsole, goal.as_deref()).await;
             let mut machine = console().with(|m| m.take()).await.unwrap().unwrap();
@@ -850,7 +879,7 @@ async fn gate_session() {
     )
     .unwrap_or_default();
     let journal: super::journal::Journal = serde_json::from_str(
-        &std::fs::read_to_string(saves.join("red").join("journal.json")).unwrap_or_default(),
+        &std::fs::read_to_string(super::files::journal_path(&saves, &rom)).unwrap_or_default(),
     )
     .unwrap_or_default();
     let mut out = format!(

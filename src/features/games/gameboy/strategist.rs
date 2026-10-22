@@ -21,13 +21,16 @@ use super::puzzle::Wanted;
 use super::skills::{self, Skill};
 use super::supervisor::finish_stream;
 use crate::ai::{ChatProvider, ChatRequest, Input, OpenAi, Part, Role, ToolDef, Turn};
+use crate::util::media::ModelImage;
 
 /// The fixed instructions.
 const PROMPT: &str = "You plan a run of a Game Boy game. An executor carries out one short \
 task at a time; you pick the next one.
 
 You get the goal, your notes, what the last task did (its actions and all the text read) \
-and where the player is now. Facts read from the game's memory beat your notes.
+and where the player is now, with a picture of the screen as it is now. Facts read from \
+the game's memory beat your notes; in a game with no facts, the picture is most of what \
+you know about where the player is.
 
 The next task:
 - one thing, a few steps at most, described by what's on screen, never by buttons or counts;
@@ -195,6 +198,9 @@ pub struct Ask<'a> {
     pub digest: &'a str,
     /// Where she is now, and anything code adds (the stuck ladder, the last episodes).
     pub now: &'a str,
+    /// The screen as it is now: in a game with no memory map it's most of what code can
+    /// say about where she is.
+    pub screen: Option<&'a ModelImage>,
     pub care: Care,
 }
 
@@ -239,6 +245,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                     job,
                     PROMPT,
                     &ask.situation(ask.notes),
+                    ask.screen,
                     "plan",
                     &schema(true, true),
                 )
@@ -255,6 +262,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                         "{}\n\nFirst, only the notes and the skills.",
                         ask.situation(ask.notes)
                     ),
+                    ask.screen,
                     "notes",
                     &schema(true, false),
                 )
@@ -266,6 +274,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                     job,
                     PROMPT,
                     &format!("{}\n\nNow only the next task.", ask.situation(&new_notes)),
+                    ask.screen,
                     "task",
                     &schema(false, true),
                 )
@@ -296,7 +305,9 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         system: format!("{PROMPT}\n\nAnswer by calling plan."),
         input: Input::Full(vec![Turn {
             role: Role::User,
-            parts: vec![Part::Text(ask.situation(ask.notes))],
+            parts: std::iter::once(Part::Text(ask.situation(ask.notes)))
+                .chain(ask.screen.cloned().map(Part::Image))
+                .collect(),
         }]),
         tools: vec![ToolDef {
             name: "plan",

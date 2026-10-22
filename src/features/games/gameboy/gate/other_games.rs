@@ -250,7 +250,11 @@ fn steps_by_hand() {
     let folder = results("walk");
     let mut world = World::default();
     let mut view = look(&mut world, &mut m);
-    println!("start {view:?} spot {:?}", world.sight.her_spot());
+    println!(
+        "start {view:?} spot {:?} finding {}",
+        world.sight.her_spot(),
+        world.sight.finding_her()
+    );
     std::fs::write(
         folder.join("000.png"),
         png_at(&m.emulator.screen(), 2).unwrap(),
@@ -261,13 +265,29 @@ fn steps_by_hand() {
         .split_whitespace()
         .enumerate()
     {
+        // A, B and S (Start) are pressed as buttons, then looked at.
+        let button = match word {
+            "A" => Some(Button::A),
+            "B" => Some(Button::B),
+            "S" => Some(Button::Start),
+            _ => None,
+        };
         let dir = match word {
             "u" => Dir::Up,
             "d" => Dir::Down,
             "l" => Dir::Left,
             _ => Dir::Right,
         };
-        let (next, outcome) = take_step(&mut world, &mut m, look, &view, dir);
+        let (next, outcome) = match button {
+            Some(button) => {
+                tap(&mut m, button, 30);
+                (look(&mut world, &mut m), None)
+            }
+            None => {
+                let (next, outcome) = take_step(&mut world, &mut m, look, &view, dir);
+                (next, Some(outcome))
+            }
+        };
         println!(
             "{word}: {outcome:?} -> {} {:?} walk {} spot {:?} found {:?}",
             next.area,
