@@ -74,6 +74,8 @@ pub fn walk_to(
     let mut view = look(world, machine);
     let mut steps = 0;
     let mut failed = 0;
+    // Steps taken to find which sprite is her, in a game she hasn't moved in yet.
+    let mut finding = 0;
     let done = |result, steps, view| Walk {
         result,
         steps,
@@ -89,6 +91,30 @@ pub fn walk_to(
                 }
                 machine.run(10);
                 view = look(world, machine);
+            }
+            // In a game where nothing stands in the middle, she can't be seen to be free
+            // until a step shows which sprite is her: one each way at most.
+            if !view.can_walk
+                && view.text.is_empty()
+                && world.sight.finding_her()
+                && finding < 4
+                && steps < most
+            {
+                let dirs = [Dir::Down, Dir::Right, Dir::Up, Dir::Left];
+                let towards = [
+                    (target.1 > view.at.1, Dir::Down),
+                    (target.0 > view.at.0, Dir::Right),
+                    (target.1 < view.at.1, Dir::Up),
+                    (target.0 < view.at.0, Dir::Left),
+                ];
+                let dir = towards
+                    .iter()
+                    .find(|(yes, _)| *yes && finding == 0)
+                    .map_or(dirs[finding % 4], |&(_, dir)| dir);
+                finding += 1;
+                steps += 1;
+                view = take_step(world, machine, look, &view, dir).0;
+                continue;
             }
             if !view.can_walk {
                 return done(Walked::Interrupted(view.text.clone()), steps, view);
@@ -229,16 +255,19 @@ pub fn explore(world: &mut World, machine: &mut Machine, look: Look, most: u32) 
     let mut no_way = Vec::new();
     loop {
         let view = look(world, machine);
+        // Not free yet only because code hasn't seen which sprite is her: walking there
+        // takes the step that shows it.
+        let can_walk = view.can_walk || (view.text.is_empty() && world.sight.finding_her());
         let map = world.area(&view.area);
         let target = map
             .frontier(view.at)
             .into_iter()
             .find(|pos| !no_way.contains(pos));
-        let Some(target) = target.filter(|_| view.can_walk && steps < most) else {
+        let Some(target) = target.filter(|_| can_walk && steps < most) else {
             // Nothing left to see, or nothing she can walk to: walk_to says which.
             let result = match target {
                 None if view.can_walk => Walked::NoWay,
-                _ => walk_to(world, machine, look, view.at, 0).result,
+                _ => walk_to(world, machine, look, view.at, if can_walk { 4 } else { 0 }).result,
             };
             return Walk {
                 result,

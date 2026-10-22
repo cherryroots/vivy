@@ -45,3 +45,11 @@ winnow = "1.0.4"
 
 [dev-dependencies]
 twilight-validate = "0.17.0"
+
+# For running the game tests while changing code: as fast as release, but rebuilt
+# incrementally in small pieces, so a one-line change takes seconds, not minutes.
+# `cargo test --profile fast-test`
+[profile.fast-test]
+inherits = "release"
+incremental = true
+codegen-units = 256

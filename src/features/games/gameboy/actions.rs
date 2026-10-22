@@ -236,13 +236,18 @@ fn act(world: &mut World, machine: &mut Machine, look: Look, name: &str, args: &
             }
             let walk = walk_to(world, machine, look, (x, y), WALK_MOST);
             let view = settle(world, machine, look, &mut Vec::new());
-            walked(walk.result, walk.steps, view, (x, y), false)
+            let finding = world.sight.finding_her();
+            unseen(
+                walked(walk.result, walk.steps, view, (x, y), false),
+                finding,
+            )
         }
         "explore" => {
             let walk = explore(world, machine, look, WALK_MOST);
             let view = settle(world, machine, look, &mut Vec::new());
             let at = view.at;
-            walked(walk.result, walk.steps, view, at, true)
+            let finding = world.sight.finding_her();
+            unseen(walked(walk.result, walk.steps, view, at, true), finding)
         }
         "press" => press(world, machine, look, args["buttons"].as_str().unwrap_or("")),
         "read_text" => read_text(world, machine, look),
@@ -313,6 +318,18 @@ fn words_of(view: &View) -> Vec<String> {
         .then(|| view.text.clone())
         .into_iter()
         .collect()
+}
+
+/// A walk that couldn't start because code hasn't seen which sprite is her yet (nothing
+/// on screen moved with a press): says so, instead of blaming text that isn't there.
+fn unseen(mut acted: Acted, finding: bool) -> Acted {
+    if finding && acted.view.text.is_empty() && acted.outcome.starts_with("Can't walk now") {
+        acted.outcome = "Can't walk yet: no sprite has moved with a press, so which one is you \
+                         isn't known. Press a direction toward open floor; a step that moves \
+                         you shows it."
+            .to_string();
+    }
+    acted
 }
 
 /// What a walk did, in a line. `exploring` is for `explore`, where `NoWay` means
@@ -432,7 +449,11 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
         presses += 1;
         view = settle(world, machine, look, &mut words);
     }
-    let outcome = if presses == 0 && view.can_walk {
+    let outcome = if !view.can_walk && view.text.is_empty() && world.sight.finding_her() {
+        "No text was read. Which sprite is you isn't known yet: press a direction toward open \
+         floor, and the step shows it."
+            .to_string()
+    } else if presses == 0 && view.can_walk {
         "There's no text on screen.".to_string()
     } else if view.text.contains(CURSOR) {
         format!("Read the text ({presses} presses). A choice or menu is up now.")

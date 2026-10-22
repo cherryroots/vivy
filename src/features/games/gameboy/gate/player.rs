@@ -10,11 +10,11 @@ use crate::features::games::gameboy::any::{self, Sight};
 use crate::features::games::gameboy::console::Machine;
 use crate::features::games::gameboy::map::AreaMap;
 use crate::features::games::gameboy::pictures::png_at;
-use crate::features::games::gameboy::red::{self, State};
+use crate::features::games::gameboy::red::State;
 use crate::features::games::gameboy::session::Game;
 use crate::features::games::gameboy::skills::Skill;
 use crate::features::games::gameboy::supervisor::Player;
-use crate::features::games::gameboy::walk::Look;
+use crate::features::games::gameboy::walk::{Look, look_for};
 use crate::features::games::gameboy::world::World;
 
 pub struct Local {
@@ -27,9 +27,11 @@ pub struct Local {
 
 impl Local {
     pub fn new(machine: Machine) -> Local {
+        // Red's own look for Red unless VIVY_GB_LOOK=any; every other game has only the
+        // look with no memory map.
         let look: Look = match std::env::var("VIVY_GB_LOOK").as_deref() {
             Ok("any") => any::look,
-            _ => red::look,
+            _ => look_for(machine.emulator.info()),
         };
         Local {
             machine,

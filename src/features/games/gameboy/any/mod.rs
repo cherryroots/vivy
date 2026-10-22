@@ -142,6 +142,9 @@ struct Pictures(#[serde(with = "as_list")] HashMap<Pos, u64>);
 /// What only matters while playing.
 #[derive(Debug, Clone, Default)]
 struct Live {
+    /// Nothing stands in the middle and she hasn't been seen to move yet, so code can't
+    /// tell which sprite is her until she takes a step.
+    finding: bool,
     finder: Option<Finder>,
     /// Memory at the last look, and the last look she could walk at.
     memory: Option<Memory>,
@@ -274,6 +277,12 @@ impl Sight {
         seen.into_iter()
             .filter(|(_, key)| !self.lively.contains(key))
             .collect()
+    }
+
+    /// Whether a step would show which sprite is her (see `Live::finding`): until then
+    /// she isn't free to walk, so walking takes the step anyway.
+    pub fn finding_her(&self) -> bool {
+        self.live.finding
     }
 
     /// Where her sprite is on the screen, once a step has shown it moves across it.
@@ -564,6 +573,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // After a fade anything goes, whether a step code took went dark or her own presses
     // did between looks.
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
+    sight.live.finding = !free
+        && sight.live.spot.is_none()
+        && sight.live.her.is_empty()
+        && screen.drawn
+        && !screen.sprites.is_empty()
+        && steps_of(&screen, None).is_none();
     // Only a look she can walk at: a battle's moves press directions and scroll too.
     if walked && free {
         sight
