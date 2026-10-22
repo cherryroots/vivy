@@ -790,6 +790,41 @@ fn a_battle_is_not_a_place() {
     assert_eq!(places.len(), 1, "{places:?}");
 }
 
+/// Two battle screens from a live run, her back still in the middle as sprites a moment,
+/// each looked at just after a press of hers: they're never her sprite (she can't walk
+/// there), so neither is a place.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and the task states"]
+fn a_battle_her_presses_scrolled_is_not_her() {
+    use crate::features::games::gameboy::console::Timing;
+    use crate::features::games::gameboy::emulator::Button;
+    use crate::features::games::gameboy::map::Dir::{Down, Up};
+    use crate::features::games::gameboy::presses::Press;
+    use crate::features::games::gameboy::walk::take_step;
+    let mut m = super::tasks::load("viridian");
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    let mut view = look(&mut world, &mut m);
+    for dir in [Up, Down, Up, Down] {
+        view = take_step(&mut world, &mut m, look, &view, dir).0;
+    }
+    assert!(view.can_walk);
+    for battle in ["battle_slide", "battle_slide2", "battle_slide"] {
+        let saved = std::fs::read(super::tasks::folder().join(format!("{battle}.state"))).unwrap();
+        m.emulator.load_state(&saved).unwrap();
+        m.press(&[Press(vec![Button::Left])], Timing { hold: 2, gap: 2 });
+        let view = look(&mut world, &mut m);
+        assert!(!view.can_walk, "{battle}");
+        for _ in 0..6 {
+            m.run(10);
+            assert!(!look(&mut world, &mut m).can_walk, "{battle}");
+        }
+    }
+    let places = world.sight.places();
+    assert_eq!(places.len(), 1, "{places:?}");
+}
+
 /// Red's stairs, taken by pressing the way herself (not a step code took): the fade
 /// between two looks she could walk at is a door, though the room below looks much like
 /// hers, and back up is her bedroom again.
@@ -827,4 +862,41 @@ fn stairs_taken_by_her_own_presses_are_somewhere_new() {
     press(&mut m, Button::Right);
     assert_eq!(m.emulator.read(RED_MAP), 38, "upstairs");
     assert_eq!(look(&mut world, &mut m).area, upstairs);
+}
+
+/// The same stairs, with the Start menu opened at the top of them first: the menu covers
+/// her room but it still shows, so the fade on the way down is still a door.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM"]
+fn stairs_taken_after_a_menu_are_somewhere_new() {
+    use crate::features::games::gameboy::console::Timing;
+    use crate::features::games::gameboy::emulator::Button;
+    use crate::features::games::gameboy::map::Dir::{Down, Left, Right, Up};
+    use crate::features::games::gameboy::presses::Press;
+    use crate::features::games::gameboy::walk::take_step;
+    let mut m = red::tests::new_game();
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    for dir in [
+        Up, Up, Left, Left, Down, Right, Right, Right, Up, Up, Left, Down,
+    ] {
+        let view = look(&mut world, &mut m);
+        take_step(&mut world, &mut m, look, &view, dir);
+    }
+    walk_to(&mut world, &mut m, look, (6, 1), 20);
+    let upstairs = look(&mut world, &mut m).area;
+    let press = |m: &mut Machine, button: Button| {
+        m.press(&[Press(vec![button])], Timing { hold: 16, gap: 16 });
+        m.run(30);
+    };
+    press(&mut m, Button::Start);
+    assert!(!look(&mut world, &mut m).can_walk, "the menu is up");
+    press(&mut m, Button::B);
+    press(&mut m, Button::Right);
+    m.run(60);
+    assert_eq!(m.emulator.read(RED_MAP), 37, "downstairs");
+    let downstairs = look(&mut world, &mut m);
+    assert!(downstairs.can_walk);
+    assert_ne!(downstairs.area, upstairs);
 }

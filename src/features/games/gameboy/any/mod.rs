@@ -73,6 +73,10 @@ pub struct Sight {
     pictures: HashMap<String, Pictures>,
     /// Places numbered so far, while no area byte is known.
     places: u32,
+    /// Pictures seen to change on a step while she stood still (flowers, water): one
+    /// picture moving, which says nothing about where she is.
+    #[serde(default)]
+    lively: HashSet<u64>,
     #[serde(skip)]
     live: Live,
 }
@@ -155,6 +159,10 @@ struct Live {
     recorded: u64,
     /// The scroll at the last look.
     scroll: (u8, u8),
+    /// Her map has shown at every look since the last one she could walk at.
+    on_map: bool,
+    /// The screen scrolled further than steps go since she last could walk.
+    jumped: bool,
 }
 
 /// The screen the last time she could walk: its scroll, and each tile's number and
@@ -225,6 +233,13 @@ impl Sight {
             .collect();
         places.sort_by(|a, b| a.0.cmp(&b.0));
         places
+    }
+
+    /// The steps without the pictures that move.
+    fn steady(&self, seen: Vec<(Pos, u64)>) -> Vec<(Pos, u64)> {
+        seen.into_iter()
+            .filter(|(_, key)| !self.lively.contains(key))
+            .collect()
     }
 
     /// The place these steps look like, other than the one she just left (Red's stairs
@@ -310,7 +325,7 @@ impl Sight {
                 }
                 let pa = self.pictures.get(a).unwrap_or(&empty);
                 let pb = self.pictures.get(b).unwrap_or(&empty);
-                let seen: Vec<(Pos, u64)> = pb.0.iter().map(|(&pos, &key)| (pos, key)).collect();
+                let seen = self.steady(pb.0.iter().map(|(&pos, &key)| (pos, key)).collect());
                 // Both seen in full, one place looks the same nearly everywhere.
                 let (same, both) = compare(pa, &seen);
                 let unlike = both >= KNOWN_AFTER && (same as f32) < both as f32 * KNOWN_SHARE;
@@ -410,17 +425,30 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 && scroll != sight.live.scroll
         }
     };
-    if walked {
-        sight.live.her.extend(middle_sprites(&screen));
-    }
+    let stood_still = stepped.is_none() && !walked && scroll == sight.live.scroll && !faded;
+    let was = (sight.live.area.clone(), sight.live.at);
     sight.live.scroll = scroll;
+    // Whether her map still shows under whatever covers it (a menu, a text box), since
+    // she last could walk: a battle or a scene puts another screen up.
+    let on_map =
+        sight.live.on_map
+            && !faded
+            && sight.live.calm.as_ref().is_some_and(|last| {
+                changed_since(last, &calm_of(&screen), (0, 0)) <= COLS * ROWS / 2
+            });
     // After a fade anything goes, whether a step code took went dark or her own presses
     // did between looks.
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
+    // Only a look she can walk at: a battle's moves press directions and scroll too.
+    if walked && free {
+        sight.live.her.extend(middle_sprites(&screen));
+    }
     #[cfg(test)]
     let stepped_at_all = stepped.as_ref().map(|(s, _)| (s.direction, s.outcome));
     let at = sight.position(&memory);
-    let seen = at.map(|at| seen_steps(&screen, at)).unwrap_or_default();
+    let seen = at
+        .map(|at| sight.steady(seen_steps(&screen, at)))
+        .unwrap_or_default();
     // Where she left the last place: the step she went into, and whether it was dark.
     let mut left = None;
     if let Some((step, before)) = stepped {
@@ -432,11 +460,11 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     } else if let Some(at) = at {
         // No step, but the game may have moved her: a scene, or a checkpoint loaded. If
         // the screen looks unlike where she last walked, it's somewhere else (a little
-        // unlike says nothing: flowers and water move). If it went dark between two looks
-        // she could walk at, she walked through a door by her own presses (Red's stairs
-        // look much like the room she left); a battle ends dark too, but she couldn't
-        // walk in it.
-        let through_door = faded && sight.live.was_free;
+        // unlike says nothing: flowers and water move). If it went dark while her map
+        // still showed since she last walked (a menu may have covered it), she walked
+        // through a door by her own presses (Red's stairs look much like the room she
+        // left); a battle ends dark too, but its own screen was up.
+        let through_door = faded && (sight.live.was_free || sight.live.on_map);
         if free
             && sight.live.free.is_some()
             && sight.live.left.is_none()
@@ -484,6 +512,15 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let steps = steps_of(&screen).filter(|_| free);
     if let Some(steps) = steps {
         let around = pictures_around(&screen, steps);
+        if stood_still && was == (sight.live.area.clone(), sight.live.at) {
+            for (offset, key) in &around {
+                if let Some(&old) = sight.live.around.get(offset)
+                    && old != *key
+                {
+                    sight.lively.extend([old, *key]);
+                }
+            }
+        }
         sight.live.people = people(&screen, steps);
         let map = world.areas.entry(area.clone()).or_default();
         let pictures = sight.pictures.entry(area.clone()).or_default();
@@ -510,6 +547,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         sight.live.free = Some(memory.clone());
     }
     sight.live.was_free = free;
+    sight.live.on_map = free || on_map;
     sight.live.recorded = machine.recorded();
     sight.live.memory = Some(memory);
     View {
@@ -779,10 +817,7 @@ fn calm(
     if r.lcdc & 0x20 != 0 && i32::from(r.wy) <= her.1 && i32::from(r.wx) <= her.0 + 7 {
         return false;
     }
-    let now = Calm {
-        scroll: (r.scx, r.scy),
-        tiles: screen.cells.iter().map(|c| (c.index, c.key)).collect(),
-    };
+    let now = calm_of(screen);
     if dark {
         sight.live.calm = None;
     }
@@ -794,6 +829,7 @@ fn calm(
             return false;
         }
         sight.live.calm = Some(now);
+        sight.live.jumped = false;
         return true;
     };
     let moved = |a: u8, b: u8| i32::from(b.wrapping_sub(a) as i8) / 8;
@@ -801,14 +837,20 @@ fn calm(
         moved(last.scroll.0, now.scroll.0),
         moved(last.scroll.1, now.scroll.1),
     );
-    let free = if by != (0, 0) && !stepped {
-        false
-    } else {
-        // Scrolled by a step or two, the tiles still on screen have moved with it; a text
-        // box that came up as the step ended hasn't.
-        let near = by.0.abs() <= 4 && by.1.abs() <= 4;
-        !near || changed_since(last, &now, by) <= CALM_CHANGES
-    };
+    // Scrolled by a step or two, the tiles still on screen have moved with it; a text box
+    // that came up as the step ended hasn't. Scrolled further, nothing is left to compare:
+    // her sprite must be in the middle (a battle's own screen has other sprites there),
+    // there and at every look until she's free.
+    let near = by.0.abs() <= 4 && by.1.abs() <= 4;
+    if !near {
+        sight.live.jumped = true;
+    }
+    let free = (by == (0, 0) || stepped)
+        && (!near || changed_since(last, &now, by) <= CALM_CHANGES)
+        && (!sight.live.jumped || is_her(&sight.live.her, screen));
+    if free {
+        sight.live.jumped = false;
+    }
     if free || by != (0, 0) {
         sight.live.calm = Some(now);
     }
@@ -866,6 +908,14 @@ fn trace_new_place(
     );
 }
 
+/// The screen as `calm` compares it.
+fn calm_of(screen: &Screen) -> Calm {
+    Calm {
+        scroll: (screen.registers.scx, screen.registers.scy),
+        tiles: screen.cells.iter().map(|c| (c.index, c.key)).collect(),
+    }
+}
+
 /// Whether the screen is the same a moment later: still a picture, her sprite on the same
 /// step, and no more than a few tiles changed.
 fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps) -> bool {
@@ -879,10 +929,7 @@ fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps) -> bool {
     {
         return false;
     }
-    let again = Calm {
-        scroll: (screen.registers.scx, screen.registers.scy),
-        tiles: screen.cells.iter().map(|c| (c.index, c.key)).collect(),
-    };
+    let again = calm_of(&screen);
     steps_of(&screen).is_some_and(|s| s.player == steps.player && s.origin == steps.origin)
         && again.scroll == now.scroll
         && changed_since(now, &again, (0, 0)) <= CALM_CHANGES
@@ -1008,6 +1055,39 @@ fn join_keys(keys: [u64; 4]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pictures_that_move_dont_make_a_place_look_different() {
+        let mut sight = Sight::default();
+        let room: Vec<(Pos, u64)> = (0..20).map(|i| ((i % 5, i / 5), 100 + i as u64)).collect();
+        sight.pictures.insert(
+            "Place 1".to_string(),
+            Pictures(room.iter().copied().collect()),
+        );
+        // Flowers on four of its steps showed another picture this time.
+        let seen: Vec<(Pos, u64)> = room
+            .iter()
+            .map(|&(pos, key)| {
+                (
+                    pos,
+                    if pos.1 == 0 && pos.0 < 4 {
+                        key + 1000
+                    } else {
+                        key
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            sight.known_place(&sight.steady(seen.clone()), "Place 2"),
+            None
+        );
+        sight.lively.extend((100..104).chain(1100..1104));
+        assert_eq!(
+            sight.known_place(&sight.steady(seen), "Place 2"),
+            Some("Place 1".to_string())
+        );
+    }
 
     #[test]
     fn a_picture_is_what_trying_it_did() {
