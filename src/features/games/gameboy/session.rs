@@ -918,6 +918,7 @@ async fn keep<G: Game>(
     write_json(&files::maps_path(dir, rom), &world.areas).await?;
     write_json(&files::sight_path(dir, rom), &world.sight).await?;
     write_json(&files::skills_path(dir, rom), &world.skills).await?;
+    write_json(&files::watches_path(dir, rom), &world.watches).await?;
     write_json(&files::today_path(dir), today).await?;
     let latest = files::save_path(dir, rom, LATEST).map_err(anyhow::Error::msg)?;
     write_file(&latest, &game.save_state().await?).await

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::any::Sight;
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
+use super::ram::{Search, Watch};
 use super::red::Trust;
 use super::skills::Skill;
 
@@ -32,6 +33,12 @@ pub struct World {
     pub trust: Trust,
     /// The routines she has written for this game.
     pub skills: Vec<Skill>,
+    /// The values she found in memory and named (`ram.rs`), saved with her skills.
+    #[serde(default)]
+    pub watches: Vec<Watch>,
+    /// Her memory search under way, if any. Not saved: memory moves on without her.
+    #[serde(skip)]
+    pub search: Option<Search>,
     /// What code has learned about a game with no memory map (`any/`).
     #[serde(default)]
     pub sight: Sight,

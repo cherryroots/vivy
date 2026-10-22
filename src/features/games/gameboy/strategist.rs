@@ -62,6 +62,12 @@ of the facts and words in it (like fact \"Badges\" has \"Boulder\"). Leave area 
 a fact, fact and has empty for an area. Code keeps the reached ones; send the ones still \
 ahead, changed as you learn more.
 
+Memory search: the executor can find where the game keeps a number (HP, money, a \
+counter) by searching memory like a cheat finder, and watch it; watched values are in the \
+facts, as \"Watched: money 3175\". When a number that would help isn't in the facts, a task \
+can be to find it: note its value on screen, do something that changes it, search again, \
+until one place is left, then watch it.
+
 Skills: the executor writes its own, with know-how notes and a routine code runs as one \
 action. Each round of a routine, the first rule whose if_words are on screen (any case; \
 empty fits any screen) presses its buttons (1 to 5, spaced, like \"down right a\"). It \

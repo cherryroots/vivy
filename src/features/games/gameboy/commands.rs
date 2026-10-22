@@ -27,6 +27,7 @@ use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
 use super::player::OnConsole;
 use super::playing::{self, not_playing};
+use super::ram::Watch;
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::View;
@@ -136,11 +137,13 @@ async fn load(ctx: &CommandCtx, args: GameboyLoad) -> Result<()> {
         .await
         .with_context(|| format!("reading {}", path.display()))?;
     let known = read_skills(&settings, &rom).await?;
+    let watches = read_watches(&settings, &rom).await?;
     let name = rom.clone();
     let (title, gif) = console()
         .with(move |machine| -> Result<_> {
             let mut m = Machine::new(&name, &bytes).map_err(|e| user_error(format!("{e:#}")))?;
             m.world.skills = known;
+            m.world.watches = watches;
             // The boot logo and the first moments of the game.
             m.run(4 * 60);
             let gif = pictures::gif(&m.screens_since(0), RECORD_EVERY, GIF_SCALE)?;
@@ -386,22 +389,32 @@ async fn task(ctx: &CommandCtx, args: GameboyTask) -> Result<()> {
         .chat()
         .ok_or_else(|| user_error("Tasks need a model: the bot has no AI key."))?;
     ctx.defer().await?;
-    let (game, mark, rom, known) = on_machine(|m| {
+    let (game, mark, rom, known, watched) = on_machine(|m| {
         game_look(m)?;
         Ok((
             game_name(&m.emulator.info().title),
             m.recorded(),
             m.rom.clone(),
             m.world.skills.clone(),
+            m.world.watches.clone(),
         ))
     })
     .await?;
     let most = actions.map_or(TASK_ACTIONS, |actions| actions as u32);
     let episode = run_task(provider.as_ref(), &mut OnConsole, &game, &task, None, most).await;
     // What she wrote down is kept even when the task fails partway.
-    let now_known = on_machine(|m| Ok(m.world.skills.clone())).await?;
+    let (now_known, now_watched) =
+        on_machine(|m| Ok((m.world.skills.clone(), m.world.watches.clone()))).await?;
     if now_known != known {
         write_skills(&settings, &rom, &now_known).await?;
+    }
+    if now_watched != watched {
+        let path = files::watches_path(&settings.saves_dir(), &rom);
+        write_file(
+            &path,
+            serde_json::to_string_pretty(&now_watched)?.as_bytes(),
+        )
+        .await?;
     }
     let episode = episode?;
     let (now, gif) = on_machine(move |m| {
@@ -490,6 +503,16 @@ async fn read_skills(settings: &Settings, rom: &str) -> Result<Vec<skills::Skill
     let path = files::skills_path(&settings.saves_dir(), rom);
     match tokio::fs::read_to_string(&path).await {
         Ok(json) => Ok(skills::from_json(&json)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", path.display()))),
+    }
+}
+
+/// The values she watches in `rom`'s memory, from their file (none when there isn't one).
+async fn read_watches(settings: &Settings, rom: &str) -> Result<Vec<Watch>> {
+    let path = files::watches_path(&settings.saves_dir(), rom);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(json) => Ok(serde_json::from_str(&json).unwrap_or_default()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(anyhow::Error::new(e).context(format!("reading {}", path.display()))),
     }
