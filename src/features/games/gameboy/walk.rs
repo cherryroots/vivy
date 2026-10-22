@@ -161,6 +161,14 @@ pub fn take_step(
         settle(machine);
         next = look(world, machine);
     }
+    // Where the step took her, if not onto the next step: over a ledge, or carried along
+    // (the step waits until the screen stops scrolling, so a ride is over by now).
+    if let Outcome::Moved(_) = taken.outcome
+        && next.area == view.area
+        && next.can_walk
+    {
+        world.area(&view.area).landed(view.at, dir, next.at);
+    }
     if let Outcome::Moved(n) = taken.outcome
         && next.area == view.area
     {

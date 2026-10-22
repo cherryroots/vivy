@@ -528,7 +528,8 @@ fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
                 };
                 let truth = test_game::step_byte(room, (x as usize, y as usize));
                 let right = match truth {
-                    3 => kind == Kind::Wall,
+                    test_game::WALL => kind == Kind::Wall,
+                    test_game::LEDGE => !kind.walkable(),
                     0x80.. => kind == Kind::Door,
                     _ => kind.walkable(),
                 };
@@ -569,6 +570,58 @@ fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
     assert_eq!(rooms.len(), 3, "{report}");
     assert_eq!(places.len(), 3, "one name for each room: {report}");
     assert!(agree > 150 && differ * 20 <= agree, "{report}");
+}
+
+/// The test game's ledge and floor arrows, with the look that has no memory map: one hop
+/// down the ledge and one ride on the arrows teach every ledge and arrow step that looks
+/// the same, and the map then hops down where it can and goes around on the way up.
+#[test]
+fn ledges_and_arrows_are_learned_by_trying_them() {
+    use crate::features::games::gameboy::map::Dir::{Down, Right};
+    use crate::features::games::gameboy::walk::take_step;
+    let rom = test_game::build();
+    let look = look_for(&RomInfo::read(&rom).unwrap());
+    let mut m = Machine::new("rooms.gb", &rom).unwrap();
+    m.run(120);
+    let mut world = World::default();
+    // Walk about first, so code knows where she stands, then through the first door.
+    explore(&mut world, &mut m, look, 40);
+    let walk = walk_to(&mut world, &mut m, look, (15, 4), 60);
+    assert!(
+        matches!(walk.result, Walked::NewArea(_)),
+        "{:?}",
+        walk.result
+    );
+    let room = walk.view.area.clone();
+    assert_eq!(
+        walk_to(&mut world, &mut m, look, (4, 6), 30).result,
+        Walked::Arrived
+    );
+    let view = look(&mut world, &mut m);
+    let (view, _) = take_step(&mut world, &mut m, look, &view, Down);
+    assert_eq!(view.at, (4, 8), "hopped");
+    let map = world.area(&room);
+    assert_eq!(map.kind((4, 7)), Some(Kind::OneWay(Down)));
+    assert_eq!(map.kind((6, 7)), Some(Kind::OneWay(Down)), "by its look");
+    // Up again: around the end of the ledge, never over it.
+    let up = map.path((5, 8), (5, 6), false).unwrap();
+    assert!(up.len() > 2, "{up:?}");
+    // Down from another spot above it: one press.
+    assert_eq!(map.path((5, 6), (5, 8), false).map(|w| w.len()), Some(1));
+
+    assert_eq!(
+        walk_to(&mut world, &mut m, look, (2, 9), 30).result,
+        Walked::Arrived
+    );
+    let view = look(&mut world, &mut m);
+    let (view, _) = take_step(&mut world, &mut m, look, &view, Right);
+    assert_eq!(view.at, (7, 9), "carried");
+    assert_eq!(m.emulator.read(test_game::X_PIXELS), 7 * 16);
+    let map = world.area(&room);
+    assert_eq!(map.kind((3, 9)), Some(Kind::Mover));
+    assert_eq!(map.kind((5, 9)), Some(Kind::Mover), "by its look");
+    assert_eq!(map.step_to((2, 9), Right, false), Some((7, 9)));
+    println!("{}", map.draw((5, 8), 8));
 }
 
 /// Walking by pressing a direction herself (not a step code took) scrolls the screen too,

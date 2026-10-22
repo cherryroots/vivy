@@ -32,6 +32,11 @@ pub enum Kind {
     Sign,
     /// Past the edge of the map: walking on goes to the next area.
     Edge,
+    /// Crossed one way only, hopping over it to the step beyond (a ledge); a wall from
+    /// every other side.
+    OneWay(Dir),
+    /// A step that carries her on somewhere else (floor arrows, a spinner, ice).
+    Mover,
 }
 
 impl Kind {
@@ -44,12 +49,27 @@ impl Kind {
             Kind::Door => 'D',
             Kind::Sign => 'S',
             Kind::Edge => '>',
+            Kind::OneWay(Dir::Up) => '↑',
+            Kind::OneWay(Dir::Down) => '↓',
+            Kind::OneWay(Dir::Left) => '←',
+            Kind::OneWay(Dir::Right) => '→',
+            Kind::Mover => '*',
         }
     }
 
-    /// Whether the player can stand on it, as far as its look says.
+    /// Whether the player can stand on it, as far as its look says. A one-way step is
+    /// hopped over, never stood on.
     pub fn walkable(self) -> bool {
-        matches!(self, Kind::Floor | Kind::Grass | Kind::Door | Kind::Edge)
+        matches!(
+            self,
+            Kind::Floor | Kind::Grass | Kind::Door | Kind::Edge | Kind::Mover
+        )
+    }
+
+    /// Learned by trying, so it stays whatever the step looks like: doors (the tiles under
+    /// some look like floor or wall), one-way steps and steps that carry her.
+    fn sticks(self) -> bool {
+        matches!(self, Kind::Door | Kind::OneWay(_) | Kind::Mover)
     }
 }
 
@@ -65,6 +85,10 @@ pub struct AreaMap {
     /// Where each door led, by its position.
     #[serde(with = "as_list")]
     pub doors: HashMap<Pos, String>,
+    /// Steps that took her somewhere other than the next step: (from, direction) and
+    /// where she ended up (hopped over a ledge, carried along by arrows).
+    #[serde(default, with = "as_list")]
+    moves: HashMap<(Pos, Dir), Pos>,
     /// Her own markers ("locked door, needs a key").
     #[serde(with = "as_list")]
     pub markers: HashMap<Pos, String>,
@@ -114,8 +138,7 @@ impl AreaMap {
         if self.walked.contains(&pos) && !kind.walkable() {
             return;
         }
-        // A door stays a door: the tiles under some doors look like floor or wall.
-        if self.kinds.get(&pos) == Some(&Kind::Door) {
+        if self.kinds.get(&pos).is_some_and(|k| k.sticks()) && !kind.sticks() {
             return;
         }
         self.kinds.insert(pos, kind);
@@ -141,6 +164,41 @@ impl AreaMap {
         // person) has gone; only blocks out of her own step are kept as they are.
     }
 
+    /// A step from `from` in `dir` ended at `to`, not on the next step: two steps on is a
+    /// hop over a one-way step, anywhere else she was carried (and goes there again).
+    pub fn landed(&mut self, from: Pos, dir: Dir, to: Pos) {
+        let next = dir.step(from);
+        if to == from || to == next {
+            return;
+        }
+        if to == dir.step(next) {
+            self.see(next, Kind::OneWay(dir));
+        } else {
+            self.moves.insert((from, dir), to);
+            if self.kind(next) != Some(Kind::Door) {
+                self.see(next, Kind::Mover);
+            }
+        }
+        self.walked(to);
+    }
+
+    /// Where a step from `from` in `dir` ends: the next step, the step past a one-way step
+    /// crossed its way, or wherever the step took her before. `None` when it can't be
+    /// tried (see `can_step`).
+    pub fn step_to(&self, from: Pos, dir: Dir, explore: bool) -> Option<Pos> {
+        if let Some(&to) = self.moves.get(&(from, dir)) {
+            return Some(to);
+        }
+        if !self.can_step(from, dir, explore) {
+            return None;
+        }
+        let next = dir.step(from);
+        match self.kind(next) {
+            Some(Kind::OneWay(_)) => Some(dir.step(next)),
+            _ => Some(next),
+        }
+    }
+
     pub fn kind(&self, pos: Pos) -> Option<Kind> {
         self.kinds.get(&pos).copied()
     }
@@ -157,7 +215,8 @@ impl AreaMap {
     }
 
     /// Whether a step from `from` in `dir` can be tried: not blocked before, not into a
-    /// person, onto a walkable step (or an unseen one, when `explore`).
+    /// person, onto a walkable step (or an unseen one, when `explore`), or over a one-way
+    /// step its way onto one.
     pub fn can_step(&self, from: Pos, dir: Dir, explore: bool) -> bool {
         let to = dir.step(from);
         if self.blocked.contains(&(from, dir)) || self.people.contains(&to) {
@@ -165,6 +224,9 @@ impl AreaMap {
         }
         if self.walked.contains(&to) {
             return true;
+        }
+        if let Some(Kind::OneWay(way)) = self.kinds.get(&to) {
+            return *way == dir && self.can_step(to, dir, explore);
         }
         match self.kinds.get(&to) {
             Some(kind) => kind.walkable(),
@@ -189,12 +251,14 @@ impl AreaMap {
             if came.len() > MOST {
                 break;
             }
-            if pos != from && matches!(self.kind(pos), Some(Kind::Door | Kind::Edge)) {
+            if pos != from && self.leaves(pos) {
                 continue;
             }
             for dir in Dir::ALL {
-                let next = dir.step(pos);
-                if next == from || came.contains_key(&next) || !self.can_step(pos, dir, explore) {
+                let Some(next) = self.step_to(pos, dir, explore) else {
+                    continue;
+                };
+                if next == from || came.contains_key(&next) {
                     continue;
                 }
                 came.insert(next, (pos, dir));
@@ -215,6 +279,12 @@ impl AreaMap {
         None
     }
 
+    /// Whether a way can't go on from this step: a door or edge leaves the area, and a
+    /// step that carries her somewhere not yet known could end anywhere.
+    fn leaves(&self, pos: Pos) -> bool {
+        matches!(self.kind(pos), Some(Kind::Door | Kind::Edge | Kind::Mover))
+    }
+
     /// Unseen steps next to steps she can reach from `from`: where exploring goes next,
     /// nearest first.
     pub fn frontier(&self, from: Pos) -> Vec<Pos> {
@@ -222,17 +292,22 @@ impl AreaMap {
         let mut reached = HashSet::from([from]);
         let mut queue = VecDeque::from([from]);
         while let Some(pos) = queue.pop_front() {
-            if pos != from && matches!(self.kind(pos), Some(Kind::Door | Kind::Edge)) {
+            if pos != from && self.leaves(pos) {
                 continue;
             }
             for dir in Dir::ALL {
-                let next = dir.step(pos);
-                if reached.contains(&next) || self.blocked.contains(&(pos, dir)) {
+                if self.blocked.contains(&(pos, dir)) {
                     continue;
+                }
+                // The step she'd see next: the next one, or the one past a one-way step
+                // crossed its way.
+                let mut next = dir.step(pos);
+                if self.kind(next) == Some(Kind::OneWay(dir)) {
+                    next = dir.step(next);
                 }
                 if self.kind(next).is_none() && !self.walked.contains(&next) {
                     // Past the area's edges there's nothing to see, and no way there.
-                    if !self.inside(next) {
+                    if !self.inside(next) || reached.contains(&next) {
                         continue;
                     }
                     if !found.contains(&next) {
@@ -240,9 +315,10 @@ impl AreaMap {
                     }
                     continue;
                 }
-                if self.can_step(pos, dir, false) {
-                    reached.insert(next);
-                    queue.push_back(next);
+                if let Some(to) = self.step_to(pos, dir, false)
+                    && reached.insert(to)
+                {
+                    queue.push_back(to);
                 }
             }
         }
@@ -342,6 +418,11 @@ impl AreaMap {
                 .iter()
                 .map(|(&p, m)| (by(p), m.clone()))
                 .collect(),
+            moves: self
+                .moves
+                .iter()
+                .map(|(&(p, d), &to)| ((by(p), d), by(to)))
+                .collect(),
             people: self.people.iter().map(|&p| by(p)).collect(),
             size: self.size,
         }
@@ -359,6 +440,9 @@ impl AreaMap {
         }
         for (pos, area) in other.doors {
             self.doors.entry(pos).or_insert(area);
+        }
+        for (step, to) in other.moves {
+            self.moves.entry(step).or_insert(to);
         }
         for (pos, marker) in other.markers {
             self.markers.entry(pos).or_insert(marker);
@@ -394,7 +478,9 @@ pub(super) mod as_list {
 
 /// What the map's letters mean, for a prompt.
 pub const LEGEND: &str = "@ you, . floor, # wall, \" tall grass, D door or stairs, \
-S sign, > edge (walk on to the next area), P person, ! your marker, ? not seen yet";
+S sign, > edge (walk on to the next area), ↑ ↓ ← → one way (hop over it that way only, \
+like a ledge), * carries you on (floor arrows, a spinner), P person, ! your marker, \
+? not seen yet";
 
 #[cfg(test)]
 mod tests {
@@ -437,6 +523,8 @@ mod tests {
                     'D' => Kind::Door,
                     'S' => Kind::Sign,
                     '>' => Kind::Edge,
+                    'v' => Kind::OneWay(Dir::Down),
+                    '*' => Kind::Mover,
                     _ => continue,
                 };
                 map.see((x as i32, y as i32), kind);
@@ -537,6 +625,64 @@ mod tests {
         assert!(frontier.contains(&(0, -1)) && frontier.contains(&(-1, 1)));
         assert!(!frontier.contains(&(3, 0)), "behind a wall");
         assert_eq!(frontier.len(), 4);
+    }
+
+    #[test]
+    fn a_ledge_is_hopped_down_and_gone_around_on_the_way_up() {
+        let map = map_of(&[
+            "......", //
+            "vvvv..", //
+            "......", //
+        ]);
+        // Down: straight over the ledge, which takes one press for two steps.
+        assert_eq!(names(&map.path((1, 0), (1, 2), false).unwrap()), "d");
+        assert_eq!(map.step_to((1, 0), Dir::Down, false), Some((1, 2)));
+        // Up: never onto it, so around the end of it.
+        assert_eq!(map.step_to((1, 2), Dir::Up, false), None);
+        assert_eq!(map.step_to((4, 0), Dir::Left, false), Some((3, 0)));
+        let up = map.path((1, 2), (1, 0), false).unwrap();
+        assert_eq!(names(&up), "rrruulll");
+        assert_eq!(map.letter((0, 1), (9, 9)), '↓');
+        // What's past a ledge is somewhere to look.
+        let unseen = map_of(&["..", "v.", "??"]);
+        assert!(unseen.frontier((0, 0)).contains(&(0, 2)));
+    }
+
+    #[test]
+    fn where_steps_land_is_learned() {
+        let mut map = map_of(&[
+            "........", //
+            "........", //
+            "........", //
+        ]);
+        // Two steps on from one press: the step between is a ledge, crossed that way.
+        map.landed((2, 0), Dir::Down, (2, 2));
+        assert_eq!(map.kind((2, 1)), Some(Kind::OneWay(Dir::Down)));
+        // Carried four steps along by the step ahead: that step carries her, and the
+        // same step from there goes there again.
+        map.landed((0, 2), Dir::Right, (5, 2));
+        assert_eq!(map.kind((1, 2)), Some(Kind::Mover));
+        assert_eq!(map.step_to((0, 2), Dir::Right, false), Some((5, 2)));
+        assert_eq!(names(&map.path((0, 2), (6, 2), false).unwrap()), "rr");
+        // From anywhere else, it's where a way can end, not go through.
+        let way = map.path((1, 1), (1, 2), false).unwrap();
+        assert_eq!(names(&way), "d");
+        assert_eq!(
+            names(&map.path((1, 1), (3, 2), false).unwrap()),
+            "urdr",
+            "around both"
+        );
+        // What she learned by trying stays, whatever the step looks like next time.
+        map.see((1, 2), Kind::Floor);
+        map.see((2, 1), Kind::Wall);
+        assert_eq!(map.kind((1, 2)), Some(Kind::Mover));
+        assert_eq!(map.kind((2, 1)), Some(Kind::OneWay(Dir::Down)));
+        // Saved and moved with the rest.
+        let moved = map.shifted((1, 1));
+        assert_eq!(moved.step_to((1, 3), Dir::Right, false), Some((6, 3)));
+        let back: AreaMap = serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
+        assert_eq!(back.step_to((0, 2), Dir::Right, false), Some((5, 2)));
+        assert_eq!(back.kind((2, 1)), Some(Kind::OneWay(Dir::Down)));
     }
 
     #[test]

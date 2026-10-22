@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use super::change::{Look as FrameLook, look as frame_look};
 use super::console::Machine;
-use super::map::{AreaMap, Kind, Pos, as_list};
+use super::map::{AreaMap, Dir, Kind, Pos, as_list};
 use super::moves::{Outcome, offset};
 use super::screen::{COLS, Layer, ROWS, Screen};
 use super::walk::settle;
@@ -87,13 +87,24 @@ pub struct Learned {
     pub walked: u32,
     pub blocked: u32,
     pub doors: u32,
+    /// Hopped over this way, landing on the step beyond (a ledge).
+    #[serde(default)]
+    pub over: Option<Dir>,
+    /// Stepped onto and carried on somewhere else (floor arrows, a spinner).
+    #[serde(default)]
+    pub carried: u32,
 }
 
 impl Learned {
-    /// What a step with this picture is, once she has tried one.
+    /// What a step with this picture is, once she has tried one. A picture walked onto
+    /// more often than it went somewhere new is floor, whatever happened once.
     pub fn kind(self) -> Option<Kind> {
-        if self.doors > 0 {
+        if let Some(dir) = self.over {
+            Some(Kind::OneWay(dir))
+        } else if self.doors > 0 && self.doors >= self.walked {
             Some(Kind::Door)
+        } else if self.carried > 0 && self.carried >= self.walked {
+            Some(Kind::Mover)
         } else if self.walked > 0 {
             Some(Kind::Floor)
         } else if self.blocked > 0 {
@@ -502,12 +513,32 @@ fn after_step(
     // What the step ahead turned out to be, by its picture.
     let ahead = |n: i32| (pressed.0 * n, pressed.1 * n);
     match step.outcome {
+        // Two steps the way she pressed: she hopped over the step ahead (a ledge).
+        Outcome::Moved(2) if !new_place && step.scrolled == ahead(2) => {
+            if let Some(&key) = sight.live.around.get(&ahead(1)) {
+                sight.steps.entry(key).or_default().over = Some(step.direction);
+            }
+            if let Some(&key) = sight.live.around.get(&ahead(2)) {
+                sight.steps.entry(key).or_default().walked += 1;
+            }
+        }
+        // Anywhere else but the next step: the step ahead carried her on.
+        Outcome::Moved(_) if !new_place && step.scrolled != ahead(1) => {
+            if let Some(&key) = sight.live.around.get(&ahead(1)) {
+                sight.steps.entry(key).or_default().carried += 1;
+            }
+            if let Some(&key) = sight.live.around.get(&step.scrolled) {
+                sight.steps.entry(key).or_default().walked += 1;
+            }
+        }
         Outcome::Moved(n) => {
             if let Some(&key) = sight.live.around.get(&ahead(n)) {
                 let learned = sight.steps.entry(key).or_default();
-                if new_place {
+                // Through a door: it went dark. Somewhere new with no fade is an edge,
+                // which says nothing about the picture (it's ground like any other).
+                if new_place && dark {
                     learned.doors += 1;
-                } else {
+                } else if !new_place {
                     learned.walked += 1;
                 }
             }
@@ -861,6 +892,13 @@ mod tests {
         assert_eq!(learned.kind(), Some(Kind::Floor), "walking onto one wins");
         learned.doors = 1;
         assert_eq!(learned.kind(), Some(Kind::Door));
+        // Walked onto far more often than it went somewhere: ground at an edge.
+        learned.walked = 40;
+        assert_eq!(learned.kind(), Some(Kind::Floor));
+        learned.carried = 41;
+        assert_eq!(learned.kind(), Some(Kind::Mover));
+        learned.over = Some(Dir::Down);
+        assert_eq!(learned.kind(), Some(Kind::OneWay(Dir::Down)));
     }
 
     #[test]

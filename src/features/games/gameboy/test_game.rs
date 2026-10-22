@@ -11,6 +11,9 @@
 //!   came from is at `0xC0A1`, and the room's music at `0xC0A2` (the first two rooms
 //!   share it), to catch an area finder that picks the wrong byte.
 //! - Stepping onto a door fades the screen to black, draws the next room, and fades back.
+//! - The second room has a ledge, hopped down over in one press (two steps, like Red's),
+//!   and a wall from every other side; and floor arrows that carry her right until they
+//!   end.
 //! - A frame counter (`0xC001`) and a step counter (`0xC006`) change all the time.
 
 use std::collections::HashMap;
@@ -47,13 +50,16 @@ const PLAYER: u16 = 0x1200;
 const DOORS: u16 = 0x5000;
 
 /// The kinds of step, and their pictures: four tiles each, the kind times four on.
-const WALL: u8 = 3;
+pub const WALL: u8 = 3;
 const DOOR_KIND: u8 = 4;
-const KINDS: usize = 5;
+pub const LEDGE: u8 = 5;
+pub const ARROW: u8 = 6;
+const KINDS: usize = 7;
 const PLAYER_TILE: u8 = (KINDS * 4) as u8;
 
-/// The rooms: their numbers, floor kind and steps. `#` is a wall, `.` floor, and a digit
-/// a door, by its number in `DOOR_TO`.
+/// The rooms: their numbers, floor kind and steps. `#` is a wall, `.` floor, `v` a ledge
+/// (crossed going down), `>` an arrow that carries her right, and a digit a door, by its
+/// number in `DOOR_TO`.
 pub const ROOMS: [(u8, u8, [&str; 12]); 3] = [
     (
         0x21,
@@ -84,9 +90,9 @@ pub const ROOMS: [(u8, u8, [&str; 12]); 3] = [
             "1..............#",
             "#.....##.......#",
             "#.....##.......#",
+            "#..vvvvv.......#",
             "#..............#",
-            "#..............#",
-            "#..............#",
+            "#..>>>>........#",
             "#..............#",
             "########2#######",
         ],
@@ -127,6 +133,8 @@ pub fn step_byte(room: usize, (x, y): (usize, usize)) -> u8 {
     let (_, floor, rows) = ROOMS[room];
     match rows.get(y).and_then(|row| row.as_bytes().get(x)) {
         Some(b'.') => floor,
+        Some(b'v') => LEDGE,
+        Some(b'>') => ARROW,
         Some(&c) if c.is_ascii_digit() => 0x80 + (c - b'0'),
         _ => WALL,
     }
@@ -268,6 +276,7 @@ fn program() -> Vec<u8> {
     a.op(&[0xb7]); // or a
     a.jr(NZ, "next");
     a.call("check_door");
+    a.call("check_arrow");
     a.jr(ALWAYS, "next");
     // Standing: a direction held starts a step (b: x by, c: y by).
     a.label("idle");
@@ -330,6 +339,12 @@ fn program() -> Vec<u8> {
     a.label("try_step");
     a.call("step_at");
     a.op(&[0x7e, 0xfe, WALL, 0xc8]); // ld a, (hl); cp WALL; ret z
+    a.op(&[0xfe, LEDGE]); // cp LEDGE
+    a.jr(NZ, "walk");
+    // A ledge: a wall unless she's going down, then two steps at once.
+    a.op(&[0x79, 0xfe, 0x01, 0xc0]); // ld a, c; cp 1; ret nz
+    a.op(&[0x0e, 0x02]); // ld c, 2
+    a.label("walk");
     a.op(&[0x78, 0xcb, 0x37, 0xe6, 0xf0, 0x5f]); // ld a, b; swap a; and $f0; ld e, a
     a.op16(0xfa, X_PIXELS);
     a.op(&[0x83]); // add a, e
@@ -374,6 +389,15 @@ fn program() -> Vec<u8> {
     a.op(&[0x06, 20]);
     a.call("wait_frames");
     a.op(&[0x3e, 0xe4, 0xe0, BGP, 0xc9]); // back to the picture; ret
+
+    // At the end of a step: on an arrow, another step right.
+    a.label("check_arrow");
+    a.op(&[0x01, 0, 0]); // ld bc, 0
+    a.call("step_at");
+    a.op(&[0x7e, 0xfe, ARROW, 0xc0]); // ld a, (hl); cp ARROW; ret nz
+    a.op16(0x01, 0x0100); // ld bc: right
+    a.call("try_step");
+    a.op(&[0xc9]); // ret
 
     // The scroll that puts her step in the middle: (x * 16 - 64, y * 16 - 64).
     a.label("set_scroll");
@@ -508,6 +532,47 @@ mod tests {
             let room = ROOMS.iter().position(|r| r.0 == to).unwrap();
             assert_eq!(step_byte(room, (x.into(), y.into())), ROOMS[room].1);
         }
+    }
+
+    /// Through the first door into the second room, at (1, 4).
+    pub fn in_the_second_room() -> Machine {
+        let mut m = started();
+        step(&mut m, Button::Down);
+        for _ in 0..12 {
+            step(&mut m, Button::Right);
+        }
+        m.run(60);
+        assert_eq!(m.emulator.read(ROOM), 0x35);
+        m
+    }
+
+    #[test]
+    fn a_ledge_is_hopped_down_and_arrows_carry_her() {
+        let mut m = in_the_second_room();
+        let at = |m: &mut Machine| (m.emulator.read(X_PIXELS) / 16, m.emulator.read(Y));
+        assert_eq!(at(&mut m), (1, 4));
+        for button in [
+            Button::Right,
+            Button::Right,
+            Button::Right,
+            Button::Down,
+            Button::Down,
+        ] {
+            step(&mut m, button);
+        }
+        assert_eq!(at(&mut m), (4, 6), "above the ledge");
+        let hop = step(&mut m, Button::Down);
+        assert_eq!(hop.outcome, Outcome::Moved(2));
+        assert_eq!(at(&mut m), (4, 8), "over it");
+        assert_eq!(step(&mut m, Button::Up).outcome, Outcome::Blocked);
+        // Onto the first arrow from the left: carried to the step past the last.
+        step(&mut m, Button::Left);
+        step(&mut m, Button::Left);
+        step(&mut m, Button::Down);
+        assert_eq!(at(&mut m), (2, 9));
+        let carried = step(&mut m, Button::Right);
+        assert_eq!(at(&mut m), (7, 9));
+        assert_eq!(carried.outcome, Outcome::Moved(5));
     }
 
     #[test]

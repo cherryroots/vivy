@@ -57,6 +57,10 @@ async fn puzzle_moves_are_followed_on_red() {
         .unwrap();
     assert_eq!(acted.outcome, "Followed the move; she's at (4, 28).");
     let map = &local.world.areas["Route 1"];
+    // The hop taught the map that this step is a ledge, crossed going down only.
+    assert_eq!(map.kind((4, 27)), Some(Kind::OneWay(Dir::Down)));
+    assert_eq!(map.step_to((4, 26), Dir::Down, false), Some((4, 28)));
+    assert_eq!(map.step_to((4, 28), Dir::Up, false), None);
     assert_eq!(
         puzzle::surprises(&local.world.log, "Route 1", map),
         ["Route 1 (4, 26) down: moved to (4, 28)"]
