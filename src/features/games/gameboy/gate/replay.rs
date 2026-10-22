@@ -59,12 +59,23 @@ async fn replay_episodes() {
             actions += 1;
             differed += usize::from(!same);
             let asked = format!("{} {}", played.name, args_text(&played.args));
+            // Where she is now, and whether she can walk: what a press changed.
+            let at = format!(
+                "[{} {:?}{}]",
+                acted.view.area,
+                acted.view.at,
+                if acted.view.can_walk {
+                    ""
+                } else {
+                    " can't walk"
+                }
+            );
             if same {
-                println!("  = {}: {}", asked.trim(), played.outcome);
+                println!("  = {}: {} {at}", asked.trim(), played.outcome);
             } else {
                 println!("  ≠ {}", asked.trim());
                 println!("      then: {}", played.outcome);
-                println!("      now:  {}", acted.outcome);
+                println!("      now:  {} {at}", acted.outcome);
             }
             std::fs::write(
                 folder.join(format!("{n:03}-{:02}.png", i + 1)),
