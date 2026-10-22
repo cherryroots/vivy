@@ -233,7 +233,8 @@ fn sprites_while_holding() {
 }
 
 /// Takes the steps in `VIVY_GB_WALK` (like "u u l d") from `VIVY_GB_FROM` with the look
-/// that has no memory map, printing what each step and look gave.
+/// that has no memory map, printing what each step and look gave. A, B and S press those
+/// buttons, F finds her sprite, and "pr:20" holds right for 20 frames.
 #[test]
 #[ignore = "needs a ROM in VIVY_GB_OTHER and a state in VIVY_GB_FROM"]
 fn steps_by_hand() {
@@ -278,7 +279,28 @@ fn steps_by_hand() {
             "l" => Dir::Left,
             _ => Dir::Right,
         };
+        // p and a direction holds it for some frames, the way her own presses do: "pr:20".
+        let held = word.strip_prefix('p').map(|rest| {
+            let (way, frames) = rest.split_once(':').unwrap_or((rest, "8"));
+            (
+                Button::parse(match way {
+                    "u" => "up",
+                    "d" => "down",
+                    "l" => "left",
+                    _ => "right",
+                })
+                .unwrap(),
+                frames.parse::<u32>().unwrap(),
+            )
+        });
         let (next, outcome) = match button {
+            _ if let Some((way, frames)) = held => {
+                m.emulator.hold(&[way]);
+                m.run(frames);
+                m.emulator.release();
+                m.run(10);
+                (look(&mut world, &mut m), None)
+            }
             // F finds her the way walking does when it doesn't know her yet.
             _ if word == "F" => {
                 let found = crate::features::games::gameboy::moves::which_is_her(&mut m);

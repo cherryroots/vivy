@@ -90,8 +90,22 @@ pub struct Sight {
     /// picture moving, which says nothing about where she is.
     #[serde(default)]
     lively: HashSet<u64>,
+    /// Where she was at the last look, so a session, a replay or a checkpoint carried on
+    /// from a save state starts where she stood then, not at a new place's (0, 0).
+    #[serde(default)]
+    whereabouts: Option<Whereabouts>,
     #[serde(skip)]
     live: Live,
+}
+
+/// Where she was at a look: the place, the step she stood on, where her sprite was on the
+/// screen and its pictures.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Whereabouts {
+    pub area: String,
+    pub at: Pos,
+    pub spot: Option<(i32, i32)>,
+    her: Vec<u64>,
 }
 
 /// The bytes found in memory.
@@ -182,6 +196,8 @@ struct Live {
     /// (`Machine::recorded`), to see whether it went dark in between.
     was_free: bool,
     recorded: u64,
+    /// The frame of the last look (`Emulator::frames`), to follow her sprite from there.
+    frame: u64,
     /// The scroll at the last look.
     scroll: (u8, u8),
     /// The tile numbers of each step at the last look she could walk at, by steps from
@@ -287,6 +303,23 @@ impl Sight {
     /// she isn't free to walk, so walking takes the step anyway.
     pub fn finding_her(&self) -> bool {
         self.live.finding
+    }
+
+    /// Where she was at the last look.
+    pub fn whereabouts(&self) -> Option<&Whereabouts> {
+        self.whereabouts.as_ref()
+    }
+
+    /// Carries on from a save state where she was `at` (a checkpoint loaded): the next look
+    /// starts there, as a session's first look does. What the cheat finder has found so
+    /// far stays.
+    pub fn carry_on_from(&mut self, at: Option<Whereabouts>) {
+        let finder = self.live.finder.take();
+        self.live = Live {
+            finder,
+            ..Live::default()
+        };
+        self.whereabouts = at;
     }
 
     /// Her sprite is the one at `spot` (`moves::which_is_her` found it).
@@ -503,8 +536,14 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let mut memory = Memory::read(&mut machine.emulator);
 
     if sight.live.memory.is_none() {
-        // The first look: wherever she is gets a name, kept until memory gives one.
-        if sight.live.area.is_empty() {
+        // The first look: where she was when the state was saved, or wherever she is gets
+        // a name, kept until memory gives one.
+        if let Some(w) = sight.whereabouts.clone() {
+            sight.live.area = w.area;
+            sight.live.at = w.at;
+            sight.live.spot = w.spot;
+            sight.live.her = w.her.into_iter().collect();
+        } else if sight.live.area.is_empty() {
             sight.live.area = sight.new_place();
         }
         sight
@@ -547,7 +586,15 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             };
         }
         _ => match spot {
-            Some(last) => sight.live.spot = find_her(&sight.live.her, &screen, last).or(spot),
+            // Followed frame by frame first: a press of hers can take her further than her
+            // pictures are looked for, facing a way not seen before.
+            Some(last) => {
+                sight.live.spot = machine
+                    .sprites_since(sight.live.frame)
+                    .and_then(|frames| super::moves::followed(&frames, last, &screen))
+                    .or_else(|| find_her(&sight.live.her, &screen, last))
+                    .or(spot);
+            }
             // Nothing stands in the middle, and her own presses moved sprites across a
             // still screen: those are her.
             None if pressed
@@ -592,6 +639,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         && !faded
         && sight.live.was_free;
     let was = (sight.live.area.clone(), sight.live.at);
+    let scroll_was = sight.live.scroll;
     sight.live.scroll = scroll;
     // Whether her map still shows under whatever covers it (a menu, a text box), since
     // she last could walk: a battle or a scene puts another screen up.
@@ -619,7 +667,17 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     }
     #[cfg(test)]
     let stepped_at_all = stepped.as_ref().map(|(s, _)| (s.direction, s.outcome));
-    let at = sight.position(&memory);
+    // Where she walks across the screen, her own presses (not a step code took) moved her
+    // by as many steps as her sprite went, with the screen's scroll.
+    let at = sight.position(&memory).or_else(|| {
+        let (Some(from), Some(to)) = (spot, sight.live.spot) else {
+            return None;
+        };
+        (stepped.is_none() && pressed).then(|| {
+            let (dx, dy) = pressed_steps((from, scroll_was), (to, scroll));
+            (sight.live.at.0 + dx, sight.live.at.1 + dy)
+        })
+    });
     let mut seen = at
         .map(|at| sight.steady(seen_steps(&screen, at, sight.live.spot)))
         .unwrap_or_default();
@@ -749,7 +807,16 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     sight.live.was_free = free;
     sight.live.on_map = free || on_map;
     sight.live.recorded = machine.recorded();
+    sight.live.frame = machine.emulator.frames();
     sight.live.memory = Some(memory);
+    let mut her: Vec<u64> = sight.live.her.iter().copied().collect();
+    her.sort_unstable();
+    sight.whereabouts = Some(Whereabouts {
+        area: area.clone(),
+        at,
+        spot: sight.live.spot,
+        her,
+    });
     View {
         area,
         at,
@@ -765,6 +832,29 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             })
         }),
     }
+}
+
+/// How many steps her sprite went between two looks, from where it was on the screen and
+/// the screen's scroll each time. The scroll wraps every 256 pixels: of the ways it could
+/// have gone, the one that moved her least (a screen sliding on to the next room takes her
+/// from one edge to the other while she walks a step or two).
+fn pressed_steps(
+    (from, scroll_from): ((i32, i32), (u8, u8)),
+    (to, scroll_to): ((i32, i32), (u8, u8)),
+) -> Pos {
+    let axis = |from: i32, scroll_from: u8, to: i32, scroll_to: u8| {
+        let turned = i32::from(scroll_to.wrapping_sub(scroll_from));
+        let scrolled = [turned, turned - 256]
+            .into_iter()
+            .min_by_key(|s| (to - from + s).abs())
+            .unwrap_or(0);
+        let start = from + i32::from(scroll_from);
+        (start + to - from + scrolled).div_euclid(STEP) - start.div_euclid(STEP)
+    };
+    (
+        axis(from.0, scroll_from.0, to.0, scroll_to.0),
+        axis(from.1, scroll_from.1, to.1, scroll_to.1),
+    )
 }
 
 /// Learns from one step: what the step ahead was and where she is now. Says whether she
@@ -1421,6 +1511,41 @@ fn join_keys(keys: [u64; 4]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn her_own_presses_count_steps_across_the_screen_and_slides() {
+        // Two steps right on a still screen, from the middle of a step.
+        assert_eq!(
+            pressed_steps(((40, 72), (0, 0)), ((72, 72), (0, 0))),
+            (2, 0)
+        );
+        // A few pixels within one step: none.
+        assert_eq!(
+            pressed_steps(((40, 72), (0, 0)), ((46, 72), (0, 0))),
+            (0, 0)
+        );
+        // Over the edge of a step: one.
+        assert_eq!(
+            pressed_steps(((44, 72), (0, 0)), ((50, 72), (0, 0))),
+            (1, 0)
+        );
+        // The screen slides a room right (160 pixels) and her sprite goes from the right
+        // edge to the left: a step on, not eight back.
+        assert_eq!(
+            pressed_steps(((150, 72), (0, 0)), ((14, 72), (160, 0))),
+            (1, 0)
+        );
+        // And back left, the scroll wrapping past 0.
+        assert_eq!(
+            pressed_steps(((14, 72), (160, 0)), ((150, 72), (0, 0))),
+            (-1, 0)
+        );
+        // A camera that follows her a little: the scroll counts with her sprite.
+        assert_eq!(
+            pressed_steps(((80, 72), (250, 0)), ((88, 72), (10, 0))),
+            (2, 0)
+        );
+    }
 
     #[test]
     fn rooms_alike_but_for_their_walls_are_not_one_place() {

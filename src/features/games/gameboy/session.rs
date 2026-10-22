@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::actions::Acted;
-use super::any::Sight;
+use super::any::{Sight, Whereabouts};
 use super::budget::Today;
 use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
@@ -407,6 +407,9 @@ struct Checkpoint {
     notes: Vec<Note>,
     area: String,
     episode: u32,
+    /// Where she stood, for a game read without a memory map (`Sight::carry_on_from`).
+    #[serde(default)]
+    whereabouts: Option<Whereabouts>,
 }
 
 /// Plays until a cap, starting from where the game is now. `goal` replaces the journal's.
@@ -884,6 +887,7 @@ async fn checkpoint<G: Game>(
         notes: journal.notes.clone(),
         area: area.to_string(),
         episode: journal.episodes,
+        whereabouts: game.world().await?.sight.whereabouts().cloned(),
     };
     write_json(&folder.join(format!("{n}.json")), &saved).await?;
     let numbers = checkpoints(&folder).await;
@@ -919,6 +923,10 @@ async fn roll_back<G: Game>(
         .await?
         .with_context(|| format!("checkpoint {n} has no notes"))?;
     game.load_state(state).await?;
+    // Her place and step as they were then, not where she was when she got stuck.
+    let mut sight = game.world().await?.sight;
+    sight.carry_on_from(saved.whereabouts);
+    game.set_sight(sight).await?;
     journal.notes = saved.notes;
     journal.stuck = 0;
     journal.rollbacks += 1;

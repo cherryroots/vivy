@@ -314,6 +314,59 @@ impl Parts {
     }
 }
 
+/// Follows her sprites from `spot` through every frame since a look
+/// (`Machine::sprites_since`), the way a step follows them: where her sprite is on `now`'s
+/// screen after her own presses (or the game) moved it further than a look can match.
+/// `None` when a frame had none of them near where they were.
+pub fn followed(frames: &[&[(i32, i32)]], spot: (i32, i32), now: &Screen) -> Option<(i32, i32)> {
+    let (first, rest) = frames.split_first()?;
+    let height = now.sprites.first().map_or(8, |s| s.height);
+    let off = |p: &(i32, i32)| ((p.0 + 4 - spot.0).abs(), (p.1 + height / 2 - spot.1).abs());
+    let mut parts: Vec<(i32, i32)> = first
+        .iter()
+        .filter(|p| off(p).0 <= 5 && off(p).1 <= 5)
+        .copied()
+        .collect();
+    if parts.is_empty() {
+        parts.extend(
+            first
+                .iter()
+                .filter(|p| off(p).0 + off(p).1 <= HER_NEAR)
+                .min_by_key(|p| off(p).0 + off(p).1)
+                .copied(),
+        );
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    for frame in rest {
+        let mut kept = 0;
+        for part in &mut parts {
+            // A part may flicker out for a frame; it's picked up again near where it was.
+            if let Some(&next) = frame
+                .iter()
+                .filter(|q| {
+                    (q.0 - part.0).abs() <= FOLLOW_MOST && (q.1 - part.1).abs() <= FOLLOW_MOST
+                })
+                .min_by_key(|q| (q.0 - part.0).abs() + (q.1 - part.1).abs())
+            {
+                *part = next;
+                kept += 1;
+            }
+        }
+        if kept == 0 {
+            return None;
+        }
+    }
+    let hers: Vec<Sprite> = now
+        .sprites
+        .iter()
+        .filter(|s| parts.contains(&(s.x, s.y)))
+        .copied()
+        .collect();
+    middle_of(&hers)
+}
+
 /// The sprites in `group` and every one that touches them, and those that touch those: a
 /// whole person drawn in parts.
 pub fn touching(group: &[Sprite], all: &[Sprite]) -> Vec<Sprite> {
