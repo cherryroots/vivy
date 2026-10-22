@@ -161,7 +161,8 @@ struct Live {
     scroll: (u8, u8),
     /// Her map has shown at every look since the last one she could walk at.
     on_map: bool,
-    /// The screen scrolled further than steps go since she last could walk.
+    /// The screen scrolled further than steps go, or while she couldn't walk, since she
+    /// last could.
     jumped: bool,
 }
 
@@ -851,8 +852,11 @@ fn calm(
     if free {
         sight.live.jumped = false;
     }
+    // Following a scroll she wasn't free at (a scene moving her, or a battle's own screen
+    // sliding in with no fade): her sprite must be in the middle again before she is.
     if free || by != (0, 0) {
         sight.live.calm = Some(now);
+        sight.live.jumped |= !free;
     }
     free
 }

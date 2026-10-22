@@ -810,7 +810,12 @@ fn a_battle_her_presses_scrolled_is_not_her() {
         view = take_step(&mut world, &mut m, look, &view, dir).0;
     }
     assert!(view.can_walk);
-    for battle in ["battle_slide", "battle_slide2", "battle_slide"] {
+    for battle in [
+        "battle_slide",
+        "battle_slide2",
+        "battle_slide3",
+        "battle_slide",
+    ] {
         let saved = std::fs::read(super::tasks::folder().join(format!("{battle}.state"))).unwrap();
         m.emulator.load_state(&saved).unwrap();
         m.press(&[Press(vec![Button::Left])], Timing { hold: 2, gap: 2 });
