@@ -564,9 +564,13 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
             sprite = (ahead * along.0, ahead * along.1);
         }
         // A text box or menu in the window doesn't scroll anything, and the background
-        // under it keeps its scroll, so the scroll registers are safe to follow.
-        scrolled.0 += scroll.0;
-        scrolled.1 += scroll.1;
+        // under it keeps its scroll, so the scroll registers are safe to follow. A whole
+        // tile or more at once is another screen put up, not walking (Link's Awakening's
+        // game over counted a step down as 6 steps left).
+        if scroll.0.abs() < 8 && scroll.1.abs() < 8 {
+            scrolled.0 += scroll.0;
+            scrolled.1 += scroll.1;
+        }
         walked.0 += sprite.0;
         walked.1 += sprite.1;
         let moved = (scroll.0 + sprite.0, scroll.1 + sprite.1);

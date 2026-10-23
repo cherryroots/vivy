@@ -708,14 +708,28 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // grid from where her sprite was and is, as her own presses are, so what she
         // sees is marked where she stands (rounding a step's pixels can disagree with
         // the grid by one when she stands between two steps).
+        // A step only takes her the way pressed (a hop, or something carrying her straight
+        // on): any other way, the sprite followed wasn't her (on Link's Awakening's beach a
+        // crab, as the screen slid on, counted a step right as 7 left), so it was one step
+        // and she's looked for again.
+        let mut astray = false;
         if let (Some(was), Some(now), Outcome::Moved(_)) = (spot, sight.live.spot, step.outcome) {
             let counted = pressed_steps((was, scroll_was), (now, scroll));
-            if counted != (0, 0) {
+            let along = counted.0 * pressed.0 + counted.1 * pressed.1;
+            let aside = counted.0 * pressed.1 - counted.1 * pressed.0;
+            if along > 0 && aside == 0 {
                 step.scrolled = counted;
+            } else if counted != (0, 0) {
+                step.scrolled = pressed;
+                astray = true;
             }
         }
         if after_step(sight, &mut world.areas, step, &before, &memory, dark, free) {
             left = Some(((from.0 + pressed.0, from.1 + pressed.1), dark));
+        }
+        if astray && let Some(last) = sight.live.spot {
+            sight.live.spot = her_anywhere(&sight.live.her, &screen, last);
+            sight.live.lost = sight.live.spot.is_none();
         }
     } else if let Some(at) = at {
         // No step, but the game may have moved her: a scene, or a checkpoint loaded. If
