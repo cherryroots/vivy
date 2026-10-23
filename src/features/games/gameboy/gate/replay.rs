@@ -8,6 +8,11 @@
 //! new folder in `VIVY_GB_RESULTS`; with `VIVY_GB_STEPS_LOG` set, every step each took. A test session's episodes play back exactly; the
 //! bot's keep running while she thinks, so theirs are close. What code knew of her sprite
 //! isn't saved, so the first step may find it again.
+//!
+//! With `VIVY_GB_WATCH` (addresses in hex), every look prints a `LOOK|` line: the place
+//! and step code counted, whether she's free, her sprite's spot and those bytes. Given a
+//! game's own numbers for where she is, a script can check code's counting against them
+//! over many episodes.
 
 use std::path::PathBuf;
 

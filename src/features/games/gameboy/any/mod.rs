@@ -794,10 +794,14 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // by as many steps as her sprite went, with the screen's scroll.
     // Where her sprite isn't followed (through a door's fade it shows up elsewhere), she's
     // still where she was, so a door she went through by her own presses still counts.
+    // A screen still sliding on to the next room after her presses moves her too, with
+    // nothing pressed since: Link's Awakening's slides end a look or two after the press,
+    // and the rest of the slide was lost (a step or more each time).
+    let slid = scroll != scroll_was;
     let at = sight.position(&memory).or_else(|| {
         let from = spot.filter(|_| stepped.is_none())?;
         match sight.live.spot {
-            Some(to) if pressed => {
+            Some(to) if pressed || slid => {
                 let (dx, dy) = pressed_steps((from, scroll_was), (to, scroll));
                 Some((sight.live.at.0 + dx, sight.live.at.1 + dy))
             }
@@ -1025,6 +1029,8 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         sight.found.spot = None;
         sight.live.unseen = 0;
     }
+    #[cfg(test)]
+    trace_look(machine, &area, at, steps.is_some(), sight.live.spot);
     sight.live.memory = Some(memory);
     let mut her: Vec<u64> = sight.live.her.iter().copied().collect();
     her.sort_unstable();
@@ -1600,6 +1606,29 @@ fn trace_new_place(
             machine.emulator.frames(),
             sight.live.at
         ),
+    );
+}
+
+/// With `VIVY_GB_WATCH` (addresses in hex, like `ff98,ff99`), every look prints where
+/// code thinks she is and those bytes, to check code's counting against a game's own
+/// numbers when replaying (`gate/replay.rs`).
+#[cfg(test)]
+fn trace_look(machine: &mut Machine, area: &str, at: Pos, free: bool, spot: Option<(i32, i32)>) {
+    let Ok(watch) = std::env::var("VIVY_GB_WATCH") else {
+        return;
+    };
+    let bytes: Vec<String> = watch
+        .split(',')
+        .filter_map(|a| u16::from_str_radix(a.trim(), 16).ok())
+        .map(|a| format!("{:02x}", machine.emulator.read(a)))
+        .collect();
+    println!(
+        "LOOK|{area}|{}|{}|{free}|{:?}|{}|{}",
+        at.0,
+        at.1,
+        spot,
+        bytes.join(","),
+        machine.emulator.frames()
     );
 }
 
