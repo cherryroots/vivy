@@ -742,6 +742,13 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // found again by walking: a byte can count her pixel from where each area starts, so
     // it may be off by another constant somewhere else (Harvest Moon's farm, after the
     // house).
+    // Never from a copy of the sprite table, though it moves with her best of all.
+    if sight.live.walks_across
+        && let Some(copy) = memory::sprite_table_copy(&memory, &machine.emulator.video().oam)
+        && let Some(finder) = sight.live.finder.as_mut()
+    {
+        finder.pixels.leave_out(&copy);
+    }
     let found = sight
         .live
         .finder

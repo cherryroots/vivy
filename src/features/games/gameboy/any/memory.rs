@@ -14,6 +14,8 @@
 //!   bytes that don't hold what they held there, and a place that looks new drops the
 //!   bytes that hold what they held in a place she's been.
 
+use std::ops::Range;
+
 use serde::{Deserialize, Serialize};
 
 use super::super::emulator::Emulator;
@@ -463,6 +465,18 @@ impl PixelAxis {
         };
     }
 
+    /// Drops the guesses at these bytes, the chosen one too.
+    fn leave_out(&mut self, bytes: &Range<u16>) {
+        self.guesses.retain(|g| !bytes.contains(&g.address));
+        if self.chosen.is_some_and(|c| bytes.contains(&c.address)) {
+            self.chosen = self.best();
+        }
+        if self.guesses.is_empty() {
+            *self = PixelAxis::new();
+            self.guesses.retain(|g| !bytes.contains(&g.address));
+        }
+    }
+
     /// The byte that agreed the most, once one agreed enough. Fewer misses, then one that
     /// doesn't count the scroll, then the lower address break ties (the stack, at the top
     /// of high RAM, holds copies of her pixel only while the code using it runs).
@@ -473,6 +487,36 @@ impl PixelAxis {
             .min_by_key(|g| (u32::MAX - g.agreed, g.missed, g.scrolls, g.address))
             .map(|g| g.pixel())
     }
+}
+
+/// Bytes of the sprite table (4 to a sprite: y, x, picture, flags).
+const SPRITE_TABLE: u16 = 160;
+
+/// Where work RAM holds a copy of the sprite table, if it does: games build the table in
+/// work RAM and have it copied in every frame, from the start of a page. A sprite's bytes
+/// there follow her sprite exactly, but only while she keeps her place in the table, and
+/// games hand the places out again as sprites come and go (in Link's Awakening, once
+/// others came on screen, the copy's x and y were someone else's, and her map drifted
+/// from the picture). So they say nothing a sprite doesn't. A page is the copy when most
+/// of the table's bytes that aren't 0 are the same there (a frame's moves aside).
+pub fn sprite_table_copy(memory: &Memory, table: &[u8]) -> Option<Range<u16>> {
+    let table = table.get(..usize::from(SPRITE_TABLE))?;
+    let used = table.iter().filter(|&&b| b != 0).count();
+    if used < 8 {
+        return None;
+    }
+    (WORK.0 >> 8..=(WORK.0 + WORK.1 as u16 - 1) >> 8)
+        .map(|page| page << 8)
+        .find(|&start| {
+            let same = (0..SPRITE_TABLE)
+                .filter(|&i| {
+                    let b = table[usize::from(i)];
+                    b != 0 && memory.get(start + i) == b
+                })
+                .count();
+            same * 4 >= used * 3
+        })
+        .map(|start| start..start + SPRITE_TABLE)
 }
 
 /// Finding where her sprite is on the screen, in a game where she walks across it: bytes
@@ -513,6 +557,13 @@ impl Pixels {
     /// The bytes for her x and y, once both are found.
     pub fn found(&self) -> Option<(Pixel, Pixel)> {
         Some((self.x.chosen?, self.y.chosen?))
+    }
+
+    /// These bytes aren't hers whatever they did (a copy of the sprite table): dropped,
+    /// and found again from the rest if they were the ones found.
+    pub fn leave_out(&mut self, bytes: &Range<u16>) {
+        self.x.leave_out(bytes);
+        self.y.leave_out(bytes);
     }
 
     /// The bytes found weren't hers after all: found again from every byte.
@@ -1080,6 +1131,43 @@ mod tests {
         assert_eq!((px.address, px.scrolls, px.offset), (screen_x, false, 8));
         assert_eq!((py.address, py.scrolls, py.offset), (map_y, true, 0));
         assert_eq!(pixels.at(&memory, (across, scroll)), Some((x, y)));
+    }
+
+    #[test]
+    fn a_copy_of_the_sprite_table_is_never_her() {
+        let mut memory = Pretend::new().memory;
+        let mut table = vec![0u8; 160];
+        for (i, b) in table.iter_mut().enumerate().take(40) {
+            *b = (i * 7 + 3) as u8;
+        }
+        assert_eq!(sprite_table_copy(&memory, &table), None);
+        for (i, &b) in table.iter().enumerate() {
+            memory.set(0xc000 + i as u16, b);
+        }
+        // A frame's moves differ a little.
+        memory.set(0xc001, 99);
+        let copy = sprite_table_copy(&memory, &table).expect("found");
+        assert_eq!(copy, 0xc000..0xc0a0);
+        // An empty table matches any page of zeros.
+        assert_eq!(sprite_table_copy(&memory, &[0; 160]), None);
+
+        // Found from the copy before: left out, and found again from the rest.
+        let x = Pixel {
+            address: 0xc009,
+            scrolls: false,
+            offset: 0,
+        };
+        let mut pixels = Pixels::known(
+            x,
+            Pixel {
+                address: 0xc008,
+                ..x
+            },
+        );
+        assert!(pixels.found().is_some());
+        pixels.leave_out(&copy);
+        assert_eq!(pixels.found(), None);
+        assert!(pixels.left().0 > 1000);
     }
 
     #[test]
