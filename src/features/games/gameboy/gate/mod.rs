@@ -856,7 +856,7 @@ async fn gate_session() {
             episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
             daily_usd: setting("VIVY_GB_GATE_USD", "3").parse().unwrap(),
             // Under the account's free million a day, with room for the bot.
-            free_tokens: setting("VIVY_GB_FREE_TOKENS", "800000").parse().unwrap(),
+            free_tokens: setting("VIVY_GB_FREE_TOKENS", "950000").parse().unwrap(),
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
