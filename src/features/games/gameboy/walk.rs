@@ -74,6 +74,7 @@ pub fn walk_to(
     let mut view = look(world, machine);
     let mut steps = 0;
     let mut failed = 0;
+    let mut plan: Vec<Dir> = Vec::new();
     // Steps taken to find which sprite is her, in a game she hasn't moved in yet.
     let mut finding = 0;
     let done = |result, steps, view| Walk {
@@ -100,6 +101,16 @@ pub fn walk_to(
                 && finding < 4
                 && steps < most
             {
+                // First by pressing each way and seeing which sprite does as pressed;
+                // failing that (the screen scrolled, or two did), by steps.
+                if finding == 0
+                    && let Some(spot) = super::moves::which_is_her(machine)
+                {
+                    finding += 1;
+                    world.sight.found_her_at(spot);
+                    view = look(world, machine);
+                    continue;
+                }
                 let dirs = [Dir::Down, Dir::Right, Dir::Up, Dir::Left];
                 let towards = [
                     (target.1 > view.at.1, Dir::Down),
@@ -127,16 +138,28 @@ pub fn walk_to(
         if steps >= most || failed >= MOST_FAILED {
             return done(Walked::Stuck, steps, view);
         }
+        // The way planned is kept while its next step is still open: planned again at
+        // every step, people walking about (and the other side of a screen's edge) made
+        // the shortest way flip between two, and she went back and forth for 60 steps.
         let map = world.area(&view.area);
-        let way = map
-            .path(view.at, target, false)
-            .or_else(|| map.path(view.at, target, true));
-        let Some(&dir) = way.as_ref().and_then(|w| w.first()) else {
+        let open = |dir: Dir| map.path(view.at, dir.step(view.at), true) == Some(vec![dir]);
+        if !plan.first().is_some_and(|&dir| open(dir)) {
+            plan = map
+                .path(view.at, target, false)
+                .or_else(|| map.path(view.at, target, true))
+                .unwrap_or_default();
+        }
+        let Some(&dir) = plan.first() else {
             return done(Walked::NoWay, steps, view);
         };
 
         let (next, outcome) = take_step(world, machine, look, &view, dir);
         steps += 1;
+        if next.at == dir.step(view.at) {
+            plan.remove(0);
+        } else {
+            plan.clear();
+        }
         if next.area != view.area {
             return done(Walked::NewArea(next.area.clone()), steps, next);
         }
@@ -183,6 +206,7 @@ pub fn take_step(
         outcome: taken.outcome,
         scrolled,
         her: taken.her,
+        slid: taken.scrolled != (0, 0),
     });
     let mut next = look(world, machine);
     world.stepped = None;

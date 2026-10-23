@@ -30,6 +30,7 @@ mod other_games;
 mod perception;
 pub(super) mod player;
 mod puzzles;
+mod replay;
 pub(super) mod tasks;
 
 use std::collections::HashMap;
@@ -189,6 +190,20 @@ async fn spent(db: &Db) -> f64 {
 }
 
 /// A new folder for this run's results.
+/// Copies a folder and everything in it.
+fn copy_folder(from: &std::path::Path, to: &std::path::Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            copy_folder(&path, &to.join(entry.file_name()));
+        } else {
+            std::fs::copy(&path, to.join(entry.file_name())).unwrap();
+        }
+    }
+}
+
 fn results(what: &str) -> PathBuf {
     let folder = PathBuf::from(setting(
         "VIVY_GB_RESULTS",
@@ -747,7 +762,8 @@ async fn gate_learning() {
 /// Stage 4b: one whole session as the bot plays it (`session::play`), with the real
 /// models: Haiku acting, the strategist (`VIVY_GB_REVIEWER`'s model, `gpt-6-astra`)
 /// planning, its checkpoints and stuck ladder. It starts from a new game in her bedroom,
-/// or from the task state `VIVY_GB_START`, with the default goal or `VIVY_GB_GOAL`, for
+/// or from the task state `VIVY_GB_START` (or any game's state, as a path), carrying on
+/// from the saves in `VIVY_GB_SAVES` if given, with the default goal or `VIVY_GB_GOAL`, for
 /// `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40). `VIVY_GB_GATE_USD` caps the paid
 /// models (3). The report has every episode's line, her notes and skills at the end, and
 /// the saves folder (journal, maps, skills, checkpoints).
@@ -773,6 +789,21 @@ async fn gate_session() {
     let goal = std::env::var("VIVY_GB_GOAL").ok();
     let folder = results(&format!("session-{}", file_name(&planner)));
     let saves = folder.join("saves");
+    // VIVY_GB_SAVES is the last session's saves folder: her journal, maps and skills
+    // carry on (start from its `latest.state` with VIVY_GB_START).
+    if let Ok(from) = std::env::var("VIVY_GB_SAVES") {
+        copy_folder(std::path::Path::new(&from), &saves);
+    }
+    // What every test session used today, whichever saves it plays from: each had kept
+    // its own count, and a day of them went past the account's free million.
+    let today_file = PathBuf::from(setting(
+        "VIVY_GB_TODAY",
+        "/mnt/project-files/gameboy/today.json",
+    ));
+    std::fs::create_dir_all(&saves).unwrap();
+    if today_file.exists() {
+        std::fs::copy(&today_file, super::files::today_path(&saves)).unwrap();
+    }
     // A path is a state of any game, for the ROM in VIVY_GB_ROM; a bare name is one of
     // the gate's Red task states.
     let mut local = if start.is_empty() {
@@ -824,7 +855,8 @@ async fn gate_session() {
             minutes: setting("VIVY_GB_MINUTES", "30").parse().unwrap(),
             episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
             daily_usd: setting("VIVY_GB_GATE_USD", "3").parse().unwrap(),
-            free_tokens: 1_000_000,
+            // Under the account's free million a day, with room for the bot.
+            free_tokens: setting("VIVY_GB_FREE_TOKENS", "950000").parse().unwrap(),
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
@@ -984,6 +1016,10 @@ Start: {}. Goal: {}.
     )
     .unwrap();
     std::fs::write(folder.join("report.md"), &out).unwrap();
+    if let Some(dir) = today_file.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::copy(super::files::today_path(&saves), &today_file).unwrap();
     println!(
         "{out}
 Results in {}",

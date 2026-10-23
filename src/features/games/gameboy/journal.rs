@@ -21,6 +21,10 @@ pub const LOG_MOST: usize = 200;
 const TEXTS_MOST: usize = 20_000;
 /// New steps seen in one episode that count as progress.
 pub const STEPS_FOR_PROGRESS: usize = 8;
+/// New steps on the maps since the last checkpoint that make a checkpoint, even in an
+/// area she was in before: a rollback then goes back over ground covered, not to the
+/// last door she went through, which in a big outdoors can be the start of the game.
+pub const STEPS_FOR_CHECKPOINT: usize = 80;
 /// Episodes without progress at which the ladder's rungs start (see [`Rung`]).
 pub const CHANGE_AT: u32 = 3;
 pub const REVIEW_AT: u32 = 6;
@@ -63,6 +67,9 @@ pub struct Journal {
     pub texts: BTreeSet<u64>,
     /// Checkpoints made, ever: the next one's number.
     pub checkpoints: u32,
+    /// Steps seen on all the maps at the last checkpoint: a game whose whole outdoors is
+    /// one place (Link's Awakening) gets a checkpoint for ground covered, too.
+    pub seen_at_checkpoint: usize,
 }
 
 /// What one episode found that's new.

@@ -62,6 +62,12 @@ pub fn checkpoints_folder(saves_dir: &Path, rom: &str) -> PathBuf {
     saves_folder(saves_dir, rom).join("checkpoints")
 }
 
+/// The last episodes as she played them (`session::Replay`), `<n>.json` with `<n>.state`
+/// (the game as the episode began), to play again with no model.
+pub fn replays_folder(saves_dir: &Path, rom: &str) -> PathBuf {
+    saves_folder(saves_dir, rom).join("replays")
+}
+
 /// What playing used today, for every game (`budget.rs`).
 pub fn today_path(saves_dir: &Path) -> PathBuf {
     saves_dir.join("today.json")

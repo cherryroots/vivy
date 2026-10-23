@@ -141,9 +141,10 @@ fn follow(
             moved.push((s, d));
         }
     }
-    // The move most of them made, then the group nearest where she was.
-    // Ranked by: near where she was, how many sprites, how near.
-    type Ranked = ((bool, usize, i32), (i32, i32), (i32, i32));
+    // The move most of them made, then the group nearest where she was. Once she's known,
+    // the nearest first: a fox walking beside her is as many sprites as she is.
+    // Ranked by: near where she was, how near once known, how many sprites, how near.
+    type Ranked = ((bool, i32, usize, i32), (i32, i32), (i32, i32));
     let mut best: Option<Ranked> = None;
     let mut moves: Vec<(i32, i32)> = moved.iter().map(|m| m.1).collect();
     moves.sort_unstable();
@@ -158,12 +159,287 @@ fn follow(
         if only_near && far > HER_NEAR {
             continue;
         }
-        let this = ((far <= HER_NEAR, group.len(), -far), middle, d);
+        // Once she's known, where she is moves by what her sprites did: someone passing
+        // close by would pull the middle of everything touching her off her.
+        let middle = match near {
+            Some(n) if only_near => (n.0 + d.0, n.1 + d.1),
+            _ => middle,
+        };
+        let nearest = if only_near { -far } else { 0 };
+        let this = ((far <= HER_NEAR, nearest, group.len(), -far), middle, d);
         if best.is_none_or(|b| this.0 > b.0) {
             best = Some(this);
         }
     }
     best.map(|(_, middle, d)| (middle, d))
+}
+
+/// Frames each way is held while finding which sprite is hers, and waited after.
+const PROBE_HOLD: u32 = 10;
+const PROBE_WAIT: u32 = 6;
+/// The most pixels across and down that the sprites that did as pressed can cover and
+/// still be her alone.
+const HELD_TOGETHER: i32 = 24;
+/// Frames the screen must be drawn and still before finding her.
+const PROBE_STEADY: u32 = 8;
+/// Frames watched with nothing pressed, before each round of presses.
+const PROBE_STILL: u32 = 16;
+
+/// Which sprite is hers on a screen that stays still under her, found the way a cheat
+/// finder narrows down bytes: nothing is pressed for a moment, then each way in turn
+/// (each side of the way she last went, then on and back), every sprite is followed
+/// frame by frame, and only those that stood still while nothing was pressed and went
+/// the way pressed whenever they moved, at least twice, are kept. If that leaves more
+/// than one, or none, it goes round once more.
+/// Children and animals wandering about go some other way sooner or later. Where her
+/// sprites are, or `None` if no one sprite (with those touching it) is left, or the
+/// screen scrolled.
+pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
+    // A door's fade may still be going: the screen drawn with sprites on it and its
+    // scroll still for a moment first.
+    let mut steady = 0;
+    for _ in 0..SETTLE_MOST {
+        let before = machine.emulator.video().registers;
+        machine.frame();
+        let video = machine.emulator.video();
+        let same = (video.registers.scx, video.registers.scy) == (before.scx, before.scy);
+        let shown = !super::screen::sprite_places(video).is_empty();
+        steady = if video.drawn && same && shown {
+            steady + 1
+        } else {
+            0
+        };
+        if steady >= PROBE_STEADY {
+            break;
+        }
+    }
+    let mut screen = Screen::read(machine.emulator.video());
+    let scroll = (screen.registers.scx, screen.registers.scy);
+    // Where each sprite is now, how many presses it followed, and whether it went
+    // another way.
+    let mut tracks: Vec<((i32, i32), u32, bool)> = screen
+        .sprites
+        .iter()
+        .map(|s| ((s.x, s.y), 0, false))
+        .collect();
+    // Nothing pressed first, then each way; a second time round if that didn't leave
+    // one sprite. Each side first, then on the way she last went and back, so she ends
+    // about where she began: back first would walk her out of a door she just came in by
+    // (in Link's Awakening's telephone hut, pressing down at all walked her straight out),
+    // and on first into one she was walking out of.
+    let ahead = machine.emulator.last_direction().unwrap_or(Button::Right);
+    let aside = match ahead {
+        Button::Up | Button::Down => Button::Right,
+        _ => Button::Down,
+    };
+    let round = [
+        None,
+        Some(aside),
+        Some(opposite(aside)),
+        Some(ahead),
+        Some(opposite(ahead)),
+    ];
+    for (n, press) in round.iter().chain(&round).enumerate() {
+        if n == round.len()
+            && let Some(her) = only_one(&tracks, &screen)
+        {
+            return Some(her);
+        }
+        let along = press.and_then(offset).unwrap_or((0, 0));
+        let from: Vec<(i32, i32)> = tracks.iter().map(|t| t.0).collect();
+        // With nothing pressed she stands still: anyone moving then is somebody else
+        // (a chicken pecking about in Link's Awakening was taken for Link).
+        let frames = if press.is_some() {
+            PROBE_HOLD + PROBE_WAIT
+        } else {
+            PROBE_STILL
+        };
+        machine.emulator.hold(press.as_slice());
+        for frame in 0..frames {
+            if frame == PROBE_HOLD {
+                machine.emulator.release();
+            }
+            machine.frame();
+            let next = Screen::read(machine.emulator.video());
+            if !next.drawn || (next.registers.scx, next.registers.scy) != scroll {
+                machine.emulator.release();
+                return None;
+            }
+            for track in &mut tracks {
+                // The nearest sprite a frame on. One that's gone for a frame (games
+                // flicker sprites when there are many) is looked for again next frame.
+                let at = track.0;
+                if let Some(now) = next
+                    .sprites
+                    .iter()
+                    .map(|s| (s.x, s.y))
+                    .filter(|p| {
+                        (p.0 - at.0).abs() <= FOLLOW_MOST && (p.1 - at.1).abs() <= FOLLOW_MOST
+                    })
+                    .min_by_key(|p| (p.0 - at.0).abs() + (p.1 - at.1).abs())
+                {
+                    track.0 = now;
+                }
+            }
+            screen = next;
+        }
+        for (track, from) in tracks.iter_mut().zip(&from) {
+            let d = (track.0.0 - from.0, track.0.1 - from.1);
+            let ahead = d.0 * along.0 + d.1 * along.1;
+            let across = (d.0 * along.1).abs() + (d.1 * along.0).abs();
+            if press.is_some() && ahead >= 4 && across <= 2 {
+                track.1 += 1;
+            } else if d.0.abs() + d.1.abs() > 1 {
+                track.2 = true;
+            }
+        }
+    }
+    machine.emulator.release();
+    only_one(&tracks, &screen)
+}
+
+/// The one sprite (with those touching it) that went the way pressed at least twice and
+/// never another way, if there's one.
+fn only_one(tracks: &[((i32, i32), u32, bool)], screen: &Screen) -> Option<(i32, i32)> {
+    let kept: Vec<Sprite> = screen
+        .sprites
+        .iter()
+        .filter(|s| tracks.iter().any(|t| t.1 >= 2 && !t.2 && t.0 == (s.x, s.y)))
+        .copied()
+        .collect();
+    // Every sprite kept must be part of her: two that did as she was pressed are too many
+    // to tell apart, unless they're within a step and a half of each other (what she
+    // holds over her head moves just as she does).
+    let span = |of: fn(&Sprite) -> (i32, i32)| {
+        let low = kept.iter().map(|s| of(s).0).min()?;
+        let high = kept.iter().map(|s| of(s).1).max()?;
+        Some(high - low)
+    };
+    let together = span(|s| (s.x, s.x + 8))? <= HELD_TOGETHER
+        && span(|s| (s.y, s.y + s.height))? <= HELD_TOGETHER;
+    if !together {
+        let her = touching(&kept[..1], &screen.sprites);
+        return kept
+            .iter()
+            .all(|k| her.contains(k))
+            .then(|| middle_of(&her))
+            .flatten();
+    }
+    middle_of(&kept)
+}
+
+/// Her sprites, each followed from frame to frame to the nearest sprite a frame on: once
+/// she's known, the middle of everything moving near her would drift onto whoever walks
+/// beside her (a fox in Link's Awakening's village).
+struct Parts(Vec<Sprite>);
+
+impl Parts {
+    /// The sprites that make her up: those in a 16-pixel square around `at` (the halves or
+    /// quarters of one person), or else the one nearest. Not everything touching her: a
+    /// child standing right beside her is somebody else.
+    fn of(screen: &Screen, at: (i32, i32)) -> Parts {
+        let off = |s: &Sprite| ((s.x + 4 - at.0).abs(), (s.y + s.height / 2 - at.1).abs());
+        let mut parts: Vec<Sprite> = screen
+            .sprites
+            .iter()
+            .filter(|s| off(s).0 <= 5 && off(s).1 <= 5)
+            .copied()
+            .collect();
+        if parts.is_empty() {
+            parts.extend(
+                screen
+                    .sprites
+                    .iter()
+                    .min_by_key(|s| off(s).0 + off(s).1)
+                    .copied(),
+            );
+        }
+        Parts(parts)
+    }
+
+    /// Follows them a frame on: the move most of them made, if it was her way, and where
+    /// they are now (their middle, so a walk's bob doesn't add up).
+    fn follow(&mut self, after: &Screen, along: (i32, i32)) -> Option<((i32, i32), (i32, i32))> {
+        let mut moves: Vec<(i32, i32)> = Vec::new();
+        for part in &mut self.0 {
+            let at = (part.x, part.y);
+            let Some(now) = after
+                .sprites
+                .iter()
+                .map(|s| (s.x, s.y))
+                .filter(|p| (p.0 - at.0).abs() <= FOLLOW_MOST && (p.1 - at.1).abs() <= FOLLOW_MOST)
+                .min_by_key(|p| (p.0 - at.0).abs() + (p.1 - at.1).abs())
+            else {
+                continue;
+            };
+            moves.push((now.0 - at.0, now.1 - at.1));
+            (part.x, part.y) = now;
+        }
+        let d = *moves
+            .iter()
+            .max_by_key(|d| moves.iter().filter(|m| m == d).count())?;
+        let ahead = d.0 * along.0 + d.1 * along.1;
+        let across = (d.0 * along.1).abs() + (d.1 * along.0).abs();
+        (ahead > 0 && across <= 1).then_some((self.middle()?, d))
+    }
+
+    /// Where she is: the middle of her sprites.
+    fn middle(&self) -> Option<(i32, i32)> {
+        middle_of(&self.0)
+    }
+}
+
+/// Follows her sprites from `spot` through every frame since a look
+/// (`Machine::sprites_since`), the way a step follows them: where her sprite is on `now`'s
+/// screen after her own presses (or the game) moved it further than a look can match.
+/// `None` when a frame had none of them near where they were.
+pub fn followed(frames: &[&[(i32, i32)]], spot: (i32, i32), now: &Screen) -> Option<(i32, i32)> {
+    let (first, rest) = frames.split_first()?;
+    let height = now.sprites.first().map_or(8, |s| s.height);
+    let off = |p: &(i32, i32)| ((p.0 + 4 - spot.0).abs(), (p.1 + height / 2 - spot.1).abs());
+    let mut parts: Vec<(i32, i32)> = first
+        .iter()
+        .filter(|p| off(p).0 <= 5 && off(p).1 <= 5)
+        .copied()
+        .collect();
+    if parts.is_empty() {
+        parts.extend(
+            first
+                .iter()
+                .filter(|p| off(p).0 + off(p).1 <= HER_NEAR)
+                .min_by_key(|p| off(p).0 + off(p).1)
+                .copied(),
+        );
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    for frame in rest {
+        let mut kept = 0;
+        for part in &mut parts {
+            // A part may flicker out for a frame; it's picked up again near where it was.
+            if let Some(&next) = frame
+                .iter()
+                .filter(|q| {
+                    (q.0 - part.0).abs() <= FOLLOW_MOST && (q.1 - part.1).abs() <= FOLLOW_MOST
+                })
+                .min_by_key(|q| (q.0 - part.0).abs() + (q.1 - part.1).abs())
+            {
+                *part = next;
+                kept += 1;
+            }
+        }
+        if kept == 0 {
+            return None;
+        }
+    }
+    let hers: Vec<Sprite> = now
+        .sprites
+        .iter()
+        .filter(|s| parts.contains(&(s.x, s.y)))
+        .copied()
+        .collect();
+    middle_of(&hers)
 }
 
 /// The sprites in `group` and every one that touches them, and those that touch those: a
@@ -176,10 +452,14 @@ pub fn touching(group: &[Sprite], all: &[Sprite]) -> Vec<Sprite> {
             .filter(|s| !whole.contains(s))
             .filter(|s| {
                 whole.iter().any(|w| {
-                    s.x <= w.x + 8
-                        && w.x <= s.x + 8
-                        && s.y <= w.y + w.height
-                        && w.y <= s.y + s.height
+                    // Side by side on one row, or one 8-pixel row on another. Sprites that
+                    // only overlap are two people: a child standing just above her in
+                    // Link's Awakening was taken as part of her.
+                    let near = s.x <= w.x + 8 && w.x <= s.x + 8;
+                    let beside = (s.y - w.y).abs() <= 2;
+                    let stacked =
+                        s.height == 8 && w.height == 8 && (s.y == w.y + 8 || w.y == s.y + 8);
+                    near && (beside || stacked)
                 })
             })
             .copied()
@@ -225,6 +505,11 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
     let middle = !walks_across && in_the_middle(&screen);
     let mut her = her.or_else(|| middle.then_some(MIDDLE));
     let only_near = her.is_some();
+    // Her own sprites, followed one by one, once she's known on a screen she walks across.
+    let mut parts = her
+        .filter(|_| walks_across)
+        .map(|at| Parts::of(&screen, at));
+    let start_at = parts.as_ref().and_then(Parts::middle);
     let mut transitions = Transitions::default();
     let mut new_area = false;
     let mut frames = 0;
@@ -263,17 +548,29 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
         if picture
             && scroll.0.abs() < 8
             && scroll.1.abs() < 8
-            && let Some((now, d)) = follow(&screen, &next, along, her, only_near)
+            && let Some((now, d)) = match (&mut parts, her) {
+                (Some(parts), Some(_)) => parts.follow(&next, along),
+                _ => follow(&screen, &next, along, her, only_near),
+            }
         {
             her = Some(now);
+            // From the first sprite that moves her way on, those sprites are followed and
+            // no others: a fox hopping past isn't her.
+            if parts.is_none() && !middle {
+                parts = Some(Parts::of(&next, now));
+            }
             // Only along her way: a walk can bob a pixel across it.
             let ahead = d.0 * along.0 + d.1 * along.1;
             sprite = (ahead * along.0, ahead * along.1);
         }
         // A text box or menu in the window doesn't scroll anything, and the background
-        // under it keeps its scroll, so the scroll registers are safe to follow.
-        scrolled.0 += scroll.0;
-        scrolled.1 += scroll.1;
+        // under it keeps its scroll, so the scroll registers are safe to follow. A whole
+        // tile or more at once is another screen put up, not walking (Link's Awakening's
+        // game over counted a step down as 6 steps left).
+        if scroll.0.abs() < 8 && scroll.1.abs() < 8 {
+            scrolled.0 += scroll.0;
+            scrolled.1 += scroll.1;
+        }
         walked.0 += sprite.0;
         walked.1 += sprite.1;
         let moved = (scroll.0 + sprite.0, scroll.1 + sprite.1);
@@ -317,6 +614,20 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
         }
     }
     machine.emulator.release();
+    // Her own sprites were followed whichever way they went: a screen sliding on to the
+    // next room carries her across it the other way.
+    if let Some(at) = parts.as_ref().and_then(Parts::middle) {
+        her = Some(at);
+        // How far she went across the screen is where her sprites are now, whichever
+        // way they moved: during a slide she goes against the press, nearly as far as
+        // the screen scrolls, and she has only walked the difference.
+        if let Some(from) = start_at
+            && scrolled != (0, 0)
+        {
+            let ahead = (at.0 - from.0) * along.0 + (at.1 - from.1) * along.1;
+            walked = (ahead * along.0, ahead * along.1);
+        }
+    }
     // On a screen that scrolled under her, her sprite only bobs (a hop down a ledge).
     if middle && scrolled != (0, 0) {
         walked = (0, 0);
@@ -333,9 +644,12 @@ pub fn step(machine: &mut Machine, direction: Button, her: Option<(i32, i32)>) -
     } else {
         STEP_PIXELS - part
     };
-    if let Some(spot) = her
-        .filter(|_| !new_area && !against_wall && rest != 0 && (walks_across || walked != (0, 0)))
-    {
+    // Not walked back over the edge of a screen that slid on: back there the screen slides
+    // back again (Link's Awakening's village), and the step undoes itself.
+    let slid_on = walks_across && scrolled != (0, 0) && rest < 0;
+    if let Some(spot) = her.filter(|_| {
+        !new_area && !against_wall && !slid_on && rest != 0 && (walks_across || walked != (0, 0))
+    }) {
         let (more, rolled, now) = finish_step(machine, &mut screen, direction, spot, coast, rest);
         walked.0 += more.0;
         walked.1 += more.1;
@@ -388,6 +702,7 @@ fn finish_step(
     };
     let wanted = rest.abs();
     let (mut walked, mut scrolled, mut her) = ((0, 0), (0, 0), spot);
+    let mut parts = Parts::of(screen, spot);
     let (mut gone, mut stuck, mut still) = (0, 0, 0);
     machine.emulator.hold(&[button]);
     let mut holding = true;
@@ -398,7 +713,7 @@ fn finish_step(
             scroll_delta(screen.registers.scx, next.registers.scx),
             scroll_delta(screen.registers.scy, next.registers.scy),
         );
-        let step = follow(screen, &next, way, Some(her), true);
+        let step = parts.follow(&next, way);
         *screen = next;
         scrolled.0 += scroll.0;
         scrolled.1 += scroll.1;

@@ -324,9 +324,9 @@ fn words_of(view: &View) -> Vec<String> {
 /// on screen moved with a press): says so, instead of blaming text that isn't there.
 fn unseen(mut acted: Acted, finding: bool) -> Acted {
     if finding && acted.view.text.is_empty() && acted.outcome.starts_with("Can't walk now") {
-        acted.outcome = "Can't walk yet: no sprite has moved with a press, so which one is you \
-                         isn't known. Press a direction toward open floor; a step that moves \
-                         you shows it."
+        acted.outcome = "Can't walk yet: which sprite is you isn't known, and pressing each \
+                         way didn't show it (two moved as pressed, or none did). Walk again, or \
+                         press a direction toward open floor."
             .to_string();
     }
     acted
@@ -383,6 +383,15 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
     let mut view = before.clone();
     for one in &presses {
         machine.press(std::slice::from_ref(one), Timing::default());
+        view = settle(world, machine, look, &mut words);
+    }
+    // Her own presses haven't shown which sprite is her: pressing each way does.
+    if !view.can_walk
+        && view.text.is_empty()
+        && world.sight.finding_her()
+        && let Some(spot) = super::moves::which_is_her(machine)
+    {
+        world.sight.found_her_at(spot);
         view = settle(world, machine, look, &mut words);
     }
     let typed = presses::describe(&presses);
@@ -450,8 +459,8 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
         view = settle(world, machine, look, &mut words);
     }
     let outcome = if !view.can_walk && view.text.is_empty() && world.sight.finding_her() {
-        "No text was read. Which sprite is you isn't known yet: press a direction toward open \
-         floor, and the step shows it."
+        "No text was read. Which sprite is you isn't known yet: walk_to or explore finds it \
+         (they press each way and see which one does as pressed)."
             .to_string()
     } else if presses == 0 && view.can_walk {
         "There's no text on screen.".to_string()

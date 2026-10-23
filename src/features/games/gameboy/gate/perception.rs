@@ -689,6 +689,50 @@ fn stairs_to_the_same_spot_are_somewhere_new() {
     );
 }
 
+/// A session, a replay or a checkpoint carried on from a save state starts where she
+/// stood when it was saved: the same place and step, not a new place at (0, 0).
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM"]
+fn a_save_state_carries_on_where_she_stood() {
+    use crate::features::games::gameboy::map::Dir::{Down, Left, Right, Up};
+    use crate::features::games::gameboy::walk::take_step;
+    let mut m = red::tests::new_game();
+    let mut world = World::default();
+    let look: crate::features::games::gameboy::walk::Look =
+        crate::features::games::gameboy::any::look;
+    let steps = |world: &mut World, m: &mut Machine, dirs: &[_]| {
+        for &dir in dirs {
+            let view = look(world, m);
+            take_step(world, m, look, &view, dir);
+        }
+    };
+    steps(&mut world, &mut m, &[Up, Up, Left, Left, Down, Right]);
+    let then = look(&mut world, &mut m);
+    let state = m.emulator.save_state().unwrap();
+    let saved: crate::features::games::gameboy::any::Sight =
+        serde_json::from_str(&serde_json::to_string(&world.sight).unwrap()).unwrap();
+    let whereabouts = world.sight.whereabouts().cloned();
+
+    // A new session from the saved files.
+    let mut again = red::tests::new_game();
+    again.emulator.load_state(&state).unwrap();
+    let mut carried = World {
+        areas: world.areas.clone(),
+        sight: saved,
+        ..World::default()
+    };
+    let now = look(&mut carried, &mut again);
+    assert_eq!((&now.area, now.at), (&then.area, then.at));
+
+    // A checkpoint loaded after walking on.
+    steps(&mut world, &mut m, &[Right, Right, Up]);
+    m.emulator.load_state(&state).unwrap();
+    m.run(1);
+    world.sight.carry_on_from(whereabouts);
+    let back = look(&mut world, &mut m);
+    assert_eq!((&back.area, back.at), (&then.area, then.at));
+}
+
 /// Up and down Red's stairs a few times: the bedroom is known again each time she comes
 /// back up (the room downstairs looks much like it, but it's where she just was), and
 /// each floor keeps one name.

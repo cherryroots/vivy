@@ -31,10 +31,10 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::actions::Acted;
-use super::any::Sight;
+use super::any::{Sight, Whereabouts};
 use super::budget::Today;
 use super::files;
-use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung};
+use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
 use super::map::AreaMap;
 use super::notes::{self, Note, Reached};
 use super::puzzle::{self, Move, Wanted};
@@ -257,11 +257,34 @@ impl Now {
     }
 }
 
-/// The game as the supervisor plays it: each action is also told to the dashboard, and a
-/// blackout is noticed.
+/// How many episodes' replays are kept, the newest.
+pub const REPLAYS_KEPT: u32 = 20;
+
+/// One episode as she played it, to play again with no model (`gate/replay.rs`): the task,
+/// what code knew as it began, and every action with what it said then. The game as it
+/// began is `<n>.state` beside it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Replay {
+    pub task: String,
+    pub world: World,
+    pub actions: Vec<Played>,
+}
+
+/// An action she took, and what it said.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Played {
+    pub name: String,
+    pub args: Value,
+    pub outcome: String,
+}
+
+/// The game as the supervisor plays it: each action is also told to the dashboard and kept
+/// for the replay, and a blackout is noticed.
 struct Watched<'a, G> {
     game: &'a mut G,
     now: Option<&'a watch::Sender<Now>>,
+    /// Every action taken, for the replay.
+    played: Vec<Played>,
     /// The area she was in before the last action.
     area: String,
     /// The area she blacked out in, if she did.
@@ -272,6 +295,11 @@ struct Watched<'a, G> {
 impl<G: Game> Player for Watched<'_, G> {
     async fn act(&mut self, name: &str, args: &Value) -> anyhow::Result<Acted> {
         let acted = self.game.act(name, args).await?;
+        self.played.push(Played {
+            name: name.to_string(),
+            args: args.clone(),
+            outcome: acted.outcome.clone(),
+        });
         if blacked_out(&acted.words) {
             self.blacked_out = Some(self.area.clone());
         }
@@ -379,6 +407,9 @@ struct Checkpoint {
     notes: Vec<Note>,
     area: String,
     episode: u32,
+    /// Where she stood, for a game read without a memory map (`Sight::carry_on_from`).
+    #[serde(default)]
+    whereabouts: Option<Whereabouts>,
 }
 
 /// Plays until a cap, starting from where the game is now. `goal` replaces the journal's.
@@ -557,9 +588,11 @@ pub async fn play<G: Game>(
         }
         let mut stopped = false;
         let mut failed = false;
+        let before = (game.save_state().await?, game.world().await?);
         let mut watched = Watched {
             game: &mut *game,
             now: session.now.as_ref(),
+            played: Vec::new(),
             area: area.clone(),
             blacked_out: None,
         };
@@ -571,6 +604,7 @@ pub async fn play<G: Game>(
             }
         };
         let blacked_out = watched.blacked_out.take();
+        let played = std::mem::take(&mut watched.played);
         let episode = match episode {
             Ok(episode) => {
                 failures = 0;
@@ -587,6 +621,15 @@ pub async fn play<G: Game>(
         };
         journal.episodes += 1;
         summary.episodes += 1;
+        let replay = Replay {
+            task: task.clone(),
+            world: before.1,
+            actions: played,
+        };
+        // A replay is for finding what went wrong: one that can't be written stops nothing.
+        if let Err(err) = save_replay(session, journal.episodes, &replay, &before.0).await {
+            tracing::warn!("Couldn't save the replay: {err:#}");
+        }
         let world = game.world().await?;
         let done = !stopped && !failed && matches!(episode.finished, Some((true, _)));
         let found = journal.found(&world, &episode.words, done);
@@ -626,7 +669,9 @@ pub async fn play<G: Game>(
             summary.new_areas.push(new.clone());
         }
         let mut pictured = None;
-        if !found.areas.is_empty() {
+        if !found.areas.is_empty()
+            || journal.seen >= journal.seen_at_checkpoint + STEPS_FOR_CHECKPOINT
+        {
             checkpoint(session, game, &mut journal, &at).await?;
             summary.checkpoints += 1;
             pictured = Some(Report {
@@ -831,6 +876,7 @@ async fn checkpoint<G: Game>(
 ) -> anyhow::Result<()> {
     let folder = files::checkpoints_folder(&session.saves_dir, &session.rom);
     journal.checkpoints += 1;
+    journal.seen_at_checkpoint = journal.seen;
     let n = journal.checkpoints;
     write_file(
         &folder.join(format!("{n}.state")),
@@ -841,6 +887,7 @@ async fn checkpoint<G: Game>(
         notes: journal.notes.clone(),
         area: area.to_string(),
         episode: journal.episodes,
+        whereabouts: game.world().await?.sight.whereabouts().cloned(),
     };
     write_json(&folder.join(format!("{n}.json")), &saved).await?;
     let numbers = checkpoints(&folder).await;
@@ -876,6 +923,10 @@ async fn roll_back<G: Game>(
         .await?
         .with_context(|| format!("checkpoint {n} has no notes"))?;
     game.load_state(state).await?;
+    // Her place and step as they were then, not where she was when she got stuck.
+    let mut sight = game.world().await?.sight;
+    sight.carry_on_from(saved.whereabouts);
+    game.set_sight(sight).await?;
     journal.notes = saved.notes;
     journal.stuck = 0;
     journal.rollbacks += 1;
@@ -928,6 +979,23 @@ async fn keep<G: Game>(
     write_json(&files::today_path(dir), today).await?;
     let latest = files::save_path(dir, rom, LATEST).map_err(anyhow::Error::msg)?;
     write_file(&latest, &game.save_state().await?).await
+}
+
+/// Writes episode `n`'s replay and drops the one `REPLAYS_KEPT` before it.
+async fn save_replay(
+    session: &Session<'_>,
+    n: u32,
+    replay: &Replay,
+    state: &[u8],
+) -> anyhow::Result<()> {
+    let folder = files::replays_folder(&session.saves_dir, &session.rom);
+    write_json(&folder.join(format!("{n}.json")), replay).await?;
+    write_file(&folder.join(format!("{n}.state")), state).await?;
+    if let Some(old) = n.checked_sub(REPLAYS_KEPT) {
+        let _ = tokio::fs::remove_file(folder.join(format!("{old}.json"))).await;
+        let _ = tokio::fs::remove_file(folder.join(format!("{old}.state"))).await;
+    }
+    Ok(())
 }
 
 /// USD this month for playing on paid models: every `game_play` call, and planning on
@@ -1353,6 +1421,12 @@ mod tests {
         let latest = files::save_path(dir.path(), "test.gb", LATEST).unwrap();
         assert_eq!(std::fs::read(latest).unwrap(), b"2");
         assert!(files::today_path(dir.path()).exists());
+        // The last episode can be played again: its actions and the game as it began.
+        let replays = files::replays_folder(dir.path(), "test.gb");
+        let replay: Replay = read_json(&replays.join("13.json")).await.unwrap().unwrap();
+        assert_eq!(replay.task, "task 13");
+        assert_eq!(replay.actions[0].outcome, "Nothing changed.");
+        assert!(replays.join("13.state").exists());
 
         // The next session carries on from the journal: the goal stays.
         let (report, _lines) = mpsc::unbounded_channel();

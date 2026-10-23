@@ -14,6 +14,7 @@ use anyhow::{Context as _, Result, anyhow};
 
 use super::emulator::{Button, Emulator, FPS};
 use super::presses::Press;
+use super::screen::sprite_places;
 use super::world::World;
 
 /// A screen is kept for GIFs every this many frames: 20 a second.
@@ -21,6 +22,8 @@ pub const RECORD_EVERY: u32 = 3;
 
 /// How many seconds of screens are kept. A screen is 69 KB, so 10 s is about 14 MB.
 pub const RECENT_SECONDS: u32 = 10;
+
+const RECENT_FRAMES: usize = (RECENT_SECONDS as f64 * FPS) as usize;
 
 const RECENT_SCREENS: usize = (RECENT_SECONDS as f64 * FPS / RECORD_EVERY as f64) as usize;
 
@@ -48,6 +51,9 @@ pub struct Machine {
     /// Screens recorded since the ROM was put in, so a caller can ask for the ones after
     /// some point.
     recorded: u64,
+    /// Where the sprites were each frame of the last `RECENT_SECONDS`, by the emulator's
+    /// frame number, to follow one through frames no look saw (`moves::followed`).
+    sprite_frames: VecDeque<(u64, Vec<(i32, i32)>)>,
     /// What code has learned about the game's world: area maps and the movement log.
     pub world: World,
 }
@@ -59,6 +65,7 @@ impl Machine {
             rom: rom.to_string(),
             recent: VecDeque::with_capacity(RECENT_SCREENS),
             recorded: 0,
+            sprite_frames: VecDeque::with_capacity(RECENT_FRAMES),
             world: World::default(),
         })
     }
@@ -66,6 +73,11 @@ impl Machine {
     /// Runs one frame, keeping its screen if it's one to record.
     pub fn frame(&mut self) {
         self.emulator.frame();
+        if self.sprite_frames.len() == RECENT_FRAMES {
+            self.sprite_frames.pop_front();
+        }
+        self.sprite_frames
+            .push_back((self.emulator.frames(), sprite_places(self.emulator.video())));
         if self
             .emulator
             .frames()
@@ -114,10 +126,24 @@ impl Machine {
             .collect()
     }
 
+    /// Where the sprites were each frame from `frame` (`Emulator::frames`) on, that frame
+    /// first, or `None` when it isn't kept any more.
+    pub fn sprites_since(&self, frame: u64) -> Option<Vec<&[(i32, i32)]>> {
+        let first = self.sprite_frames.iter().position(|(n, _)| *n == frame)?;
+        Some(
+            self.sprite_frames
+                .iter()
+                .skip(first)
+                .map(|(_, places)| places.as_slice())
+                .collect(),
+        )
+    }
+
     /// Forgets the recorded screens, after loading a state, so a GIF never jumps between
     /// two games.
     pub fn clear_recording(&mut self) {
         self.recent.clear();
+        self.sprite_frames.clear();
     }
 }
 

@@ -204,6 +204,22 @@ pub fn tile_pixel(tile: &[u8], x: usize, y: usize) -> u8 {
     ((tile[y * 2] >> bit) & 1) | (((tile[y * 2 + 1] >> bit) & 1) << 1)
 }
 
+/// Where the visible sprites are (their top left), in OAM order: `sprites` without their
+/// pictures, cheap enough for every frame.
+pub fn sprite_places(video: &Video) -> Vec<(i32, i32)> {
+    let r = &video.registers;
+    if r.lcdc & 0x02 == 0 {
+        return Vec::new();
+    }
+    let height = if r.lcdc & 0x04 != 0 { 16 } else { 8 };
+    video
+        .oam
+        .chunks_exact(4)
+        .map(|s| (s[1] as i32 - 8, s[0] as i32 - 16))
+        .filter(|&(x, y)| y > -height && y < 144 && x > -8 && x < 160)
+        .collect()
+}
+
 /// The visible sprites, in OAM order.
 fn sprites(video: &Video) -> Vec<Sprite> {
     let r = &video.registers;
