@@ -200,6 +200,8 @@ struct Live {
     /// She's somewhere else, but not through a door: another screen was put up since she
     /// last walked (a game over, a scene), so where she was is no door.
     relocated: bool,
+    /// The screen went dark while she couldn't walk, since she last could.
+    faded_away: bool,
     /// Her sprite has been known on a screen she walks across: steps are counted from it.
     walks_across: bool,
     /// Where a sprite that moved her way once is, until it does again (see `confirmed`).
@@ -682,6 +684,10 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // After a fade anything goes, whether a step code took went dark or her own presses
     // did between looks.
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
+    let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
+    if !free {
+        sight.live.faded_away = faded_away;
+    }
     sight.live.finding = !free
         && sight.live.spot.is_none()
         && (sight.live.her.is_empty() || sight.live.lost)
@@ -724,15 +730,22 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // sees is marked where she stands (rounding a step's pixels can disagree with
         // the grid by one when she stands between two steps).
         // A step only takes her the way pressed (a hop, or something carrying her straight
-        // on): any other way, the sprite followed wasn't her (on Link's Awakening's beach a
-        // crab, as the screen slid on, counted a step right as 7 left), so it was one step
-        // and she's looked for again.
+        // on), about as far as the step saw her go (a slide is a room over, a step or
+        // two): otherwise the sprite followed wasn't her (on Link's Awakening's beach a
+        // crab, as the screen slid on, counted a step right as 7 left; in the village a
+        // villager above her, a step up as 3), so it was one step and she's looked for
+        // again.
         let mut astray = false;
-        if let (Some(was), Some(now), Outcome::Moved(_)) = (spot, sight.live.spot, step.outcome) {
+        if let (Some(was), Some(now), Outcome::Moved(n)) = (spot, sight.live.spot, step.outcome) {
             let counted = pressed_steps((was, scroll_was), (now, scroll));
             let along = counted.0 * pressed.0 + counted.1 * pressed.1;
             let aside = counted.0 * pressed.1 - counted.1 * pressed.0;
-            if along > 0 && aside == 0 {
+            let as_far = if step.slid {
+                along <= 2
+            } else {
+                (along - n).abs() <= 1
+            };
+            if along > 0 && aside == 0 && as_far {
                 step.scrolled = counted;
             } else if counted != (0, 0) {
                 step.scrolled = pressed;
@@ -756,9 +769,10 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // Where she walks across the screen, only a door counts, as for a step code takes:
         // a screen sliding on to the next room is the same place, and one that looked
         // unlike what was seen there had split Link's Awakening's village into five. But
-        // once another screen was put up since she last walked (a game over, a scene),
-        // she may be anywhere: after Link's Awakening's game over she came back in
-        // Tarin's house, still counted on the beach.
+        // once the screen went dark while she couldn't walk (a game over, a scene), she
+        // may be anywhere: after Link's Awakening's game over she came back in Tarin's
+        // house, still counted on the beach. (Her map not showing isn't enough: a slide
+        // changes the whole screen, and session 10 split the outdoors into eight.)
         let through_door = faded && (sight.live.was_free || sight.live.on_map);
         // Where she walks across the screen, a fade seen while she couldn't walk yet
         // (the room still coming in) counts once she can: in Link's Awakening's
@@ -774,7 +788,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             && sight.live.free.is_some()
             && sight.live.left.is_none()
             && (through_door
-                || ((sight.live.spot.is_none() || !on_map)
+                || ((sight.live.spot.is_none() || faded_away)
                     && sight
                         .pictures
                         .get(&sight.live.area)
@@ -946,6 +960,10 @@ fn after_step(
 ) -> bool {
     let pressed = offset(step.direction.button()).unwrap_or((0, 0));
     let had_position = sight.position(before).is_some();
+    // A hop or a carry is only learned where she's known to be, by memory or her sprite:
+    // before Link's sprite was found, the steps that found him counted as being carried,
+    // and a fresh start drew Link's Awakening's village as spinners.
+    let knows_where = had_position || sight.live.spot.is_some();
     let dead_reckoned = (
         sight.live.at.0 + step.scrolled.0,
         sight.live.at.1 + step.scrolled.1,
@@ -973,6 +991,7 @@ fn after_step(
         // Two steps the way she pressed: she hopped over the step ahead (a ledge).
         Outcome::Moved(2)
             if !new_place
+                && knows_where
                 && step.scrolled == ahead(2)
                 && !(step.slid && sight.live.spot.is_some()) =>
         {
@@ -988,6 +1007,7 @@ fn after_step(
         // like Link's Awakening nudge her round corners, a step aside.
         Outcome::Moved(_)
             if !new_place
+                && knows_where
                 && step.scrolled != ahead(1)
                 && !(sight.live.spot.is_some()
                     && (step.slid
