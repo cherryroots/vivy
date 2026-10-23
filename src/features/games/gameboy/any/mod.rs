@@ -731,6 +731,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // did between looks.
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
     let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
+    // Dark again before she could walk where a door led: another screen came up in
+    // between (Link's Awakening's game over menu, then the spot it starts her at again),
+    // so that was no door, and she's somewhere else.
+    if (dark || faded) && !free {
+        sight.live.door_pending = false;
+    }
     if !free {
         sight.live.faded_away = faded_away;
     }
