@@ -584,6 +584,176 @@ impl Pixels {
     }
 }
 
+/// A byte that says which screen she's on, where the game slides from one screen to the
+/// next (Link's Awakening's rooms): a room number, which changes by the same amount every
+/// time she slides on right (and back by as much sliding left), by another amount sliding
+/// down, and never while she stays on one screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenByte {
+    pub address: u16,
+    /// What it changes by sliding on to the next screen right, and down.
+    pub right: u8,
+    pub down: u8,
+}
+
+/// Slides each way (across and up or down) a byte must follow before it counts as the
+/// screen.
+const SCREEN_AFTER: u32 = 3;
+
+/// What a guess learned along one axis: what the byte changes by sliding on (right or
+/// down), and how many slides it followed.
+#[derive(Debug, Clone, Copy, Default)]
+struct Along {
+    by: Option<u8>,
+    agreed: u32,
+}
+
+impl Along {
+    /// Whether the byte changed as a slide `way` (1 right or down, -1 left or up) would.
+    fn slid(&mut self, changed: u8, way: i32) -> bool {
+        let by = if way > 0 {
+            changed
+        } else {
+            changed.wrapping_neg()
+        };
+        match self.by {
+            _ if changed == 0 => return false,
+            None => self.by = Some(by),
+            Some(b) if b != by => return false,
+            Some(_) => {}
+        }
+        self.agreed += 1;
+        true
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScreenGuess {
+    address: u16,
+    across: Along,
+    up_down: Along,
+    missed: u32,
+}
+
+impl ScreenGuess {
+    /// One miss is let off, and one more for every 4 slides it followed.
+    fn in_the_running(self) -> bool {
+        self.missed <= 1 + (self.across.agreed + self.up_down.agreed) / 4
+    }
+
+    fn found(self) -> Option<ScreenByte> {
+        (self.across.agreed >= SCREEN_AFTER && self.up_down.agreed >= SCREEN_AFTER).then_some(
+            ScreenByte {
+                address: self.address,
+                right: self.across.by?,
+                down: self.up_down.by?,
+            },
+        )
+    }
+}
+
+/// Finding which screen she's on, in a game that slides from screen to screen: with it,
+/// where she is is the screen and her step on it, read rather than counted. A copy of the
+/// camera follows every slide one way too, but not the other, and comes round again
+/// (Link's Awakening's is back where it was 8 screens on), so it's never the screen.
+#[derive(Debug, Clone)]
+pub struct Screens {
+    guesses: Vec<ScreenGuess>,
+}
+
+impl Default for Screens {
+    fn default() -> Screens {
+        Screens {
+            guesses: (0..Memory::LEN)
+                .map(|i| ScreenGuess {
+                    address: address(i),
+                    across: Along::default(),
+                    up_down: Along::default(),
+                    missed: 0,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Screens {
+    /// This byte, found before, and every other byte again.
+    pub fn known(byte: ScreenByte) -> Screens {
+        let mut screens = Screens::default();
+        if let Some(g) = screens
+            .guesses
+            .iter_mut()
+            .find(|g| g.address == byte.address)
+        {
+            g.across = Along {
+                by: Some(byte.right),
+                agreed: SCREEN_AFTER,
+            };
+            g.up_down = Along {
+                by: Some(byte.down),
+                agreed: SCREEN_AFTER,
+            };
+        }
+        screens
+    }
+
+    /// Between two looks on still screens: `slid` says the way she slid along each axis
+    /// (0 for none). With no slide at all, the screen byte didn't change.
+    pub fn between(&mut self, before: &Memory, after: &Memory, slid: (i32, i32)) {
+        for g in &mut self.guesses {
+            let changed = after.get(g.address).wrapping_sub(before.get(g.address));
+            let agreed = match slid {
+                (0, 0) => changed == 0,
+                // A slide both ways at once: the change is both together.
+                (x, y) if x != 0 && y != 0 => {
+                    let by = |a: Along, way: i32| {
+                        a.by.map(|b| if way > 0 { b } else { b.wrapping_neg() })
+                    };
+                    by(g.across, x)
+                        .zip(by(g.up_down, y))
+                        .is_some_and(|(a, b)| a.wrapping_add(b) == changed)
+                }
+                (x, 0) => g.across.slid(changed, x),
+                (_, y) => g.up_down.slid(changed, y),
+            };
+            if !agreed {
+                g.missed += 1;
+            }
+        }
+        self.guesses.retain(|g| g.in_the_running());
+        if self.guesses.is_empty() {
+            *self = Screens::default();
+        }
+    }
+
+    /// The byte that followed the most slides, once one followed enough both ways. Then
+    /// the fewest misses and the lower address.
+    pub fn found(&self) -> Option<ScreenByte> {
+        self.guesses
+            .iter()
+            .filter_map(|g| Some((g, g.found()?)))
+            .min_by_key(|(g, b)| {
+                (
+                    u32::MAX - g.across.agreed - g.up_down.agreed,
+                    g.missed,
+                    b.address,
+                )
+            })
+            .map(|(_, b)| b)
+    }
+
+    /// Which screen she's on, by the byte found.
+    pub fn at(&self, memory: &Memory) -> Option<u8> {
+        Some(memory.get(self.found()?.address))
+    }
+
+    #[cfg(test)]
+    /// Whether a byte is still in the running.
+    pub fn guessed(&self, address: u16) -> bool {
+        self.guesses.iter().any(|g| g.address == address)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AreaGuess {
     address: u16,
@@ -806,6 +976,7 @@ impl Areas {
 pub struct Finder {
     pub position: Position,
     pub pixels: Pixels,
+    pub screens: Screens,
     pub areas: Areas,
 }
 
@@ -1168,6 +1339,64 @@ mod tests {
         pixels.leave_out(&copy);
         assert_eq!(pixels.found(), None);
         assert!(pixels.left().0 > 1000);
+    }
+
+    #[test]
+    fn the_screen_is_the_byte_that_counts_slides() {
+        // A world of screens 16 across: the room byte counts 1 a screen right and 16 one
+        // down; copies of the camera count 160 pixels a screen across and 128 down.
+        const ROOM: u16 = 0xfff6;
+        const CAMERA_X: u16 = 0xc120;
+        const CAMERA_Y: u16 = 0xc121;
+        let mut p = Pretend::new();
+        let mut screens = Screens::default();
+        let (mut col, mut row) = (2u8, 3u8);
+        let set = |p: &mut Pretend, col: u8, row: u8| {
+            p.memory.set(ROOM, row * 16 + col);
+            p.memory.set(CAMERA_X, col.wrapping_mul(160));
+            p.memory.set(CAMERA_Y, row.wrapping_mul(128));
+        };
+        set(&mut p, col, row);
+        // Around the world: right, right, down, down, left, left, up, up, with walks on
+        // each screen.
+        for way in [(1, 0), (0, 1), (-1, 0), (0, -1)] {
+            for _ in 0..2 {
+                for _ in 0..3 {
+                    let (before, after) = p.walk(1, 0);
+                    screens.between(&before, &after, (0, 0));
+                }
+                // Not before it followed slides both ways.
+                if way.1 == 0 && way.0 > 0 {
+                    assert_eq!(screens.found(), None);
+                }
+                let before = p.memory.clone();
+                col = (i32::from(col) + way.0) as u8;
+                row = (i32::from(row) + way.1) as u8;
+                set(&mut p, col, row);
+                screens.between(&before, &p.memory, way);
+            }
+        }
+        // The room byte changed once while she stayed, and is still the screen.
+        let before = p.memory.clone();
+        p.memory.set(ROOM, 0);
+        screens.between(&before, &p.memory, (0, 0));
+        set(&mut p, col, row);
+        let room = ScreenByte {
+            address: ROOM,
+            right: 1,
+            down: 16,
+        };
+        assert_eq!(screens.found(), Some(room));
+        assert_eq!(screens.at(&p.memory), Some(2 + 3 * 16));
+        // The camera's copies each missed every slide the other way.
+        assert!(!screens.guessed(CAMERA_X));
+        assert!(!screens.guessed(CAMERA_Y));
+        // Known again from a save, and still the room after a slide.
+        let mut again = Screens::known(room);
+        let before = p.memory.clone();
+        set(&mut p, col + 1, row);
+        again.between(&before, &p.memory, (1, 0));
+        assert_eq!(again.found(), Some(room));
     }
 
     #[test]
