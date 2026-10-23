@@ -32,7 +32,7 @@ use super::moves::{Outcome, offset};
 use super::screen::{COLS, Layer, ROWS, Screen};
 use super::walk::settle;
 use super::world::{Grid, Stepped, View, World};
-use memory::{Areas, Byte, Finder, Memory, Pixel, Pixels, Position};
+use memory::{Areas, Byte, Finder, Memory, Pixel, Pixels, Position, ScreenByte, Screens};
 
 /// Pixels in a step.
 const STEP: i32 = 16;
@@ -72,6 +72,11 @@ const TELLING_AFTER: usize = 4;
 const OTHER_KINDS: usize = 6;
 const OTHER_SHARE: f32 = 0.25;
 
+/// Pixels her sprite must cross the screen by, between two looks, for the screen to have
+/// slid on to the next: Link's Awakening's slides take it from one edge to the other
+/// (144 across, 112 down).
+const SLID_ACROSS: i32 = 64;
+
 /// Shifts tried when knowing a place again from steps counted from somewhere else.
 const SHIFTS_TRIED: usize = 5;
 
@@ -103,6 +108,11 @@ pub struct Sight {
     /// there when the place isn't known by its look.
     #[serde(default, with = "as_list")]
     came_in: HashMap<(String, Pos), Pos>,
+    /// In a game that slides from screen to screen, once memory says which screen she's
+    /// on: the step each screen of each place starts at, from the first time she stood
+    /// there, so coming back puts her where she was then.
+    #[serde(default, with = "as_list")]
+    origins: HashMap<(String, u8), Pos>,
     #[serde(skip)]
     live: Live,
 }
@@ -129,6 +139,9 @@ pub struct Found {
     /// Where she walks across the screen: the bytes for her sprite's pixel x and y.
     #[serde(default)]
     pub spot: Option<(Pixel, Pixel)>,
+    /// In a game that slides from screen to screen: the byte for which screen she's on.
+    #[serde(default)]
+    pub screens: Option<ScreenByte>,
 }
 
 /// What steps with one picture did when she tried them.
@@ -230,6 +243,11 @@ struct Live {
     frame: u64,
     /// The scroll at the last look.
     scroll: (u8, u8),
+    /// The last look she stood on a still screen, her sprite's spot read from memory
+    /// (`Sight::settled`), and the latest one, until a later look says the screen stayed
+    /// still.
+    settled: Option<Settled>,
+    still: Option<Settled>,
     /// The tile numbers of each step at the last look she could walk at, by steps from
     /// her, to tell a picture moving from a tile changed.
     numbers: HashMap<Pos, [u8; 4]>,
@@ -240,6 +258,19 @@ struct Live {
     /// The screen scrolled further than steps go, or while she couldn't walk, since she
     /// last could.
     jumped: bool,
+}
+
+/// A look where she stood on a still screen, her sprite's spot read from memory: two in a
+/// row in one place say whether the screen slid on to the next in between.
+#[derive(Debug, Clone)]
+struct Settled {
+    memory: Memory,
+    area: String,
+    spot: (i32, i32),
+    at: Pos,
+    scroll: (u8, u8),
+    /// `Emulator::frames` at the look.
+    frame: u64,
 }
 
 /// The screen the last time she could walk: its scroll, and each tile's number and
@@ -280,6 +311,9 @@ impl Sight {
             if let Some((x, y)) = found.spot {
                 finder.pixels = Pixels::known(x, y);
             }
+            if let Some(byte) = found.screens {
+                finder.screens = Screens::known(byte);
+            }
             finder
         })
     }
@@ -305,6 +339,100 @@ impl Sight {
             .filter(|_| self.live.walks_across)
             .and_then(|f| f.pixels.at(memory, scroll))
             .filter(|&(x, y)| (-8..=168).contains(&x) && (-8..=152).contains(&y))
+    }
+
+    /// A look where she stood on a still screen (still at the look after it too), her
+    /// sprite's spot by memory. Says where she stood then. Since the last one in this
+    /// place, she went as far as memory's pixels and the scroll say, read rather than
+    /// counted look by look (which loses a step now and then while the screen slides on).
+    /// The screen slid on to the next along an axis where her sprite went from one side
+    /// of the screen to the other, against the way she went (or with the screen's scroll
+    /// changed, where a game slides by scrolling): the cheat finder learns which byte says
+    /// the screen. Once it knows, each screen of a place starts at one step, from the
+    /// first time she stood there, and coming back puts her on it.
+    fn settled(&mut self, look: Settled) -> Pos {
+        let Settled {
+            memory,
+            area,
+            spot,
+            at: counted,
+            scroll,
+            frame,
+        } = look;
+        let mut at = counted;
+        if let Some(last) = self.live.settled.take().filter(|l| l.area == area) {
+            let way = |moved: i32, went: i32, scrolled: bool| {
+                if moved.abs() >= SLID_ACROSS && (scrolled || moved * went < 0) {
+                    -moved.signum()
+                } else {
+                    0
+                }
+            };
+            let scrolled = (scroll.0 != last.scroll.0, scroll.1 != last.scroll.1);
+            let slid = (
+                way(spot.0 - last.spot.0, at.0 - last.at.0, scrolled.0),
+                way(spot.1 - last.spot.1, at.1 - last.at.1, scrolled.1),
+            );
+            // The scroll comes round every 256 pixels, so her pixels and the scroll say
+            // where she is only within 16 steps (two slides between the looks can scroll
+            // it once round): of the steps they could mean, the one nearest the count.
+            // Where a slide didn't scroll the screen, they say nothing about how far the
+            // slide took her, and the count stands.
+            let went = pressed_steps((last.spot, last.scroll), (spot, scroll));
+            let read = |last: i32, went: i32, counted: i32, slid: i32, scrolled: bool| {
+                if slid != 0 && !scrolled {
+                    counted
+                } else {
+                    let round = 256 / STEP;
+                    counted + (last + went - counted + round / 2).rem_euclid(round) - round / 2
+                }
+            };
+            at = (
+                read(last.at.0, went.0, at.0, slid.0, scrolled.0),
+                read(last.at.1, went.1, at.1, slid.1, scrolled.1),
+            );
+            #[cfg(test)]
+            if at != counted {
+                trace(format_args!("READ|{counted:?}|{at:?}"));
+            }
+            // The scroll changed with her sprite where it was: not sure what happened.
+            if slid != (0, 0) || scroll == last.scroll {
+                self.finder().screens.between(&last.memory, &memory, slid);
+            }
+        }
+        let found = self.live.finder.as_ref().and_then(|f| f.screens.found());
+        if found != self.found.screens {
+            #[cfg(test)]
+            trace(format_args!("SCREENS|{found:?}"));
+            self.found.screens = found;
+            self.origins.clear();
+        }
+        if let Some(screen) = self
+            .live
+            .finder
+            .as_ref()
+            .and_then(|f| f.screens.at(&memory))
+        {
+            let on = step_on_screen(spot, scroll);
+            let origin = *self
+                .origins
+                .entry((area.clone(), screen))
+                .or_insert((at.0 - on.0, at.1 - on.1));
+            #[cfg(test)]
+            if (origin.0 + on.0, origin.1 + on.1) != at {
+                trace(format_args!("SNAP|{screen}|{at:?}|{origin:?}"));
+            }
+            at = (origin.0 + on.0, origin.1 + on.1);
+        }
+        self.live.settled = Some(Settled {
+            memory,
+            area,
+            spot,
+            at,
+            scroll,
+            frame,
+        });
+        at
     }
 
     fn area_byte(&self) -> Option<u16> {
@@ -963,6 +1091,41 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     if let Some(finder) = &sight.live.finder {
         sight.found.spot = finder.pixels.found();
     }
+    // A look on a still screen counts once the screen is still a while later too (not a
+    // look again in the same frame): a slide can start with the screen byte already the
+    // next screen's, the screen not moving yet. Where it says she stood then, she's that
+    // much elsewhere now.
+    let frame = machine.emulator.frames();
+    if dark || faded {
+        sight.live.settled = None;
+        sight.live.still = None;
+    } else {
+        match sight.live.still.take() {
+            Some(look) if look.frame == frame => sight.live.still = Some(look),
+            Some(look) if look.scroll == scroll && look.area == sight.live.area => {
+                let counted = look.at;
+                let read = sight.settled(look);
+                sight.live.at.0 += read.0 - counted.0;
+                sight.live.at.1 += read.1 - counted.1;
+            }
+            _ => {}
+        }
+        if sight.live.still.is_none()
+            && free
+            && sight.live.by_memory
+            && scroll == scroll_was
+            && let Some(spot) = sight.live.spot
+        {
+            sight.live.still = Some(Settled {
+                memory: memory.clone(),
+                area: sight.live.area.clone(),
+                spot,
+                at: sight.live.at,
+                scroll,
+                frame,
+            });
+        }
+    }
 
     let area = sight.live.area.clone();
     let at = sight.live.at;
@@ -1056,6 +1219,15 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             })
         }),
     }
+}
+
+/// The step her sprite stands on, on the screen's grid (as `steps_of` counts it).
+fn step_on_screen(spot: (i32, i32), scroll: (u8, u8)) -> Pos {
+    let axis = |at: i32, scroll: u8| {
+        let origin = (STEP - i32::from(scroll) % STEP) % STEP;
+        (at - origin).div_euclid(STEP)
+    };
+    (axis(spot.0, scroll.0), axis(spot.1, scroll.1))
 }
 
 /// How many steps her sprite went between two looks, from where it was on the screen and
@@ -1368,6 +1540,10 @@ fn rename(
             }
         }
     }
+    for ((area, screen), origin) in std::mem::take(&mut sight.origins) {
+        let area = names.get(&area).cloned().unwrap_or(area);
+        sight.origins.entry((area, screen)).or_insert(origin);
+    }
     if let Some(new) = names.get(&sight.live.area) {
         sight.live.area = new.clone();
     }
@@ -1630,6 +1806,14 @@ fn trace_look(machine: &mut Machine, area: &str, at: Pos, free: bool, spot: Opti
         bytes.join(","),
         machine.emulator.frames()
     );
+}
+
+/// A line of the look trace (`trace_look`).
+#[cfg(test)]
+fn trace(line: std::fmt::Arguments) {
+    if std::env::var_os("VIVY_GB_WATCH").is_some() {
+        println!("{line}");
+    }
 }
 
 /// The screen, in whole tiles of the map if `steady`.
