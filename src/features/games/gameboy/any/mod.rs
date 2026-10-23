@@ -111,6 +111,9 @@ pub struct Whereabouts {
     pub at: Pos,
     pub spot: Option<(i32, i32)>,
     her: Vec<u64>,
+    /// Her sprite was known on a screen she walks across, even if it isn't now.
+    #[serde(default)]
+    walks_across: bool,
 }
 
 /// The bytes found in memory.
@@ -563,7 +566,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             sight.live.area = w.area;
             sight.live.at = w.at;
             sight.live.spot = w.spot;
-            sight.live.walks_across = w.spot.is_some();
+            sight.live.walks_across = w.walks_across || w.spot.is_some();
             sight.live.her = w.her.into_iter().collect();
         } else if sight.live.area.is_empty() {
             sight.live.area = sight.new_place();
@@ -651,9 +654,11 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         sight.live.spot = her_anywhere(&sight.live.her, &screen, at);
         sight.live.lost = sight.live.spot.is_none();
     }
-    if sight.live.spot.is_some() {
-        sight.live.lost = false;
-    }
+    // Where she walks across the screen, her sprite not known is always lost, to be found
+    // again by pressing: a save state taken after a game over had her neither found nor
+    // lost, and she couldn't walk for a whole episode.
+    sight.live.lost = sight.live.spot.is_none()
+        && (sight.live.lost || (sight.live.walks_across && !sight.live.her.is_empty()));
     sight.live.sprites = screen.sprites.iter().map(|s| (s.x, s.y)).collect();
     // Her sprite, when a press of hers just moved her (a step code took, or one she
     // pressed herself).
@@ -906,6 +911,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         at,
         spot: sight.live.spot,
         her,
+        walks_across: sight.live.walks_across,
     });
     View {
         area,
