@@ -261,6 +261,278 @@ impl Position {
     }
 }
 
+/// A byte that holds her sprite's x or y on the screen, in pixels, give or take a
+/// constant: some games keep where she is on the screen, others where she is on a map that
+/// scrolls under her (her pixel plus the scroll).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Pixel {
+    pub address: u16,
+    /// The byte counts the scroll too.
+    pub scrolls: bool,
+    /// What the byte holds more than her pixel (and the scroll).
+    pub offset: u8,
+}
+
+impl Pixel {
+    /// Her sprite's pixel on the screen, by this byte, with the screen scrolled `scroll`.
+    /// A little past the screen's top or left edge is below 0.
+    pub fn on_screen(self, memory: &Memory, scroll: u8) -> i32 {
+        let mut pixel = memory.get(self.address).wrapping_sub(self.offset);
+        if self.scrolls {
+            pixel = pixel.wrapping_sub(scroll);
+        }
+        if pixel >= PAST_EDGE {
+            i32::from(pixel) - 256
+        } else {
+            i32::from(pixel)
+        }
+    }
+
+    /// What the byte holds less her pixel (and the scroll): the same every time, for the
+    /// byte that's hers.
+    fn offset_now(address: u16, scrolls: bool, memory: &Memory, pixel: i32, scroll: u8) -> u8 {
+        let mut offset = memory.get(address).wrapping_sub(pixel as u8);
+        if scrolls {
+            offset = offset.wrapping_sub(scroll);
+        }
+        offset
+    }
+}
+
+/// Pixels a sprite can be past the screen's top or left edge: a byte's pixel this far
+/// round from 0 is below it.
+const PAST_EDGE: u8 = 224;
+
+/// Pixels the middle of her sprites may be off where a byte says: something walking beside
+/// her, or a sword or shield she holds, counts as one of her sprites now and then (in
+/// Link's Awakening's village, by 4).
+const PIXEL_NEAR: u8 = 4;
+
+/// Pixels the middle of her sprites must have moved since the last look counted for a
+/// look to say anything: twice what it can be off by, so a byte that stays put never
+/// agrees.
+const MOVED_PIXELS: i32 = 2 * PIXEL_NEAR as i32;
+
+/// Moves along an axis a byte must follow before it counts as her pixel.
+const PIXEL_AFTER: u32 = 8;
+
+/// One guess at her pixel along an axis: the offset most looks agreed on (a running
+/// majority vote, so a look that took another sprite for her doesn't move it), and how
+/// often looks agreed and didn't.
+#[derive(Debug, Clone, Copy)]
+struct PixelGuess {
+    address: u16,
+    scrolls: bool,
+    offset: u8,
+    lead: u32,
+    agreed: u32,
+    missed: u32,
+    /// How often each offset near `offset` was seen (from `PIXEL_NEAR` below to as far
+    /// above), so the byte puts her where her sprites' middle most often is.
+    near: [u16; 2 * PIXEL_NEAR as usize + 1],
+}
+
+impl PixelGuess {
+    fn new(address: u16, scrolls: bool) -> PixelGuess {
+        PixelGuess {
+            address,
+            scrolls,
+            offset: 0,
+            lead: 0,
+            agreed: 0,
+            missed: 0,
+            near: [0; 2 * PIXEL_NEAR as usize + 1],
+        }
+    }
+
+    /// Starts again from this offset.
+    fn from(&mut self, offset: u8) {
+        self.offset = offset;
+        self.lead = 1;
+        self.near = [0; 2 * PIXEL_NEAR as usize + 1];
+        self.near[usize::from(PIXEL_NEAR)] = 1;
+    }
+
+    fn pixel(self) -> Pixel {
+        let (most, _) = self
+            .near
+            .iter()
+            .enumerate()
+            .rev()
+            .max_by_key(|&(i, &n)| (n, usize::from(PIXEL_NEAR).abs_diff(i) == 0))
+            .unwrap_or((usize::from(PIXEL_NEAR), &0));
+        Pixel {
+            address: self.address,
+            scrolls: self.scrolls,
+            offset: self
+                .offset
+                .wrapping_add(most as u8)
+                .wrapping_sub(PIXEL_NEAR),
+        }
+    }
+
+    /// One miss is let off, and one more for every 4 looks it agreed with.
+    fn in_the_running(self) -> bool {
+        self.missed <= 1 + self.agreed / 4
+    }
+}
+
+/// The guesses at her pixel along one axis.
+#[derive(Debug, Clone)]
+struct PixelAxis {
+    guesses: Vec<PixelGuess>,
+    /// Her pixel (and the scroll) at the last look counted, for guesses that don't count
+    /// the scroll and for ones that do: only a look where that moved further than her
+    /// sprite is found off by says anything (a byte that stays put agrees with a sprite
+    /// that only wobbled).
+    last: [Option<i32>; 2],
+    chosen: Option<Pixel>,
+}
+
+impl PixelAxis {
+    fn new() -> PixelAxis {
+        let guesses = (0..Memory::LEN)
+            .flat_map(|i| [false, true].map(|scrolls| PixelGuess::new(address(i), scrolls)))
+            .collect();
+        PixelAxis {
+            guesses,
+            last: [None; 2],
+            chosen: None,
+        }
+    }
+
+    /// Only this byte, found before: still checked.
+    fn known(pixel: Pixel) -> PixelAxis {
+        let mut guess = PixelGuess::new(pixel.address, pixel.scrolls);
+        guess.from(pixel.offset);
+        guess.lead = PIXEL_AFTER;
+        guess.agreed = PIXEL_AFTER;
+        PixelAxis {
+            guesses: vec![guess],
+            last: [None; 2],
+            chosen: Some(pixel),
+        }
+    }
+
+    /// Her sprite was seen at `at` along this axis (the middle of her sprites), with the
+    /// screen scrolled `scroll`.
+    fn saw(&mut self, memory: &Memory, at: i32, scroll: u8) {
+        let moved = [false, true].map(|scrolls| {
+            let now = at + if scrolls { i32::from(scroll) } else { 0 };
+            let last = &mut self.last[usize::from(scrolls)];
+            let moved = last.is_some_and(|last| (last - now).abs() >= MOVED_PIXELS);
+            if moved || last.is_none() {
+                *last = Some(now);
+            }
+            moved
+        });
+        for g in &mut self.guesses {
+            if !moved[usize::from(g.scrolls)] {
+                continue;
+            }
+            let now = Pixel::offset_now(g.address, g.scrolls, memory, at, scroll);
+            let off = now.wrapping_sub(g.offset).wrapping_add(PIXEL_NEAR);
+            if g.lead == 0 && g.agreed == 0 {
+                // The first look counted: the offset to check from.
+                g.from(now);
+            } else if off <= 2 * PIXEL_NEAR {
+                g.agreed += 1;
+                g.lead += 1;
+                g.near[usize::from(off)] += 1;
+            } else {
+                g.missed += 1;
+                if g.lead == 0 {
+                    g.from(now);
+                } else {
+                    g.lead -= 1;
+                }
+            }
+        }
+        self.guesses.retain(|g| g.in_the_running());
+        if self.guesses.is_empty() {
+            *self = PixelAxis::new();
+        }
+        let chosen = self.chosen.and_then(|c| {
+            self.guesses
+                .iter()
+                .find(|g| g.address == c.address && g.scrolls == c.scrolls)
+        });
+        self.chosen = match chosen {
+            Some(g) => Some(g.pixel()),
+            None => self.best(),
+        };
+    }
+
+    /// The byte that agreed the most, once one agreed enough. Fewer misses, then one that
+    /// doesn't count the scroll, then the lower address break ties (the stack, at the top
+    /// of high RAM, holds copies of her pixel only while the code using it runs).
+    fn best(&self) -> Option<Pixel> {
+        self.guesses
+            .iter()
+            .filter(|g| g.agreed >= PIXEL_AFTER)
+            .min_by_key(|g| (u32::MAX - g.agreed, g.missed, g.scrolls, g.address))
+            .map(|g| g.pixel())
+    }
+}
+
+/// Finding where her sprite is on the screen, in a game where she walks across it: bytes
+/// that move with her sprite, pixel for pixel, while she walks. Once found, memory says
+/// where she is on the screen exactly, whatever else moves with her (a companion, a crab
+/// the step followed instead).
+#[derive(Debug, Clone)]
+pub struct Pixels {
+    x: PixelAxis,
+    y: PixelAxis,
+}
+
+impl Default for Pixels {
+    fn default() -> Pixels {
+        Pixels {
+            x: PixelAxis::new(),
+            y: PixelAxis::new(),
+        }
+    }
+}
+
+impl Pixels {
+    /// Only these bytes, found before: still checked.
+    pub fn known(x: Pixel, y: Pixel) -> Pixels {
+        Pixels {
+            x: PixelAxis::known(x),
+            y: PixelAxis::known(y),
+        }
+    }
+
+    /// Her sprite was seen at `at` on the screen (the middle of her sprites), scrolled
+    /// `scroll`, while she could walk.
+    pub fn saw(&mut self, memory: &Memory, at: (i32, i32), scroll: (u8, u8)) {
+        self.x.saw(memory, at.0, scroll.0);
+        self.y.saw(memory, at.1, scroll.1);
+    }
+
+    /// The bytes for her x and y, once both are found.
+    pub fn found(&self) -> Option<(Pixel, Pixel)> {
+        Some((self.x.chosen?, self.y.chosen?))
+    }
+
+    /// The bytes found weren't hers after all: found again from every byte.
+    pub fn forget(&mut self) {
+        *self = Pixels::default();
+    }
+
+    /// Where her sprite is on the screen, by memory.
+    pub fn at(&self, memory: &Memory, scroll: (u8, u8)) -> Option<(i32, i32)> {
+        let (x, y) = self.found()?;
+        Some((x.on_screen(memory, scroll.0), y.on_screen(memory, scroll.1)))
+    }
+
+    #[cfg(test)]
+    /// How many guesses are left for x and y.
+    pub fn left(&self) -> (usize, usize) {
+        (self.x.guesses.len(), self.y.guesses.len())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AreaGuess {
     address: u16,
@@ -482,6 +754,7 @@ impl Areas {
 #[derive(Debug, Clone, Default)]
 pub struct Finder {
     pub position: Position,
+    pub pixels: Pixels,
     pub areas: Areas,
 }
 
@@ -759,5 +1032,65 @@ mod tests {
         }
         assert!(!areas.holds(tileset));
         assert_eq!(areas.found(), Some(AREA));
+    }
+
+    /// Walks her round a screen that scrolls now and then: `screen_x` holds her pixel plus
+    /// 8 (the screen sliding across says nothing about it), `map_y` her pixel plus the
+    /// scroll. Now and then something beside her moves the middle of her sprites, and once
+    /// the step took someone else for her.
+    #[test]
+    fn bytes_that_move_with_her_sprite_are_found() {
+        let screen_x: u16 = 0xff98;
+        let map_y: u16 = 0xd100;
+        let mut memory = Pretend::new().memory;
+        let mut pixels = Pixels::default();
+        let walk = [
+            (16, 0),
+            (0, 16),
+            (-16, 0),
+            (0, -16),
+            (16, 0),
+            (0, 16),
+            (16, 0),
+            (0, 16),
+        ];
+        let (mut x, mut y, mut scroll, mut across) = (40i32, 60i32, 0u8, 0u8);
+        for (i, (dx, dy)) in walk.iter().cycle().take(32).enumerate() {
+            x += dx;
+            if i % 4 == 3 {
+                across = across.wrapping_add(16);
+            }
+            // Half the time the screen scrolls down instead of her going down.
+            if i % 2 == 0 {
+                y += dy;
+            } else {
+                scroll = (i32::from(scroll) + dy) as u8;
+            }
+            memory.set(screen_x, (x + 8) as u8);
+            memory.set(map_y, (y + i32::from(scroll)) as u8);
+            memory.set(0xc500, i as u8);
+            let seen = match i {
+                9 => (x + 30, y),
+                _ if i % 5 == 0 => (x + 4, y - 4),
+                _ => (x, y),
+            };
+            pixels.saw(&memory, seen, (across, scroll));
+        }
+        let (px, py) = pixels.found().expect("both found");
+        assert_eq!((px.address, px.scrolls, px.offset), (screen_x, false, 8));
+        assert_eq!((py.address, py.scrolls, py.offset), (map_y, true, 0));
+        assert_eq!(pixels.at(&memory, (across, scroll)), Some((x, y)));
+    }
+
+    #[test]
+    fn a_pixel_past_the_top_of_the_screen_is_below_0() {
+        let mut memory = Pretend::new().memory;
+        memory.set(0xff98, 4);
+        let pixel = Pixel {
+            address: 0xff98,
+            scrolls: false,
+            offset: 8,
+        };
+        assert_eq!(pixel.on_screen(&memory, 0), -4);
     }
 }

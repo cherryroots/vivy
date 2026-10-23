@@ -32,7 +32,7 @@ use super::moves::{Outcome, offset};
 use super::screen::{COLS, Layer, ROWS, Screen};
 use super::walk::settle;
 use super::world::{Grid, Stepped, View, World};
-use memory::{Areas, Byte, Finder, Memory, Position};
+use memory::{Areas, Byte, Finder, Memory, Pixel, Pixels, Position};
 
 /// Pixels in a step.
 const STEP: i32 = 16;
@@ -42,6 +42,10 @@ use super::moves::{MIDDLE, middle_of, touching};
 
 /// Pixels from her spot a sprite can be and still be hers.
 const HER_NEAR: i32 = 12;
+
+/// Looks in a row with no sprite where memory puts her, before the bytes found for her
+/// sprite are given up: she blinks for a while after being hit.
+const UNSEEN_MOST: u32 = 6;
 
 /// Tiles that may change with no scroll while she can still walk (a clock, a counter).
 /// Tile numbers are compared, so tiles whose pictures move (water, flowers) don't count.
@@ -122,6 +126,9 @@ pub struct Found {
     pub x: Option<Byte>,
     pub y: Option<Byte>,
     pub area: Option<u16>,
+    /// Where she walks across the screen: the bytes for her sprite's pixel x and y.
+    #[serde(default)]
+    pub spot: Option<(Pixel, Pixel)>,
 }
 
 /// What steps with one picture did when she tried them.
@@ -207,6 +214,10 @@ struct Live {
     faded_away: bool,
     /// Her sprite has been known on a screen she walks across: steps are counted from it.
     walks_across: bool,
+    /// Her spot came from memory at the last look (`Sight::memory_spot`).
+    by_memory: bool,
+    /// Looks in a row the game's picture showed with no sprite where memory put her.
+    unseen: u32,
     /// Where a sprite that moved her way once is, until it does again (see `confirmed`).
     candidate: Option<(i32, i32)>,
     /// Where the sprites were at the last look, to see which moved when she pressed.
@@ -266,6 +277,9 @@ impl Sight {
             if let Some(area) = found.area {
                 finder.areas = Areas::known(area);
             }
+            if let Some((x, y)) = found.spot {
+                finder.pixels = Pixels::known(x, y);
+            }
             finder
         })
     }
@@ -279,6 +293,18 @@ impl Sight {
             .as_ref()
             .filter(|_| self.live.spot.is_none())
             .and_then(|f| f.position.at(memory))
+    }
+
+    /// Where memory says her sprite is on the screen, in a game where she walks across
+    /// it: once found, it beats following her sprite, which can take whatever moves with
+    /// her for her. Not while it says she's off the screen (a scene moving her).
+    fn memory_spot(&self, memory: &Memory, scroll: (u8, u8)) -> Option<(i32, i32)> {
+        self.live
+            .finder
+            .as_ref()
+            .filter(|_| self.live.walks_across)
+            .and_then(|f| f.pixels.at(memory, scroll))
+            .filter(|&(x, y)| (-8..=168).contains(&x) && (-8..=152).contains(&y))
     }
 
     fn area_byte(&self) -> Option<u16> {
@@ -603,22 +629,25 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // may have moved it).
     let spot = sight.live.spot;
     let pressed = machine.emulator.directions_pressed() != sight.live.pressed;
+    // Her sprite where it was seen at this look, if it was (not where it was last time).
+    let mut seen_her = None;
     match &stepped {
         Some((step, _)) if step.her.is_some() => {
             sight.live.spot = match spot {
                 Some(_) => step.her,
                 None => confirmed(&mut sight.live, step.her),
             };
+            seen_her = step.her;
         }
         _ => match spot {
             // Followed frame by frame first: a press of hers can take her further than her
             // pictures are looked for, facing a way not seen before.
             Some(last) => {
-                sight.live.spot = machine
+                seen_her = machine
                     .sprites_since(sight.live.frame)
                     .and_then(|frames| super::moves::followed(&frames, last, &screen))
-                    .or_else(|| find_her(&sight.live.her, &screen, last))
-                    .or(spot);
+                    .or_else(|| find_her(&sight.live.her, &screen, last));
+                sight.live.spot = seen_her.or(spot);
             }
             // Nothing stands in the middle, and her own presses moved sprites across a
             // still screen: those are her.
@@ -659,6 +688,18 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // lost, and she couldn't walk for a whole episode.
     sight.live.lost = sight.live.spot.is_none()
         && (sight.live.lost || (sight.live.walks_across && !sight.live.her.is_empty()));
+    // Once memory says where her sprite is, that's where it is, while a sprite is there
+    // (or none shows at all, through a fade): where none is, the bytes may count from
+    // somewhere else in this area, and her sprite is followed as before until they're
+    // given up and found again.
+    let by_memory_was = std::mem::take(&mut sight.live.by_memory);
+    if let Some(at) = sight.memory_spot(&memory, (screen.registers.scx, screen.registers.scy))
+        && (!screen.drawn || screen.sprites.is_empty() || !sprites_near(&screen, at).is_empty())
+    {
+        sight.live.spot = Some(at);
+        sight.live.lost = false;
+        sight.live.by_memory = true;
+    }
     sight.live.sprites = screen.sprites.iter().map(|s| (s.x, s.y)).collect();
     // Her sprite, when a press of hers just moved her (a step code took, or one she
     // pressed herself).
@@ -692,6 +733,34 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
     if !free {
         sight.live.faded_away = faded_away;
+    }
+    // Where she walks across the screen, her sprite seen while she can walk teaches the
+    // cheat finder which bytes hold its pixel. Once found, they're only checked for a
+    // sprite where they put her, whenever the game's picture shows: following her sprite
+    // takes whatever moves with her for her now and then (in Link's Awakening's village,
+    // someone walking beside him), and that isn't the bytes' fault. Given up, they're
+    // found again by walking: a byte can count her pixel from where each area starts, so
+    // it may be off by another constant somewhere else (Harvest Moon's farm, after the
+    // house).
+    let found = sight
+        .live
+        .finder
+        .as_ref()
+        .is_some_and(|f| f.pixels.found().is_some());
+    if found {
+        if screen.drawn && !dark && !faded && !screen.sprites.is_empty() {
+            sight.live.unseen = if sight.live.by_memory {
+                0
+            } else {
+                sight.live.unseen + 1
+            };
+        }
+    } else if free
+        && screen.drawn
+        && sight.live.walks_across
+        && let Some(at) = seen_her
+    {
+        sight.finder().pixels.saw(&memory, at, scroll);
     }
     sight.live.finding = !free
         && sight.live.spot.is_none()
@@ -734,14 +803,45 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // grid from where her sprite was and is, as her own presses are, so what she
         // sees is marked where she stands (rounding a step's pixels can disagree with
         // the grid by one when she stands between two steps).
-        // A step only takes her the way pressed (a hop, or something carrying her straight
-        // on), about as far as the step saw her go (a slide is a room over, a step or
-        // two): otherwise the sprite followed wasn't her (on Link's Awakening's beach a
-        // crab, as the screen slid on, counted a step right as 7 left; in the village a
-        // villager above her, a step up as 3), so it was one step and she's looked for
-        // again.
+        // Where memory said where her sprite was and is, it says how far she went: the
+        // pixels she went the way pressed, in steps, say what the step was, and the steps
+        // of the screen she crossed say where she is now (in a game where she walks
+        // freely, 17 pixels from between two steps crosses two). Nudged round a corner is
+        // still a step; further than the step saw her go is a door or a scene moving her,
+        // and the step was one step.
         let mut astray = false;
-        if let (Some(was), Some(now), Outcome::Moved(n)) = (spot, sight.live.spot, step.outcome) {
+        if let (Some(was), Some(now), Outcome::Moved(_) | Outcome::Blocked) =
+            (spot, sight.live.spot, step.outcome)
+            && by_memory_was
+            && sight.live.by_memory
+        {
+            let went = pressed_pixels((was, scroll_was), (now, scroll));
+            let along = went.0 * pressed.0 + went.1 * pressed.1;
+            let aside = went.0 * pressed.1 - went.1 * pressed.0;
+            let n = (along + STEP / 2).div_euclid(STEP);
+            let as_far = match step.outcome {
+                Outcome::Moved(m) => n <= 2 || (n - m).abs() <= 1,
+                _ => n <= 1,
+            };
+            if aside.abs() < STEP && as_far {
+                step.scrolled = pressed_steps((was, scroll_was), (now, scroll));
+                step.outcome = if n > 0 {
+                    Outcome::Moved(n)
+                } else {
+                    Outcome::Blocked
+                };
+            } else if matches!(step.outcome, Outcome::Moved(_)) {
+                step.scrolled = pressed;
+            }
+        } else if let (Some(was), Some(now), Outcome::Moved(n)) =
+            (spot, sight.live.spot, step.outcome)
+        {
+            // A step only takes her the way pressed (a hop, or something carrying her
+            // straight on), about as far as the step saw her go (a slide is a room over, a
+            // step or two): otherwise the sprite followed wasn't her (on Link's Awakening's
+            // beach a crab, as the screen slid on, counted a step right as 7 left; in the
+            // village a villager above her, a step up as 3), so it was one step and she's
+            // looked for again.
             let counted = pressed_steps((was, scroll_was), (now, scroll));
             let along = counted.0 * pressed.0 + counted.1 * pressed.1;
             let aside = counted.0 * pressed.1 - counted.1 * pressed.0;
@@ -843,6 +943,9 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         sight.found.x = Some(x);
         sight.found.y = Some(y);
     }
+    if let Some(finder) = &sight.live.finder {
+        sight.found.spot = finder.pixels.found();
+    }
 
     let area = sight.live.area.clone();
     let at = sight.live.at;
@@ -903,6 +1006,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     sight.live.on_map = free || on_map;
     sight.live.recorded = machine.recorded();
     sight.live.frame = machine.emulator.frames();
+    // The bytes found for her sprite given up (see above): found again by walking.
+    if sight.live.unseen > UNSEEN_MOST {
+        sight.finder().pixels.forget();
+        sight.found.spot = None;
+        sight.live.unseen = 0;
+    }
     sight.live.memory = Some(memory);
     let mut her: Vec<u64> = sight.live.her.iter().copied().collect();
     her.sort_unstable();
@@ -938,14 +1047,30 @@ fn pressed_steps(
     (from, scroll_from): ((i32, i32), (u8, u8)),
     (to, scroll_to): ((i32, i32), (u8, u8)),
 ) -> Pos {
+    let went = pressed_pixels((from, scroll_from), (to, scroll_to));
+    let axis = |from: i32, scroll_from: u8, went: i32| {
+        let start = from + i32::from(scroll_from);
+        (start + went).div_euclid(STEP) - start.div_euclid(STEP)
+    };
+    (
+        axis(from.0, scroll_from.0, went.0),
+        axis(from.1, scroll_from.1, went.1),
+    )
+}
+
+/// How many pixels her sprite went between two looks, with the screen's scroll (see
+/// `pressed_steps`).
+fn pressed_pixels(
+    (from, scroll_from): ((i32, i32), (u8, u8)),
+    (to, scroll_to): ((i32, i32), (u8, u8)),
+) -> (i32, i32) {
     let axis = |from: i32, scroll_from: u8, to: i32, scroll_to: u8| {
         let turned = i32::from(scroll_to.wrapping_sub(scroll_from));
         let scrolled = [turned, turned - 256]
             .into_iter()
             .min_by_key(|s| (to - from + s).abs())
             .unwrap_or(0);
-        let start = from + i32::from(scroll_from);
-        (start + to - from + scrolled).div_euclid(STEP) - start.div_euclid(STEP)
+        to - from + scrolled
     };
     (
         axis(from.0, scroll_from.0, to.0, scroll_to.0),
@@ -1327,6 +1452,16 @@ fn confirmed(live: &mut Live, found: Option<(i32, i32)>) -> Option<(i32, i32)> {
         .is_some_and(|c| (c.0 - found.0).abs() + (c.1 - found.1).abs() <= STEP + HER_NEAR);
     live.candidate = Some(found);
     again.then_some(found)
+}
+
+/// The middles of the sprites near `at`.
+fn sprites_near(screen: &Screen, at: (i32, i32)) -> Vec<(i32, i32)> {
+    screen
+        .sprites
+        .iter()
+        .map(|s| (s.x + 4, s.y + s.height / 2))
+        .filter(|&(x, y)| (x - at.0).abs() <= HER_NEAR && (y - at.1).abs() <= HER_NEAR)
+        .collect()
 }
 
 /// The pictures of the sprites where she stands: the middle of the screen, or her spot.

@@ -160,8 +160,8 @@ fn explore_another_game() {
     }
     let found = world.sight.found;
     let mut report = format!(
-        "{}: {steps} steps, {walks} walks ({free} ended free to walk), {doors} new areas, {texts} texts.\nFound x {:?}, y {:?}, area {:?}\n",
-        info.title, found.x, found.y, found.area
+        "{}: {steps} steps, {walks} walks ({free} ended free to walk), {doors} new areas, {texts} texts.\nFound x {:?}, y {:?}, area {:?}, her sprite {:?}\n",
+        info.title, found.x, found.y, found.area, found.spot
     );
     let places = world.sight.places();
     writeln!(report, "{} places", places.len()).unwrap();
@@ -346,4 +346,57 @@ fn steps_by_hand() {
     }
     let area = view.area.clone();
     println!("{}", world.area(&area).draw(view.at, 6));
+}
+
+/// Walks around from a save state (`VIVY_GB_FROM`) and says which bytes the cheat finder
+/// took for her sprite's pixel, and how far memory's spot was from her sprite.
+#[test]
+#[ignore = "needs a ROM"]
+fn pixels_follow_her() {
+    use crate::features::games::gameboy::any::memory::{Memory, Pixels};
+    use crate::features::games::gameboy::moves;
+    let (_, rom) = other();
+    let mut m = Machine::new("other.gb", &rom).unwrap();
+    let from = std::env::var("VIVY_GB_FROM").expect("VIVY_GB_FROM: a save state");
+    m.emulator
+        .load_state(&std::fs::read(from).unwrap())
+        .unwrap();
+    m.run(2);
+    let mut her = moves::which_is_her(&mut m);
+    let mut pixels = Pixels::default();
+    let ways = [
+        Button::Right,
+        Button::Down,
+        Button::Left,
+        Button::Up,
+        Button::Right,
+        Button::Right,
+        Button::Up,
+        Button::Left,
+        Button::Down,
+        Button::Down,
+        Button::Left,
+        Button::Up,
+    ];
+    let (mut off, mut checked) = (0, 0);
+    for (i, &way) in ways.iter().cycle().take(60).enumerate() {
+        let step = moves::step(&mut m, way, her);
+        let memory = Memory::read(&mut m.emulator);
+        let video = m.emulator.video();
+        let scroll = (video.registers.scx, video.registers.scy);
+        if let (Some(at), Some(seen)) = (pixels.at(&memory, scroll), step.her) {
+            checked += 1;
+            if (at.0 - seen.0).abs() > 4 || (at.1 - seen.1).abs() > 4 {
+                off += 1;
+                println!("{i}: memory says {at:?}, her sprite {seen:?}");
+            }
+        }
+        println!("{i}: {way:?} {:?} her {:?}", step.outcome, step.her);
+        if let Some(seen) = step.her.filter(|_| pixels.found().is_none()) {
+            pixels.saw(&memory, seen, scroll);
+        }
+        her = pixels.at(&memory, scroll).or(step.her).or(her);
+    }
+    println!("found {:?}, left {:?}", pixels.found(), pixels.left());
+    println!("{off} of {checked} looks off by more than 4 pixels");
 }
