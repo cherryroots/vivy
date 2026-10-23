@@ -845,7 +845,9 @@ async fn gate_session() {
             minutes: setting("VIVY_GB_MINUTES", "30").parse().unwrap(),
             episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
             daily_usd: setting("VIVY_GB_GATE_USD", "3").parse().unwrap(),
-            free_tokens: 1_000_000,
+            // Test runs share the account's free daily tokens with the bot, which they
+            // can't see, so they keep well under the million.
+            free_tokens: setting("VIVY_GB_FREE_TOKENS", "400000").parse().unwrap(),
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
