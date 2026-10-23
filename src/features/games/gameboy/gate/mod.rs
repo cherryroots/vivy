@@ -794,6 +794,16 @@ async fn gate_session() {
     if let Ok(from) = std::env::var("VIVY_GB_SAVES") {
         copy_folder(std::path::Path::new(&from), &saves);
     }
+    // What every test session used today, whichever saves it plays from: each had kept
+    // its own count, and a day of them went past the account's free million.
+    let today_file = PathBuf::from(setting(
+        "VIVY_GB_TODAY",
+        "/mnt/project-files/gameboy/today.json",
+    ));
+    std::fs::create_dir_all(&saves).unwrap();
+    if today_file.exists() {
+        std::fs::copy(&today_file, super::files::today_path(&saves)).unwrap();
+    }
     // A path is a state of any game, for the ROM in VIVY_GB_ROM; a bare name is one of
     // the gate's Red task states.
     let mut local = if start.is_empty() {
@@ -845,9 +855,8 @@ async fn gate_session() {
             minutes: setting("VIVY_GB_MINUTES", "30").parse().unwrap(),
             episodes: setting("VIVY_GB_EPISODES", "40").parse().unwrap(),
             daily_usd: setting("VIVY_GB_GATE_USD", "3").parse().unwrap(),
-            // Test runs share the account's free daily tokens with the bot, which they
-            // can't see, so they keep well under the million.
-            free_tokens: setting("VIVY_GB_FREE_TOKENS", "400000").parse().unwrap(),
+            // Under the account's free million a day, with room for the bot.
+            free_tokens: setting("VIVY_GB_FREE_TOKENS", "800000").parse().unwrap(),
         },
         stop: tokio_util::sync::CancellationToken::new(),
         report,
@@ -1007,6 +1016,10 @@ Start: {}. Goal: {}.
     )
     .unwrap();
     std::fs::write(folder.join("report.md"), &out).unwrap();
+    if let Some(dir) = today_file.parent() {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::copy(super::files::today_path(&saves), &today_file).unwrap();
     println!(
         "{out}
 Results in {}",
