@@ -181,6 +181,8 @@ pub struct Emulator {
     /// How many times a direction has been pressed: a look can tell the screen scrolled
     /// because she walked, not because the game moved her.
     directions_pressed: u64,
+    /// The direction pressed last, which way she last went.
+    last_direction: Option<Button>,
 }
 
 impl Emulator {
@@ -215,6 +217,7 @@ impl Emulator {
             frames: 0,
             held: Vec::new(),
             directions_pressed: 0,
+            last_direction: None,
         })
     }
 
@@ -302,6 +305,7 @@ impl Emulator {
                 self.gb.key_press(button.key());
                 if button.is_direction() {
                     self.directions_pressed += 1;
+                    self.last_direction = Some(button);
                 }
             } else if was && !now {
                 self.gb.key_lift(button.key());
@@ -318,6 +322,11 @@ impl Emulator {
 
     pub fn release(&mut self) {
         self.hold(&[]);
+    }
+
+    /// The direction pressed last, if any.
+    pub fn last_direction(&self) -> Option<Button> {
+        self.last_direction
     }
 
     /// The screen as it was last drawn: 160×144 pixels, 3 bytes (red, green, blue) each.

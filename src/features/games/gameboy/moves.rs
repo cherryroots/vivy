@@ -180,12 +180,14 @@ const PROBE_WAIT: u32 = 6;
 /// The most pixels across and down that the sprites that did as pressed can cover and
 /// still be her alone.
 const HELD_TOGETHER: i32 = 24;
+/// Frames the screen must be drawn and still before finding her.
+const PROBE_STEADY: u32 = 8;
 /// Frames watched with nothing pressed, before each round of presses.
 const PROBE_STILL: u32 = 16;
 
 /// Which sprite is hers on a screen that stays still under her, found the way a cheat
 /// finder narrows down bytes: nothing is pressed for a moment, then each way in turn
-/// (right, left, down, up, so she ends about where she began), every sprite is followed
+/// (each side of the way she last went, then on and back), every sprite is followed
 /// frame by frame, and only those that stood still while nothing was pressed and went
 /// the way pressed whenever they moved, at least twice, are kept. If that leaves more
 /// than one, or none, it goes round once more.
@@ -193,6 +195,24 @@ const PROBE_STILL: u32 = 16;
 /// sprites are, or `None` if no one sprite (with those touching it) is left, or the
 /// screen scrolled.
 pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
+    // A door's fade may still be going: the screen drawn with sprites on it and its
+    // scroll still for a moment first.
+    let mut steady = 0;
+    for _ in 0..SETTLE_MOST {
+        let before = machine.emulator.video().registers;
+        machine.frame();
+        let video = machine.emulator.video();
+        let same = (video.registers.scx, video.registers.scy) == (before.scx, before.scy);
+        let shown = !super::screen::sprite_places(video).is_empty();
+        steady = if video.drawn && same && shown {
+            steady + 1
+        } else {
+            0
+        };
+        if steady >= PROBE_STEADY {
+            break;
+        }
+    }
     let mut screen = Screen::read(machine.emulator.video());
     let scroll = (screen.registers.scx, screen.registers.scy);
     // Where each sprite is now, how many presses it followed, and whether it went
@@ -203,13 +223,21 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
         .map(|s| ((s.x, s.y), 0, false))
         .collect();
     // Nothing pressed first, then each way; a second time round if that didn't leave
-    // one sprite.
+    // one sprite. Each side first, then on the way she last went and back, so she ends
+    // about where she began: back first would walk her out of a door she just came in by
+    // (in Link's Awakening's telephone hut, pressing down at all walked her straight out),
+    // and on first into one she was walking out of.
+    let ahead = machine.emulator.last_direction().unwrap_or(Button::Right);
+    let aside = match ahead {
+        Button::Up | Button::Down => Button::Right,
+        _ => Button::Down,
+    };
     let round = [
         None,
-        Some(Button::Right),
-        Some(Button::Left),
-        Some(Button::Down),
-        Some(Button::Up),
+        Some(aside),
+        Some(opposite(aside)),
+        Some(ahead),
+        Some(opposite(ahead)),
     ];
     for (n, press) in round.iter().chain(&round).enumerate() {
         if n == round.len()

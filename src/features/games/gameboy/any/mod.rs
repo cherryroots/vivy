@@ -188,6 +188,10 @@ struct Live {
     spot: Option<(i32, i32)>,
     /// Her sprite was lost and her pictures weren't anywhere: found again by pressing.
     lost: bool,
+    /// Pressing just found her (`found_her_at`), after any fade since the last look.
+    just_found: bool,
+    /// She went through a door by her own presses and can't walk yet where it led.
+    door_pending: bool,
     /// Where a sprite that moved her way once is, until it does again (see `confirmed`).
     candidate: Option<(i32, i32)>,
     /// Where the sprites were at the last look, to see which moved when she pressed.
@@ -327,6 +331,7 @@ impl Sight {
         self.live.spot = Some(spot);
         self.live.candidate = None;
         self.live.lost = false;
+        self.live.just_found = true;
     }
 
     /// Where her sprite is on the screen, once a step has shown it moves across it.
@@ -608,6 +613,16 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             None => {}
         },
     }
+    // Through a door's fade she comes in somewhere else on the screen: where she was says
+    // nothing (in Link's Awakening's telephone hut her spot stayed on the telephone, and
+    // she was never free there, so the hut was never a place).
+    if (faded || dark)
+        && !std::mem::take(&mut sight.live.just_found)
+        && let Some(last) = sight.live.spot
+    {
+        sight.live.spot = her_anywhere(&sight.live.her, &screen, last);
+        sight.live.lost = sight.live.spot.is_none();
+    }
     // No sprite where she's thought to be: lost (a screen sliding faster than she can be
     // followed, a scene moving her). Found again by pressing, the way she was at first.
     if let Some(at) = sight.live.spot
@@ -669,14 +684,17 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let stepped_at_all = stepped.as_ref().map(|(s, _)| (s.direction, s.outcome));
     // Where she walks across the screen, her own presses (not a step code took) moved her
     // by as many steps as her sprite went, with the screen's scroll.
+    // Where her sprite isn't followed (through a door's fade it shows up elsewhere), she's
+    // still where she was, so a door she went through by her own presses still counts.
     let at = sight.position(&memory).or_else(|| {
-        let (Some(from), Some(to)) = (spot, sight.live.spot) else {
-            return None;
-        };
-        (stepped.is_none() && pressed).then(|| {
-            let (dx, dy) = pressed_steps((from, scroll_was), (to, scroll));
-            (sight.live.at.0 + dx, sight.live.at.1 + dy)
-        })
+        let from = spot.filter(|_| stepped.is_none())?;
+        match sight.live.spot {
+            Some(to) if pressed => {
+                let (dx, dy) = pressed_steps((from, scroll_was), (to, scroll));
+                Some((sight.live.at.0 + dx, sight.live.at.1 + dy))
+            }
+            _ => Some(sight.live.at),
+        }
     });
     let mut seen = at
         .map(|at| sight.steady(seen_steps(&screen, at, sight.live.spot)))
@@ -710,6 +728,16 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // a screen sliding on to the next room is the same place, and one that looked
         // unlike what was seen there had split Link's Awakening's village into five.
         let through_door = faded && (sight.live.was_free || sight.live.on_map);
+        // Where she walks across the screen, a fade seen while she couldn't walk yet
+        // (the room still coming in) counts once she can: in Link's Awakening's
+        // telephone hut, the look after the fade wasn't free, and the hut never became
+        // a place.
+        let door_pending = std::mem::take(&mut sight.live.door_pending)
+            || (through_door && sight.live.spot.is_some());
+        let through_door = through_door || door_pending;
+        if !free && door_pending {
+            sight.live.door_pending = true;
+        }
         if free
             && sight.live.free.is_some()
             && sight.live.left.is_none()
@@ -922,10 +950,15 @@ fn after_step(
             }
         }
         // Anywhere else but the next step: the step ahead carried her on.
+        // Where she walks across the screen, only straight on and further than a hop: games
+        // like Link's Awakening nudge her round corners, a step aside.
         Outcome::Moved(_)
             if !new_place
                 && step.scrolled != ahead(1)
-                && !(step.slid && sight.live.spot.is_some()) =>
+                && !(sight.live.spot.is_some()
+                    && (step.slid
+                        || step.scrolled.0 * pressed.1 != step.scrolled.1 * pressed.0
+                        || step.scrolled.0 * pressed.0 + step.scrolled.1 * pressed.1 < 3)) =>
         {
             if let Some(&key) = sight.live.around.get(&ahead(1)) {
                 sight.steps.entry(key).or_default().carried += 1;
