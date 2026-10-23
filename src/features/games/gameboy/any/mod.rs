@@ -94,6 +94,11 @@ pub struct Sight {
     /// from a save state starts where she stood then, not at a new place's (0, 0).
     #[serde(default)]
     whereabouts: Option<Whereabouts>,
+    /// Where she walks across the screen: her step just in from each door she went
+    /// through (the place she left and its door step), so coming in by it again starts
+    /// there when the place isn't known by its look.
+    #[serde(default, with = "as_list")]
+    came_in: HashMap<(String, Pos), Pos>,
     #[serde(skip)]
     live: Live,
 }
@@ -192,6 +197,11 @@ struct Live {
     just_found: bool,
     /// She went through a door by her own presses and can't walk yet where it led.
     door_pending: bool,
+    /// She's somewhere else, but not through a door: another screen was put up since she
+    /// last walked (a game over, a scene), so where she was is no door.
+    relocated: bool,
+    /// Her sprite has been known on a screen she walks across: steps are counted from it.
+    walks_across: bool,
     /// Where a sprite that moved her way once is, until it does again (see `confirmed`).
     candidate: Option<(i32, i32)>,
     /// Where the sprites were at the last look, to see which moved when she pressed.
@@ -365,7 +375,11 @@ impl Sight {
     /// The same, for steps counted from wherever she came in (a game she walks across):
     /// the place, and how far its steps are from the ones she counted. Each picture seen
     /// before at some step suggests a shift; the ones most suggested are tried.
-    fn known_place_shifted(&self, seen: &[(Pos, u64)], left: &str) -> Option<(String, Pos)> {
+    fn known_place_shifted(
+        &self,
+        seen: &[(Pos, u64)],
+        may_be: impl Fn(&str) -> bool,
+    ) -> Option<(String, Pos)> {
         let telling = without_common(seen);
         let shifted = |seen: &[(Pos, u64)], by: Pos| -> Vec<(Pos, u64)> {
             seen.iter()
@@ -373,7 +387,7 @@ impl Sight {
                 .collect()
         };
         let mut best: Option<(usize, String, Pos)> = None;
-        for (name, pictures) in self.pictures.iter().filter(|(name, _)| *name != left) {
+        for (name, pictures) in self.pictures.iter().filter(|(name, _)| may_be(name)) {
             let mut votes: HashMap<Pos, usize> = HashMap::new();
             for &((x, y), key) in &telling {
                 for (&(px, py), _) in pictures.0.iter().filter(|(_, k)| **k == key) {
@@ -547,6 +561,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             sight.live.area = w.area;
             sight.live.at = w.at;
             sight.live.spot = w.spot;
+            sight.live.walks_across = w.spot.is_some();
             sight.live.her = w.her.into_iter().collect();
         } else if sight.live.area.is_empty() {
             sight.live.area = sight.new_place();
@@ -740,7 +755,10 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // left); a battle ends dark too, but its own screen was up.
         // Where she walks across the screen, only a door counts, as for a step code takes:
         // a screen sliding on to the next room is the same place, and one that looked
-        // unlike what was seen there had split Link's Awakening's village into five.
+        // unlike what was seen there had split Link's Awakening's village into five. But
+        // once another screen was put up since she last walked (a game over, a scene),
+        // she may be anywhere: after Link's Awakening's game over she came back in
+        // Tarin's house, still counted on the beach.
         let through_door = faded && (sight.live.was_free || sight.live.on_map);
         // Where she walks across the screen, a fade seen while she couldn't walk yet
         // (the room still coming in) counts once she can: in Link's Awakening's
@@ -756,16 +774,18 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             && sight.live.free.is_some()
             && sight.live.left.is_none()
             && (through_door
-                || (sight.live.spot.is_none()
+                || ((sight.live.spot.is_none() || !on_map)
                     && sight
                         .pictures
                         .get(&sight.live.area)
                         .is_some_and(|p| looks_different(p, &seen))))
         {
             left = Some((sight.live.at, true));
+            sight.live.relocated = !through_door;
         }
         sight.live.at = at;
     }
+    sight.live.walks_across |= sight.live.spot.is_some();
     // Where she walks across the screen, places are known by the steps she counted.
     if sight.live.spot.is_some() {
         seen = sight.steady(seen_steps(&screen, sight.live.at, sight.live.spot));
@@ -1048,10 +1068,14 @@ fn arrive(
     dark: bool,
 ) {
     sight.live.calm = None;
+    // Not through a door (a game over, a scene): where she was leads nowhere, and she may
+    // be somewhere else in the same place.
+    let relocated = std::mem::take(&mut sight.live.relocated);
     let old_area = sight.live.area.clone();
     let led = areas
         .get(&old_area)
         .and_then(|map| map.doors.get(&gone))
+        .filter(|_| !relocated)
         .cloned();
     // Back through a door she came through before: the area byte holds what it held
     // the first time she came in.
@@ -1083,14 +1107,28 @@ fn arrive(
     let led = areas
         .get(&old_area)
         .and_then(|map| map.doors.get(&gone))
+        .filter(|_| !relocated)
         .cloned();
     // Where she walks across the screen, her steps in a place she knows are counted on
-    // from where she was there before.
-    let shifted = (sight.live.spot.is_some() && led.is_none())
-        .then(|| sight.known_place_shifted(seen, &old_area))
+    // from where she was there before: found by its look, or else where she came in by
+    // this door last time. Through a known door, the steps she counted were the last
+    // place's, and the outdoors of Link's Awakening was drawn into a house she went into.
+    let walks_across = sight.live.walks_across;
+    let shifted = walks_across
+        .then(|| match &led {
+            Some(place) => sight.known_place_shifted(seen, |name| name == place),
+            None if relocated => sight.known_place_shifted(seen, |_| true),
+            None => sight.known_place_shifted(seen, |name| name != old_area),
+        })
         .flatten();
+    let door = (old_area.clone(), gone);
     if let Some((_, by)) = shifted {
         sight.live.at = (sight.live.at.0 + by.0, sight.live.at.1 + by.1);
+    } else if walks_across
+        && led.is_some()
+        && let Some(&came) = sight.came_in.get(&door)
+    {
+        sight.live.at = came;
     }
     let name = match sight.area_byte() {
         // The byte can't name the place she just left: she stepped somewhere new.
@@ -1101,9 +1139,14 @@ fn arrive(
         None => led.or_else(|| sight.known_place(seen, &old_area)),
     }
     .unwrap_or_else(|| sight.new_place());
-    let map = areas.entry(old_area).or_default();
-    map.see(gone, if dark { Kind::Door } else { Kind::Edge });
-    map.doors.insert(gone, name.clone());
+    if !relocated {
+        let map = areas.entry(old_area).or_default();
+        map.see(gone, if dark { Kind::Door } else { Kind::Edge });
+        map.doors.insert(gone, name.clone());
+        if walks_across {
+            sight.came_in.insert(door, sight.live.at);
+        }
+    }
     sight
         .live
         .arrived
