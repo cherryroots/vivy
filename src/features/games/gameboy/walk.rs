@@ -104,10 +104,10 @@ pub fn walk_to(
                 // First by pressing each way and seeing which sprite does as pressed;
                 // failing that (the screen scrolled, or two did), by steps.
                 if finding == 0
-                    && let Some(spot) = super::moves::which_is_her(machine)
+                    && let Some(her) = super::moves::which_is_her(machine)
                 {
                     finding += 1;
-                    world.sight.found_her_at(spot);
+                    world.sight.found_her_at(her);
                     view = look(world, machine);
                     continue;
                 }

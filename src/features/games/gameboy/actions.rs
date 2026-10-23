@@ -389,9 +389,9 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
     if !view.can_walk
         && view.text.is_empty()
         && world.sight.finding_her()
-        && let Some(spot) = super::moves::which_is_her(machine)
+        && let Some(her) = super::moves::which_is_her(machine)
     {
-        world.sight.found_her_at(spot);
+        world.sight.found_her_at(her);
         view = settle(world, machine, look, &mut words);
     }
     let typed = presses::describe(&presses);

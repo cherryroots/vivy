@@ -97,6 +97,11 @@ fn explore_another_game() {
         steps += walk.steps.max(1);
         let area = walk.view.area.clone();
         free += usize::from(walk.view.can_walk);
+        // A save state where she first walks in each place, to start other runs from.
+        let state = folder.join(format!("{}.state", area.replace(' ', "-")));
+        if walk.view.can_walk && !state.exists() {
+            std::fs::write(&state, m.emulator.save_state().unwrap()).unwrap();
+        }
         writeln!(
             log,
             "{walks:3} {:?} {} steps, at {area} {:?}, can walk {}, target {target:?} from {:?}",
@@ -305,8 +310,8 @@ fn steps_by_hand() {
             _ if word == "F" => {
                 let found = crate::features::games::gameboy::moves::which_is_her(&mut m);
                 println!("which is her: {found:?}");
-                if let Some(spot) = found {
-                    world.sight.found_her_at(spot);
+                if let Some(her) = found {
+                    world.sight.found_her_at(her);
                 }
                 (look(&mut world, &mut m), None)
             }
@@ -335,6 +340,25 @@ fn steps_by_hand() {
                 .map(|s| format!("({},{} h{} t{})", s.x, s.y, s.height, s.tile))
                 .collect();
             println!("    sprites: {}", list.join(" "));
+        }
+        // VIVY_GB_HOLDS (an address in hex) says whether it's still a guess for x or y.
+        if let Ok(hex) = std::env::var("VIVY_GB_HOLDS") {
+            let address = u16::from_str_radix(&hex, 16).unwrap();
+            if let Some(f) = world.sight.finder_now() {
+                println!(
+                    "    holds {hex}: {:?}, left {:?}, found {:?}",
+                    f.position.holds(address),
+                    f.position.left(),
+                    f.position.found()
+                );
+            }
+        }
+        // VIVY_GB_DUMP saves work and high RAM after each word, to search offline.
+        if std::env::var("VIVY_GB_DUMP").is_ok() {
+            use crate::features::games::gameboy::any::memory::{Memory, address};
+            let memory = Memory::read(&mut m.emulator);
+            let bytes: Vec<u8> = (0..Memory::LEN).map(|i| memory.get(address(i))).collect();
+            std::fs::write(folder.join(format!("{:03}.mem", i + 1)), bytes).unwrap();
         }
         // VIVY_GB_CELLS prints the grid: each cell's layer (b/w) and tile number.
         if std::env::var("VIVY_GB_CELLS").is_ok() {
@@ -381,7 +405,7 @@ fn pixels_follow_her() {
         .load_state(&std::fs::read(from).unwrap())
         .unwrap();
     m.run(2);
-    let mut her = moves::which_is_her(&mut m);
+    let mut her = moves::which_is_her(&mut m).map(|h| h.at);
     let mut pixels = Pixels::default();
     let ways = [
         Button::Right,
@@ -464,8 +488,8 @@ async fn names_letters() {
                 "F" => {
                     let found =
                         crate::features::games::gameboy::moves::which_is_her(&mut local.machine);
-                    if let Some(spot) = found {
-                        local.world.sight.found_her_at(spot);
+                    if let Some(her) = found {
+                        local.world.sight.found_her_at(her);
                     }
                     look(&mut local.world, &mut local.machine)
                 }

@@ -185,6 +185,16 @@ const PROBE_STEADY: u32 = 8;
 /// Frames watched with nothing pressed, before each round of presses.
 const PROBE_STILL: u32 = 16;
 
+/// Her sprite, found by pressing: where it is now, how far the presses moved it from where
+/// it stood before them (in pixels: each way and back can leave her a step off), and the
+/// screen's scroll, which they didn't move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Her {
+    pub at: (i32, i32),
+    pub moved: (i32, i32),
+    pub scroll: (u8, u8),
+}
+
 /// Which sprite is hers on a screen that stays still under her, found the way a cheat
 /// finder narrows down bytes: nothing is pressed for a moment, then each way in turn
 /// (each side of the way she last went, then on and back), every sprite is followed
@@ -194,7 +204,7 @@ const PROBE_STILL: u32 = 16;
 /// Children and animals wandering about go some other way sooner or later. Where her
 /// sprites are, or `None` if no one sprite (with those touching it) is left, or the
 /// screen scrolled.
-pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
+pub fn which_is_her(machine: &mut Machine) -> Option<Her> {
     // A door's fade may still be going: the screen drawn with sprites on it and its
     // scroll still for a moment first.
     let mut steady = 0;
@@ -215,12 +225,12 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
     }
     let mut screen = Screen::read(machine.emulator.video());
     let scroll = (screen.registers.scx, screen.registers.scy);
-    // Where each sprite is now, how many presses it followed, and whether it went
-    // another way.
-    let mut tracks: Vec<((i32, i32), u32, bool)> = screen
+    // Where each sprite is now, how many presses it followed, whether it went another
+    // way, and where it started.
+    let mut tracks: Vec<Track> = screen
         .sprites
         .iter()
-        .map(|s| ((s.x, s.y), 0, false))
+        .map(|s| ((s.x, s.y), 0, false, (s.x, s.y)))
         .collect();
     // Nothing pressed first, then each way; a second time round if that didn't leave
     // one sprite. Each side first, then on the way she last went and back, so she ends
@@ -241,7 +251,7 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
     ];
     for (n, press) in round.iter().chain(&round).enumerate() {
         if n == round.len()
-            && let Some(her) = only_one(&tracks, &screen)
+            && let Some(her) = only_one(&tracks, &screen, scroll)
         {
             return Some(her);
         }
@@ -295,18 +305,26 @@ pub fn which_is_her(machine: &mut Machine) -> Option<(i32, i32)> {
         }
     }
     machine.emulator.release();
-    only_one(&tracks, &screen)
+    only_one(&tracks, &screen, scroll)
 }
+
+/// A sprite followed while pressing: where it is, presses it followed, whether it went
+/// another way, and where it was at first.
+type Track = ((i32, i32), u32, bool, (i32, i32));
 
 /// The one sprite (with those touching it) that went the way pressed at least twice and
 /// never another way, if there's one.
-fn only_one(tracks: &[((i32, i32), u32, bool)], screen: &Screen) -> Option<(i32, i32)> {
+fn only_one(tracks: &[Track], screen: &Screen, scroll: (u8, u8)) -> Option<Her> {
+    let followed: Vec<&Track> = tracks.iter().filter(|t| t.1 >= 2 && !t.2).collect();
     let kept: Vec<Sprite> = screen
         .sprites
         .iter()
-        .filter(|s| tracks.iter().any(|t| t.1 >= 2 && !t.2 && t.0 == (s.x, s.y)))
+        .filter(|s| followed.iter().any(|t| t.0 == (s.x, s.y)))
         .copied()
         .collect();
+    // Her parts all went as far.
+    let moved = followed.first().map(|t| (t.0.0 - t.3.0, t.0.1 - t.3.1))?;
+    let found = |at| Her { at, moved, scroll };
     // Every sprite kept must be part of her: two that did as she was pressed are too many
     // to tell apart, unless they're within a step and a half of each other (what she
     // holds over her head moves just as she does).
@@ -323,9 +341,10 @@ fn only_one(tracks: &[((i32, i32), u32, bool)], screen: &Screen) -> Option<(i32,
             .iter()
             .all(|k| her.contains(k))
             .then(|| middle_of(&her))
-            .flatten();
+            .flatten()
+            .map(found);
     }
-    middle_of(&kept)
+    middle_of(&kept).map(found)
 }
 
 /// Her sprites, each followed from frame to frame to the nearest sprite a frame on: once

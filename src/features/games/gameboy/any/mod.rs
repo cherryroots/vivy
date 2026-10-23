@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use super::change::{Look as FrameLook, look as frame_look};
 use super::console::Machine;
 use super::map::{AreaMap, Dir, Kind, Pos, as_list};
-use super::moves::{Outcome, offset};
+use super::moves::{Her, Outcome, offset};
 use super::pictures::png_part;
 use super::screen::{COLS, Layer, ROWS, Screen, TileKey};
 use super::text::{Font, Page, Unread, joined, page_of};
@@ -278,6 +278,9 @@ struct Live {
     asked: Vec<Page>,
     /// The text box at the last look, if there was one.
     page: Option<Page>,
+    /// Places where the screen's byte stood still the last time she slid on to another
+    /// screen: it says nothing there (a game can keep its rooms indoors in another byte).
+    unscreened: HashSet<String>,
 }
 
 /// A look where she stood on a still screen, her sprite's spot read from memory: two in a
@@ -430,6 +433,17 @@ impl Sight {
             if slid != (0, 0) || scroll == last.scroll {
                 self.finder().screens.between(&last.memory, &memory, slid);
             }
+            // Whether the screen's byte says anything here: it changes with every slide
+            // where it does.
+            if slid != (0, 0)
+                && let Some(byte) = self.found.screens
+            {
+                if last.memory.get(byte.address) == memory.get(byte.address) {
+                    self.live.unscreened.insert(area.clone());
+                } else {
+                    self.live.unscreened.remove(&area);
+                }
+            }
         }
         let found = self.live.finder.as_ref().and_then(|f| f.screens.found());
         if found != self.found.screens {
@@ -437,11 +451,13 @@ impl Sight {
             trace(format_args!("SCREENS|{found:?}"));
             self.found.screens = found;
             self.origins.clear();
+            self.live.unscreened.clear();
         }
         if let Some(screen) = self
             .live
             .finder
             .as_ref()
+            .filter(|_| !self.live.unscreened.contains(&area))
             .and_then(|f| f.screens.at(&memory))
         {
             let on = step_on_screen(spot, scroll);
@@ -609,9 +625,20 @@ impl Sight {
         self.whereabouts = at;
     }
 
-    /// Her sprite is the one at `spot` (`moves::which_is_her` found it).
-    pub fn found_her_at(&mut self, spot: (i32, i32)) {
-        self.live.spot = Some(spot);
+    /// Pressing found her sprite (`moves::which_is_her`). The presses moved her too, and
+    /// pressing each way and back can leave her a step from where she stood: she's as many
+    /// steps on as her sprite went.
+    pub fn found_her_at(&mut self, her: Her) {
+        let went = pressed_steps(
+            ((her.at.0 - her.moved.0, her.at.1 - her.moved.1), her.scroll),
+            (her.at, her.scroll),
+        );
+        #[cfg(test)]
+        if went != (0, 0) {
+            trace(format_args!("PROBED|{went:?}"));
+        }
+        self.live.at = (self.live.at.0 + went.0, self.live.at.1 + went.1);
+        self.live.spot = Some(her.at);
         self.live.candidate = None;
         self.live.lost = false;
         self.live.just_found = true;
@@ -1468,6 +1495,7 @@ fn after_step(
 ) -> bool {
     let pressed = offset(step.direction.button()).unwrap_or((0, 0));
     let had_position = sight.position(before).is_some();
+    let picked = sight.live.finder.as_ref().and_then(|f| f.position.found());
     // A hop or a carry is only learned where she's known to be, by memory or her sprite:
     // before Link's sprite was found, the steps that found him counted as being carried,
     // and a fresh start drew Link's Awakening's village as spinners.
@@ -1563,25 +1591,60 @@ fn after_step(
             } else {
                 sight.position(&then)
             };
-            let (map, pictures) = (areas.remove(&name), sight.pictures.remove(&name));
-            let Some(by) = by else { continue };
-            if let Some(map) = map {
-                areas.insert(name.clone(), map.shifted(by));
-            }
-            if let Some(pictures) = pictures {
-                let moved = pictures
-                    .0
-                    .into_iter()
-                    .map(|((x, y), k)| ((x + by.0, y + by.1), k));
-                sight
-                    .pictures
-                    .insert(name.clone(), Pictures(moved.collect()));
+            match by {
+                Some(by) => shift_place(sight, areas, &name, by),
+                None => {
+                    areas.remove(&name);
+                    sight.pictures.remove(&name);
+                }
             }
             sight.live.arrived.insert(name, then);
         }
     }
+    // The bytes changed under her while known (the byte that counts x going round just
+    // found, which adds 16 steps for each time it had): what was drawn here moves with
+    // the numbers.
+    if had_position
+        && let (Some(old), Some(new)) = (
+            picked,
+            sight.live.finder.as_ref().and_then(|f| f.position.found()),
+        )
+        && old != new
+    {
+        let by = (
+            new.0.steps(before) - old.0.steps(before),
+            new.1.steps(before) - old.1.steps(before),
+        );
+        if by != (0, 0) {
+            #[cfg(test)]
+            trace(format_args!("SHIFT|{by:?}"));
+            let here = sight.live.area.clone();
+            shift_place(sight, areas, &here, by);
+        }
+    }
     sight.live.at = now.unwrap_or(if new_place { (0, 0) } else { dead_reckoned });
     new_place
+}
+
+/// What was drawn of a place, moved `by` steps.
+fn shift_place(
+    sight: &mut Sight,
+    areas: &mut HashMap<String, AreaMap>,
+    name: &str,
+    by: (i32, i32),
+) {
+    if let Some(map) = areas.remove(name) {
+        areas.insert(name.to_string(), map.shifted(by));
+    }
+    if let Some(pictures) = sight.pictures.remove(name) {
+        let moved = pictures
+            .0
+            .into_iter()
+            .map(|((x, y), k)| ((x + by.0, y + by.1), k));
+        sight
+            .pictures
+            .insert(name.to_string(), Pictures(moved.collect()));
+    }
 }
 
 /// She has gone somewhere new, from the last place's step `gone` (a door if the screen
@@ -2215,6 +2278,65 @@ mod tests {
     }
 
     #[test]
+    fn the_presses_that_find_her_count_as_steps() {
+        let mut sight = Sight::default();
+        sight.live.at = (3, 3);
+        // Each way and back left her a step right of where she stood.
+        sight.found_her_at(Her {
+            at: (88, 72),
+            moved: (16, 0),
+            scroll: (0, 0),
+        });
+        assert_eq!(sight.live.at, (4, 3));
+        assert_eq!(sight.her_spot(), Some((88, 72)));
+        // Half a step back, short of the step she started on: still on it.
+        sight.found_her_at(Her {
+            at: (80, 72),
+            moved: (-8, 0),
+            scroll: (0, 0),
+        });
+        assert_eq!(sight.live.at, (4, 3));
+    }
+
+    #[test]
+    fn a_screen_byte_that_stands_still_through_a_slide_says_nothing_there() {
+        let byte = ScreenByte {
+            address: 0xc100,
+            right: 1,
+            down: 16,
+        };
+        let mut sight = Sight::default();
+        sight.found.screens = Some(byte);
+        sight.finder();
+        let look = |room: u8, spot: (i32, i32), at: Pos, frame: u64| {
+            let mut memory = Memory::from_bytes(vec![0; Memory::LEN]);
+            memory.set(byte.address, room);
+            Settled {
+                memory,
+                area: "Place 1".to_string(),
+                spot,
+                at,
+                scroll: (0, 0),
+                frame,
+                by_memory: true,
+            }
+        };
+        assert_eq!(sight.settled(look(0x22, (136, 72), (8, 4), 1)), (8, 4));
+        // On to the next screen right, her sprite now at the left edge, and the byte
+        // still says the same room (a dungeon keeps its rooms elsewhere): the count stands,
+        // where snapping would have put her back on the first screen.
+        assert_eq!(sight.settled(look(0x22, (24, 72), (10, 4), 2)), (10, 4));
+        assert!(sight.live.unscreened.contains("Place 1"));
+        // Walking across it, still not snapped.
+        assert_eq!(sight.settled(look(0x22, (136, 72), (17, 4), 3)), (17, 4));
+        // A slide the byte follows: it says the screen here again, and sliding back puts
+        // her on the first screen, whatever was counted.
+        assert_eq!(sight.settled(look(0x23, (24, 72), (19, 4), 4)), (19, 4));
+        assert!(sight.live.unscreened.is_empty());
+        assert_eq!(sight.settled(look(0x22, (136, 72), (16, 4), 5)), (8, 4));
+    }
+
+    #[test]
     fn her_own_presses_count_steps_across_the_screen_and_slides() {
         // Two steps right on a still screen, from the middle of a step.
         assert_eq!(
@@ -2411,6 +2533,7 @@ mod tests {
         sight.found.x = Some(Byte {
             address: 0xd362,
             per_step: 1,
+            high: None,
         });
         sight
             .pictures
