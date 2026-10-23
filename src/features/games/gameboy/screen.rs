@@ -259,6 +259,19 @@ fn sprites(video: &Video) -> Vec<Sprite> {
 }
 
 /// FNV-1a over the tile's bytes and its flips.
+/// Whether a tile's picture is one colour all over (the space between letters, a text
+/// box's plain inside), in any of the four colours and flips.
+pub fn is_blank(key: TileKey) -> bool {
+    (0u8..4).any(|colour| {
+        let low = if colour & 1 != 0 { 0xff } else { 0 };
+        let high = if colour & 2 != 0 { 0xff } else { 0 };
+        let bytes: Vec<u8> = (0..8).flat_map(|_| [low, high]).collect();
+        [0, 0x20, 0x40, 0x60]
+            .into_iter()
+            .any(|flips| fingerprint(&bytes, flips) == key)
+    })
+}
+
 fn fingerprint(bytes: &[u8], flips: u8) -> TileKey {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for &byte in bytes.iter().chain(std::iter::once(&flips)) {
@@ -419,5 +432,21 @@ pub mod tests {
         // Pinned, since saved fonts and tile notes are keyed on it.
         assert_eq!(fingerprint(&[0; 16], 0), 0x4dfa_4cff_d1f7_979f);
         assert_ne!(fingerprint(&[0; 16], 0x20), fingerprint(&[0; 16], 0));
+    }
+
+    #[test]
+    fn blank_tiles_are_one_colour_all_over() {
+        assert!(is_blank(fingerprint(&[0; 16], 0)));
+        assert!(is_blank(fingerprint(&[0xff; 16], 0x40)));
+        let mut dark_grey = [0u8; 16];
+        dark_grey
+            .iter_mut()
+            .skip(1)
+            .step_by(2)
+            .for_each(|b| *b = 0xff);
+        assert!(is_blank(fingerprint(&dark_grey, 0)));
+        let mut dot = [0u8; 16];
+        dot[6] = 0x10;
+        assert!(!is_blank(fingerprint(&dot, 0)));
     }
 }

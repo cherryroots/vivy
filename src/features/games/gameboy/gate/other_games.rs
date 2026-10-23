@@ -336,6 +336,25 @@ fn steps_by_hand() {
                 .collect();
             println!("    sprites: {}", list.join(" "));
         }
+        // VIVY_GB_CELLS prints the grid: each cell's layer (b/w) and tile number.
+        if std::env::var("VIVY_GB_CELLS").is_ok() {
+            use crate::features::games::gameboy::screen::{COLS, Layer, ROWS, Screen};
+            let s = Screen::read(m.emulator.video());
+            for row in 0..ROWS {
+                let line: Vec<String> = (0..COLS)
+                    .map(|col| {
+                        let c = s.cell(col, row);
+                        let l = match c.layer {
+                            Layer::Window => 'w',
+                            Layer::Background => 'b',
+                            Layer::Off => '-',
+                        };
+                        format!("{l}{:02x}", c.index)
+                    })
+                    .collect();
+                println!("    {row:2} {}", line.join(" "));
+            }
+        }
         let screen = m.emulator.screen();
         std::fs::write(
             folder.join(format!("{:03}-{word}.png", i + 1)),
@@ -399,4 +418,108 @@ fn pixels_follow_her() {
     }
     println!("found {:?}, left {:?}", pixels.found(), pixels.left());
     println!("{off} of {checked} looks off by more than 4 pixels");
+}
+
+/// Reads a text box with the model naming its letters (`letters.rs`): from a save state
+/// (`VIVY_GB_FROM`), presses as `steps_by_hand` takes them (`VIVY_GB_WALK`, e.g. to talk
+/// to someone), then `read_text`, twice: the second time from the same state with the
+/// letters named the first time, so its words should read with no model.
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_OTHER, a state in VIVY_GB_FROM and a model key"]
+async fn names_letters() {
+    use super::player::Local;
+    use crate::features::games::gameboy::any::{self, Sight};
+    use crate::features::games::gameboy::letters;
+    use crate::features::games::gameboy::map::Dir;
+    use crate::features::games::gameboy::supervisor::Player;
+    use crate::features::games::gameboy::walk::take_step;
+    use crate::features::games::gameboy::world::World;
+    let (_, rom) = other();
+    let state = std::fs::read(std::env::var("VIVY_GB_FROM").unwrap()).unwrap();
+    let walk = std::env::var("VIVY_GB_WALK").unwrap();
+    let http = super::http();
+    let db = super::spend_db().await;
+    let model = super::setting("VIVY_GB_MODEL", "claude-haiku-5-5");
+    let (provider, _) = super::player_model(&http, &db, &model);
+    let mut sight = Sight::default();
+    for round in 1..=2 {
+        let mut m = Machine::new("other.gb", &rom).unwrap();
+        m.emulator.load_state(&state).unwrap();
+        m.run(2);
+        // What was learned, without what only mattered while playing.
+        let sight_now: Sight =
+            serde_json::from_value(serde_json::to_value(&sight).unwrap()).unwrap();
+        let mut local = Local {
+            machine: m,
+            world: World {
+                sight: sight_now,
+                ..World::default()
+            },
+            look: any::look,
+        };
+        let look = local.look;
+        let mut view = look(&mut local.world, &mut local.machine);
+        for word in walk.split_whitespace() {
+            view = match word {
+                "F" => {
+                    let found =
+                        crate::features::games::gameboy::moves::which_is_her(&mut local.machine);
+                    if let Some(spot) = found {
+                        local.world.sight.found_her_at(spot);
+                    }
+                    look(&mut local.world, &mut local.machine)
+                }
+                "A" => {
+                    tap(&mut local.machine, Button::A, 30);
+                    look(&mut local.world, &mut local.machine)
+                }
+                way => {
+                    let dir = match way {
+                        "u" => Dir::Up,
+                        "d" => Dir::Down,
+                        "l" => Dir::Left,
+                        _ => Dir::Right,
+                    };
+                    take_step(&mut local.world, &mut local.machine, look, &view, dir).0
+                }
+            };
+        }
+        let acted = local
+            .act("read_text", &serde_json::json!({}))
+            .await
+            .unwrap();
+        println!("Round {round}: {}", acted.outcome);
+        println!("  words read: {:?}", acted.words);
+        let kept = local.unread().await.unwrap();
+        let unread = letters::fewest(&kept);
+        let folder = results("letters");
+        for (i, u) in unread.iter().enumerate() {
+            std::fs::write(folder.join(format!("{round}-{i}.png")), &u.picture).unwrap();
+        }
+        let reads = if unread.is_empty() {
+            Vec::new()
+        } else {
+            letters::read_boxes(provider.as_ref(), &unread)
+                .await
+                .unwrap()
+        };
+        let mut votes = Vec::new();
+        for (u, rows) in unread.iter().zip(&reads) {
+            let fits = u.page.votes(rows);
+            println!(
+                "  box {:?}: read {rows:?}, {} named",
+                u.page.shape(),
+                fits.len()
+            );
+            votes.extend(fits);
+        }
+        let pages: Vec<_> = kept.into_iter().map(|u| u.page).collect();
+        let named = local.name_letters(&votes, &pages).await.unwrap();
+        println!("  named: {named:?}");
+        sight = local.world.sight;
+        let votes = serde_json::to_value(&sight.font).unwrap()["votes"]
+            .as_object()
+            .map_or(0, |v| v.len());
+        println!("  letters named so far: {votes}");
+    }
 }

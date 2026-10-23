@@ -596,6 +596,28 @@ pub struct ScreenByte {
     pub down: u8,
 }
 
+impl ScreenByte {
+    /// Where a screen is on the grid of screens the byte counts, across and down: with
+    /// `right` 1 and `down` 16, screen 0x35 is 5 across and 3 down. `None` where the two
+    /// don't make a grid (the larger isn't a whole number of the smaller).
+    pub fn grid(self, value: u8) -> Option<(i32, i32)> {
+        let (r, d, v) = (
+            i32::from(self.right),
+            i32::from(self.down),
+            i32::from(value),
+        );
+        if r == 0 || d == 0 {
+            None
+        } else if d > r && d % r == 0 {
+            Some(((v % d) / r, v / d))
+        } else if r > d && r % d == 0 {
+            Some((v / r, (v % r) / d))
+        } else {
+            None
+        }
+    }
+}
+
 /// Slides each way (across and up or down) a byte must follow before it counts as the
 /// screen.
 const SCREEN_AFTER: u32 = 3;

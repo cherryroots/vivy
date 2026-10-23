@@ -13,9 +13,11 @@ use super::any::Sight;
 use super::console::{Machine, console};
 use super::map::AreaMap;
 use super::pictures::png_at;
+use super::screen::TileKey;
 use super::session::Game;
 use super::skills::Skill;
 use super::supervisor::Player;
+use super::text::{Page, Unread};
 use super::walk::{Look, look_for};
 use super::world::World;
 
@@ -60,6 +62,19 @@ impl Player for OnConsole {
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
         on_game(|_, m, _| png_at(&m.emulator.screen(), SCREEN_SCALE)).await?
+    }
+
+    async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {
+        on_game(|world, _, _| world.sight.take_unread()).await
+    }
+
+    async fn name_letters(
+        &mut self,
+        votes: &[(TileKey, String)],
+        pages: &[Page],
+    ) -> anyhow::Result<(Vec<String>, String)> {
+        let (votes, pages) = (votes.to_vec(), pages.to_vec());
+        on_game(move |world, _, _| world.sight.name_letters(&votes, &pages)).await
     }
 }
 

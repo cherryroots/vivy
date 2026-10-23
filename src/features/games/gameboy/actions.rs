@@ -408,9 +408,17 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
 }
 
 fn keep_words(words: &mut Vec<String>, view: &View) {
-    if !view.text.is_empty() && words.last() != Some(&view.text) {
-        words.push(view.text.clone());
+    if view.text.is_empty() || words.last() == Some(&view.text) {
+        return;
     }
+    // Caught half typed a look ago: the whole of it replaces that.
+    if words
+        .last()
+        .is_some_and(|last| view.text.starts_with(last.as_str()))
+    {
+        words.pop();
+    }
+    words.push(view.text.clone());
 }
 
 /// Lets the screen settle after an action and looks: until she can walk, the words have

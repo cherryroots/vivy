@@ -11,9 +11,11 @@ use crate::features::games::gameboy::console::Machine;
 use crate::features::games::gameboy::map::AreaMap;
 use crate::features::games::gameboy::pictures::png_at;
 use crate::features::games::gameboy::red::State;
+use crate::features::games::gameboy::screen::TileKey;
 use crate::features::games::gameboy::session::Game;
 use crate::features::games::gameboy::skills::Skill;
 use crate::features::games::gameboy::supervisor::Player;
+use crate::features::games::gameboy::text::{Page, Unread};
 use crate::features::games::gameboy::walk::{Look, look_for};
 use crate::features::games::gameboy::world::World;
 
@@ -67,6 +69,18 @@ impl Player for Local {
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
         png_at(&self.machine.emulator.screen(), actions::SCREEN_SCALE)
+    }
+
+    async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {
+        Ok(self.world.sight.take_unread())
+    }
+
+    async fn name_letters(
+        &mut self,
+        votes: &[(TileKey, String)],
+        pages: &[Page],
+    ) -> anyhow::Result<(Vec<String>, String)> {
+        Ok(self.world.sight.name_letters(votes, pages))
     }
 }
 

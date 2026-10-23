@@ -19,7 +19,7 @@ use std::path::PathBuf;
 use super::player::Local;
 use super::results;
 use crate::features::games::gameboy::console::Machine;
-use crate::features::games::gameboy::session::Replay;
+use crate::features::games::gameboy::session::{NAMED_LETTERS, Replay};
 use crate::features::games::gameboy::supervisor::{Player, args_text};
 
 /// The replays to play: one file, or every one in a folder by episode number.
@@ -59,6 +59,12 @@ async fn replay_episodes() {
             start.view.area, start.view.at, replay.task
         );
         for (i, played) in replay.actions.iter().enumerate() {
+            if played.name == NAMED_LETTERS {
+                let votes: Vec<(u64, String)> =
+                    serde_json::from_value(played.args["votes"].clone()).unwrap_or_default();
+                local.name_letters(&votes, &[]).await.unwrap();
+                continue;
+            }
             local.world.log.clear();
             let acted = local.act(&played.name, &played.args).await.unwrap();
             // With `VIVY_GB_STEPS_LOG`, every step the action took.
