@@ -38,9 +38,11 @@ use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_
 use super::map::AreaMap;
 use super::notes::{self, Note, Reached};
 use super::puzzle::{self, Move, Wanted};
+use super::screen::TileKey;
 use super::skills::{self, Skill};
 use super::strategist::{self, Ask, Calls, Care, Plan};
 use super::supervisor::{Episode, Player, args_text, run_task};
+use super::text::{Page, Unread};
 use super::world::World;
 use crate::ai::{ChatProvider, OpenAi, Spend};
 use crate::core::timers::Timer;
@@ -278,6 +280,10 @@ pub struct Played {
     pub outcome: String,
 }
 
+/// A replay's entry for letters named between actions (`args.votes`, as
+/// `Sight::name_letters` takes them), so playing it again reads the same words.
+pub const NAMED_LETTERS: &str = "named letters";
+
 /// The game as the supervisor plays it: each action is also told to the dashboard and kept
 /// for the replay, and a blackout is noticed.
 struct Watched<'a, G> {
@@ -326,6 +332,25 @@ impl<G: Game> Player for Watched<'_, G> {
 
     async fn describe(&mut self, acted: &Acted) -> anyhow::Result<String> {
         self.game.describe(acted).await
+    }
+
+    async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {
+        self.game.unread().await
+    }
+
+    async fn name_letters(
+        &mut self,
+        votes: &[(TileKey, String)],
+        pages: &[Page],
+    ) -> anyhow::Result<(Vec<String>, String)> {
+        if !votes.is_empty() {
+            self.played.push(Played {
+                name: NAMED_LETTERS.to_string(),
+                args: json!({ "votes": votes }),
+                outcome: String::new(),
+            });
+        }
+        self.game.name_letters(votes, pages).await
     }
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {

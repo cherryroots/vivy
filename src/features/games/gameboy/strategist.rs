@@ -368,7 +368,7 @@ fn schema(notes: bool, task: bool) -> Value {
 }
 
 /// An object with these properties, all required and no others (a strict schema).
-fn strict(properties: Value) -> Value {
+pub(super) fn strict(properties: Value) -> Value {
     let required: Vec<String> = properties
         .as_object()
         .map(|p| p.keys().cloned().collect())

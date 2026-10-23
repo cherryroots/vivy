@@ -16,8 +16,10 @@
 //!   is as it was when she last walked, apart from scrolling. A text box, a menu or a
 //!   battle changes many tiles without scrolling.
 //!
-//! Words on screen need the font's letters named (a later stage), so `text` stays empty;
-//! the models see the screen itself.
+//! - **Words on screen**: a text box over her map is what changed since she last walked,
+//!   with no scroll. Once each of its letters' pictures is named (a model reads the box
+//!   once, `letters.rs`, and the font keeps the names, `text.rs`), its words read exactly.
+//!   Until then `text` stays empty and the box waits in [`Sight::take_unread`].
 
 pub mod memory;
 
@@ -29,7 +31,9 @@ use super::change::{Look as FrameLook, look as frame_look};
 use super::console::Machine;
 use super::map::{AreaMap, Dir, Kind, Pos, as_list};
 use super::moves::{Outcome, offset};
-use super::screen::{COLS, Layer, ROWS, Screen};
+use super::pictures::png_part;
+use super::screen::{COLS, Layer, ROWS, Screen, TileKey};
+use super::text::{Font, Page, Unread, joined, page_of};
 use super::walk::settle;
 use super::world::{Grid, Stepped, View, World};
 use memory::{Areas, Byte, Finder, Memory, Pixel, Pixels, Position, ScreenByte, Screens};
@@ -57,6 +61,13 @@ const MOVING_MOST: usize = 12;
 /// How long a screen must hold still to count as calm when there's no calm screen to
 /// compare it with.
 const STILL_FRAMES: u32 = 20;
+
+/// Text boxes kept for naming their letters, at most, and pages already asked about.
+const UNREAD_MOST: usize = 16;
+const ASKED_MOST: usize = 32;
+
+/// How many times bigger a text box's picture is for the model.
+const LETTERS_SCALE: u32 = 4;
 
 /// To know a place again by its look: steps of the screen that must have been seen there
 /// before, and how many of them must look the same.
@@ -113,6 +124,9 @@ pub struct Sight {
     /// there, so coming back puts her where she was then.
     #[serde(default, with = "as_list")]
     origins: HashMap<(String, u8), Pos>,
+    /// The names of the game's letters, by their pictures.
+    #[serde(default)]
+    pub font: Font,
     #[serde(skip)]
     live: Live,
 }
@@ -258,6 +272,12 @@ struct Live {
     /// The screen scrolled further than steps go, or while she couldn't walk, since she
     /// last could.
     jumped: bool,
+    /// Text boxes with letters the font hasn't named, and the last pages handed out for
+    /// naming (not kept again while they show).
+    unread: Vec<Unread>,
+    asked: Vec<Page>,
+    /// The text box at the last look, if there was one.
+    page: Option<Page>,
 }
 
 /// A look where she stood on a still screen, her sprite's spot read from memory: two in a
@@ -271,6 +291,8 @@ struct Settled {
     scroll: (u8, u8),
     /// `Emulator::frames` at the look.
     frame: u64,
+    /// Her spot came from memory, not from following her sprite.
+    by_memory: bool,
 }
 
 /// The screen the last time she could walk: its scroll, and each tile's number and
@@ -358,9 +380,18 @@ impl Sight {
             at: counted,
             scroll,
             frame,
+            by_memory,
         } = look;
         let mut at = counted;
-        if let Some(last) = self.live.settled.take().filter(|l| l.area == area) {
+        // Only memory's pixels say how far she went between looks; her sprite followed
+        // can be somebody else's, but with the screen's byte known it still says which
+        // screen she's on.
+        if let Some(last) = self
+            .live
+            .settled
+            .take()
+            .filter(|l| l.area == area && l.by_memory && by_memory)
+        {
             let way = |moved: i32, went: i32, scrolled: bool| {
                 if moved.abs() >= SLID_ACROSS && (scrolled || moved * went < 0) {
                     -moved.signum()
@@ -414,10 +445,27 @@ impl Sight {
             .and_then(|f| f.screens.at(&memory))
         {
             let on = step_on_screen(spot, scroll);
-            let origin = *self
-                .origins
-                .entry((area.clone(), screen))
-                .or_insert((at.0 - on.0, at.1 - on.1));
+            // Where the screen sits among the place's others, once the byte counts a grid
+            // of screens: then even one she was put on (no slide, no door) is known.
+            let placed = self.found.screens.and_then(|byte| {
+                let known: Vec<(u8, Pos)> = self
+                    .origins
+                    .iter()
+                    .filter(|((a, _), _)| *a == area)
+                    .map(|((_, s), &o)| (*s, o))
+                    .collect();
+                grid_origin(byte, &known, screen)
+            });
+            let origin = match placed {
+                Some(origin) => {
+                    self.origins.entry((area.clone(), screen)).or_insert(origin);
+                    origin
+                }
+                None => *self
+                    .origins
+                    .entry((area.clone(), screen))
+                    .or_insert((at.0 - on.0, at.1 - on.1)),
+            };
             #[cfg(test)]
             if (origin.0 + on.0, origin.1 + on.1) != at {
                 trace(format_args!("SNAP|{screen}|{at:?}|{origin:?}"));
@@ -431,6 +479,7 @@ impl Sight {
             at,
             scroll,
             frame,
+            by_memory,
         });
         at
     }
@@ -474,6 +523,71 @@ impl Sight {
 
     /// Whether a step would show which sprite is her (see `Live::finding`): until then
     /// she isn't free to walk, so walking takes the step anyway.
+    /// A text box's words, if the font names all its letters; if not, it's kept (with
+    /// its picture, `rgb` being the screen) for naming them, unless the same box typed as
+    /// far or further is kept already.
+    fn words_on(&mut self, page: Page, screen: &Screen, rgb: &[u8]) -> String {
+        if let Some(text) = self.font.read(&page) {
+            return text;
+        }
+        let live = &mut self.live;
+        if live.unread.iter().any(|u| u.page.holds(&page))
+            || live.asked.iter().any(|asked| asked.holds(&page))
+        {
+            return String::new();
+        }
+        // The window doesn't scroll; a box on the background is where its tiles start.
+        let (dx, dy) = match screen.cell(page.cols.0, page.rows.0).layer {
+            Layer::Window => (0, 0),
+            _ => screen.phase,
+        };
+        let part = (
+            (page.cols.0 as i32 * 8 + dx) as u32,
+            (page.rows.0 as i32 * 8 + dy) as u32,
+            ((page.cols.1 - page.cols.0 + 1) * 8) as u32,
+            ((page.rows.1 - page.rows.0 + 1) * 8) as u32,
+        );
+        if let Ok(picture) = png_part(rgb, part, LETTERS_SCALE) {
+            live.unread.retain(|u| !page.holds(&u.page));
+            live.unread.push(Unread { page, picture });
+            if live.unread.len() > UNREAD_MOST {
+                live.unread.remove(0);
+            }
+        }
+        String::new()
+    }
+
+    /// The text boxes kept for naming their letters since the last call, oldest first.
+    pub fn take_unread(&mut self) -> Vec<Unread> {
+        let unread = std::mem::take(&mut self.live.unread);
+        let live = &mut self.live;
+        live.asked.extend(unread.iter().map(|u| u.page.clone()));
+        let over = live.asked.len().saturating_sub(ASKED_MOST);
+        live.asked.drain(..over);
+        unread
+    }
+
+    /// Names letters (`Page::votes`), and gives the words of `pages` that now read, and
+    /// of the text box at the last look.
+    pub fn name_letters(
+        &mut self,
+        votes: &[(TileKey, String)],
+        pages: &[Page],
+    ) -> (Vec<String>, String) {
+        for (key, name) in votes {
+            self.font.vote(*key, name);
+        }
+        let read: Vec<String> = pages
+            .iter()
+            .filter_map(|page| self.font.read(page))
+            .filter(|text| !text.is_empty())
+            .collect();
+        let words = joined(&read);
+        let words = (!words.is_empty()).then_some(words).into_iter().collect();
+        let now = self.live.page.as_ref().and_then(|p| self.font.read(p));
+        (words, now.unwrap_or_default())
+    }
+
     pub fn finding_her(&self) -> bool {
         self.live.finding
     }
@@ -857,7 +971,28 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             });
     // After a fade anything goes, whether a step code took went dark or her own presses
     // did between looks.
+    // A text box over her map: what changed since she last walked, with no scroll. A
+    // tile is the same if its number or its picture is (see `changed_since`).
+    let page = sight
+        .live
+        .calm
+        .as_ref()
+        .filter(|last| on_map && !dark && !faded && last.scroll == scroll)
+        .and_then(|last| {
+            let changed: Vec<bool> = calm_of(&screen)
+                .tiles
+                .iter()
+                .zip(&last.tiles)
+                .map(|(a, b)| a.0 != b.0 && a.1 != b.1)
+                .collect();
+            page_of(&screen, &changed)
+        });
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
+    sight.live.page = page.filter(|_| !free);
+    let text = match sight.live.page.clone() {
+        Some(page) => sight.words_on(page, &screen, &machine.emulator.screen()),
+        None => String::new(),
+    };
     let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
     // Dark again before she could walk where a door led: another screen came up in
     // between (Link's Awakening's game over menu, then the spot it starts her at again),
@@ -1089,7 +1224,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         sight.found.y = Some(y);
     }
     if let Some(finder) = &sight.live.finder {
-        sight.found.spot = finder.pixels.found();
+        let spot = finder.pixels.found();
+        #[cfg(test)]
+        if spot.is_some() != sight.found.spot.is_some() {
+            trace(format_args!("PIXELS|{spot:?}"));
+        }
+        sight.found.spot = spot;
     }
     // A look on a still screen counts once the screen is still a while later too (not a
     // look again in the same frame): a slide can start with the screen byte already the
@@ -1112,7 +1252,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
         if sight.live.still.is_none()
             && free
-            && sight.live.by_memory
+            && (sight.live.by_memory || sight.found.screens.is_some())
             && scroll == scroll_was
             && let Some(spot) = sight.live.spot
         {
@@ -1123,6 +1263,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                 at: sight.live.at,
                 scroll,
                 frame,
+                by_memory: sight.live.by_memory,
             });
         }
     }
@@ -1208,7 +1349,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         area,
         at,
         can_walk: steps.is_some(),
-        text: String::new(),
+        text,
         facts: String::new(),
         grid: steps.and_then(|s| {
             (s.origin == (0, 0)).then_some(Grid {
@@ -1219,6 +1360,51 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             })
         }),
     }
+}
+
+/// Where a screen starts (its top left step), from the screens of the same place she
+/// has stood on (`known`: each screen and where it started then), where the byte counts
+/// a grid of screens (`ScreenByte::grid`): a screen is as many steps across as most
+/// screens side by side are apart, and as many down, and the place's screens line up
+/// where most of them say. `None` until two pairs side by side and two one above the
+/// other agree how big a screen is.
+fn grid_origin(byte: ScreenByte, known: &[(u8, Pos)], screen: u8) -> Option<Pos> {
+    let on_grid: Vec<((i32, i32), Pos)> = known
+        .iter()
+        .filter_map(|&(s, o)| Some((byte.grid(s)?, o)))
+        .collect();
+    // The answer most say (by at least `least`), the smallest on a tie.
+    let most = |counts: HashMap<Pos, u32>, least: u32| -> Option<Pos> {
+        counts
+            .into_iter()
+            .filter(|&(_, n)| n >= least)
+            .max_by_key(|&(pos, n)| (n, std::cmp::Reverse(pos)))
+            .map(|(pos, _)| pos)
+    };
+    let mut sizes: [HashMap<Pos, u32>; 2] = Default::default();
+    for (a, oa) in &on_grid {
+        for (b, ob) in &on_grid {
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let apart = (ob.0 - oa.0, ob.1 - oa.1);
+            if (dx, dy) == (1, 0) {
+                *sizes[0].entry(apart).or_default() += 1;
+            } else if (dx, dy) == (0, 1) {
+                *sizes[1].entry(apart).or_default() += 1;
+            }
+        }
+    }
+    let [across, down] = sizes;
+    let (across, down) = (most(across, 2)?, most(down, 2)?);
+    // Where screen (0, 0) would start, by each screen she stood on.
+    let start = |(gx, gy): (i32, i32)| (gx * across.0 + gy * down.0, gx * across.1 + gy * down.1);
+    let mut bases: HashMap<Pos, u32> = HashMap::new();
+    for &(g, o) in &on_grid {
+        let s = start(g);
+        *bases.entry((o.0 - s.0, o.1 - s.1)).or_default() += 1;
+    }
+    let base = most(bases, 1)?;
+    let s = start(byte.grid(screen)?);
+    Some((base.0 + s.0, base.1 + s.1))
 }
 
 /// The step her sprite stands on, on the screen's grid (as `steps_of` counts it).
@@ -2002,6 +2188,31 @@ fn join_keys(keys: [u64; 4]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screens_on_a_grid_are_placed_where_the_others_say() {
+        let byte = ScreenByte {
+            address: 0xdb54,
+            right: 1,
+            down: 16,
+        };
+        assert_eq!(byte.grid(0x35), Some((5, 3)));
+        assert_eq!(ScreenByte { right: 3, ..byte }.grid(0x35), None);
+        // Screens 10 steps across and 8 down; one (0x22) was counted a step off.
+        let known = [
+            (0x10, (0, 0)),
+            (0x11, (10, 0)),
+            (0x12, (20, 0)),
+            (0x00, (0, -8)),
+            (0x01, (10, -8)),
+            (0x22, (21, 8)),
+        ];
+        assert_eq!(grid_origin(byte, &known, 0x22), Some((20, 8)));
+        // Put on a screen she never stood on: two across and two down from 0x10.
+        assert_eq!(grid_origin(byte, &known, 0x32), Some((20, 16)));
+        // One pair each way doesn't say how big a screen is yet.
+        assert_eq!(grid_origin(byte, &known[..4], 0x32), None);
+    }
 
     #[test]
     fn her_own_presses_count_steps_across_the_screen_and_slides() {

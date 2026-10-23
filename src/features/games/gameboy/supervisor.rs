@@ -13,6 +13,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use super::actions::{self, Acted};
+use super::letters;
+use super::screen::TileKey;
+use super::text::{Page, Unread};
 use crate::ai::{
     ChatEvent, ChatProvider, ChatRequest, Input, NativeRound, Part, Role, ToolOutput, Turn,
     next_input,
@@ -51,6 +54,20 @@ pub trait Player: Send {
     async fn describe(&mut self, acted: &Acted) -> anyhow::Result<String>;
     /// The screen now, as a small PNG.
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>>;
+    /// Text boxes seen since the last call with letters the game's font hasn't named yet
+    /// (games read from the screen, `letters.rs`).
+    async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {
+        Ok(Vec::new())
+    }
+    /// Names letters, and gives the words of `pages` that read now, and the words on the
+    /// screen now (the last look's text box).
+    async fn name_letters(
+        &mut self,
+        _votes: &[(TileKey, String)],
+        _pages: &[Page],
+    ) -> anyhow::Result<(Vec<String>, String)> {
+        Ok((Vec::new(), String::new()))
+    }
 }
 
 /// How a task went.
@@ -208,7 +225,14 @@ pub async fn run_task(
             if episode.actions >= most {
                 return Ok(episode);
             }
-            let acted = player.act(&call.name, &call.args).await?;
+            let mut acted = player.act(&call.name, &call.args).await?;
+            // Text boxes whose letters weren't named yet: named now, and their words read.
+            if let Some((named, now)) = letters::name_letters(provider, player).await {
+                acted.words.splice(0..0, named);
+                if !acted.view.can_walk && acted.view.text.is_empty() {
+                    acted.view.text = now;
+                }
+            }
             text_up = !acted.view.can_walk && !acted.view.text.is_empty();
             if acted.view.area != area && !episode.entered.contains(&acted.view.area) {
                 episode.entered.push(acted.view.area.clone());

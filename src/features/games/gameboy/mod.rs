@@ -38,6 +38,7 @@ mod files;
 #[cfg(test)]
 mod gate;
 mod journal;
+mod letters;
 mod map;
 mod moves;
 mod narrate;
@@ -54,13 +55,10 @@ mod session;
 mod skills;
 mod strategist;
 mod supervisor;
-// Reading text from the font, for games with no memory map. Tested on Pokémon Red now;
-// played games use it once the tile classifier arrives.
 #[cfg(test)]
 mod test_game;
 #[cfg(test)]
 mod test_rom;
-#[cfg_attr(not(test), allow(dead_code))]
 mod text;
 mod walk;
 mod web;

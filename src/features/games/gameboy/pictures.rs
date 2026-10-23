@@ -36,6 +36,20 @@ pub fn png_at(screen: &[u8], scale: u32) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
+/// Part of a screen as a PNG, `scale` times bigger: `w`×`h` pixels from `(x, y)`, cut
+/// to the screen's edges.
+pub fn png_part(screen: &[u8], (x, y, w, h): (u32, u32, u32, u32), scale: u32) -> Result<Vec<u8>> {
+    let image = RgbImage::from_raw(WIDTH as u32, HEIGHT as u32, screen.to_vec())
+        .context("a screen of the wrong size")?;
+    let (x, y) = (x.min(WIDTH as u32 - 1), y.min(HEIGHT as u32 - 1));
+    let (w, h) = (w.min(WIDTH as u32 - x), h.min(HEIGHT as u32 - y));
+    let part = image::imageops::crop_imm(&image, x, y, w, h).to_image();
+    let big = image::imageops::resize(&part, w * scale, h * scale, FilterType::Nearest);
+    let mut out = std::io::Cursor::new(Vec::new());
+    big.write_to(&mut out, ImageFormat::Png)?;
+    Ok(out.into_inner())
+}
+
 /// Screens as an animated GIF, `scale` times bigger, playing at the game's speed when they
 /// were taken every `every` frames. A screen the same as the one before it isn't repeated;
 /// the one before just stays up longer. Plays once (Discord loops GIFs anyway).
