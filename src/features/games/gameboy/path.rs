@@ -1,6 +1,7 @@
 //! Where she went during one press, frame by frame: how high a jump took her and where
-//! she came down, or how far a dash, a slide or a knock back carried her. A look only sees where she stands before and after; the frames in
-//! between (`Machine::frames_since`) show the arc. Pure, from her sprite and the
+//! she came down, or how far a dash, a slide or a knock back carried her. A look only
+//! sees where she stands before and after; the frames in between
+//! (`Machine::frames_since`) show the arc. Pure, from her sprite and the
 //! background's scroll, so it reads any game the same way: a screen that scrolls under her
 //! moves the background, not her sprite, and both count.
 //!
@@ -33,7 +34,7 @@ pub type Frame<'a> = (&'a [(i32, i32)], (u8, u8));
 /// followed from `spot` (the middle of her sprite on the first frame). `height` is the
 /// sprites' height. `None` when no sprite was at the spot, or she was lost for long.
 pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i32, i32)>> {
-    let (&(first, first_scroll), rest) = frames.split_first()?;
+    let (&(first, _), rest) = frames.split_first()?;
     let off = |p: &(i32, i32)| ((p.0 + 4 - spot.0).abs(), (p.1 + height / 2 - spot.1).abs());
     let mut parts: Vec<(i32, i32)> = first
         .iter()
@@ -54,14 +55,10 @@ pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i3
     }
     // Each part's start and where it is now.
     let mut parts: Vec<((i32, i32), (i32, i32))> = parts.into_iter().map(|p| (p, p)).collect();
-    let mut scrolled = (0, 0);
-    let mut last_scroll = first_scroll;
+    let scrolled = scrolled(frames);
     let mut lost = 0;
     let mut places = vec![(0, 0)];
-    for &(sprites, scroll) in rest {
-        scrolled.0 += i32::from(scroll.0.wrapping_sub(last_scroll.0) as i8);
-        scrolled.1 += i32::from(scroll.1.wrapping_sub(last_scroll.1) as i8);
-        last_scroll = scroll;
+    for (&(sprites, _), &scrolled) in rest.iter().zip(&scrolled[1..]) {
         let mut kept = 0;
         for (_, now) in &mut parts {
             // A part may flicker out for a frame; it's picked up again near where it was.
@@ -134,18 +131,7 @@ impl Motion {
     /// "went 5 right from the start".
     pub fn words(&self) -> String {
         let (x, y) = self.ended;
-        let mut place = Vec::new();
-        match self.halves(x) {
-            0 => {}
-            h if h > 0 => place.push(format!("{} right", steps(h))),
-            h => place.push(format!("{} left", steps(-h))),
-        }
-        match self.halves(y) {
-            0 => {}
-            h if h > 0 => place.push(format!("{} down", steps(h))),
-            h => place.push(format!("{} up", steps(-h))),
-        }
-        let place = place.join(" ");
+        let place = place_words((x, y), self.step);
         if self.rise < RISE {
             return format!("went {place} from the start");
         }
@@ -161,9 +147,47 @@ impl Motion {
 
     /// Pixels in half steps, the nearest.
     fn halves(&self, pixels: i32) -> i32 {
-        let half = self.step.max(2) / 2;
-        (pixels + pixels.signum() * half / 2) / half
+        halves(pixels, self.step)
     }
+}
+
+/// Pixels in half steps of `step` pixels, the nearest.
+fn halves(pixels: i32, step: i32) -> i32 {
+    let half = step.max(2) / 2;
+    (pixels + pixels.signum() * half / 2) / half
+}
+
+/// Pixels (x right, y down) as steps in words: "3 right 1 up", or nothing for under half
+/// a step.
+pub fn place_words((x, y): (i32, i32), step: i32) -> String {
+    let mut place = Vec::new();
+    match halves(x, step) {
+        0 => {}
+        h if h > 0 => place.push(format!("{} right", steps(h))),
+        h => place.push(format!("{} left", steps(-h))),
+    }
+    match halves(y, step) {
+        0 => {}
+        h if h > 0 => place.push(format!("{} down", steps(h))),
+        h => place.push(format!("{} up", steps(-h))),
+    }
+    place.join(" ")
+}
+
+/// How far the background has scrolled by each frame since the first, in pixels: it
+/// wraps at 256, and goes a little at a time.
+pub fn scrolled(frames: &[Frame]) -> Vec<(i32, i32)> {
+    let mut total = (0, 0);
+    let mut last = frames.first().map_or((0, 0), |f| f.1);
+    frames
+        .iter()
+        .map(|&(_, scroll)| {
+            total.0 += i32::from(scroll.0.wrapping_sub(last.0) as i8);
+            total.1 += i32::from(scroll.1.wrapping_sub(last.1) as i8);
+            last = scroll;
+            total
+        })
+        .collect()
 }
 
 /// Half steps as words: "2", "2.5".
