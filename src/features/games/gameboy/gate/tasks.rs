@@ -41,7 +41,7 @@ impl Driver {
 
     fn tap(&mut self, button: Button) {
         self.m
-            .press(&[Press(vec![button])], Timing { hold: 6, gap: 20 });
+            .press(&[Press::of(vec![button])], Timing { hold: 6, gap: 20 });
     }
 
     /// Presses through text, choices and battles until she can walk. A nickname question

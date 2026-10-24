@@ -97,10 +97,11 @@ impl Machine {
         }
     }
 
-    /// Presses each in turn: held for `timing.hold` frames, then nothing for `timing.gap`.
+    /// Presses each in turn: held for `timing.hold` frames (or the press's own length),
+    /// then nothing for `timing.gap`.
     pub fn press(&mut self, presses: &[Press], timing: Timing) {
-        for Press(buttons) in presses {
-            self.hold_for(buttons, timing.hold);
+        for Press { buttons, frames } in presses {
+            self.hold_for(buttons, frames.unwrap_or(timing.hold));
             self.hold_for(&[], timing.gap);
         }
     }

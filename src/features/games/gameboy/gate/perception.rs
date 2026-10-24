@@ -820,7 +820,7 @@ fn a_battle_is_not_a_place() {
                 }
             }
             m.press(
-                &[Press(vec![Button::A])],
+                &[Press::of(vec![Button::A])],
                 Timing {
                     hold: 4,
                     gap: 20 + i % 30,
@@ -873,7 +873,7 @@ fn a_battle_her_presses_scrolled_is_not_her() {
     ] {
         let saved = std::fs::read(super::tasks::folder().join(format!("{battle}.state"))).unwrap();
         m.emulator.load_state(&saved).unwrap();
-        m.press(&[Press(vec![Button::Left])], Timing { hold: 2, gap: 2 });
+        m.press(&[Press::of(vec![Button::Left])], Timing { hold: 2, gap: 2 });
         let view = look(&mut world, &mut m);
         assert!(!view.can_walk, "{battle}");
         for _ in 0..6 {
@@ -909,7 +909,7 @@ fn stairs_taken_by_her_own_presses_are_somewhere_new() {
     walk_to(&mut world, &mut m, look, (6, 1), 20);
     let upstairs = look(&mut world, &mut m).area;
     let press = |m: &mut Machine, button: Button| {
-        m.press(&[Press(vec![button])], Timing { hold: 16, gap: 16 });
+        m.press(&[Press::of(vec![button])], Timing { hold: 16, gap: 16 });
         m.run(90);
     };
     press(&mut m, Button::Right);
@@ -947,7 +947,7 @@ fn stairs_taken_after_a_menu_are_somewhere_new() {
     walk_to(&mut world, &mut m, look, (6, 1), 20);
     let upstairs = look(&mut world, &mut m).area;
     let press = |m: &mut Machine, button: Button| {
-        m.press(&[Press(vec![button])], Timing { hold: 16, gap: 16 });
+        m.press(&[Press::of(vec![button])], Timing { hold: 16, gap: 16 });
         m.run(30);
     };
     press(&mut m, Button::Start);

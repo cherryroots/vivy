@@ -131,7 +131,7 @@ fn explore_another_game() {
                 tap(&mut m, Button::A, 30);
                 let _ = look(&mut world, &mut m);
                 let button = [Button::Down, Button::Left, Button::Up, Button::Right][texts % 4];
-                m.press(&[Press(vec![button])], Timing::default());
+                m.press(&[Press::of(vec![button])], Timing::default());
             }
             Walked::Arrived => {}
             Walked::NoWay | Walked::Stuck => {
@@ -298,11 +298,38 @@ fn steps_by_hand() {
                 frames.parse::<u32>().unwrap(),
             )
         });
+        // H and buttons keeps them held from then on, H alone lets go: "Hb =right*3 H".
+        if let Some(rest) = word.strip_prefix('H') {
+            let kept: Vec<Button> = rest.split('+').filter_map(Button::parse).collect();
+            m.emulator.keep(&kept);
+        }
         // = and presses the way her press action types them: "=b+right*3".
         let typed = word
             .strip_prefix('=')
             .map(|rest| crate::features::games::gameboy::presses::parse(rest).unwrap());
         let (next, outcome) = match button {
+            _ if word.starts_with('H') => (look(&mut world, &mut m), None),
+            // R writes the skill in VIVY_GB_SKILL (write_skill's arguments as JSON) and uses
+            // it, the way her tools do, saving every screen it recorded.
+            _ if word == "R" => {
+                use crate::features::games::gameboy::actions;
+                let args: serde_json::Value =
+                    serde_json::from_str(&std::env::var("VIVY_GB_SKILL").unwrap()).unwrap();
+                let wrote = actions::run(&mut world, &mut m, look, "write_skill", &args);
+                println!("wrote: {}", wrote.outcome);
+                let mark = m.recorded();
+                let name = serde_json::json!({"name": args["name"]});
+                let used = actions::run(&mut world, &mut m, look, "use_skill", &name);
+                println!("used: {}", used.outcome);
+                for (n, screen) in m.screens_since(mark).iter().enumerate() {
+                    std::fs::write(
+                        folder.join(format!("{:03}-R-{n:03}.png", i + 1)),
+                        png_at(screen, 2).unwrap(),
+                    )
+                    .unwrap();
+                }
+                (used.view, None)
+            }
             _ if let Some(presses) = &typed => {
                 m.press(presses, Default::default());
                 (look(&mut world, &mut m), None)
@@ -340,6 +367,11 @@ fn steps_by_hand() {
             world.sight.her_spot(),
             world.sight.found
         );
+        // VIVY_GB_NEAR says what's near her, the way her look does.
+        if std::env::var("VIVY_GB_NEAR").is_ok() {
+            use crate::features::games::gameboy::{actions, near};
+            println!("    {}", near::line(&actions::near_her(&world, &m, &next)));
+        }
         if std::env::var("VIVY_GB_SPRITES").is_ok() {
             let s = crate::features::games::gameboy::screen::Screen::read(m.emulator.video());
             let list: Vec<String> = s

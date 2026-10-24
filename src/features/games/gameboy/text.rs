@@ -385,6 +385,7 @@ mod tests {
             vram: Vec::new(),
             oam: Vec::new(),
             registers: Registers::default(),
+            lines: Vec::new(),
             drawn: true,
             color: false,
         };

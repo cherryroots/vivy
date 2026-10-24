@@ -84,7 +84,11 @@ empty fits any screen) presses its buttons (1 to 5, spaced, like \"down right a\
 stops when the player can walk (unless stop_when_free is false), on a stop word once it \
 has pressed something, after most rounds (at most 50), when no rule fits, or when 3 \
 rounds change nothing. Stop words are words, never numbers: HP, levels and money change. \
-Each skill shows how its last use ended. Review them: rewrite one \
+A reflex is a routine for fights and jumps in real time: its rules have if_near, what must \
+be around the player (near, ahead, behind, above, below, left, right or coming, then steps \
+1 to 4, like \"ahead 2\"; or blocked, when the last direction didn't move it), and it runs \
+while the player walks, stopping when words come up or it can't walk for a moment. holding keeps buttons held while a skill \
+runs (a shield). Each skill shows how its last use ended. Review them: rewrite one \
 whose last use went wrong, merge near-copies into one and delete the rest, delete one \
 that never helped, add one when the last task repeated a job no skill covers. Rules \
 match words that are really on screen in the text read. Change nothing that works: an \
@@ -401,6 +405,7 @@ pub(super) fn strict(properties: Value) -> Value {
 fn skill_change() -> Value {
     let rule = strict(json!({
         "if_words": {"type": "string"},
+        "if_near": {"type": "string"},
         "press": {"type": "string"}
     }));
     strict(json!({
@@ -411,7 +416,8 @@ fn skill_change() -> Value {
         "rules": {"type": "array", "items": rule},
         "stop_words": {"type": "array", "items": {"type": "string"}},
         "stop_when_free": {"type": "boolean"},
-        "most": {"type": "integer"}
+        "most": {"type": "integer"},
+        "holding": {"type": "string"}
     }))
 }
 
@@ -436,10 +442,10 @@ mod tests {
         );
         let change = &both["properties"]["skill_changes"]["items"];
         assert_eq!(change["additionalProperties"], false);
-        assert_eq!(change["required"].as_array().unwrap().len(), 8);
+        assert_eq!(change["required"].as_array().unwrap().len(), 9);
         assert_eq!(
             change["properties"]["rules"]["items"]["required"],
-            json!(["if_words", "press"])
+            json!(["if_near", "if_words", "press"])
         );
         assert_eq!(both["additionalProperties"], false);
         for (field, keys) in [("notes", 2), ("milestones", 4)] {

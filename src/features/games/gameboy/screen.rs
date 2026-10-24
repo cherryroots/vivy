@@ -94,13 +94,21 @@ impl Screen {
         let drawn = video.drawn && r.lcdc & 0x80 != 0 && !video.vram.is_empty();
         let mut cells = Vec::with_capacity(COLS * ROWS);
         for row in 0..ROWS {
+            let bar = bar_registers(video, row * 8);
             for col in 0..COLS {
                 cells.push(if drawn {
                     let (x, y) = (col * 8, row * 8);
                     if in_window(&r, x, y) {
-                        read_cell(video, x, y, true)
+                        read_cell(video, &r, x, y, true)
+                    } else if let Some(bar) = &bar {
+                        // A status bar stays put like a window, whatever the map does.
+                        Cell {
+                            layer: Layer::Window,
+                            ..read_cell(video, bar, x, y, false)
+                        }
                     } else {
-                        read_cell(video, x + phase.0 as usize, y + phase.1 as usize, false)
+                        let (x, y) = (x + phase.0 as usize, y + phase.1 as usize);
+                        read_cell(video, &r, x, y, false)
                     }
                 } else {
                     Cell {
@@ -144,10 +152,26 @@ fn in_window(r: &Registers, x: usize, y: usize) -> bool {
     r.lcdc & 0x20 != 0 && r.wx <= 166 && r.wy <= 143 && y >= r.wy as usize && x + 7 >= r.wx as usize
 }
 
+/// The registers a status bar on the row of cells from line `y` was drawn with: LCDC or
+/// the scroll other than most lines had (Mega Man's bar at the bottom has the scroll back
+/// at nothing and sprites off). `None` for a row of the map.
+fn bar_registers(video: &Video, y: usize) -> Option<Registers> {
+    let r = video.registers;
+    let &(lcdc, scx, scy) = video.lines.get(y)?;
+    if (lcdc, scx, scy) == (r.lcdc, r.scx, r.scy) {
+        return None;
+    }
+    Some(Registers {
+        lcdc,
+        scx,
+        scy,
+        ..r
+    })
+}
+
 /// The cell whose top left pixel is at screen pixel `(x, y)`, in the window or the
-/// background.
-fn read_cell(video: &Video, x: usize, y: usize, window: bool) -> Cell {
-    let r = &video.registers;
+/// background, drawn with registers `r`.
+fn read_cell(video: &Video, r: &Registers, x: usize, y: usize, window: bool) -> Cell {
     // The original Game Boy blanks both layers when bit 0 is off. (On a Game Boy Color it
     // only gives sprites priority, so the layers still show.)
     if r.lcdc & 0x01 == 0 && !video.color {
@@ -402,6 +426,7 @@ pub mod tests {
                 bgp: 0xe4,
                 ..Registers::default()
             },
+            lines: Vec::new(),
             drawn: true,
             color: false,
         };

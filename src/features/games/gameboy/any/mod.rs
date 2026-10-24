@@ -304,6 +304,8 @@ struct Settled {
 struct Calm {
     scroll: (u8, u8),
     tiles: Vec<(u8, u64)>,
+    /// Cells that don't scroll with the map: the window, a status bar.
+    fixed: Vec<bool>,
 }
 
 /// How the screen's steps sit: the pixel the grid starts at, steps across and down, and
@@ -2079,6 +2081,11 @@ fn calm_of(screen: &Screen) -> Calm {
     Calm {
         scroll: (screen.registers.scx, screen.registers.scy),
         tiles: screen.cells.iter().map(|c| (c.index, c.key)).collect(),
+        fixed: screen
+            .cells
+            .iter()
+            .map(|c| c.layer == Layer::Window)
+            .collect(),
     }
 }
 
@@ -2103,12 +2110,21 @@ fn holds_still(machine: &mut Machine, now: &Calm, steps: Steps, spot: Option<(i3
 
 /// How many tiles differ from the last calm screen, moved by `by` cells, where both have
 /// one. A tile is the same if its number or its picture is: tiles whose pictures move
-/// keep their numbers, and a map drawn again elsewhere keeps its pictures.
+/// keep their numbers, and a map drawn again elsewhere keeps its pictures. A fixed cell
+/// (the window, a status bar) on either is compared where it is, since it doesn't move
+/// with the map: a status bar stays the same, a text box coming up changes.
 fn changed_since(last: &Calm, now: &Calm, by: (i32, i32)) -> usize {
     let (cols, rows) = (COLS as i32, ROWS as i32);
+    let fixed = |calm: &Calm, i: usize| calm.fixed.get(i).copied().unwrap_or(false);
     let mut changed = 0;
     for row in 0..rows {
         for col in 0..cols {
+            let i = (row * cols + col) as usize;
+            let by = if fixed(now, i) || fixed(last, i) {
+                (0, 0)
+            } else {
+                by
+            };
             let (c, r) = (col + by.0, row + by.1);
             if !(0..cols).contains(&c) || !(0..rows).contains(&r) {
                 continue;
@@ -2440,7 +2456,7 @@ mod tests {
         let mut m = super::super::red::tests::new_game();
         let mut world = World::default();
         let press = |m: &mut Machine, button: Button| {
-            m.press(&[Press(vec![button])], Timing { hold: 4, gap: 30 });
+            m.press(&[Press::of(vec![button])], Timing { hold: 4, gap: 30 });
         };
         for button in [Button::Left, Button::Right, Button::Left, Button::Right] {
             press(&mut m, button);

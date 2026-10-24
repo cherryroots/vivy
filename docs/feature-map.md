@@ -223,6 +223,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #112 | | Game Boy: in games that count her position in pixels on a map wider than 16 steps (Harvest Moon's farm), a second vote finds the byte that counts the pixel byte going round, so her position no longer jumps back 16 steps and splits the place; places where the screen's byte stands still through a slide (a dungeon keeping its rooms elsewhere) aren't snapped by it; the steps the presses that find her sprite left her off are counted |
 | #113 | | Game Boy: where code knows which sprite is hers, the pictures the models get have corner marks round her, so a villager who looks like her isn't taken for her |
 | #114 | | Game Boy: the strategist marks a task essential when the next milestone needs it; stuck on one, she keeps at it another way instead of exploring elsewhere, and isn't rolled back to a checkpoint away from it. The press tool says buttons joined with + are held together (`b+right`) |
+| #115 | | Game Boy: buttons held through an action (`holding`) and long presses (`a:40`); every look says what's near her and how it moves; reflex skills that react to what's near her in real time with no model call; status bars read as fixed rows, so Mega Man's sprites are seen |
 
 ## Not built yet
 

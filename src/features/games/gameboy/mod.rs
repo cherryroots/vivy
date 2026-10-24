@@ -42,6 +42,7 @@ mod letters;
 mod map;
 mod moves;
 mod narrate;
+mod near;
 mod notes;
 mod pictures;
 mod player;
