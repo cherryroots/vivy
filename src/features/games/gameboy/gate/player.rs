@@ -9,7 +9,7 @@ use crate::features::games::gameboy::actions::{self, Acted};
 use crate::features::games::gameboy::any::{self, Sight};
 use crate::features::games::gameboy::console::Machine;
 use crate::features::games::gameboy::map::AreaMap;
-use crate::features::games::gameboy::pictures::png_at;
+use crate::features::games::gameboy::pictures::png_marked;
 use crate::features::games::gameboy::red::State;
 use crate::features::games::gameboy::screen::TileKey;
 use crate::features::games::gameboy::session::Game;
@@ -68,7 +68,11 @@ impl Player for Local {
     }
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
-        png_at(&self.machine.emulator.screen(), actions::SCREEN_SCALE)
+        png_marked(
+            &self.machine.emulator.screen(),
+            actions::SCREEN_SCALE,
+            self.world.sight.her_spot(),
+        )
     }
 
     async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {

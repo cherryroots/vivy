@@ -36,6 +36,66 @@ pub fn png_at(screen: &[u8], scale: u32) -> Result<Vec<u8>> {
     Ok(out.into_inner())
 }
 
+/// A screen as a PNG, `scale` times bigger, with corner marks round her sprite where code
+/// knows which one is hers (`her`, its middle on the screen): the models had taken a
+/// villager who looks like Link for him and walked from the wrong place all episode.
+pub fn png_marked(screen: &[u8], scale: u32, her: Option<(i32, i32)>) -> Result<Vec<u8>> {
+    let Some((x, y)) = her else {
+        return png_at(screen, scale);
+    };
+    let image = RgbImage::from_raw(WIDTH as u32, HEIGHT as u32, screen.to_vec())
+        .context("a screen of the wrong size")?;
+    let mut big = image::imageops::resize(
+        &image,
+        WIDTH as u32 * scale,
+        HEIGHT as u32 * scale,
+        FilterType::Nearest,
+    );
+    let s = scale as i32;
+    let (left, top, right, bottom) = (
+        (x - MARK_REACH) * s,
+        (y - MARK_REACH) * s,
+        (x + MARK_REACH) * s,
+        (y + MARK_REACH) * s,
+    );
+    // Black, with white round it, so it shows on any colour.
+    for (colour, grow) in [([255, 255, 255], s), ([0, 0, 0], 0)] {
+        let (thick, arm) = (MARK_THICK * s + 2 * grow, MARK_ARM * s + grow);
+        for (cx, cy, dx, dy) in [
+            (left, top, 1, 1),
+            (right, top, -1, 1),
+            (left, bottom, 1, -1),
+            (right, bottom, -1, -1),
+        ] {
+            let (cx, cy) = (cx - dx * grow, cy - dy * grow);
+            // Along the top or bottom, then down or up the side.
+            fill(&mut big, (cx, cy), (cx + dx * arm, cy + dy * thick), colour);
+            fill(&mut big, (cx, cy), (cx + dx * thick, cy + dy * arm), colour);
+        }
+    }
+    let mut out = std::io::Cursor::new(Vec::new());
+    big.write_to(&mut out, ImageFormat::Png)?;
+    Ok(out.into_inner())
+}
+
+/// How far each corner mark is from her middle, how long each arm is, and how thick,
+/// in the screen's pixels.
+const MARK_REACH: i32 = 11;
+const MARK_ARM: i32 = 5;
+const MARK_THICK: i32 = 2;
+
+/// Fills the rectangle between two corners (either way round), cut to the picture.
+fn fill(image: &mut RgbImage, a: (i32, i32), b: (i32, i32), colour: [u8; 3]) {
+    let (w, h) = (image.width() as i32, image.height() as i32);
+    let (x0, x1) = (a.0.min(b.0).max(0), a.0.max(b.0).min(w));
+    let (y0, y1) = (a.1.min(b.1).max(0), a.1.max(b.1).min(h));
+    for y in y0..y1 {
+        for x in x0..x1 {
+            image.put_pixel(x as u32, y as u32, image::Rgb(colour));
+        }
+    }
+}
+
 /// Part of a screen as a PNG, `scale` times bigger: `w`×`h` pixels from `(x, y)`, cut
 /// to the screen's edges.
 pub fn png_part(screen: &[u8], (x, y, w, h): (u32, u32, u32, u32), scale: u32) -> Result<Vec<u8>> {
@@ -207,6 +267,23 @@ mod tests {
         }
         // 3 frames is 5 hundredths; the last also has a minute (3603 frames) more.
         assert_eq!(delays, vec![5, 6032]);
+    }
+
+    #[test]
+    fn her_marks_go_round_her_and_off_the_edge_is_cut() {
+        let plain = screen([100, 100, 100], (159, 143));
+        assert_eq!(
+            png_marked(&plain, 2, None).unwrap(),
+            png_at(&plain, 2).unwrap()
+        );
+        let png = png_marked(&plain, 2, Some((80, 72))).unwrap();
+        let image = image::load_from_memory(&png).unwrap().to_rgb8();
+        // The top left corner's mark is black, white round it, and the middle is untouched.
+        assert_eq!(image.get_pixel(69 * 2 + 1, 61 * 2 + 1).0, [0, 0, 0]);
+        assert_eq!(image.get_pixel(69 * 2 - 1, 61 * 2 - 1).0, [255, 255, 255]);
+        assert_eq!(image.get_pixel(80 * 2, 72 * 2).0, [100, 100, 100]);
+        // At the top of the screen the marks above her are cut, not wrapped.
+        assert!(png_marked(&plain, 2, Some((8, 2))).is_ok());
     }
 
     #[test]

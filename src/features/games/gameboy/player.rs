@@ -12,7 +12,7 @@ use super::actions::{self, Acted, SCREEN_SCALE};
 use super::any::Sight;
 use super::console::{Machine, console};
 use super::map::AreaMap;
-use super::pictures::png_at;
+use super::pictures::png_marked;
 use super::screen::TileKey;
 use super::session::Game;
 use super::skills::Skill;
@@ -61,7 +61,10 @@ impl Player for OnConsole {
     }
 
     async fn screen(&mut self) -> anyhow::Result<Vec<u8>> {
-        on_game(|_, m, _| png_at(&m.emulator.screen(), SCREEN_SCALE)).await?
+        on_game(|world, m, _| {
+            png_marked(&m.emulator.screen(), SCREEN_SCALE, world.sight.her_spot())
+        })
+        .await?
     }
 
     async fn unread(&mut self) -> anyhow::Result<Vec<Unread>> {
