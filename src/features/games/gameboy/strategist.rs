@@ -41,6 +41,13 @@ use them up;
 (code checks it);
 - different from a task that just failed, unless you can name what will go differently.
 
+Essential tasks: when the next milestone needs one thing done that nothing else gets \
+round (a key item to get, someone who must be talked to, an obstacle in the way), mark \
+the task essential and keep at it until it's done. When it fails, try it another way \
+(another route, another button, an item, a skill for it, puzzle help), never just go \
+somewhere else; note what was tried and how it went, so the next try is different. \
+Exploring elsewhere is for finding what the essential task needs.
+
 Puzzle help: when the way on in this area needs more than walking (steps that carry the \
 player somewhere else, things to push, switches) and walking or exploring has failed, \
 ask for it: the spot to reach here as x and y, and in what, how you think it works. A \
@@ -123,6 +130,9 @@ pub struct Plan {
     /// The milestones still ahead, as it sees them now.
     pub milestones: Vec<Milestone>,
     pub task: String,
+    /// The task is the one way to the next milestone: when it fails, she keeps at it
+    /// another way rather than going somewhere else.
+    pub essential: bool,
     /// Puzzle help it asked for, to follow before the task (`puzzle.rs`).
     pub puzzle: Option<Wanted>,
     /// Changes to her skills, as `skills::review` takes them.
@@ -141,6 +151,8 @@ struct Answer {
     milestones: Option<Vec<Milestone>>,
     #[serde(default)]
     next_task: Option<String>,
+    #[serde(default)]
+    essential: Option<bool>,
     #[serde(default)]
     puzzle: Option<Wanted>,
     #[serde(default)]
@@ -179,6 +191,7 @@ impl Answer {
             notes: self.notes(),
             milestones: self.milestones.take().unwrap_or_default(),
             task: self.next_task.take().unwrap_or_default(),
+            essential: self.essential.unwrap_or(false),
             puzzle: self.puzzle.take().filter(|p| !p.what.trim().is_empty()),
             skill_changes: self.skill_changes.take().unwrap_or_default(),
             tokens,
@@ -288,6 +301,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 notes: new_notes,
                 milestones: first_answer.milestones.unwrap_or_default(),
                 task: second.task,
+                essential: second.essential,
                 puzzle: second.puzzle,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
                 tokens,
@@ -352,12 +366,13 @@ fn schema(notes: bool, task: bool) -> Value {
     }
     if task {
         properties["next_task"] = json!({"type": "string"});
+        properties["essential"] = json!({"type": "boolean"});
         properties["puzzle"] = strict(json!({
             "what": {"type": "string"},
             "x": {"type": "integer"},
             "y": {"type": "integer"}
         }));
-        required.extend(["next_task", "puzzle"]);
+        required.extend(["next_task", "essential", "puzzle"]);
     }
     json!({
         "type": "object",
@@ -415,6 +430,7 @@ mod tests {
                 "milestones",
                 "skill_changes",
                 "next_task",
+                "essential",
                 "puzzle"
             ])
         );
@@ -435,7 +451,7 @@ mod tests {
         assert!(notes["properties"].get("next_task").is_none());
         assert_eq!(
             schema(false, true)["required"],
-            json!(["reasoning", "next_task", "puzzle"])
+            json!(["reasoning", "next_task", "essential", "puzzle"])
         );
         let puzzle = &both["properties"]["puzzle"];
         assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
