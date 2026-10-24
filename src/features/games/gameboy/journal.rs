@@ -57,6 +57,9 @@ pub struct Journal {
     pub let_off: bool,
     /// Rollbacks since the last progress: each goes one checkpoint further back.
     pub rollbacks: u32,
+    /// The last task was essential (`Plan::essential`): stuck on it, she keeps at it
+    /// another way, and isn't taken back to a checkpoint away from it.
+    pub essential: bool,
     /// What the last task did, for the next plan (also after a restart).
     pub digest: String,
     /// Areas she has been in.
@@ -164,6 +167,7 @@ impl Journal {
     pub fn rung(&self) -> Rung {
         match self.stuck {
             n if n >= GIVE_UP_AT => Rung::GiveUp,
+            ROLLBACK_AT if self.essential => Rung::Change,
             ROLLBACK_AT => Rung::Rollback,
             REVIEW_AT => Rung::Review,
             n if n >= CHANGE_AT => Rung::Change,
@@ -200,6 +204,22 @@ fn fingerprint(words: &str) -> u64 {
 mod tests {
     use super::*;
     use crate::features::games::gameboy::map::Kind;
+
+    #[test]
+    fn stuck_on_an_essential_task_she_stays_rather_than_going_back() {
+        let at = |stuck, essential| {
+            Journal {
+                stuck,
+                essential,
+                ..Journal::default()
+            }
+            .rung()
+        };
+        assert_eq!(at(ROLLBACK_AT, false), Rung::Rollback);
+        assert_eq!(at(ROLLBACK_AT, true), Rung::Change);
+        assert_eq!(at(REVIEW_AT, true), Rung::Review);
+        assert_eq!(at(GIVE_UP_AT, true), Rung::GiveUp);
+    }
 
     fn world(areas: &[(&str, i32)]) -> World {
         let mut world = World::default();

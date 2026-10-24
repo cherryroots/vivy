@@ -9,7 +9,8 @@
 //! - Checkpoints: a save state each time she reaches an area for the first time, with the
 //!   notes as they were. The newest few are kept.
 //! - The stuck ladder (`journal::Rung`): after 3 episodes with nothing new she's told to
-//!   try something different and explore first; at 6 the strategist reviews its notes at
+//!   try something different and explore first (or, on a task the strategist marked
+//!   essential, to keep at it another way, never taken back to a checkpoint for it); at 6 the strategist reviews its notes at
 //!   high effort; at 9 she goes back to a checkpoint, keeping her skills, each time one
 //!   further back; 3 rollbacks without progress, or 15 episodes, and the session ends.
 //! - After every episode the journal, the maps, her skills, the day's use and a `latest`
@@ -517,12 +518,14 @@ pub async fn play<G: Game>(
             timer.running();
         }
         if rung == Rung::Change && journal.stuck == CHANGE_AT {
+            let asked = if journal.essential {
+                "She keeps at the task the story needs, another way."
+            } else {
+                "She's asked for a different kind of task, exploring first."
+            };
             let _ = session.report.send(Report::line(
                 Reported::Stuck,
-                format!(
-                    "⚠️ **Nothing new for {CHANGE_AT} episodes.** She's asked for a different kind \
-                 of task, exploring first."
-                ),
+                format!("⚠️ **Nothing new for {CHANGE_AT} episodes.** {asked}"),
             ));
         }
 
@@ -563,6 +566,7 @@ pub async fn play<G: Game>(
         if !reviewed.is_empty() {
             game.set_skills(world.skills.clone()).await?;
         }
+        journal.essential = plan.essential && !plan.task.trim().is_empty();
         let task = if plan.task.trim().is_empty() {
             EXPLORE.to_string()
         } else {
@@ -766,7 +770,16 @@ async fn plan<G: Game>(
     if !recent.is_empty() {
         write!(now, "\n\nThe last episodes:\n- {}", recent.join("\n- ")).unwrap();
     }
-    if rung != Rung::Play {
+    if rung != Rung::Play && journal.essential {
+        write!(
+            now,
+            "\n\nNothing new for {} episodes (no new area, steps or text), on an essential \
+             task. Back out of any menu, then keep at it another way than the tries in the \
+             last episodes and your notes; go elsewhere only to find what it needs.",
+            journal.stuck
+        )
+        .unwrap();
+    } else if rung != Rung::Play {
         write!(
             now,
             "\n\nNothing new for {} episodes (no new area, steps or text). Back out of any \
