@@ -335,8 +335,16 @@ fn steps_by_hand() {
             _ if let Some(rest) = word.strip_prefix('P') => {
                 use crate::features::games::gameboy::actions;
                 let args = serde_json::json!({ "buttons": rest });
+                let mark = m.recorded();
                 let pressed = actions::run(&mut world, &mut m, look, "press", &args);
                 println!("pressed: {}", pressed.outcome);
+                for (n, screen) in m.screens_since(mark).iter().enumerate() {
+                    std::fs::write(
+                        folder.join(format!("{:03}-P-{n:03}.png", i + 1)),
+                        png_at(screen, 2).unwrap(),
+                    )
+                    .unwrap();
+                }
                 (pressed.view, None)
             }
             _ if let Some(presses) = &typed => {

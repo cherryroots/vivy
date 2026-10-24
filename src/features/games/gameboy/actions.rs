@@ -16,6 +16,7 @@ use super::path;
 use super::presses::{self, Press};
 use super::puzzle::Move;
 use super::ram;
+use super::sent;
 use super::skills::{self, Around, Skill};
 use super::walk::{Look, Walked, explore, take_step, walk_to};
 use super::world::{View, World};
@@ -260,18 +261,25 @@ fn sprite_height(machine: &Machine) -> i32 {
     }
 }
 
-/// Her path through the press that started on frame `start` from `spot`, if it carried
-/// her further than a step: kept with the game's world, and said as a line.
-fn carried(
+/// What the press that started on frame `start` did over time, from her `spot` then: how
+/// it carried her, if further than a step, and what it sent out. Kept with the game's
+/// world, and said as lines.
+fn after_press(
     world: &mut World,
     machine: &Machine,
     start: u64,
     spot: Option<(i32, i32)>,
     typed: &str,
     view: &View,
-) -> Option<String> {
-    let frames = machine.frames_since(start)?;
-    let places = path::follow(&frames, spot?, sprite_height(machine))?;
+) -> Vec<String> {
+    let Some(frames) = machine.frames_since(start) else {
+        return Vec::new();
+    };
+    let height = sprite_height(machine);
+    let Some((spot, places)) = spot.and_then(|s| Some((s, path::follow(&frames, s, height)?)))
+    else {
+        return Vec::new();
+    };
     let mut press = typed.to_string();
     let held = machine.emulator.kept();
     if !held.is_empty() {
@@ -279,10 +287,23 @@ fn carried(
         press.push_str(&format!(" holding {}", names.join("+")));
     }
     let step = view.grid.map_or(16, |g| g.pixels);
-    let motion = path::Motion::of(&press, &places, step)?;
-    let line = format!("{} {}.", motion.press, motion.words());
-    path::remember(&mut world.motions, motion);
-    Some(line)
+    let mut lines = Vec::new();
+    if let Some(motion) = path::Motion::of(&press, &places, step) {
+        lines.push(format!("{} {}.", motion.press, motion.words()));
+        path::remember(&mut world.motions, motion);
+    }
+    let back = start.saturating_sub(sent::FRESH_FRAMES as u64);
+    let before = machine.frames_since(back).unwrap_or_default();
+    let before = &before[..before.len().saturating_sub(frames.len())];
+    for one in sent::sent(&press, before, &frames, spot, &places, height, step) {
+        lines.push(format!(
+            "{} sent something out: {}.",
+            one.press,
+            one.words()
+        ));
+        sent::remember(&mut world.sent, one);
+    }
+    lines
 }
 
 /// The buttons in `holding`, like "b" or "a+b", or what's wrong with it.
@@ -515,7 +536,7 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
         machine.press(std::slice::from_ref(one), Timing::default());
         view = settle(world, machine, look, &mut words);
         let typed = presses::describe(std::slice::from_ref(one));
-        carried_lines.extend(carried(world, machine, start, spot, &typed, &view));
+        carried_lines.extend(after_press(world, machine, start, spot, &typed, &view));
     }
     // Her own presses haven't shown which sprite is her: pressing each way does.
     if !view.can_walk
@@ -888,9 +909,10 @@ pub fn describe(world: &World, view: &View) -> String {
         if !near.is_empty() {
             lines.push(near);
         }
-        let motions = path::list(&world.motions);
-        if !motions.is_empty() {
-            lines.push(motions);
+        for list in [path::list(&world.motions), sent::list(&world.sent)] {
+            if !list.is_empty() {
+                lines.push(list);
+            }
         }
     }
     let skills = skills::list(&world.skills);

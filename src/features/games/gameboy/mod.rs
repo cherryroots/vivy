@@ -53,6 +53,7 @@ mod puzzle;
 mod ram;
 mod red;
 mod screen;
+mod sent;
 mod session;
 mod skills;
 mod strategist;

@@ -18,6 +18,7 @@ use super::near::Thing;
 use super::path::Motion;
 use super::ram::{Search, Watch};
 use super::red::Trust;
+use super::sent::Sent;
 use super::skills::Skill;
 
 /// Steps kept in the movement log.
@@ -55,6 +56,10 @@ pub struct World {
     /// with her skills.
     #[serde(default)]
     pub motions: Vec<Motion>,
+    /// What her presses sent out (shots, a boomerang), the last of each (`sent.rs`), saved
+    /// with her skills.
+    #[serde(default)]
+    pub sent: Vec<Sent>,
 }
 
 /// A step, as the look after it is told.

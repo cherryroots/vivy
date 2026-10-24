@@ -120,7 +120,7 @@ Fights and jumps happen in real time, while a model call between presses takes s
 
 Mega Man V had been unplayable: his sprites were never seen, since the game turns sprites off and the scroll back to nothing for the status bar at the bottom, and by V-Blank, where the picture was read, only the bar's settings were left. The picture is now read with the LCDC and scroll most of its lines were drawn with (`Emulator::frame` keeps each line's), and rows drawn with others are a status bar: read with their own settings and kept where they are, like the window, when the map scrolls (the camera following him had changed 19 of the bar's cells and stopped him). Now code finds Mega Man by pressing, and one reflex written by hand (`blocked` → `a:24 right:16`, `ahead 4` → `b`, otherwise `right`) ran, jumped onto a ledge and shot at what came for 31 rounds before he fell, with no model call. Sample: `gameboy/samples/megaman-reflex.gif` in the project's shared folder.
 
-## Where a press took her
+## Where a press took her, and what it sent out
 
 A look sees where she stands before and after a press, never the frames in between, so in a Mega Man session she couldn't learn how far a jump carries: her two jump skills missed their landings and she deleted them, and every jump the puzzle helper planned ended somewhere else. Code now follows her through every frame of a press (`path.rs`, from the sprites and the background's scroll `Machine::frames_since` keeps for each frame, so a screen that scrolls under her counts as well as her sprite moving across it), and says what the press did when it carried her somewhere a plain step doesn't:
 
@@ -128,6 +128,8 @@ A look sees where she stands before and after a press, never the frames in betwe
 - **Further than a step**, 1.5 steps or more either way (a dash, a slide, a fall, a knock back): `right:40 went 6.5 right 1 down from the start.`
 
 The press tool's outcome ends with these lines, and the last of each press (with any buttons held through it, like `a holding right`), up to 8, is kept with the game's world (`World::motions`, saved with her skills) and listed under her map: `Presses that carried you further than a step (the last of each, in steps):`. Following her the same way a look does, the readouts agree with her place: after `right:40` above, the look had her 7 right and 1 down of where she was.
+
+**What a press sent out** (`sent.rs`). The same frames show what comes out of her: a part that shows up next to one of hers (not there a few frames before the press or since, so a shot already flying that flickers back isn't new) and moves away from her and across the map is something she sent, followed frame by frame (from where it was heading, so a shot passing an enemy isn't swapped for it) until it's missing for 3 frames. Her parts are the ones at her middle and every one touching those, so a tall hero's arm raised to aim is hers, and a shot is hers until it's clear of her. The outcome says which way it went, how far, and how it ended: `b sent something out: 5.5 right, and went off the screen.`, or `was gone next to something else` (it may have hit it), `came back` (a boomerang), `was still going`. The last of each press, up to 8, is kept (`World::sent`) and listed under her map as `What your presses sent out`. By hand in Mega Man V, a shot facing right says `5.5 right, and went off the screen`; in Contra, `up+b` says both the shot that left before the aim turned (`3.5 right`) and the one going up (`5.5 up`). On the Mega Man session's replay, 27 presses got such lines and every position stayed the same; 23 were his shots, and the other 4 came from a hit, a fall into a pit or his death burst, where parts fly off him.
 
 The puzzle helper gets the same list, and a move can now be buttons held together (`a+right`, held longer with frames, `a+right:30`) as well as a direction or a. The solver is told to plan such presses from the ones she has made, and to end its moves soon after one she hasn't tried. Start and select aren't allowed, since they open menus.
 
@@ -249,6 +251,7 @@ All under `src/features/games/gameboy/`.
 | `console.rs` | `Machine` (the emulator, its ROM's name and its recent screens) and `Console`, the thread it runs on |
 | `presses.rs` | Reading `a a up*3 start` into presses, and writing them back (pure) |
 | `path.rs` | Where she went during one press, frame by frame: jumps and presses that carried her further than a step, and the last of each (pure) |
+| `sent.rs` | What a press sent out (shots, a boomerang): followed frame by frame, which way it went and how it ended, and the last of each (pure) |
 | `near.rs` | What moves near her, by steps from her, from the sprites of two frames (pure) |
 | `pictures.rs` | Screens as a PNG or a GIF (pure) |
 | `files.rs` | The ROMs in `roms_dir`, save states in `saves_dir`, and which names are allowed |
