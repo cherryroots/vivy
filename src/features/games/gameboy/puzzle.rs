@@ -21,7 +21,6 @@ use serde_json::{Value, json};
 use super::emulator::Button;
 use super::map::{AreaMap, Dir, Kind, LEGEND, Pos};
 use super::notes::Note;
-use super::path::{self, Motion};
 use super::presses::{self, Press};
 use super::world::Logged;
 use crate::ai::OpenAi;
@@ -49,12 +48,25 @@ puzzle works from those, then the moves.
 Each move is a press made some times in a row and the step the player stands on after \
 it, as its x and y on the map. A press is up, down, left or right (one step), a (push or \
 use what the player faces; it doesn't move the player), or buttons held together for a \
-jump or a dash, like a+right, held longer with frames after a colon (a+right:30, 60 a \
-second). Plan such presses from the ones the player has made, listed with how they moved \
-the player; one not tried yet is a guess, so end the moves soon after it. Code presses \
-them one at a time and stops at the first move that doesn't end where you said, so say \
+jump or a dash, like a+right, held longer with frames after a colon (60 a second). Each \
+button can have its own frames: a:20+right:60 holds a for 20 frames and right for 60, so \
+the jump's height and its distance are set apart; a+right:30 holds both 30.
+
+Work the frames out from what the player's presses did: the jumps and dashes listed with \
+how high they went, on which frame, where they ended and when they landed, and how many \
+pixels each frame of holding a direction carries the player, on the ground and in the \
+air. A jump goes as far as its \
+direction is held while in the air, so hold the direction for the frames the distance \
+needs, and past the landing frame only to keep walking. One unlike any tried yet is a \
+guess, so end the moves soon after it.
+
+Code presses the moves one at a time. A held press that ends one step from its spot walks \
+that step; otherwise code stops at the first move that doesn't end where you said, so say \
 where the player will really stand, the puzzle's effects included, and keep moves short \
-past anything you're unsure of. The last move ends on the spot. At most 30 moves.";
+past anything you're unsure of. The last move ends on the spot. At most 30 moves.
+
+Games don't go exactly the same twice. When a move ends somewhere else, code asks again \
+and says how the plans so far went: plan from where the player stands now.";
 
 /// What the strategist asks for: the spot to reach in the area she's in, and what it
 /// knows of how the puzzle works.
@@ -142,14 +154,14 @@ pub fn surprises(log: &VecDeque<Logged>, area: &str, map: &AreaMap) -> Vec<Strin
     lines.split_off(skip)
 }
 
-/// What the solver is told.
+/// What the solver is told. `presses` is what her presses did (`path::presses`).
 pub fn ask(
     area: &str,
     map: &AreaMap,
     at: Pos,
     wanted: &Wanted,
     surprises: &[String],
-    motions: &[Motion],
+    presses: &str,
     notes: &[Note],
 ) -> String {
     let size = map
@@ -174,9 +186,8 @@ pub fn ask(
     for line in surprises {
         text.push_str(&format!("- {line}\n"));
     }
-    let motions = path::list(motions);
-    if !motions.is_empty() {
-        text.push_str(&format!("\n{motions}\n"));
+    if !presses.is_empty() {
+        text.push_str(&format!("\n{presses}\n"));
     }
     if !notes.is_empty() {
         text.push_str("\nThe planner's notes:\n");
@@ -303,6 +314,7 @@ fn schema() -> Value {
 mod tests {
     use super::*;
     use crate::features::games::gameboy::moves::Outcome;
+    use crate::features::games::gameboy::path::{self, Motion, Pace};
 
     fn one(press: &str, times: u32, x: i32, y: i32) -> Move {
         Move {
@@ -438,13 +450,24 @@ mod tests {
             (0, 0),
             &wanted,
             &["Hideout (1, 0) right: moved to (5, 0)".to_string()],
-            &[Motion {
-                press: "a+right".to_string(),
-                rise: 32,
-                top: 32,
-                ended: (48, 0),
-                step: 16,
-            }],
+            &path::presses(
+                &[Motion {
+                    press: "a+right".to_string(),
+                    rise: 32,
+                    top: 32,
+                    ended: (48, 0),
+                    step: 16,
+                    peak: 12,
+                    landed: 26,
+                }],
+                &[Pace {
+                    way: "right".to_string(),
+                    air: false,
+                    frames: 30,
+                    pixels: 42,
+                    step: 16,
+                }],
+            ),
             &notes,
         );
         assert!(
@@ -465,7 +488,15 @@ mod tests {
         );
         assert!(
             text.contains(
-                "- a+right went up 2 steps at its highest and ended 3 right from the start\n"
+                "- a+right went up 2 steps at its highest (frame 12) and ended 3 right from \
+                 the start (landed by frame 26)\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "- right: on the ground 1.4 pixels a frame (a step every 11 frames) (from 1 \
+                 measured)"
             ),
             "{text}"
         );

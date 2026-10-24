@@ -15,7 +15,7 @@ use super::any::Sight;
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
 use super::near::Thing;
-use super::path::Motion;
+use super::path::{Motion, Pace};
 use super::ram::{Search, Watch};
 use super::red::Trust;
 use super::sent::Sent;
@@ -60,6 +60,9 @@ pub struct World {
     /// with her skills.
     #[serde(default)]
     pub sent: Vec<Sent>,
+    /// How far a frame of holding each direction carried her, the latest few (`path.rs`).
+    #[serde(default)]
+    pub paces: Vec<Pace>,
 }
 
 /// A step, as the look after it is told.

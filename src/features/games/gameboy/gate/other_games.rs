@@ -338,6 +338,10 @@ fn steps_by_hand() {
                 let mark = m.recorded();
                 let pressed = actions::run(&mut world, &mut m, look, "press", &args);
                 println!("pressed: {}", pressed.outcome);
+                println!(
+                    "{}",
+                    crate::features::games::gameboy::path::paces(&world.paces)
+                );
                 for (n, screen) in m.screens_since(mark).iter().enumerate() {
                     std::fs::write(
                         folder.join(format!("{:03}-P-{n:03}.png", i + 1)),

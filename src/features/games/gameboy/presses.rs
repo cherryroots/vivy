@@ -5,6 +5,8 @@
 //! - `a+b` presses both at once
 //! - `:40` after either holds it 40 frames, not the usual length (a charged shot, a higher
 //!   jump)
+//! - `a:20+right:45` holds each button its own frames, all pressed at once: a button
+//!   without a number is held as long as the longest
 //! - `*3` after any of them repeats it
 //! - `wait` presses nothing for as long as a press takes
 //!
@@ -23,6 +25,8 @@ pub struct Press {
     pub buttons: Vec<Button>,
     /// Frames to hold it, when not the usual length.
     pub frames: Option<u32>,
+    /// Buttons let go before the rest, and after how many frames.
+    pub shorter: Vec<(Button, u32)>,
 }
 
 impl Press {
@@ -31,6 +35,16 @@ impl Press {
         Press {
             buttons,
             frames: None,
+            shorter: Vec::new(),
+        }
+    }
+
+    /// Frames `button` is held, when a press usually lasts `usual` frames.
+    pub fn frames_of(&self, button: Button, usual: u32) -> u32 {
+        let whole = self.frames.unwrap_or(usual);
+        match self.shorter.iter().find(|(b, _)| *b == button) {
+            Some(&(_, frames)) => frames.min(whole),
+            None => whole,
         }
     }
 }
@@ -56,27 +70,37 @@ pub fn parse(text: &str) -> Result<Vec<Press>, String> {
             }
             _ => (word, 1),
         };
-        let (what, frames) = match what.split_once(':') {
-            Some((what, frames)) => {
-                let frames: u32 = frames
-                    .parse()
-                    .ok()
-                    .filter(|n| (1..=LONGEST).contains(n))
-                    .ok_or_else(|| {
-                        format!("`{word}`: put frames from 1 to {LONGEST} after `:`.")
-                    })?;
-                (what, Some(frames))
-            }
-            None => (what, None),
-        };
-        let press = if what.eq_ignore_ascii_case("wait") {
+        let mut parts = Vec::new();
+        for part in what.split('+') {
+            let (name, frames) = match part.split_once(':') {
+                Some((name, frames)) => {
+                    let frames: u32 = frames
+                        .parse()
+                        .ok()
+                        .filter(|n| (1..=LONGEST).contains(n))
+                        .ok_or_else(|| {
+                            format!("`{word}`: put frames from 1 to {LONGEST} after `:`.")
+                        })?;
+                    (name, Some(frames))
+                }
+                None => (part, None),
+            };
+            parts.push((name, frames));
+        }
+        // The press lasts as long as its longest button.
+        let frames = parts.iter().filter_map(|&(_, f)| f).max();
+        let press = if let [(name, _)] = parts.as_slice()
+            && name.eq_ignore_ascii_case("wait")
+        {
             Press {
                 buttons: Vec::new(),
                 frames,
+                shorter: Vec::new(),
             }
         } else {
             let mut buttons = Vec::new();
-            for name in what.split('+') {
+            let mut shorter = Vec::new();
+            for (name, own) in parts {
                 let button = Button::parse(name).ok_or_else(|| {
                     // `aa` for two presses of A, written together.
                     let letters =
@@ -96,9 +120,16 @@ pub fn parse(text: &str) -> Result<Vec<Press>, String> {
                 })?;
                 if !buttons.contains(&button) {
                     buttons.push(button);
+                    if let Some(own) = own.filter(|&own| Some(own) < frames) {
+                        shorter.push((button, own));
+                    }
                 }
             }
-            Press { buttons, frames }
+            Press {
+                buttons,
+                frames,
+                shorter,
+            }
         };
         if presses.len() + times > MOST {
             return Err(format!(
@@ -117,20 +148,24 @@ pub fn parse(text: &str) -> Result<Vec<Press>, String> {
 /// `a up*3 a+b b:40`.
 pub fn describe(presses: &[Press]) -> String {
     let name = |press: &Press| {
-        let buttons = if press.buttons.is_empty() {
-            "wait".to_string()
-        } else {
-            press
-                .buttons
-                .iter()
-                .map(|b| b.name())
-                .collect::<Vec<_>>()
-                .join("+")
-        };
-        match press.frames {
-            Some(frames) => format!("{buttons}:{frames}"),
-            None => buttons,
+        let mut names: Vec<String> = press
+            .buttons
+            .iter()
+            .map(|&b| match press.shorter.iter().find(|(s, _)| *s == b) {
+                Some((_, frames)) => format!("{}:{frames}", b.name()),
+                None => b.name().to_string(),
+            })
+            .collect();
+        if names.is_empty() {
+            names.push("wait".to_string());
         }
+        // The press's length goes after the last button held all of it.
+        if let Some(frames) = press.frames
+            && let Some(last) = names.iter_mut().rev().find(|n| !n.contains(':'))
+        {
+            last.push_str(&format!(":{frames}"));
+        }
+        names.join("+")
     };
     let mut words: Vec<String> = Vec::new();
     let mut i = 0;
@@ -172,20 +207,20 @@ mod tests {
             parse("a:40 b+right:8*2 wait:60").unwrap(),
             vec![
                 Press {
-                    buttons: vec![A],
-                    frames: Some(40)
+                    frames: Some(40),
+                    ..Press::of(vec![A])
                 },
                 Press {
-                    buttons: vec![B, Right],
-                    frames: Some(8)
+                    frames: Some(8),
+                    ..Press::of(vec![B, Right])
                 },
                 Press {
-                    buttons: vec![B, Right],
-                    frames: Some(8)
+                    frames: Some(8),
+                    ..Press::of(vec![B, Right])
                 },
                 Press {
-                    buttons: vec![],
-                    frames: Some(60)
+                    frames: Some(60),
+                    ..Press::of(vec![])
                 },
             ]
         );
@@ -193,6 +228,38 @@ mod tests {
         assert_eq!(parse("Rx2 l").unwrap().len(), 3);
         assert_eq!(parse("a+a").unwrap(), vec![Press::of(vec![A])]);
         assert_eq!(parse("wait*2").unwrap(), vec![Press::of(vec![]); 2]);
+    }
+
+    #[test]
+    fn holds_each_button_its_own_frames() {
+        let jump = parse("a:20+right:45").unwrap();
+        assert_eq!(
+            jump,
+            vec![Press {
+                frames: Some(45),
+                shorter: vec![(A, 20)],
+                ..Press::of(vec![A, Right])
+            }]
+        );
+        assert_eq!(jump[0].frames_of(A, 16), 20);
+        assert_eq!(jump[0].frames_of(Right, 16), 45);
+        assert_eq!(describe(&jump), "a:20+right:45");
+        // Written the other way round, or with the long one unnumbered.
+        assert_eq!(describe(&parse("right:45+a:20").unwrap()), "right:45+a:20");
+        assert_eq!(parse("a:30+right").unwrap(), parse("a+right:30").unwrap());
+        assert_eq!(describe(&parse("a:30+right:30").unwrap()), "a+right:30");
+        let plain = parse("a+right").unwrap();
+        assert_eq!(plain[0].frames_of(A, 16), 16);
+        assert!(
+            parse("a:20+right:200")
+                .unwrap_err()
+                .contains("frames from 1")
+        );
+        assert!(
+            parse("wait+a")
+                .unwrap_err()
+                .contains("`wait` isn't a button")
+        );
     }
 
     #[test]
