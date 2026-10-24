@@ -11,10 +11,11 @@ use serde_json::{Value, json};
 use super::console::{Machine, Timing};
 use super::emulator::Button;
 use super::map::{Kind, LEGEND};
+use super::near::{self, Thing};
 use super::presses::{self, Press};
 use super::puzzle::Move;
 use super::ram;
-use super::skills::{self, Skill};
+use super::skills::{self, Around, Skill};
 use super::walk::{Look, Walked, explore, take_step, walk_to};
 use super::world::{View, World};
 use crate::ai::ToolDef;
@@ -42,6 +43,10 @@ pub const SCREEN_SCALE: u32 = 2;
 /// The cursor menus show next to the chosen item: a choice to make, not text to press on.
 const CURSOR: char = '▶';
 
+/// What `holding` does, on every action that takes it.
+const HOLDING: &str = "Buttons kept held down the whole time, like \"b\" (a shield up while \
+    you walk, a run button). Let go when the action ends.";
+
 /// The tools, always in the same order (they're part of the cached prompt).
 pub fn tools() -> Vec<ToolDef> {
     vec![
@@ -54,7 +59,8 @@ pub fn tools() -> Vec<ToolDef> {
                 "type": "object",
                 "properties": {
                     "x": {"type": "integer"},
-                    "y": {"type": "integer"}
+                    "y": {"type": "integer"},
+                    "holding": {"type": "string", "description": HOLDING}
                 },
                 "required": ["x", "y"]
             }),
@@ -63,19 +69,26 @@ pub fn tools() -> Vec<ToolDef> {
             name: "explore",
             description: "Walk toward the nearest step of this area not seen yet (a ? on \
                 the map), to see more of it. Never goes through doors.",
-            parameters: json!({"type": "object", "properties": {}}),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "holding": {"type": "string", "description": HOLDING}
+                }
+            }),
         },
         ToolDef {
             name: "press",
             description: "Press 1 to 5 buttons, one after another: a, b, start, select, up, \
                 down, left, right, like \"up a\". A direction is one step, or a turn when \
-                you face another way. Join buttons with + to hold them together, like \
-                \"b+right\" for a step with b held. For menus, choices and talking (face \
-                someone, then a).",
+                you face another way. Join buttons with + to press them together \
+                (\"b+right\"); add :frames to hold one longer than a step (\"a:40\", up to \
+                120, 60 a second: a charged shot, a higher jump). For menus, choices and \
+                talking (face someone, then a).",
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "buttons": {"type": "string"}
+                    "buttons": {"type": "string"},
+                    "holding": {"type": "string", "description": HOLDING}
                 },
                 "required": ["buttons"]
             }),
@@ -98,8 +111,15 @@ pub fn tools() -> Vec<ToolDef> {
                 is on screen, after most rounds (default 30, at most 50), when no rule fits, \
                 or when nothing changes 3 rounds running (stop words only count after its \
                 first press). Stop words are words, never numbers: HP, levels and money \
-                change. The same name replaces a skill: fix one that didn't work \
-                rather than writing another beside it.",
+                change. A reflex is a routine for fights and jumps: give a rule if_near, \
+                what must be around you (the \"Near you\" line): near, ahead (the way you \
+                face), behind, above, below, left, right or coming (moving closer), then \
+                steps 1 to 4, like \"ahead 2\"; or blocked (your last direction didn't move \
+                you). A reflex runs while you walk, pressing at once with no waiting, and \
+                stops when words come up, when you can't walk for a moment, when no rule fits \
+                or after most rounds; put a rule with no if_near last for what to do \
+                otherwise. The same name replaces a skill: fix one that didn't work rather \
+                than writing another beside it.",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -112,6 +132,7 @@ pub fn tools() -> Vec<ToolDef> {
                             "type": "object",
                             "properties": {
                                 "if_words": {"type": "string"},
+                                "if_near": {"type": "string"},
                                 "press": {"type": "string"}
                             },
                             "required": ["press"]
@@ -119,7 +140,8 @@ pub fn tools() -> Vec<ToolDef> {
                     },
                     "stop_words": {"type": "array", "items": {"type": "string"}},
                     "stop_when_free": {"type": "boolean"},
-                    "most": {"type": "integer"}
+                    "most": {"type": "integer"},
+                    "holding": {"type": "string", "description": HOLDING}
                 },
                 "required": ["name", "use_when"]
             }),
@@ -175,9 +197,77 @@ pub fn run(
     name: &str,
     args: &Value,
 ) -> Acted {
+    let takes_holding = matches!(name, "walk_to" | "explore" | "press");
+    let holding = match args["holding"]
+        .as_str()
+        .filter(|_| takes_holding)
+        .map(held_buttons)
+    {
+        Some(Err(why)) => return told(world, machine, look, &why),
+        Some(Ok(buttons)) => buttons,
+        None => Vec::new(),
+    };
+    machine.emulator.keep(&holding);
     let mut acted = act(world, machine, look, name, args);
+    if !holding.is_empty() {
+        machine.emulator.keep(&[]);
+        let names: Vec<&str> = holding.iter().map(|b| b.name()).collect();
+        acted.outcome = format!("{} (holding {})", acted.outcome, names.join("+"));
+    }
     add_watched(world, machine, &mut acted.view);
+    world.near = near_her(world, machine, &acted.view);
     acted
+}
+
+/// What's near her now and how it moves, while she can walk.
+pub fn near_her(world: &World, machine: &Machine, view: &View) -> Vec<Thing> {
+    if !view.can_walk {
+        return Vec::new();
+    }
+    // Her sprite, or the middle of her step on a screen that scrolls under her.
+    let Some(her) = world.sight.her_spot().or_else(|| {
+        view.grid.map(|g| {
+            (
+                g.player.0 * g.pixels + g.pixels / 2,
+                g.player.1 * g.pixels + g.pixels / 2,
+            )
+        })
+    }) else {
+        return Vec::new();
+    };
+    let now = machine.emulator.frames();
+    let Some(frames) = machine.sprites_since(now.saturating_sub(near::LOOK_BACK)) else {
+        return Vec::new();
+    };
+    let (Some(then), Some(last)) = (frames.first(), frames.last()) else {
+        return Vec::new();
+    };
+    let height = if machine.emulator.video().registers.lcdc & 0x04 != 0 {
+        16
+    } else {
+        8
+    };
+    near::things(then, last, her, height)
+}
+
+/// The buttons in `holding`, like "b" or "a+b", or what's wrong with it.
+fn held_buttons(text: &str) -> Result<Vec<Button>, String> {
+    let mut buttons = Vec::new();
+    for name in text
+        .split(|c: char| c == '+' || c.is_whitespace() || c == ',')
+        .filter(|n| !n.is_empty())
+    {
+        let button = Button::parse(name).ok_or_else(|| {
+            format!(
+                "`{name}` in holding isn't a button. The buttons are a, b, start, select, up, \
+                 down, left and right."
+            )
+        })?;
+        if !buttons.contains(&button) {
+            buttons.push(button);
+        }
+    }
+    Ok(buttons)
 }
 
 fn add_watched(world: &World, machine: &mut Machine, view: &mut View) {
@@ -461,7 +551,7 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
     let mut view = look(world, machine);
     let mut words = Vec::new();
     keep_words(&mut words, &view);
-    let a = Press(vec![Button::A]);
+    let a = Press::of(vec![Button::A]);
     let mut presses = 0;
     while presses < READ_MOST && !view.can_walk && !view.text.contains(CURSOR) {
         machine.press(std::slice::from_ref(&a), Timing::default());
@@ -497,7 +587,7 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
     let mut words = Vec::new();
     let area = view.area.clone();
     let all = moves.len();
-    let a = Press(vec![Button::A]);
+    let a = Press::of(vec![Button::A]);
     for (i, one) in moves.iter().enumerate() {
         let n = i + 1;
         for _ in 0..one.times {
@@ -578,6 +668,19 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
 
 /// Rounds in a row that change nothing before a skill gives up.
 const SKILL_STUCK: u32 = 3;
+/// How a reflex presses: the usual hold, and only a short gap so the game sees the next
+/// press as new.
+const REFLEX: Timing = Timing { hold: 16, gap: 4 };
+/// Rounds in a row she can't walk before a reflex stops: a moment (the camera catching
+/// up, a hit knocking her back) doesn't stop it, a game over or a scene does.
+const REFLEX_UNFREE: u32 = 3;
+
+/// Where the background is scrolled to: a screen that scrolls under her moves it when she
+/// walks.
+fn scroll_of(machine: &Machine) -> (u8, u8) {
+    let r = &machine.emulator.video().registers;
+    (r.scx, r.scy)
+}
 
 /// Runs one of her skills: each round, the buttons of the first rule that fits the screen,
 /// until it says to stop. Notes how it went on the skill, for her list.
@@ -602,21 +705,38 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
     if skill.know_how() {
         return told(world, machine, look, &format!("{}{notes}", skill.name));
     }
+    // Checked when it was written.
+    let holding = held_buttons(&skill.holding).unwrap_or_default();
+    machine.emulator.keep(&holding);
+    let reflex = skill.reflex();
     let mut view = look(world, machine);
     let mut words = Vec::new();
     keep_words(&mut words, &view);
-    let (mut rounds, mut presses, mut still) = (0, 0, 0);
+    let mut around = Around {
+        things: near_her(world, machine, &view),
+        facing: machine
+            .emulator
+            .last_direction()
+            .and_then(super::moves::offset),
+        blocked: false,
+    };
+    let (mut rounds, mut presses, mut still, mut unfree) = (0, 0, 0, 0);
     let stopped = loop {
         if let Some(why) = skill.stop(&view, rounds > 0) {
             break why;
         }
+        unfree = if view.can_walk { 0 } else { unfree + 1 };
+        if reflex && unfree == REFLEX_UNFREE {
+            break format!("you couldn't walk for {REFLEX_UNFREE} rounds");
+        }
         if rounds == skill.most {
             break format!("it ran its {} rounds", skill.most);
         }
-        if still == SKILL_STUCK {
+        // A reflex runs while things move around her, so a still screen is no stop.
+        if still == SKILL_STUCK && !reflex {
             break format!("nothing changed for {SKILL_STUCK} rounds");
         }
-        let Some(rule) = skill.rule_for(&view) else {
+        let Some(rule) = skill.rule_for(&view, &around) else {
             let says = if view.text.is_empty() {
                 "has no words".to_string()
             } else {
@@ -627,9 +747,33 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
         // Checked when it was written.
         let buttons = presses::parse(&rule.press).unwrap_or_default();
         let (before, screen_before) = (view.clone(), machine.emulator.screen());
+        let (spot, scroll) = (world.sight.her_spot(), scroll_of(machine));
         for one in &buttons {
-            machine.press(std::slice::from_ref(one), Timing::default());
-            view = settle(world, machine, look, &mut words);
+            if reflex {
+                // No waiting for the screen to settle: it never does in a fight.
+                machine.press(std::slice::from_ref(one), REFLEX);
+                view = look(world, machine);
+                keep_words(&mut words, &view);
+            } else {
+                machine.press(std::slice::from_ref(one), Timing::default());
+                view = settle(world, machine, look, &mut words);
+            }
+        }
+        if reflex {
+            let pressed = buttons
+                .iter()
+                .flat_map(|p| &p.buttons)
+                .find(|b| b.is_direction());
+            let moved = world.sight.her_spot() != spot || scroll_of(machine) != scroll;
+            around = Around {
+                things: near_her(world, machine, &view),
+                facing: machine
+                    .emulator
+                    .last_direction()
+                    .and_then(super::moves::offset)
+                    .or(around.facing),
+                blocked: pressed.is_some() && !moved,
+            };
         }
         rounds += 1;
         presses += buttons.len();
@@ -647,6 +791,7 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
     } else {
         ""
     };
+    machine.emulator.keep(&[]);
     if let Some(kept) = skills::find(&mut world.skills, &skill.name) {
         kept.uses += 1;
         kept.last = summary.clone();
@@ -693,6 +838,10 @@ pub fn describe(world: &World, view: &View) -> String {
             "Map ({LEGEND}):\n{}",
             map.draw(view.at, MAP_RADIUS).trim_end()
         ));
+        let near = near::line(&world.near);
+        if !near.is_empty() {
+            lines.push(near);
+        }
     }
     let skills = skills::list(&world.skills);
     if !skills.is_empty() {

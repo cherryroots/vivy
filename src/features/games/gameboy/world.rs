@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::any::Sight;
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
+use super::near::Thing;
 use super::ram::{Search, Watch};
 use super::red::Trust;
 use super::skills::Skill;
@@ -46,6 +47,9 @@ pub struct World {
     /// here; a look that learns from steps takes it).
     #[serde(skip)]
     pub stepped: Option<Stepped>,
+    /// What was near her at the last action's end (`near.rs`). Not saved.
+    #[serde(skip)]
+    pub near: Vec<Thing>,
 }
 
 /// A step, as the look after it is told.

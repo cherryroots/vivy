@@ -164,6 +164,10 @@ pub struct Video {
     /// The 40 sprites, 4 bytes each.
     pub oam: Vec<u8>,
     pub registers: Registers,
+    /// LCDC and the scroll (x, then y) each line was drawn with, when the frame was drawn.
+    /// `registers` has the ones most lines had; a status bar drawn with others is read as
+    /// one (`Screen::read`).
+    pub lines: Vec<(u8, u8, u8)>,
     /// Whether the screen was drawn this frame (it's off between areas in many games).
     pub drawn: bool,
     pub color: bool,
@@ -178,6 +182,11 @@ pub struct Emulator {
     frames: u64,
     /// The buttons held down right now.
     held: Vec<Button>,
+    /// LCDC and the scroll as each line of this frame was drawn.
+    lines: Vec<(u8, u8, u8)>,
+    /// Buttons kept down through every hold and release until `keep` says otherwise (a
+    /// shield held up while she walks).
+    kept: Vec<Button>,
     /// How many times a direction has been pressed: a look can tell the screen scrolled
     /// because she walked, not because the game moved her.
     directions_pressed: u64,
@@ -207,6 +216,7 @@ impl Emulator {
             vram: Vec::new(),
             oam: Vec::new(),
             registers: Registers::default(),
+            lines: Vec::new(),
             drawn: false,
             color: info.color,
         };
@@ -216,6 +226,8 @@ impl Emulator {
             video,
             frames: 0,
             held: Vec::new(),
+            lines: Vec::with_capacity(144),
+            kept: Vec::new(),
             directions_pressed: 0,
             last_direction: None,
         })
@@ -237,9 +249,17 @@ impl Emulator {
         let start = self.gb.ppu_frame();
         let mut cycles: u32 = 0;
         let mut drawn = false;
+        let mut line = u8::MAX;
+        self.lines.clear();
         loop {
             cycles += u32::from(self.gb.clock());
-            if !drawn && self.gb.ppu_ly() == 144 {
+            let ly = self.gb.ppu_ly();
+            if ly != line && ly < 144 {
+                line = ly;
+                let registers = self.line_registers();
+                self.lines.push(registers);
+            }
+            if !drawn && ly == 144 {
                 self.read_video();
                 drawn = true;
             }
@@ -256,11 +276,39 @@ impl Emulator {
         self.frames += 1;
     }
 
+    /// What a line is drawn with: LCDC and the scroll.
+    fn line_registers(&mut self) -> (u8, u8, u8) {
+        (
+            self.gb.read_memory(0xff40),
+            self.gb.read_memory(0xff43),
+            self.gb.read_memory(0xff42),
+        )
+    }
+
+    /// The LCDC and scroll most of the picture was drawn with. Many games change them
+    /// part way down for a status bar (Mega Man turns sprites off and the scroll back to
+    /// nothing for his), and by V-Blank only the status bar's are left.
+    fn most_lines(&mut self) -> (u8, u8, u8) {
+        let mut counts: Vec<((u8, u8, u8), u32)> = Vec::new();
+        for &line in &self.lines {
+            match counts.iter_mut().find(|(seen, _)| *seen == line) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((line, 1)),
+            }
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(_, n)| n)
+            .map(|(line, _)| line)
+            .unwrap_or_else(|| self.line_registers())
+    }
+
     fn read_video(&mut self) {
+        let (lcdc, scx, scy) = self.most_lines();
         let registers = Registers {
-            lcdc: self.gb.read_memory(0xff40),
-            scy: self.gb.read_memory(0xff42),
-            scx: self.gb.read_memory(0xff43),
+            lcdc,
+            scy,
+            scx,
             bgp: self.gb.read_memory(0xff47),
             obp0: self.gb.read_memory(0xff48),
             obp1: self.gb.read_memory(0xff49),
@@ -279,6 +327,7 @@ impl Emulator {
         self.video.oam.clear();
         self.video.oam.extend_from_slice(&ppu.oam()[..160]);
         self.video.registers = registers;
+        self.video.lines.clone_from(&self.lines);
     }
 
     /// What the last frame was drawn from (see [`Video`]).
@@ -296,8 +345,15 @@ impl Emulator {
         self.gb.read_memory(0xff40) & 0x80 != 0
     }
 
-    /// Holds these buttons down (and lets go of any others) until the next call.
+    /// Holds these buttons down, with the kept ones, and lets go of any others until the
+    /// next call.
     pub fn hold(&mut self, buttons: &[Button]) {
+        let mut buttons = buttons.to_vec();
+        for &kept in &self.kept {
+            if !buttons.contains(&kept) {
+                buttons.push(kept);
+            }
+        }
         for &button in &Button::ALL {
             let was = self.held.contains(&button);
             let now = buttons.contains(&button);
@@ -311,15 +367,29 @@ impl Emulator {
                 self.gb.key_lift(button.key());
             }
         }
-        self.held = buttons.to_vec();
+        self.held = buttons;
     }
 
-    /// Lets go of every button.
+    /// Keeps these buttons down through every `hold` and `release` from now on, until it's
+    /// called again (with none to stop).
+    pub fn keep(&mut self, buttons: &[Button]) {
+        // What's held for itself stays held; what was only kept is let go.
+        let held: Vec<Button> = self
+            .held
+            .iter()
+            .copied()
+            .filter(|b| !self.kept.contains(b))
+            .collect();
+        self.kept = buttons.to_vec();
+        self.hold(&held);
+    }
+
     /// How many times a direction has been pressed since the Game Boy started.
     pub fn directions_pressed(&self) -> u64 {
         self.directions_pressed
     }
 
+    /// Lets go of every button but the kept ones.
     pub fn release(&mut self) {
         self.hold(&[]);
     }
@@ -358,6 +428,7 @@ impl Emulator {
         .map_err(|e| anyhow!("{e}"))
         .context("loading the state")?;
         self.held.clear();
+        self.kept.clear();
         self.frames = 0;
         Ok(())
     }
@@ -418,6 +489,28 @@ pub mod tests {
         emu.hold(&[Button::Start]);
         emu.run(2);
         assert_eq!(emu.read(PAD), 0b0000_1000);
+        emu.release();
+        emu.run(2);
+        assert_eq!(emu.read(PAD), 0);
+    }
+
+    #[test]
+    fn kept_buttons_stay_down_through_holds_and_releases() {
+        let mut emu = booted();
+        emu.keep(&[Button::B]);
+        emu.run(2);
+        assert_eq!(emu.read(PAD), 0b0000_0010);
+        emu.hold(&[Button::Right]);
+        emu.run(2);
+        assert_eq!(emu.read(PAD), 0b0001_0010);
+        emu.release();
+        emu.run(2);
+        assert_eq!(emu.read(PAD), 0b0000_0010);
+        // Held for itself as well, B is still let go once it's no longer kept.
+        emu.hold(&[Button::A, Button::B]);
+        emu.keep(&[]);
+        emu.run(2);
+        assert_eq!(emu.read(PAD), 0b0000_0001);
         emu.release();
         emu.run(2);
         assert_eq!(emu.read(PAD), 0);

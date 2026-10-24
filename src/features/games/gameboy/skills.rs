@@ -8,10 +8,16 @@
 //! is for: everything is in terms any game has, the words on screen and whether she can
 //! walk. So a battle routine in Pokémon Red is one she made herself, and in another game
 //! she makes others.
+//!
+//! A rule can also fit what's around her (`near.rs`): something near, ahead, coming
+//! closer, or her last press not moving her. A routine with such rules is a reflex: it
+//! runs in real time, a look after each press with no waiting for the screen to settle,
+//! while she walks, so she can fight or jump without a model call between presses.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::near::{self, Thing};
 use super::presses;
 use super::world::View;
 
@@ -46,6 +52,9 @@ pub struct Skill {
     pub stop_when_free: bool,
     /// Rounds one use runs at most.
     pub most: u32,
+    /// Buttons kept held the whole time it runs, like `b`.
+    #[serde(default)]
+    pub holding: String,
     /// Times it's been used, and how the last use ended.
     pub uses: u32,
     pub last: String,
@@ -55,8 +64,89 @@ pub struct Skill {
 pub struct Rule {
     /// Words that must be on screen; empty fits any screen.
     pub if_words: String,
+    /// What must be around her (`near`), like `ahead 2`; empty fits anything.
+    #[serde(default)]
+    pub if_near: String,
     /// Buttons to press, like `down right a`.
     pub press: String,
+}
+
+/// The words `if_near` takes before a number of steps (1 by default): something within
+/// that many steps of her, in the way she faces, behind her, above, below, to either
+/// side, or moving and coming closer. `blocked` takes no number: her last press of a
+/// direction didn't move her.
+const NEAR_WORDS: [&str; 9] = [
+    "near", "ahead", "behind", "above", "below", "left", "right", "coming", "blocked",
+];
+
+/// What's around her for a rule's `if_near`.
+#[derive(Debug, Clone, Default)]
+pub struct Around {
+    pub things: Vec<Thing>,
+    /// The way she faces, as a step (x right, y down), if known.
+    pub facing: Option<(i32, i32)>,
+    /// Her last press of a direction didn't move her.
+    pub blocked: bool,
+}
+
+impl Around {
+    /// Whether `wanted` (an `if_near`, checked when written) is around her.
+    pub fn has(&self, wanted: &str) -> bool {
+        let Ok((word, steps)) = near_parts(wanted) else {
+            return false;
+        };
+        let way = match word {
+            "blocked" => return self.blocked,
+            "near" => None,
+            "coming" => {
+                return self
+                    .things
+                    .iter()
+                    .any(|t| t.moving() && t.now < t.then && reach(t.at) <= steps);
+            }
+            "ahead" => self.facing,
+            "behind" => self.facing.map(|(x, y)| (-x, -y)),
+            "above" => Some((0, -1)),
+            "below" => Some((0, 1)),
+            "left" => Some((-1, 0)),
+            _ => Some((1, 0)),
+        };
+        self.things.iter().any(|t| match way {
+            None => reach(t.at) <= steps,
+            // On that side, within the steps, and at most a step off the line.
+            Some((x, y)) => {
+                let along = t.at.0 * x + t.at.1 * y;
+                let off = (t.at.0 * y - t.at.1 * x).abs();
+                (1..=steps).contains(&along) && off <= 1
+            }
+        })
+    }
+}
+
+/// Steps away, the most of across and down.
+fn reach(at: (i32, i32)) -> i32 {
+    at.0.abs().max(at.1.abs())
+}
+
+/// An `if_near`'s word and steps, or why it isn't one.
+fn near_parts(wanted: &str) -> Result<(&str, i32), String> {
+    let mut words = wanted.split_whitespace();
+    let word = words.next().unwrap_or("");
+    let steps = match words.next() {
+        None => 1,
+        Some(n) => n
+            .parse()
+            .ok()
+            .filter(|n| (1..=near::NEAR).contains(n))
+            .ok_or_else(|| format!("if_near \"{wanted}\": the steps are 1 to {}.", near::NEAR))?,
+    };
+    if !NEAR_WORDS.contains(&word) || words.next().is_some() {
+        return Err(format!(
+            "if_near \"{wanted}\" isn't one: a word ({}) and the steps, like \"ahead 2\".",
+            NEAR_WORDS.join(", ")
+        ));
+    }
+    Ok((word, steps))
 }
 
 impl Skill {
@@ -80,6 +170,7 @@ impl Skill {
                     .iter()
                     .map(|rule| Rule {
                         if_words: rule["if_words"].as_str().unwrap_or("").trim().to_string(),
+                        if_near: rule["if_near"].as_str().unwrap_or("").trim().to_lowercase(),
                         press: rule["press"].as_str().unwrap_or("").trim().to_string(),
                     })
                     .collect()
@@ -105,6 +196,15 @@ impl Skill {
                 }
                 Ok(_) => {}
                 Err(why) => return Err(why),
+            }
+            if !rule.if_near.is_empty() {
+                near_parts(&rule.if_near)?;
+            }
+        }
+        let holding = text("holding").to_lowercase();
+        for name in holding.split(['+', ' ', ',']).filter(|n| !n.is_empty()) {
+            if super::emulator::Button::parse(name).is_none() {
+                return Err(format!("`{name}` in holding isn't a button."));
             }
         }
         let stop_words: Vec<String> = args["stop_words"]
@@ -147,22 +247,40 @@ impl Skill {
             stop_words,
             stop_when_free: args["stop_when_free"].as_bool().unwrap_or(true),
             most,
+            holding,
             uses: 0,
             last: String::new(),
         })
     }
 
-    /// The rule to press on this screen: the first whose words are on it.
-    pub fn rule_for(&self, view: &View) -> Option<&Rule> {
-        self.rules
-            .iter()
-            .find(|rule| rule.if_words.is_empty() || on_screen(&view.text, &rule.if_words))
+    /// The rule to press now: the first whose words are on screen and whose `if_near` is
+    /// around her.
+    pub fn rule_for(&self, view: &View, around: &Around) -> Option<&Rule> {
+        self.rules.iter().find(|rule| {
+            (rule.if_words.is_empty() || on_screen(&view.text, &rule.if_words))
+                && (rule.if_near.is_empty() || around.has(&rule.if_near))
+        })
+    }
+
+    /// Whether it's a reflex: a rule looks at what's around her, so it runs in real time
+    /// while she walks.
+    pub fn reflex(&self) -> bool {
+        self.rules.iter().any(|rule| !rule.if_near.is_empty())
     }
 
     /// Why it stops on this screen, if it does. Stop words only count once it has pressed
-    /// something: words already on screen when it starts are what it was used for.
+    /// something: words already on screen when it starts are what it was used for. A
+    /// reflex stops when words come up instead (the code running it also stops it when she
+    /// hasn't been able to walk for a few rounds: knocked out, or a scene).
     pub fn stop(&self, view: &View, pressed: bool) -> Option<String> {
-        if self.stop_when_free && view.can_walk {
+        if self.reflex() {
+            if !view.text.is_empty() && pressed {
+                return Some(format!(
+                    "words came up: \"{}\"",
+                    view.text.replace('\n', " / ")
+                ));
+            }
+        } else if self.stop_when_free && view.can_walk {
             return Some("you can walk".to_string());
         }
         if !pressed {
@@ -212,15 +330,27 @@ impl Skill {
             lines.push(self.notes.clone());
         }
         for rule in &self.rules {
-            lines.push(if rule.if_words.is_empty() {
+            let mut when = Vec::new();
+            if !rule.if_words.is_empty() {
+                when.push(format!("on \"{}\"", rule.if_words));
+            }
+            if !rule.if_near.is_empty() {
+                when.push(format!("when {}", rule.if_near));
+            }
+            lines.push(if when.is_empty() {
                 format!("- otherwise press `{}`", rule.press)
             } else {
-                format!("- on \"{}\" press `{}`", rule.if_words, rule.press)
+                format!("- {} press `{}`", when.join(" and "), rule.press)
             });
+        }
+        if !self.holding.is_empty() {
+            lines.push(format!("- holding `{}`", self.holding));
         }
         if !self.know_how() {
             let mut stops = Vec::new();
-            if self.stop_when_free {
+            if self.reflex() {
+                stops.push("words come up".to_string());
+            } else if self.stop_when_free {
                 stops.push("she can walk".to_string());
             }
             stops.extend(self.stop_words.iter().map(|w| format!("\"{w}\"")));
@@ -371,9 +501,15 @@ mod tests {
         let skill = run_away();
         let menu = view("▶FIGHT PKMN\nITEM RUN", false);
         // "fight run" isn't in the words as they are, so the second rule fits.
-        assert_eq!(skill.rule_for(&menu).unwrap().press, "a");
+        assert_eq!(
+            skill.rule_for(&menu, &Around::default()).unwrap().press,
+            "a"
+        );
         let menu = view("What will\nRED do? ▶FIGHT\nrun", false);
-        assert_eq!(skill.rule_for(&menu).unwrap().press, "down right a");
+        assert_eq!(
+            skill.rule_for(&menu, &Around::default()).unwrap().press,
+            "down right a"
+        );
     }
 
     #[test]
@@ -463,6 +599,85 @@ mod tests {
         );
         assert!(for_review(&skills).contains("\"use_when\": \"any wild battle\""));
         assert_eq!(for_review(&[]), "(none yet)");
+    }
+
+    #[test]
+    fn reflex_rules_fit_what_is_around_her() {
+        let skill = Skill::from_args(&json!({
+            "name": "fight",
+            "use_when": "something comes at me",
+            "holding": "b",
+            "rules": [
+                {"if_near": "blocked", "press": "a:20"},
+                {"if_near": "Ahead 2", "press": "a"},
+                {"if_near": "coming 3", "press": "left"},
+                {"press": "right"}
+            ]
+        }))
+        .unwrap();
+        assert!(skill.reflex());
+        assert_eq!(skill.holding, "b");
+        let walking = view("", true);
+        let thing = |at, went: (i32, i32)| Thing {
+            at,
+            went,
+            now: (at.0.abs() + at.1.abs()) * 16,
+            then: (at.0.abs() + at.1.abs()) * 16 - went.0.signum() * at.0.signum() * 8,
+        };
+        let press = |around: &Around| skill.rule_for(&walking, around).unwrap().press.clone();
+        let facing_right = Around {
+            facing: Some((1, 0)),
+            ..Around::default()
+        };
+        assert_eq!(press(&facing_right), "right");
+        // Two steps ahead and one off the line is ahead; behind her isn't.
+        let ahead = Around {
+            things: vec![thing((2, 1), (0, 0))],
+            ..facing_right.clone()
+        };
+        assert_eq!(press(&ahead), "a");
+        let behind = Around {
+            things: vec![thing((-2, 0), (0, 0))],
+            ..facing_right.clone()
+        };
+        assert_eq!(press(&behind), "right");
+        // Behind her and coming closer.
+        let coming = Around {
+            things: vec![thing((-2, 0), (4, 0))],
+            ..facing_right.clone()
+        };
+        assert_eq!(press(&coming), "left");
+        let blocked = Around {
+            blocked: true,
+            ..ahead
+        };
+        assert_eq!(press(&blocked), "a:20");
+        // A reflex keeps going while she walks and stops when she can't.
+        assert_eq!(skill.stop(&walking, true), None);
+        assert_eq!(skill.stop(&view("", false), true), None);
+        assert_eq!(
+            skill.stop(&view("Game over", false), true).as_deref(),
+            Some("words came up: \"Game over\"")
+        );
+        assert!(skill.written().contains("- when ahead 2 press `a`"));
+        assert!(skill.written().contains("- holding `b`"));
+        assert!(!run_away().reflex());
+    }
+
+    #[test]
+    fn bad_reflexes_say_why() {
+        let with = |rule: Value, holding: &str| {
+            Skill::from_args(&json!({
+                "name": "x", "use_when": "y", "rules": [rule], "holding": holding
+            }))
+        };
+        let bad = with(json!({"if_near": "ahead 9", "press": "a"}), "").unwrap_err();
+        assert!(bad.contains("the steps are 1 to 4"), "{bad}");
+        let bad = with(json!({"if_near": "enemy", "press": "a"}), "").unwrap_err();
+        assert!(bad.contains("like \"ahead 2\""), "{bad}");
+        let bad = with(json!({"press": "a"}), "shield").unwrap_err();
+        assert!(bad.contains("`shield` in holding isn't a button"), "{bad}");
+        assert!(with(json!({"if_near": "near", "press": "a"}), "a+b").is_ok());
     }
 
     #[test]
