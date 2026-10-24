@@ -298,7 +298,15 @@ fn steps_by_hand() {
                 frames.parse::<u32>().unwrap(),
             )
         });
+        // = and presses the way her press action types them: "=b+right*3".
+        let typed = word
+            .strip_prefix('=')
+            .map(|rest| crate::features::games::gameboy::presses::parse(rest).unwrap());
         let (next, outcome) = match button {
+            _ if let Some(presses) = &typed => {
+                m.press(presses, Default::default());
+                (look(&mut world, &mut m), None)
+            }
             _ if let Some((way, frames)) = held => {
                 m.emulator.hold(&[way]);
                 m.run(frames);

@@ -69,7 +69,9 @@ pub fn tools() -> Vec<ToolDef> {
             name: "press",
             description: "Press 1 to 5 buttons, one after another: a, b, start, select, up, \
                 down, left, right, like \"up a\". A direction is one step, or a turn when \
-                you face another way. For menus, choices and talking (face someone, then a).",
+                you face another way. Join buttons with + to hold them together, like \
+                \"b+right\" for a step with b held. For menus, choices and talking (face \
+                someone, then a).",
             parameters: json!({
                 "type": "object",
                 "properties": {
