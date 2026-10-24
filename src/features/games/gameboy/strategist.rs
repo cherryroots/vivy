@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::notes::{Milestone, Note};
+use super::practice::{self, Goal};
 use super::puzzle::Wanted;
 use super::skills::{self, Skill};
 use super::supervisor::finish_stream;
@@ -53,6 +54,18 @@ player somewhere else, things to push, switches) and walking or exploring has fa
 ask for it: the spot to reach here as x and y, and in what, how you think it works. A \
 solver gets the whole map and the steps that surprised code, and code follows its moves \
 before the next task, checking each. Leave what empty for no help.
+
+Practice: when the way on needs one exact move (a jump onto a ledge or across a gap, \
+getting past an enemy) and it keeps missing in play, ask for practice before the task. \
+Code saves the game, a model plans a try, code runs it and measures it against the goal, \
+then loads the save back for the next try, up to 6; one that works is tried again from \
+two later moments and kept as a skill saying how often it worked, and the game carries on \
+from where it worked. Give what (the move, in a few words) and the goal code measures: \
+stand (on x, y or a step from it, a second later and still), area (reach the one named in area), \
+past_right or past_left (get past x), past_up or past_down (get past y), or watched (the \
+watched value named in watched changes). survive true makes dying fail a try (words like \
+game over, ending in another area, or the watched value named going down). Practise from \
+where the move starts: the task before it gets her there. Leave what empty for none.
 
 Notes: facts that make sense on their own (name the people, places and things), at most \
 15. Keep the useful ones, fix or drop wrong ones, add what the last task taught. Each says \
@@ -139,6 +152,8 @@ pub struct Plan {
     pub essential: bool,
     /// Puzzle help it asked for, to follow before the task (`puzzle.rs`).
     pub puzzle: Option<Wanted>,
+    /// Practice it asked for, before the task and any puzzle help (`practice.rs`).
+    pub practice: Option<Goal>,
     /// Changes to her skills, as `skills::review` takes them.
     pub skill_changes: Vec<Value>,
     /// Tokens used, for the free daily tokens.
@@ -159,6 +174,8 @@ struct Answer {
     essential: Option<bool>,
     #[serde(default)]
     puzzle: Option<Wanted>,
+    #[serde(default)]
+    practice: Option<Goal>,
     #[serde(default)]
     skill_changes: Option<Vec<Value>>,
 }
@@ -197,6 +214,7 @@ impl Answer {
             task: self.next_task.take().unwrap_or_default(),
             essential: self.essential.unwrap_or(false),
             puzzle: self.puzzle.take().filter(|p| !p.what.trim().is_empty()),
+            practice: self.practice.take().filter(Goal::wanted),
             skill_changes: self.skill_changes.take().unwrap_or_default(),
             tokens,
             usd,
@@ -307,6 +325,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 task: second.task,
                 essential: second.essential,
                 puzzle: second.puzzle,
+                practice: second.practice,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
                 tokens,
                 usd,
@@ -376,7 +395,18 @@ fn schema(notes: bool, task: bool) -> Value {
             "x": {"type": "integer"},
             "y": {"type": "integer"}
         }));
-        required.extend(["next_task", "essential", "puzzle"]);
+        let mut goals = vec![""];
+        goals.extend(practice::GOALS);
+        properties["practice"] = strict(json!({
+            "what": {"type": "string"},
+            "goal": {"type": "string", "enum": goals},
+            "x": {"type": "integer"},
+            "y": {"type": "integer"},
+            "area": {"type": "string"},
+            "watched": {"type": "string"},
+            "survive": {"type": "boolean"}
+        }));
+        required.extend(["next_task", "essential", "puzzle", "practice"]);
     }
     json!({
         "type": "object",
@@ -437,7 +467,8 @@ mod tests {
                 "skill_changes",
                 "next_task",
                 "essential",
-                "puzzle"
+                "puzzle",
+                "practice"
             ])
         );
         let change = &both["properties"]["skill_changes"]["items"];
@@ -457,11 +488,14 @@ mod tests {
         assert!(notes["properties"].get("next_task").is_none());
         assert_eq!(
             schema(false, true)["required"],
-            json!(["reasoning", "next_task", "essential", "puzzle"])
+            json!(["reasoning", "next_task", "essential", "puzzle", "practice"])
         );
         let puzzle = &both["properties"]["puzzle"];
         assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
         assert_eq!(puzzle["additionalProperties"], false);
+        let practice = &both["properties"]["practice"];
+        assert_eq!(practice["required"].as_array().unwrap().len(), 7);
+        assert_eq!(practice["properties"]["goal"]["enum"][0], "");
     }
 
     #[test]

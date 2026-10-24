@@ -99,6 +99,10 @@ impl Game for OnConsole {
         on_game(move |world, _, _| world.sight = sight).await
     }
 
+    async fn set_world(&mut self, world: World) -> anyhow::Result<()> {
+        on_game(move |w, _, _| *w = world).await
+    }
+
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {
         on_game(|_, m, _| m.emulator.save_state()).await?
     }

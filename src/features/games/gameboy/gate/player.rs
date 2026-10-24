@@ -109,6 +109,11 @@ impl Game for Local {
         Ok(())
     }
 
+    async fn set_world(&mut self, world: World) -> anyhow::Result<()> {
+        self.world = world;
+        Ok(())
+    }
+
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {
         self.machine.emulator.save_state()
     }

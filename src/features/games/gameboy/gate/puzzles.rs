@@ -308,25 +308,12 @@ async fn the_puzzle_helper_solves_a_maze_of_arrows() {
 #[ignore = "calls OpenAI (the free daily tokens) and needs a ROM in VIVY_GB_ROM"]
 async fn the_puzzle_helper_after_an_episode() {
     use crate::features::games::gameboy::budget::Today;
-    use crate::features::games::gameboy::console::Machine;
     use crate::features::games::gameboy::path;
-    use crate::features::games::gameboy::session::{self, Replay};
+    use crate::features::games::gameboy::session;
     if !gate_on() {
         return;
     }
-    let json = std::path::PathBuf::from(setting("VIVY_GB_REPLAY_EP", ""));
-    let replay: Replay = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
-    let rom = crate::features::games::gameboy::emulator::tests::real_rom();
-    let mut local = Local::new(Machine::new("game.gb", &rom).unwrap());
-    let state = std::fs::read(json.with_extension("state")).unwrap();
-    local.machine.emulator.load_state(&state).unwrap();
-    local.world = replay.world;
-    local.look().await.unwrap();
-    for played in &replay.actions {
-        if played.name != session::NAMED_LETTERS {
-            local.act(&played.name, &played.args).await.unwrap();
-        }
-    }
+    let mut local = after_episode().await;
     let (x, y) = setting("VIVY_GB_WANT", "")
         .split_once(',')
         .map(|(x, y)| (x.trim().parse().unwrap(), y.trim().parse().unwrap()))
@@ -369,6 +356,109 @@ async fn the_puzzle_helper_after_an_episode() {
         today.free_tokens
     );
     let folder = results("puzzle-after");
+    std::fs::write(folder.join("report.md"), &report).unwrap();
+    std::fs::write(folder.join("end.png"), local.screen().await.unwrap()).unwrap();
+    println!("{report}");
+}
+
+/// The game as an episode left it: `VIVY_GB_REPLAY_EP` (a replay's `<n>.json`, with
+/// `<n>.state` beside it) played again with no model.
+async fn after_episode() -> Local {
+    use crate::features::games::gameboy::console::Machine;
+    use crate::features::games::gameboy::session::{self, Replay};
+    let json = std::path::PathBuf::from(setting("VIVY_GB_REPLAY_EP", ""));
+    let replay: Replay = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    let rom = crate::features::games::gameboy::emulator::tests::real_rom();
+    let mut local = Local::new(Machine::new("game.gb", &rom).unwrap());
+    let state = std::fs::read(json.with_extension("state")).unwrap();
+    local.machine.emulator.load_state(&state).unwrap();
+    local.world = replay.world;
+    local.look().await.unwrap();
+    for played in &replay.actions {
+        if played.name != session::NAMED_LETTERS {
+            local.act(&played.name, &played.args).await.unwrap();
+        }
+    }
+    local
+}
+
+/// Practice for real, after an episode (`VIVY_GB_REPLAY_EP`): the goal is to stand on
+/// `VIVY_GB_WANT` ("x,y"), with `VIVY_GB_WHAT` as the move. The cheap model
+/// (`VIVY_GB_PLAYER`) plans the first tries, the strategist's model the later ones, its
+/// free tokens counted in the shared `VIVY_GB_TODAY`.
+#[tokio::test]
+#[ignore = "calls Claude and OpenAI and needs a ROM in VIVY_GB_ROM"]
+async fn practice_after_an_episode() {
+    use crate::features::games::gameboy::budget::Today;
+    use crate::features::games::gameboy::practice::{self, Goal};
+    use crate::features::games::gameboy::session::Game;
+    if !gate_on() {
+        return;
+    }
+    let mut local = after_episode().await;
+    let (x, y) = setting("VIVY_GB_WANT", "")
+        .split_once(',')
+        .map(|(x, y)| (x.trim().parse().unwrap(), y.trim().parse().unwrap()))
+        .unwrap();
+    let goal = Goal {
+        what: setting("VIVY_GB_WHAT", "the jump"),
+        goal: setting("VIVY_GB_GOAL", "stand"),
+        x,
+        y,
+        survive: true,
+        ..Goal::default()
+    };
+    let start = local.look().await.unwrap().view;
+    let today_file = std::path::PathBuf::from(setting(
+        "VIVY_GB_TODAY",
+        "/mnt/project-files/gameboy/today.json",
+    ));
+    let saved = std::fs::read_to_string(&today_file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let mut today = Today::on(saved, chrono::Utc::now());
+    let db = spend_db().await;
+    let model = setting("VIVY_GB_PLAYER", "claude-haiku-5-5");
+    let (provider, _) = super::player_model(&http(), &db, &model);
+    let strategist = setting("VIVY_GB_STRATEGIST", "gpt-6-astra");
+    let openai = openai(&http(), &db, &strategist, "high");
+    let limit = setting("VIVY_GB_FREE_TOKENS", "950000").parse().unwrap();
+    let before = today.free_tokens;
+    let practised = practice::practise(
+        provider.as_ref(),
+        Some(&openai),
+        limit,
+        &mut today,
+        &mut local,
+        &goal,
+        &[],
+        None,
+    )
+    .await
+    .unwrap();
+    std::fs::write(&today_file, serde_json::to_string_pretty(&today).unwrap()).unwrap();
+    let usd = super::spent(&db).await;
+    let end = local.look().await.unwrap().view;
+    let skills = local.world().await.unwrap().skills;
+    let kept = skills
+        .iter()
+        .find(|s| Some(&s.name) == practised.kept.as_ref())
+        .map(|s| s.written())
+        .unwrap_or_default();
+    let report = format!(
+        "# Practice after an episode ({model}, then {strategist})\n\nFrom {} {:?}: {}\n\n{}\n\n\
+         {}\n\n{kept}\n\nEnded at {} {:?}; ${usd:.3} and {} free tokens (today {}).\n",
+        start.area,
+        start.at,
+        goal.line(),
+        practised.line,
+        practised.told,
+        end.area,
+        end.at,
+        today.free_tokens - before,
+        today.free_tokens
+    );
+    let folder = results("practice-after");
     std::fs::write(folder.join("report.md"), &report).unwrap();
     std::fs::write(folder.join("end.png"), local.screen().await.unwrap()).unwrap();
     println!("{report}");
