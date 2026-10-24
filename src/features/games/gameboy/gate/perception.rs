@@ -563,7 +563,8 @@ fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
         found.x,
         Some(Byte {
             address: test_game::X_PIXELS,
-            per_step: 16
+            per_step: 16,
+            high: None,
         }),
         "{report}"
     );
@@ -571,7 +572,8 @@ fn the_look_with_no_map_learns_a_game_it_was_never_told_about() {
         found.y,
         Some(Byte {
             address: test_game::Y,
-            per_step: 1
+            per_step: 1,
+            high: None,
         }),
         "{report}"
     );

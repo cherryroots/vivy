@@ -31,6 +31,9 @@ const PER_STEP: [u8; 5] = [1, 2, 4, 8, 16];
 /// Steps along an axis a byte must follow before it counts as found.
 const FOUND_AFTER: u32 = 4;
 
+/// Steps a byte that counts another going round must stay put for, besides.
+const ROUNDS_STILL: u32 = 8;
+
 /// Area changes a byte must follow before it counts as the area.
 const AREA_AFTER: u32 = 3;
 
@@ -90,12 +93,22 @@ fn index(address: u16) -> Option<usize> {
 pub struct Byte {
     pub address: u16,
     pub per_step: u8,
+    /// Where a game counts past 255 (pixels across a map wider than 16 steps), the byte
+    /// that counts how many times it went round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub high: Option<u16>,
 }
 
 impl Byte {
-    /// Her x or y in steps, by this byte.
+    /// Her x or y in steps, by this byte (and the one that counts it going round).
     pub fn steps(self, memory: &Memory) -> i32 {
-        i32::from(memory.get(self.address) / self.per_step)
+        let high = self.high.map_or(0, |h| i32::from(memory.get(h)));
+        (high * 256 + i32::from(memory.get(self.address))) / i32::from(self.per_step)
+    }
+
+    /// The same byte, whatever counts it going round.
+    fn same(self, other: Byte) -> bool {
+        self.address == other.address && self.per_step == other.per_step
     }
 }
 
@@ -123,6 +136,50 @@ struct Axis {
     /// The byte picked, kept while it stays in the running, so the numbers don't change
     /// under her when another byte catches up.
     chosen: Option<Byte>,
+    /// The guesses for the byte that counts the chosen one going round.
+    rounds: Rounds,
+}
+
+/// Finding the byte that counts another going round: it goes up by one when the other
+/// goes past 255, down by one when it goes below 0, and never changes otherwise. A
+/// byte counting pixels goes round every 16 steps, and without it her x jumps 16 steps
+/// back each time (Harvest Moon's farm is wider than that).
+#[derive(Debug, Clone, Default)]
+struct Rounds {
+    guesses: Vec<(u16, Tally)>,
+}
+
+impl Rounds {
+    fn new() -> Rounds {
+        Rounds {
+            guesses: (0..Memory::LEN)
+                .map(|i| (address(i), Tally::default()))
+                .collect(),
+        }
+    }
+
+    /// A step the low byte followed, going round `by` (-1, 0 or 1).
+    fn step(&mut self, before: &Memory, after: &Memory, by: i32) {
+        for (address, tally) in &mut self.guesses {
+            let change = after.get(*address).wrapping_sub(before.get(*address));
+            match (change == by as u8, by != 0) {
+                (true, true) => tally.moved += 1,
+                (true, false) => tally.still += 1,
+                (false, _) => tally.missed += 1,
+            }
+        }
+        // Nothing let off before it has gone round once: most bytes are out at once.
+        self.guesses.retain(|(_, t)| t.missed <= t.moved);
+    }
+
+    /// Once one went round with it and stayed put a while besides.
+    fn found(&self) -> Option<u16> {
+        self.guesses
+            .iter()
+            .filter(|(_, t)| t.moved >= 1 && t.still >= ROUNDS_STILL)
+            .min_by_key(|(a, t)| (u32::MAX - t.moved, t.missed, *a))
+            .map(|(a, _)| *a)
+    }
 }
 
 impl Axis {
@@ -133,6 +190,7 @@ impl Axis {
                     let byte = Byte {
                         address: address(i),
                         per_step,
+                        high: None,
                     };
                     (byte, Tally::default())
                 })
@@ -141,6 +199,7 @@ impl Axis {
         Axis {
             guesses,
             chosen: None,
+            rounds: Rounds::new(),
         }
     }
 
@@ -150,9 +209,16 @@ impl Axis {
             moved: FOUND_AFTER,
             ..Tally::default()
         };
+        let rounds = match byte.high {
+            Some(high) => Rounds {
+                guesses: vec![(high, Tally { moved: 1, ..tally })],
+            },
+            None => Rounds::new(),
+        };
         Axis {
-            guesses: vec![(byte, tally)],
+            guesses: vec![(Byte { high: None, ..byte }, tally)],
             chosen: Some(byte),
+            rounds,
         }
     }
 
@@ -177,12 +243,27 @@ impl Axis {
         }
         if self
             .chosen
-            .is_some_and(|c| !self.guesses.iter().any(|(b, _)| *b == c))
+            .is_some_and(|c| !self.guesses.iter().any(|(b, _)| b.same(c)))
         {
             self.chosen = None;
         }
         if self.chosen.is_none() {
             self.chosen = self.best();
+            self.rounds = Rounds::new();
+        }
+        // Whether the chosen byte went round, on a step it followed.
+        let Some(chosen) = self.chosen else { return };
+        let (was, now) = (before.get(chosen.address), after.get(chosen.address));
+        let went = steps * i32::from(chosen.per_step);
+        if now.wrapping_sub(was) == went as u8 {
+            let by = (i32::from(was) + went).div_euclid(256);
+            self.rounds.step(before, after, by);
+        }
+        if chosen.high.is_none() {
+            self.chosen = Some(Byte {
+                high: self.rounds.found(),
+                ..chosen
+            });
         }
     }
 
@@ -1145,11 +1226,13 @@ mod tests {
             (
                 Byte {
                     address: X,
-                    per_step: 1
+                    per_step: 1,
+                    high: None,
                 },
                 Byte {
                     address: Y,
-                    per_step: 1
+                    per_step: 1,
+                    high: None,
                 }
             )
         );
@@ -1178,6 +1261,51 @@ mod tests {
         position.step(&before, &game.memory.clone(), (0, -1));
         assert_eq!(position.found(), found);
         assert_eq!(position.at(&game.memory), Some((5, 35)));
+    }
+
+    #[test]
+    fn a_pixel_x_past_255_is_read_with_the_byte_that_counts_it_going_round() {
+        // A game that only keeps pixels: x low and high, y in steps, a ticking timer.
+        let (low, high, y) = (0xc200, 0xc201, 0xc300);
+        let mut memory =
+            Memory::from_bytes((0..Memory::LEN).map(|i| (i * 37 % 251) as u8).collect());
+        let mut x: u16 = 2 * 16;
+        let mut tick = 0u8;
+        let mut position = Position::default();
+        let mut walk = |memory: &mut Memory, dx: i32, dy: i32, position: &mut Position| {
+            let before = memory.clone();
+            x = (i32::from(x) + dx * 16) as u16;
+            memory.set(low, x as u8);
+            memory.set(high, (x >> 8) as u8);
+            memory.set(y, (i32::from(memory.get(y)) + dy) as u8);
+            tick = tick.wrapping_add(1);
+            memory.set(TIMER, tick);
+            position.step(&before, memory, (dx, dy));
+        };
+        memory.set(y, 5);
+        for _ in 0..3 {
+            for (dx, dy) in [(0, 1), (0, -1)] {
+                walk(&mut memory, dx, dy, &mut position);
+            }
+        }
+        for _ in 0..4 {
+            walk(&mut memory, 1, 0, &mut position);
+        }
+        // Not round yet: x is found, but not what counts it going round.
+        let (found_x, _) = position.found().expect("found");
+        assert_eq!((found_x.address, found_x.high), (low, None));
+        // Over 255 and on: the next byte went up by one just then.
+        for _ in 0..10 {
+            walk(&mut memory, 1, 0, &mut position);
+        }
+        let (found_x, _) = position.found().expect("found");
+        assert_eq!(found_x.high, Some(high));
+        assert_eq!(position.at(&memory), Some((16, 5)));
+        // Back below 256, and still read right.
+        for _ in 0..8 {
+            walk(&mut memory, -1, 0, &mut position);
+        }
+        assert_eq!(position.at(&memory), Some((8, 5)));
     }
 
     #[test]
