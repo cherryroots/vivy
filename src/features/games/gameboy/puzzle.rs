@@ -54,7 +54,10 @@ second). Plan such presses from the ones the player has made, listed with how th
 the player; one not tried yet is a guess, so end the moves soon after it. Code presses \
 them one at a time and stops at the first move that doesn't end where you said, so say \
 where the player will really stand, the puzzle's effects included, and keep moves short \
-past anything you're unsure of. The last move ends on the spot. At most 30 moves.";
+past anything you're unsure of. The last move ends on the spot. At most 30 moves.
+
+Games don't go exactly the same twice. When a move ends somewhere else, code asks again \
+and says how the plans so far went: plan from where the player stands now.";
 
 /// What the strategist asks for: the spot to reach in the area she's in, and what it
 /// knows of how the puzzle works.

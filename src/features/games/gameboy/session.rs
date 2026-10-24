@@ -36,7 +36,7 @@ use super::any::{Sight, Whereabouts};
 use super::budget::Today;
 use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
-use super::map::AreaMap;
+use super::map::{AreaMap, Pos};
 use super::notes::{self, Note, Reached};
 use super::puzzle::{self, Move, Wanted};
 use super::screen::TileKey;
@@ -850,8 +850,15 @@ async fn plan<G: Game>(
     ))
 }
 
+/// Plans the puzzle helper makes after its first, each from where the last one left her:
+/// games aren't the same twice (a jump lands a pixel further), so a move that ends
+/// elsewhere is planned on from there.
+const REPLANS: usize = 3;
+
 /// The puzzle helper (`puzzle.rs`), when the strategist asked for it: the solver's moves,
-/// asked for again once if code turns them down, then followed. Says how it went.
+/// asked for again once if code turns them down, then followed. When a move ends
+/// somewhere else in the area, it plans again from there, up to `REPLANS` times. Says how
+/// it went.
 async fn help_with_puzzle<G: Game>(
     session: &Session<'_>,
     game: &mut G,
@@ -862,48 +869,103 @@ async fn help_with_puzzle<G: Game>(
     let Some(openai) = session.openai else {
         return Ok("it needs the strategist's model, and OpenAI isn't set up".to_string());
     };
-    let world = game.world().await?;
-    let view = game.look().await?.view;
-    let map = world.areas.get(&view.area).cloned().unwrap_or_default();
     let to = (wanted.x, wanted.y);
-    let surprises = puzzle::surprises(&world.log, &view.area, &map);
-    let asked = puzzle::ask(
-        &view.area,
-        &map,
-        view.at,
-        wanted,
-        &surprises,
-        &world.motions,
-        &journal.notes,
-    );
+    let mut said: Vec<String> = Vec::new();
+    // Each plan so far and how it went, for the next ask: one that failed the same way
+    // twice shouldn't come a third time.
+    let mut tried: Vec<String> = Vec::new();
+    for plan in 0..=REPLANS {
+        let world = game.world().await?;
+        let view = game.look().await?.view;
+        let area = view.area.clone();
+        let map = world.areas.get(&area).cloned().unwrap_or_default();
+        let surprises = puzzle::surprises(&world.log, &area, &map);
+        let mut asked = puzzle::ask(
+            &area,
+            &map,
+            view.at,
+            wanted,
+            &surprises,
+            &world.motions,
+            &journal.notes,
+        );
+        if !tried.is_empty() {
+            let (x, y) = view.at;
+            asked.push_str(&format!(
+                "\nThe game didn't go as planned. The plans so far and how they went:\n{}\n\
+                 The player stands at ({x}, {y}) now: plan from there, and don't repeat a \
+                 move that already ended somewhere else.\n",
+                tried.join("\n")
+            ));
+        }
+        let (moves, outcome) =
+            match plan_and_follow(session, game, today, openai, &asked, &map, view.at, to).await? {
+                Ok(followed) => followed,
+                Err(why) => {
+                    said.push(why);
+                    break;
+                }
+            };
+        let count = match moves.len() {
+            1 => "1 move".to_string(),
+            n => format!("{n} moves"),
+        };
+        said.push(format!("{count}. {outcome}"));
+        let now = game.look().await?.view;
+        if now.at == to || now.area != area || !now.can_walk || plan == REPLANS {
+            break;
+        }
+        let lines: Vec<String> = moves.iter().map(Move::line).collect();
+        tried.push(format!(
+            "- From ({}, {}): {}. {outcome}",
+            view.at.0,
+            view.at.1,
+            lines.join(", ")
+        ));
+        said.push(format!("Planned again from ({}, {}):", now.at.0, now.at.1));
+    }
+    Ok(said.join(" "))
+}
+
+/// One plan: the solver's moves, asked for again once if code turns them down, then
+/// followed. The moves and how following them went, or why there were none.
+#[allow(clippy::too_many_arguments)]
+async fn plan_and_follow<G: Game>(
+    session: &Session<'_>,
+    game: &mut G,
+    today: &mut Today,
+    openai: &OpenAi,
+    asked: &str,
+    map: &AreaMap,
+    at: Pos,
+    to: Pos,
+) -> anyhow::Result<Result<(Vec<Move>, String), String>> {
     let mut rejected: Option<(Vec<Move>, String)> = None;
     for _ in 0..2 {
         if !today.free_call_fits(session.limits.free_tokens, true) {
-            return Ok("there weren't enough free tokens left today to ask".to_string());
+            return Ok(Err(
+                "there weren't enough free tokens left today to ask".to_string()
+            ));
         }
         let last = rejected
             .as_ref()
             .map(|(m, why)| (m.as_slice(), why.as_str()));
-        let solution = puzzle::solve(openai, &asked, last).await?;
+        let solution = puzzle::solve(openai, asked, last).await?;
         today.used_free(solution.tokens, true);
-        match puzzle::check(&solution.moves, &map, view.at, to) {
+        match puzzle::check(&solution.moves, map, at, to) {
             Ok(()) => {
-                let moves = match solution.moves.len() {
-                    1 => "1 move".to_string(),
-                    n => format!("{n} moves"),
-                };
                 let acted = game
                     .act("follow_moves", &json!({ "moves": solution.moves }))
                     .await?;
-                return Ok(format!("{moves}. {}", acted.outcome));
+                return Ok(Ok((solution.moves, acted.outcome)));
             }
             Err(why) => rejected = Some((solution.moves, why)),
         }
     }
     let why = rejected.map(|(_, why)| why).unwrap_or_default();
-    Ok(format!(
+    Ok(Err(format!(
         "code turned its moves down twice; the last time {why}"
-    ))
+    )))
 }
 
 /// Saves a checkpoint of where the game is now, with the notes, and drops old ones.
