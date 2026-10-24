@@ -105,10 +105,26 @@ impl Machine {
     }
 
     /// Presses each in turn: held for `timing.hold` frames (or the press's own length),
-    /// then nothing for `timing.gap`.
+    /// then nothing for `timing.gap`. Buttons a press holds for less than all of it are let
+    /// go on their frame.
     pub fn press(&mut self, presses: &[Press], timing: Timing) {
-        for Press { buttons, frames } in presses {
-            self.hold_for(buttons, frames.unwrap_or(timing.hold));
+        for press in presses {
+            let whole = press.frames.unwrap_or(timing.hold);
+            if press.shorter.is_empty() {
+                self.hold_for(&press.buttons, whole);
+            } else {
+                for frame in 0..whole {
+                    let held: Vec<Button> = press
+                        .buttons
+                        .iter()
+                        .copied()
+                        .filter(|&b| press.frames_of(b, timing.hold) > frame)
+                        .collect();
+                    self.emulator.hold(&held);
+                    self.frame();
+                }
+                self.emulator.release();
+            }
             self.hold_for(&[], timing.gap);
         }
     }
@@ -259,6 +275,15 @@ mod tests {
         // ROM reads the pad once a frame).
         let scrolled = m.emulator.read(0xff43);
         assert!((3..=4).contains(&scrolled), "scrolled {scrolled}");
+        // A let go early doesn't cut the right short.
+        let start = m.emulator.frames();
+        m.press(
+            &presses::parse("a:2+right:6").unwrap(),
+            Timing { hold: 4, gap: 2 },
+        );
+        assert_eq!(m.emulator.frames() - start, 8);
+        let more = m.emulator.read(0xff43).wrapping_sub(scrolled);
+        assert!((5..=6).contains(&more), "scrolled {more} more");
     }
 
     /// What the commands do, on a real game: the GIFs `load` and `press` would post, saved

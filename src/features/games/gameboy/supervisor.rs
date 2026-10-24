@@ -40,9 +40,10 @@ After using one, check how it went, and rewrite it if it didn't do what you mean
 you. Hold a button while walking with holding (a shield), and for fighting or jumping in \
 real time write a reflex: a skill whose rules react to what's near you (if_near).
 - A press that carries you further than a step (a jump, a dash, a fall) says where it took \
-you: how high, and where you ended. Your map lists the last of each such press: plan a \
-jump from one you've made, and change how long you hold the buttons (a+right:30) to go \
-further or less far.
+you: how high, on which frame, and where you ended. Your map lists the last of each such \
+press, and how far each frame of holding a direction carries you. Plan a jump from those: \
+hold the jump button for the height and the direction for the distance, each its own \
+frames (a:20+right:60), counting the direction's frames from how far you need to go.
 - A press that fires or throws something says what it sent out: which way it went, how \
 far, and whether it went off the screen or was gone next to something (it may have hit \
 it). Your map lists the last of each: aim from those.

@@ -226,7 +226,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #115 | | Game Boy: buttons held through an action (`holding`) and long presses (`a:40`); every look says what's near her and how it moves; reflex skills that react to what's near her in real time with no model call; status bars read as fixed rows, so Mega Man's sprites are seen |
 | #116 | | Game Boy: a press that carries her further than a step (a jump, a dash, a fall) says how high she went and where she ended, followed frame by frame with the screen's scroll; the last of each such press is listed under her map, and the puzzle helper plans jumps (`a+right:30`) from them |
 | #117 | | Game Boy: a press that fires or throws something says what it sent out: which way it went, how far, and whether it went off the screen, was gone next to something (a hit) or came back; the last of each is listed under her map |
-| #118 | | Game Boy: when a puzzle helper's move leaves her somewhere other than planned, it plans again from where she is, telling the solver how the last plan went, up to 3 times |
+| #118 | | Game Boy: when a puzzle helper's move leaves her somewhere other than planned, it plans again from where she is, telling the solver how the plans so far went, up to 3 times; each button of a press can be held its own frames (`a:20+right:60`), her pace each way and when a jump peaked and landed are measured and listed, the solver plans jump frames from them, and a jump landing one step off walks the last step |
 
 ## Not built yet
 

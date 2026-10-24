@@ -241,7 +241,7 @@ async fn the_puzzle_helper_solves_a_maze_of_arrows() {
         "Arrow Room: pushed steps can't be seen on the map.",
         "tried",
     )];
-    let asked = puzzle::ask("Arrow Room", &map, start, &wanted, &surprises, &[], &notes);
+    let asked = puzzle::ask("Arrow Room", &map, start, &wanted, &surprises, "", &notes);
     let model = setting("VIVY_GB_STRATEGIST", "gpt-6-astra");
     let db = spend_db().await;
     let openai = openai(&http(), &db, &model, "high");
@@ -297,4 +297,79 @@ async fn the_puzzle_helper_solves_a_maze_of_arrows() {
     std::fs::write(folder.join("report.md"), &report).unwrap();
     println!("{report}");
     assert_eq!(at, spot, "{report}");
+}
+
+/// The puzzle helper on a real game, after one of her episodes: the episode in
+/// `VIVY_GB_REPLAY_EP` (a replay's `N.json`, its `N.state` beside it) is pressed again so
+/// her world knows how her presses go, then the helper plans and follows moves to
+/// `VIVY_GB_WANT` ("x,y"), with `VIVY_GB_WHAT` as what the strategist knows. Its free
+/// tokens count in the shared `VIVY_GB_TODAY`.
+#[tokio::test]
+#[ignore = "calls OpenAI (the free daily tokens) and needs a ROM in VIVY_GB_ROM"]
+async fn the_puzzle_helper_after_an_episode() {
+    use crate::features::games::gameboy::budget::Today;
+    use crate::features::games::gameboy::console::Machine;
+    use crate::features::games::gameboy::path;
+    use crate::features::games::gameboy::session::{self, Replay};
+    if !gate_on() {
+        return;
+    }
+    let json = std::path::PathBuf::from(setting("VIVY_GB_REPLAY_EP", ""));
+    let replay: Replay = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    let rom = crate::features::games::gameboy::emulator::tests::real_rom();
+    let mut local = Local::new(Machine::new("game.gb", &rom).unwrap());
+    let state = std::fs::read(json.with_extension("state")).unwrap();
+    local.machine.emulator.load_state(&state).unwrap();
+    local.world = replay.world;
+    local.look().await.unwrap();
+    for played in &replay.actions {
+        if played.name != session::NAMED_LETTERS {
+            local.act(&played.name, &played.args).await.unwrap();
+        }
+    }
+    let (x, y) = setting("VIVY_GB_WANT", "")
+        .split_once(',')
+        .map(|(x, y)| (x.trim().parse().unwrap(), y.trim().parse().unwrap()))
+        .unwrap();
+    let wanted = Wanted {
+        x,
+        y,
+        what: setting("VIVY_GB_WHAT", ""),
+    };
+    let start = local.look().await.unwrap().view;
+    let presses = path::presses(&local.world.motions, &local.world.paces);
+    let today_file = std::path::PathBuf::from(setting(
+        "VIVY_GB_TODAY",
+        "/mnt/project-files/gameboy/today.json",
+    ));
+    let saved = std::fs::read_to_string(&today_file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let mut today = Today::on(saved, chrono::Utc::now());
+    let model = setting("VIVY_GB_STRATEGIST", "gpt-6-astra");
+    let db = spend_db().await;
+    let openai = openai(&http(), &db, &model, "high");
+    let limit = setting("VIVY_GB_FREE_TOKENS", "950000").parse().unwrap();
+    let before = today.free_tokens;
+    let how = session::help_with_puzzle(&openai, limit, &mut local, &[], &mut today, &wanted)
+        .await
+        .unwrap();
+    std::fs::write(&today_file, serde_json::to_string_pretty(&today).unwrap()).unwrap();
+    let end = local.look().await.unwrap().view;
+    let report = format!(
+        "# Puzzle helper after an episode ({model})\n\nFrom {} {:?} to ({x}, {y}): {}\n\n\
+         What her presses did:\n{presses}\n\nHow it went: {how}\n\nEnded at {} {:?}; {} free \
+         tokens (today {}).\n",
+        start.area,
+        start.at,
+        wanted.what,
+        end.area,
+        end.at,
+        today.free_tokens - before,
+        today.free_tokens
+    );
+    let folder = results("puzzle-after");
+    std::fs::write(folder.join("report.md"), &report).unwrap();
+    std::fs::write(folder.join("end.png"), local.screen().await.unwrap()).unwrap();
+    println!("{report}");
 }

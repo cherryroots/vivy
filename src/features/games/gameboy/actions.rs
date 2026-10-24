@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 use super::console::{Machine, Timing};
 use super::emulator::Button;
-use super::map::{Kind, LEGEND};
+use super::map::{Dir, Kind, LEGEND};
 use super::near::{self, Thing};
 use super::path;
 use super::presses::{self, Press};
@@ -84,8 +84,9 @@ pub fn tools() -> Vec<ToolDef> {
                 down, left, right, like \"up a\". A direction is one step, or a turn when \
                 you face another way. Join buttons with + to press them together \
                 (\"b+right\"); add :frames to hold one longer than a step (\"a:40\", up to \
-                120, 60 a second: a charged shot, a higher jump). For menus, choices and \
-                talking (face someone, then a).",
+                120, 60 a second: a charged shot, a higher jump), and give each button its \
+                own frames to let some go first (\"a:20+right:60\" jumps and keeps going \
+                right). For menus, choices and talking (face someone, then a).",
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -261,17 +262,18 @@ fn sprite_height(machine: &Machine) -> i32 {
     }
 }
 
-/// What the press that started on frame `start` did over time, from her `spot` then: how
-/// it carried her, if further than a step, and what it sent out. Kept with the game's
-/// world, and said as lines.
+/// What `one`, pressed from frame `start`, did over time, from her `spot` then: how it
+/// carried her, if further than a step, how far each frame of its directions took her, and
+/// what it sent out. Kept with the game's world, and said as lines.
 fn after_press(
     world: &mut World,
     machine: &Machine,
     start: u64,
     spot: Option<(i32, i32)>,
-    typed: &str,
+    one: &Press,
     view: &View,
 ) -> Vec<String> {
+    let typed = presses::describe(std::slice::from_ref(one));
     let Some(frames) = machine.frames_since(start) else {
         return Vec::new();
     };
@@ -287,6 +289,18 @@ fn after_press(
         press.push_str(&format!(" holding {}", names.join("+")));
     }
     let step = view.grid.map_or(16, |g| g.pixels);
+    for way in one.buttons.iter().filter(|b| b.is_direction()) {
+        let unit = match way {
+            Button::Left => (-1, 0),
+            Button::Right => (1, 0),
+            Button::Up => (0, -1),
+            _ => (0, 1),
+        };
+        let held = one.frames_of(*way, Timing::default().hold);
+        for pace in path::paces_of(way.name(), unit, held, &places, step) {
+            path::remember_pace(&mut world.paces, pace);
+        }
+    }
     let mut lines = Vec::new();
     if let Some(motion) = path::Motion::of(&press, &places, step) {
         lines.push(format!("{} {}.", motion.press, motion.words()));
@@ -535,8 +549,7 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
         let start = machine.emulator.frames();
         machine.press(std::slice::from_ref(one), Timing::default());
         view = settle(world, machine, look, &mut words);
-        let typed = presses::describe(std::slice::from_ref(one));
-        carried_lines.extend(after_press(world, machine, start, spot, &typed, &view));
+        carried_lines.extend(after_press(world, machine, start, spot, one, &view));
     }
     // Her own presses haven't shown which sprite is her: pressing each way does.
     if !view.can_walk
@@ -645,15 +658,26 @@ fn read_text(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
 }
 
 /// Presses the puzzle helper's moves (`puzzle.rs`) one at a time, learning the map as
-/// walking does, and checks after each move that she stands where it said. Stops at the
-/// first one that doesn't, when she leaves the area, or when a choice comes up; text that
-/// comes up along the way is read through.
+/// walking does, and checks after each move that she stands where it said. A held press
+/// that ends a step from its spot (a jump landing a little short or long) walks that last
+/// step. Stops at the first move that still doesn't end there, when she leaves the area, or
+/// when a choice comes up; text that comes up along the way is read through. What the
+/// presses did over time (how a jump went) is said after the outcome.
 fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[Move]) -> Acted {
     let mut view = look(world, machine);
     let mut words = Vec::new();
+    let mut carried = Vec::new();
     let area = view.area.clone();
     let all = moves.len();
     let a = Press::of(vec![Button::A]);
+    let told = |outcome: String, carried: &[String]| {
+        let mut outcome = outcome;
+        for line in carried {
+            outcome.push(' ');
+            outcome.push_str(line);
+        }
+        outcome
+    };
     for (i, one) in moves.iter().enumerate() {
         let n = i + 1;
         for _ in 0..one.times {
@@ -667,31 +691,21 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
                         one.line()
                     );
                     return Acted {
-                        outcome,
+                        outcome: told(outcome, &carried),
                         view,
                         words,
                     };
                 }
             }
             match one.dir() {
-                Some(dir) => {
-                    let (next, outcome) = take_step(world, machine, look, &view, dir);
-                    let map = world.area(&view.area);
-                    if next.area == view.area && next.at == view.at && next.can_walk {
-                        if !map.person_at(dir.step(view.at)) {
-                            map.blocked(view.at, dir);
-                        }
-                    } else if matches!(outcome, super::moves::Outcome::Moved(_))
-                        && next.area == view.area
-                    {
-                        map.walked(next.at);
-                    }
-                    view = settle(world, machine, look, &mut words);
-                }
+                Some(dir) => view = step_once(world, machine, look, &view, dir, &mut words),
                 None => {
                     let press = one.press().unwrap_or_else(|_| a.clone());
+                    let spot = view.can_walk.then(|| her_spot(world, &view)).flatten();
+                    let start = machine.emulator.frames();
                     machine.press(std::slice::from_ref(&press), Timing::default());
                     view = settle(world, machine, look, &mut words);
+                    carried.extend(after_press(world, machine, start, spot, &press, &view));
                 }
             }
             if view.area != area {
@@ -701,11 +715,23 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
                     view.area
                 );
                 return Acted {
-                    outcome,
+                    outcome: told(outcome, &carried),
                     view,
                     words,
                 };
             }
+        }
+        let (x, y) = view.at;
+        if let Some(dir) = Dir::ALL
+            .into_iter()
+            .find(|d| d.step(view.at) == one.spot())
+            .filter(|_| view.can_walk && one.dir().is_none())
+        {
+            carried.push(format!(
+                "Move {n} ended a step away at ({x}, {y}), so she walked {}.",
+                dir.name()
+            ));
+            view = step_once(world, machine, look, &view, dir, &mut words);
         }
         if view.at != one.spot() {
             let outcome = format!(
@@ -715,7 +741,7 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
                 view.at.1
             );
             return Acted {
-                outcome,
+                outcome: told(outcome, &carried),
                 view,
                 words,
             };
@@ -727,10 +753,32 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
         _ => format!("Followed all {all} moves; she's at ({x}, {y})."),
     };
     Acted {
-        outcome,
+        outcome: told(outcome, &carried),
         view,
         words,
     }
+}
+
+/// One step `dir` the way walking takes it, learning the map: a wall where she didn't
+/// move, a walked step where she did.
+fn step_once(
+    world: &mut World,
+    machine: &mut Machine,
+    look: Look,
+    view: &View,
+    dir: Dir,
+    words: &mut Vec<String>,
+) -> View {
+    let (next, outcome) = take_step(world, machine, look, view, dir);
+    let map = world.area(&view.area);
+    if next.area == view.area && next.at == view.at && next.can_walk {
+        if !map.person_at(dir.step(view.at)) {
+            map.blocked(view.at, dir);
+        }
+    } else if matches!(outcome, super::moves::Outcome::Moved(_)) && next.area == view.area {
+        map.walked(next.at);
+    }
+    settle(world, machine, look, words)
 }
 
 /// Rounds in a row that change nothing before a skill gives up.
@@ -909,7 +957,10 @@ pub fn describe(world: &World, view: &View) -> String {
         if !near.is_empty() {
             lines.push(near);
         }
-        for list in [path::list(&world.motions), sent::list(&world.sent)] {
+        for list in [
+            path::presses(&world.motions, &world.paces),
+            sent::list(&world.sent),
+        ] {
             if !list.is_empty() {
                 lines.push(list);
             }

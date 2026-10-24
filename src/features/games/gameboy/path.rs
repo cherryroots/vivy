@@ -6,7 +6,8 @@
 //! moves the background, not her sprite, and both count.
 //!
 //! What her presses did is kept with the game's world, the last of each press, so she
-//! (and the puzzle helper) can plan a jump from one she has seen.
+//! (and the puzzle helper) can plan a jump from one she has seen. So is her pace: how far a
+//! frame of holding each direction carries her, so a press can be held for a distance.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +27,12 @@ const RISE: i32 = 8;
 const FAR: i32 = 3;
 /// Motions kept, the latest of each press.
 const KEPT: usize = 8;
+/// Frames of a hold she must move in for it to show her pace.
+const MOVING_LEAST: u32 = 8;
+/// Frames in a row she stays at one height for a jump to have landed.
+const LEVEL: usize = 12;
+/// Paces kept for each direction on the ground and in the air, the latest.
+const PACES_KEPT: usize = 6;
 
 /// Where the sprites were on one frame, with the background's scroll.
 pub type Frame<'a> = (&'a [(i32, i32)], (u8, u8));
@@ -104,6 +111,12 @@ pub struct Motion {
     pub ended: (i32, i32),
     /// Pixels in a step in that game.
     pub step: i32,
+    /// Frames from the press to where she was highest, and to the first frame after that
+    /// she stayed level from for `LEVEL` frames (landed).
+    #[serde(default)]
+    pub peak: usize,
+    #[serde(default)]
+    pub landed: usize,
 }
 
 impl Motion {
@@ -112,12 +125,19 @@ impl Motion {
     pub fn of(press: &str, places: &[(i32, i32)], step: i32) -> Option<Motion> {
         let ended = *places.last()?;
         let highest = places.iter().map(|p| p.1).min()?;
+        let peak = places.iter().position(|p| p.1 == highest)?;
+        // Landed: the first frame after the highest that she stayed level from.
+        let landed = (peak..places.len())
+            .find(|&i| places[i..].iter().take(LEVEL).all(|p| p.1 == places[i].1))
+            .unwrap_or(places.len());
         let motion = Motion {
             press: press.to_string(),
             rise: ended.1.min(0) - highest,
             top: -highest,
             ended,
             step,
+            peak,
+            landed,
         };
         let far = motion
             .halves(ended.0)
@@ -127,8 +147,8 @@ impl Motion {
         (motion.rise >= RISE || far).then_some(motion)
     }
 
-    /// "went up 2.5 steps at its highest and ended 3 right 1 up from the start", or
-    /// "went 5 right from the start".
+    /// "went up 2.5 steps at its highest (frame 20) and ended 3 right 1 up from the start
+    /// (landed by frame 44)", or "went 5 right from the start".
     pub fn words(&self) -> String {
         let (x, y) = self.ended;
         let place = place_words((x, y), self.step);
@@ -142,7 +162,15 @@ impl Motion {
         };
         let top = self.halves(self.top);
         let unit = if top == 2 { "step" } else { "steps" };
-        format!("went up {} {unit} at its highest and {ended}", steps(top))
+        let timed = if self.landed > 0 {
+            format!(
+                " (frame {}) and {ended} (landed by frame {})",
+                self.peak, self.landed
+            )
+        } else {
+            format!(" and {ended}")
+        };
+        format!("went up {} {unit} at its highest{timed}", steps(top))
     }
 
     /// Pixels in half steps, the nearest.
@@ -188,6 +216,123 @@ pub fn scrolled(frames: &[Frame]) -> Vec<(i32, i32)> {
             total
         })
         .collect()
+}
+
+/// How far `frames` of holding one direction carried her, on the ground or in the air.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pace {
+    /// The direction's name.
+    pub way: String,
+    /// Frames she was going up or down in (a jump, a fall), for a sideways direction.
+    #[serde(default)]
+    pub air: bool,
+    pub frames: u32,
+    pub pixels: i32,
+    pub step: i32,
+}
+
+/// Her pace holding `way` (pointing `unit`, x right and y down) for `held` frames, from her
+/// places that press (`follow`): the frames of the hold she moved that way in and how far
+/// they took her, on the ground and in the air apart, so a hold that ran into a wall or
+/// landed part way counts only the frames she moved. Each needs `MOVING_LEAST` frames.
+pub fn paces_of(
+    way: &str,
+    unit: (i32, i32),
+    held: u32,
+    places: &[(i32, i32)],
+    step: i32,
+) -> Vec<Pace> {
+    let along = |p: &(i32, i32)| p.0 * unit.0 + p.1 * unit.1;
+    let end = (held as usize).min(places.len().saturating_sub(1));
+    // Frames and pixels on the ground, then in the air.
+    let mut moved = [(0, 0); 2];
+    for w in places[..=end].windows(2) {
+        let went = along(&w[1]) - along(&w[0]);
+        if went > 0 {
+            let air = unit.1 == 0 && w[1].1 != w[0].1;
+            let one = &mut moved[usize::from(air)];
+            one.0 += 1;
+            one.1 += went;
+        }
+    }
+    [false, true]
+        .into_iter()
+        .zip(moved)
+        .filter(|&(_, (frames, _))| frames >= MOVING_LEAST)
+        .map(|(air, (frames, pixels))| Pace {
+            way: way.to_string(),
+            air,
+            frames,
+            pixels,
+            step,
+        })
+        .collect()
+}
+
+/// Keeps `pace` with the latest few of its direction, on the ground or in the air.
+pub fn remember_pace(paces: &mut Vec<Pace>, pace: Pace) {
+    let same = |p: &Pace, q: &Pace| p.way == q.way && p.air == q.air;
+    let kept = pace.clone();
+    paces.push(pace);
+    if paces.iter().filter(|p| same(p, &kept)).count() > PACES_KEPT
+        && let Some(oldest) = paces.iter().position(|p| same(p, &kept))
+    {
+        paces.remove(oldest);
+    }
+}
+
+/// Her pace each way as lines for a model, from the middle of the ones measured, or
+/// nothing when none are.
+pub fn paces(paces: &[Pace]) -> String {
+    let mut ways: Vec<&str> = Vec::new();
+    for pace in paces {
+        if !ways.contains(&pace.way.as_str()) {
+            ways.push(&pace.way);
+        }
+    }
+    let lines: Vec<String> = ways
+        .into_iter()
+        .map(|way| {
+            let parts: Vec<String> = [(false, "on the ground"), (true, "in the air")]
+                .into_iter()
+                .filter_map(|(air, words)| {
+                    let mut each: Vec<&Pace> = paces
+                        .iter()
+                        .filter(|p| p.way == way && p.air == air)
+                        .collect();
+                    each.sort_by(|a, b| {
+                        (a.pixels * b.frames as i32).cmp(&(b.pixels * a.frames as i32))
+                    });
+                    let mid = each.get(each.len() / 2)?;
+                    let per_frame = mid.pixels as f32 / mid.frames as f32;
+                    let frames = (mid.step as f32 / per_frame).round().max(1.0);
+                    Some(format!(
+                        "{words} {per_frame:.1} pixels a frame (a step every {frames} frames)"
+                    ))
+                })
+                .collect();
+            let presses = paces.iter().filter(|p| p.way == way).count();
+            format!("- {way}: {} (from {presses} measured)", parts.join(", "))
+        })
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    format!(
+        "How far each frame of holding a direction carries you (60 frames a second):\n{}",
+        lines.join("\n")
+    )
+}
+
+/// What her presses did, for a model: the motions and her paces, or nothing.
+pub fn presses(motions: &[Motion], paces: &[Pace]) -> String {
+    let lists = [list(motions), self::paces(paces)];
+    let lists: Vec<&String> = lists.iter().filter(|l| !l.is_empty()).collect();
+    lists
+        .iter()
+        .map(|l| l.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Half steps as words: "2", "2.5".
@@ -252,9 +397,11 @@ mod tests {
         let jump = Motion::of("a+right", &places, 16).unwrap();
         assert_eq!(jump.top, 40);
         assert_eq!(jump.ended, (52, -16));
+        assert_eq!((jump.peak, jump.landed), (6, 15));
         assert_eq!(
             jump.words(),
-            "went up 2.5 steps at its highest and ended 3.5 right 1 up from the start"
+            "went up 2.5 steps at its highest (frame 6) and ended 3.5 right 1 up from the \
+             start (landed by frame 15)"
         );
     }
 
@@ -275,7 +422,8 @@ mod tests {
         let hop = [(0, 0), (0, -12), (0, 0)];
         assert_eq!(
             Motion::of("a", &hop, 16).unwrap().words(),
-            "went up 1 step at its highest and came down where it started"
+            "went up 1 step at its highest (frame 1) and came down where it started (landed \
+             by frame 2)"
         );
     }
 
@@ -287,6 +435,8 @@ mod tests {
             top: 16,
             ended: (x, 0),
             step: 16,
+            peak: 8,
+            landed: 16,
         };
         let mut jumps = Vec::new();
         remember(&mut jumps, jump("a", 0));
@@ -300,6 +450,55 @@ mod tests {
         assert_eq!(jumps[0].press, "a:12");
         assert!(list(&jumps).starts_with("Presses that carried you"));
         assert_eq!(list(&[]), "");
+    }
+
+    #[test]
+    fn the_frames_she_moved_in_show_her_pace() {
+        let walk: Vec<(i32, i32)> = (0..30).map(|i| (i * 3 / 2, 0)).collect();
+        let right = paces_of("right", (1, 0), 20, &walk, 16);
+        assert_eq!(right.len(), 1);
+        assert_eq!(
+            (right[0].air, right[0].frames, right[0].pixels),
+            (false, 20, 30)
+        );
+        // Into a wall after 10 frames: only the frames she moved count.
+        let walled: Vec<(i32, i32)> = (0..30).map(|i| (i.min(10), 0)).collect();
+        let wall = &paces_of("right", (1, 0), 20, &walled, 16)[0];
+        assert_eq!((wall.frames, wall.pixels), (10, 10));
+        // A jump: 10 frames on the ground, then 12 going up or down.
+        let jump: Vec<(i32, i32)> = (0..30)
+            .map(|i| (2 * i.min(10) + (i - 10).max(0), -(i - 10).clamp(0, 12)))
+            .collect();
+        let both = paces_of("right", (1, 0), 22, &jump, 16);
+        assert_eq!(
+            both.iter()
+                .map(|p| (p.air, p.frames, p.pixels))
+                .collect::<Vec<_>>(),
+            vec![(false, 10, 20), (true, 12, 12)]
+        );
+        // The wrong way, or too short a hold to tell.
+        assert!(paces_of("left", (-1, 0), 20, &walk, 16).is_empty());
+        assert!(paces_of("right", (1, 0), 6, &walk, 16).is_empty());
+        let mut paces = Vec::new();
+        for frames in [10, 20, 30, 40, 50, 60, 70] {
+            let right = Pace {
+                frames,
+                pixels: frames as i32,
+                ..right[0].clone()
+            };
+            remember_pace(&mut paces, right);
+        }
+        assert_eq!(paces.len(), PACES_KEPT);
+        assert_eq!(paces[0].frames, 20);
+        remember_pace(&mut paces, both[1].clone());
+        assert_eq!(paces.len(), PACES_KEPT + 1);
+        assert_eq!(
+            super::paces(&paces),
+            "How far each frame of holding a direction carries you (60 frames a second):\n- \
+             right: on the ground 1.0 pixels a frame (a step every 16 frames), in the air 1.0 \
+             pixels a frame (a step every 16 frames) (from 7 measured)"
+        );
+        assert_eq!(super::paces(&[]), "");
     }
 
     #[test]

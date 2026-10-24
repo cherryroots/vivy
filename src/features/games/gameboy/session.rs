@@ -587,7 +587,14 @@ pub async fn play<G: Game>(
             }
             let area = game.look().await?.view.area;
             let free_before = today.free_tokens;
-            let how = match help_with_puzzle(session, game, &journal, &mut today, wanted).await {
+            let helped_by = match session.openai {
+                Some(openai) => {
+                    let limit = session.limits.free_tokens;
+                    help_with_puzzle(openai, limit, game, &journal.notes, &mut today, wanted).await
+                }
+                None => Ok("it needs the strategist's model, and OpenAI isn't set up".to_string()),
+            };
+            let how = match helped_by {
                 Ok(how) => how,
                 Err(err) => format!("it failed: {err:#}"),
             };
@@ -859,16 +866,14 @@ const REPLANS: usize = 3;
 /// asked for again once if code turns them down, then followed. When a move ends
 /// somewhere else in the area, it plans again from there, up to `REPLANS` times. Says how
 /// it went.
-async fn help_with_puzzle<G: Game>(
-    session: &Session<'_>,
+pub async fn help_with_puzzle<G: Game>(
+    openai: &OpenAi,
+    free_tokens: u64,
     game: &mut G,
-    journal: &Journal,
+    notes: &[Note],
     today: &mut Today,
     wanted: &Wanted,
 ) -> anyhow::Result<String> {
-    let Some(openai) = session.openai else {
-        return Ok("it needs the strategist's model, and OpenAI isn't set up".to_string());
-    };
     let to = (wanted.x, wanted.y);
     let mut said: Vec<String> = Vec::new();
     // Each plan so far and how it went, for the next ask: one that failed the same way
@@ -886,8 +891,8 @@ async fn help_with_puzzle<G: Game>(
             view.at,
             wanted,
             &surprises,
-            &world.motions,
-            &journal.notes,
+            &super::path::presses(&world.motions, &world.paces),
+            notes,
         );
         if !tried.is_empty() {
             let (x, y) = view.at;
@@ -899,7 +904,9 @@ async fn help_with_puzzle<G: Game>(
             ));
         }
         let (moves, outcome) =
-            match plan_and_follow(session, game, today, openai, &asked, &map, view.at, to).await? {
+            match plan_and_follow(game, today, openai, free_tokens, &asked, &map, view.at, to)
+                .await?
+            {
                 Ok(followed) => followed,
                 Err(why) => {
                     said.push(why);
@@ -931,10 +938,10 @@ async fn help_with_puzzle<G: Game>(
 /// followed. The moves and how following them went, or why there were none.
 #[allow(clippy::too_many_arguments)]
 async fn plan_and_follow<G: Game>(
-    session: &Session<'_>,
     game: &mut G,
     today: &mut Today,
     openai: &OpenAi,
+    free_tokens: u64,
     asked: &str,
     map: &AreaMap,
     at: Pos,
@@ -942,7 +949,7 @@ async fn plan_and_follow<G: Game>(
 ) -> anyhow::Result<Result<(Vec<Move>, String), String>> {
     let mut rejected: Option<(Vec<Move>, String)> = None;
     for _ in 0..2 {
-        if !today.free_call_fits(session.limits.free_tokens, true) {
+        if !today.free_call_fits(free_tokens, true) {
             return Ok(Err(
                 "there weren't enough free tokens left today to ask".to_string()
             ));
