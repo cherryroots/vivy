@@ -239,7 +239,8 @@ fn sprites_while_holding() {
 
 /// Takes the steps in `VIVY_GB_WALK` (like "u u l d") from `VIVY_GB_FROM` with the look
 /// that has no memory map, printing what each step and look gave. A, B and S press those
-/// buttons, F finds her sprite, and "pr:20" holds right for 20 frames.
+/// buttons, F finds her sprite, "pr:20" holds right for 20 frames, and "Pa+right" uses her
+/// press action.
 #[test]
 #[ignore = "needs a ROM in VIVY_GB_OTHER and a state in VIVY_GB_FROM"]
 fn steps_by_hand() {
@@ -329,6 +330,14 @@ fn steps_by_hand() {
                     .unwrap();
                 }
                 (used.view, None)
+            }
+            // P and presses uses her press action, saying what it said: "Pa+right:30".
+            _ if let Some(rest) = word.strip_prefix('P') => {
+                use crate::features::games::gameboy::actions;
+                let args = serde_json::json!({ "buttons": rest });
+                let pressed = actions::run(&mut world, &mut m, look, "press", &args);
+                println!("pressed: {}", pressed.outcome);
+                (pressed.view, None)
             }
             _ if let Some(presses) = &typed => {
                 m.press(presses, Default::default());

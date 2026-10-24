@@ -13,6 +13,7 @@ use std::sync::mpsc;
 use anyhow::{Context as _, Result, anyhow};
 
 use super::emulator::{Button, Emulator, FPS};
+use super::path::Frame;
 use super::presses::Press;
 use super::screen::sprite_places;
 use super::world::World;
@@ -42,6 +43,9 @@ impl Default for Timing {
     }
 }
 
+/// One frame's sprites, by the emulator's frame number, with the background's scroll.
+type Recorded = (u64, Vec<(i32, i32)>, (u8, u8));
+
 pub struct Machine {
     pub emulator: Emulator,
     /// The ROM's file name in `roms_dir`.
@@ -52,8 +56,9 @@ pub struct Machine {
     /// some point.
     recorded: u64,
     /// Where the sprites were each frame of the last `RECENT_SECONDS`, by the emulator's
-    /// frame number, to follow one through frames no look saw (`moves::followed`).
-    sprite_frames: VecDeque<(u64, Vec<(i32, i32)>)>,
+    /// frame number, with the background's scroll, to follow one through frames no look saw
+    /// (`moves::followed`, `path::follow`).
+    sprite_frames: VecDeque<Recorded>,
     /// What code has learned about the game's world: area maps and the movement log.
     pub world: World,
 }
@@ -76,8 +81,10 @@ impl Machine {
         if self.sprite_frames.len() == RECENT_FRAMES {
             self.sprite_frames.pop_front();
         }
+        let video = self.emulator.video();
+        let scroll = (video.registers.scx, video.registers.scy);
         self.sprite_frames
-            .push_back((self.emulator.frames(), sprite_places(self.emulator.video())));
+            .push_back((self.emulator.frames(), sprite_places(video), scroll));
         if self
             .emulator
             .frames()
@@ -130,12 +137,22 @@ impl Machine {
     /// Where the sprites were each frame from `frame` (`Emulator::frames`) on, that frame
     /// first, or `None` when it isn't kept any more.
     pub fn sprites_since(&self, frame: u64) -> Option<Vec<&[(i32, i32)]>> {
-        let first = self.sprite_frames.iter().position(|(n, _)| *n == frame)?;
+        Some(
+            self.frames_since(frame)?
+                .into_iter()
+                .map(|(places, _)| places)
+                .collect(),
+        )
+    }
+
+    /// Like `sprites_since`, with where the background was scrolled to each frame.
+    pub fn frames_since(&self, frame: u64) -> Option<Vec<Frame<'_>>> {
+        let first = self.sprite_frames.iter().position(|(n, ..)| *n == frame)?;
         Some(
             self.sprite_frames
                 .iter()
                 .skip(first)
-                .map(|(_, places)| places.as_slice())
+                .map(|(_, places, scroll)| (places.as_slice(), *scroll))
                 .collect(),
         )
     }

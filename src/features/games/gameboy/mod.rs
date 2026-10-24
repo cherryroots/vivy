@@ -44,6 +44,7 @@ mod moves;
 mod narrate;
 mod near;
 mod notes;
+mod path;
 mod pictures;
 mod player;
 mod playing;

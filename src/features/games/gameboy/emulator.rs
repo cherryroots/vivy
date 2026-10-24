@@ -345,6 +345,11 @@ impl Emulator {
         self.gb.read_memory(0xff40) & 0x80 != 0
     }
 
+    /// The buttons kept down (`keep`).
+    pub fn kept(&self) -> &[Button] {
+        &self.kept
+    }
+
     /// Holds these buttons down, with the kept ones, and lets go of any others until the
     /// next call.
     pub fn hold(&mut self, buttons: &[Button]) {

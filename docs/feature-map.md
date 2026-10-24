@@ -224,6 +224,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #113 | | Game Boy: where code knows which sprite is hers, the pictures the models get have corner marks round her, so a villager who looks like her isn't taken for her |
 | #114 | | Game Boy: the strategist marks a task essential when the next milestone needs it; stuck on one, she keeps at it another way instead of exploring elsewhere, and isn't rolled back to a checkpoint away from it. The press tool says buttons joined with + are held together (`b+right`) |
 | #115 | | Game Boy: buttons held through an action (`holding`) and long presses (`a:40`); every look says what's near her and how it moves; reflex skills that react to what's near her in real time with no model call; status bars read as fixed rows, so Mega Man's sprites are seen |
+| #116 | | Game Boy: a press that carries her further than a step (a jump, a dash, a fall) says how high she went and where she ended, followed frame by frame with the screen's scroll; the last of each such press is listed under her map, and the puzzle helper plans jumps (`a+right:30`) from them |
 
 ## Not built yet
 

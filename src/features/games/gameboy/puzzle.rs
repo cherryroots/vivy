@@ -18,8 +18,11 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use super::emulator::Button;
 use super::map::{AreaMap, Dir, Kind, LEGEND, Pos};
 use super::notes::Note;
+use super::path::{self, Motion};
+use super::presses::{self, Press};
 use super::world::Logged;
 use crate::ai::OpenAi;
 
@@ -43,12 +46,15 @@ You get the area's map as text, where the player stands, the spot to reach, the 
 this area whose results surprised code, and what the planner knows. Work out how the \
 puzzle works from those, then the moves.
 
-Each move is a button pressed some times in a row (up, down, left or right, or a to push \
-or use what the player faces) and the step the player stands on after it, as its x and y \
-on the map. Code presses them one at a time and stops at the first move that doesn't end \
-where you said, so say where the player will really stand, the puzzle's effects included, \
-and keep moves short past anything you're unsure of. Pressing a doesn't move the player. \
-The last move ends on the spot. At most 30 moves.";
+Each move is a press made some times in a row and the step the player stands on after \
+it, as its x and y on the map. A press is up, down, left or right (one step), a (push or \
+use what the player faces; it doesn't move the player), or buttons held together for a \
+jump or a dash, like a+right, held longer with frames after a colon (a+right:30, 60 a \
+second). Plan such presses from the ones the player has made, listed with how they moved \
+the player; one not tried yet is a guess, so end the moves soon after it. Code presses \
+them one at a time and stops at the first move that doesn't end where you said, so say \
+where the player will really stand, the puzzle's effects included, and keep moves short \
+past anything you're unsure of. The last move ends on the spot. At most 30 moves.";
 
 /// What the strategist asks for: the spot to reach in the area she's in, and what it
 /// knows of how the puzzle works.
@@ -59,8 +65,8 @@ pub struct Wanted {
     pub what: String,
 }
 
-/// One move: `press` (up, down, left, right or a) `times` times, after which she stands
-/// at `x`, `y`.
+/// One move: `press` (up, down, left, right, a, or buttons held together like
+/// `a+right:30`) `times` times, after which she stands at `x`, `y`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Move {
     pub press: String,
@@ -70,9 +76,29 @@ pub struct Move {
 }
 
 impl Move {
-    /// The direction it walks, or `None` for a.
+    /// The direction it walks, or `None` for a press that doesn't walk a step.
     pub fn dir(&self) -> Option<Dir> {
         Dir::ALL.into_iter().find(|d| d.name() == self.press)
+    }
+
+    /// The press, for one that doesn't walk a step: a, or buttons held together.
+    pub fn press(&self) -> Result<Press, String> {
+        match presses::parse(&self.press)?.as_slice() {
+            // Start and select open menus: no way through a puzzle.
+            [one]
+                if !one.buttons.is_empty()
+                    && !one
+                        .buttons
+                        .iter()
+                        .any(|b| matches!(b, Button::Start | Button::Select)) =>
+            {
+                Ok(one.clone())
+            }
+            _ => Err(
+                "only up, down, left, right, a, or buttons held together like a+right:30"
+                    .to_string(),
+            ),
+        }
     }
 
     pub fn spot(&self) -> Pos {
@@ -123,6 +149,7 @@ pub fn ask(
     at: Pos,
     wanted: &Wanted,
     surprises: &[String],
+    motions: &[Motion],
     notes: &[Note],
 ) -> String {
     let size = map
@@ -146,6 +173,10 @@ pub fn ask(
     }
     for line in surprises {
         text.push_str(&format!("- {line}\n"));
+    }
+    let motions = path::list(motions);
+    if !motions.is_empty() {
+        text.push_str(&format!("\n{motions}\n"));
     }
     if !notes.is_empty() {
         text.push_str("\nThe planner's notes:\n");
@@ -179,11 +210,10 @@ pub fn check(moves: &[Move], map: &AreaMap, at: Pos, to: Pos) -> Result<(), Stri
     for (i, one) in moves.iter().enumerate() {
         let n = i + 1;
         let (x, y) = one.spot();
-        if one.dir().is_none() && one.press != "a" {
-            return Err(format!(
-                "move {n} presses \"{}\": only up, down, left, right or a",
-                one.press
-            ));
+        if one.dir().is_none()
+            && let Err(why) = one.press()
+        {
+            return Err(format!("move {n} presses \"{}\": {why}", one.press));
         }
         if !(1..=TIMES_MOST).contains(&one.times) {
             return Err(format!(
@@ -255,7 +285,7 @@ fn schema() -> Value {
             "moves": {"type": "array", "items": {
                 "type": "object",
                 "properties": {
-                    "press": {"type": "string", "enum": ["up", "down", "left", "right", "a"]},
+                    "press": {"type": "string"},
                     "times": {"type": "integer"},
                     "x": {"type": "integer"},
                     "y": {"type": "integer"}
@@ -327,7 +357,18 @@ mod tests {
         );
         assert_eq!(
             wrong(&[one("start", 1, 0, 0)]),
-            "move 1 presses \"start\": only up, down, left, right or a"
+            "move 1 presses \"start\": only up, down, left, right, a, or buttons held \
+             together like a+right:30"
+        );
+        assert_eq!(
+            wrong(&[one("a+right", 2, 0, 0), one("wait:30", 1, 0, 0)]),
+            "move 2 presses \"wait:30\": only up, down, left, right, a, or buttons held \
+             together like a+right:30"
+        );
+        // A jump can end anywhere that isn't a wall.
+        assert_eq!(
+            check(&[one("a+right:30", 1, 3, 2)], &map, (0, 0), (3, 2)),
+            Ok(())
         );
         assert_eq!(
             wrong(&[one("right", 0, 0, 0)]),
@@ -397,6 +438,13 @@ mod tests {
             (0, 0),
             &wanted,
             &["Hideout (1, 0) right: moved to (5, 0)".to_string()],
+            &[Motion {
+                press: "a+right".to_string(),
+                rise: 32,
+                top: 32,
+                ended: (48, 0),
+                step: 16,
+            }],
             &notes,
         );
         assert!(
@@ -413,6 +461,12 @@ mod tests {
         );
         assert!(
             text.contains("- Hideout (1, 0) right: moved to (5, 0)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "- a+right went up 2 steps at its highest and ended 3 right from the start\n"
+            ),
             "{text}"
         );
         assert!(

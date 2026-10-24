@@ -873,6 +873,7 @@ async fn help_with_puzzle<G: Game>(
         view.at,
         wanted,
         &surprises,
+        &world.motions,
         &journal.notes,
     );
     let mut rejected: Option<(Vec<Move>, String)> = None;
