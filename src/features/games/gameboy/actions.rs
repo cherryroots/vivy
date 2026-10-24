@@ -12,6 +12,7 @@ use super::console::{Machine, Timing};
 use super::emulator::Button;
 use super::map::{Kind, LEGEND};
 use super::near::{self, Thing};
+use super::path;
 use super::presses::{self, Press};
 use super::puzzle::Move;
 use super::ram;
@@ -224,15 +225,7 @@ pub fn near_her(world: &World, machine: &Machine, view: &View) -> Vec<Thing> {
     if !view.can_walk {
         return Vec::new();
     }
-    // Her sprite, or the middle of her step on a screen that scrolls under her.
-    let Some(her) = world.sight.her_spot().or_else(|| {
-        view.grid.map(|g| {
-            (
-                g.player.0 * g.pixels + g.pixels / 2,
-                g.player.1 * g.pixels + g.pixels / 2,
-            )
-        })
-    }) else {
+    let Some(her) = her_spot(world, view) else {
         return Vec::new();
     };
     let now = machine.emulator.frames();
@@ -242,12 +235,54 @@ pub fn near_her(world: &World, machine: &Machine, view: &View) -> Vec<Thing> {
     let (Some(then), Some(last)) = (frames.first(), frames.last()) else {
         return Vec::new();
     };
-    let height = if machine.emulator.video().registers.lcdc & 0x04 != 0 {
+    near::things(then, last, her, sprite_height(machine))
+}
+
+/// Where she is on the screen: her sprite, or the middle of her step on a screen that
+/// scrolls under her.
+fn her_spot(world: &World, view: &View) -> Option<(i32, i32)> {
+    world.sight.her_spot().or_else(|| {
+        view.grid.map(|g| {
+            (
+                g.player.0 * g.pixels + g.pixels / 2,
+                g.player.1 * g.pixels + g.pixels / 2,
+            )
+        })
+    })
+}
+
+/// The sprites' height: 8, or 16 in a game that draws them tall.
+fn sprite_height(machine: &Machine) -> i32 {
+    if machine.emulator.video().registers.lcdc & 0x04 != 0 {
         16
     } else {
         8
-    };
-    near::things(then, last, her, height)
+    }
+}
+
+/// Her path through the press that started on frame `start` from `spot`, if it carried
+/// her further than a step: kept with the game's world, and said as a line.
+fn carried(
+    world: &mut World,
+    machine: &Machine,
+    start: u64,
+    spot: Option<(i32, i32)>,
+    typed: &str,
+    view: &View,
+) -> Option<String> {
+    let frames = machine.frames_since(start)?;
+    let places = path::follow(&frames, spot?, sprite_height(machine))?;
+    let mut press = typed.to_string();
+    let held = machine.emulator.kept();
+    if !held.is_empty() {
+        let names: Vec<&str> = held.iter().map(|b| b.name()).collect();
+        press.push_str(&format!(" holding {}", names.join("+")));
+    }
+    let step = view.grid.map_or(16, |g| g.pixels);
+    let motion = path::Motion::of(&press, &places, step)?;
+    let line = format!("{} {}.", motion.press, motion.words());
+    path::remember(&mut world.motions, motion);
+    Some(line)
 }
 
 /// The buttons in `holding`, like "b" or "a+b", or what's wrong with it.
@@ -473,9 +508,14 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
     let screen_before = machine.emulator.screen();
     let mut words = Vec::new();
     let mut view = before.clone();
+    let mut carried_lines = Vec::new();
     for one in &presses {
+        let spot = view.can_walk.then(|| her_spot(world, &view)).flatten();
+        let start = machine.emulator.frames();
         machine.press(std::slice::from_ref(one), Timing::default());
         view = settle(world, machine, look, &mut words);
+        let typed = presses::describe(std::slice::from_ref(one));
+        carried_lines.extend(carried(world, machine, start, spot, &typed, &view));
     }
     // Her own presses haven't shown which sprite is her: pressing each way does.
     if !view.can_walk
@@ -487,11 +527,16 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
         view = settle(world, machine, look, &mut words);
     }
     let typed = presses::describe(&presses);
-    let outcome = if view == before && machine.emulator.screen() == screen_before {
+    let still = carried_lines.is_empty() && machine.emulator.screen() == screen_before;
+    let mut outcome = if view == before && still {
         format!("Pressed {typed}. Nothing changed.")
     } else {
         format!("Pressed {typed}.")
     };
+    for line in carried_lines {
+        outcome.push(' ');
+        outcome.push_str(&line);
+    }
     Acted {
         outcome,
         view,
@@ -623,7 +668,8 @@ fn follow_moves(world: &mut World, machine: &mut Machine, look: Look, moves: &[M
                     view = settle(world, machine, look, &mut words);
                 }
                 None => {
-                    machine.press(std::slice::from_ref(&a), Timing::default());
+                    let press = one.press().unwrap_or_else(|_| a.clone());
+                    machine.press(std::slice::from_ref(&press), Timing::default());
                     view = settle(world, machine, look, &mut words);
                 }
             }
@@ -841,6 +887,10 @@ pub fn describe(world: &World, view: &View) -> String {
         let near = near::line(&world.near);
         if !near.is_empty() {
             lines.push(near);
+        }
+        let motions = path::list(&world.motions);
+        if !motions.is_empty() {
+            lines.push(motions);
         }
     }
     let skills = skills::list(&world.skills);

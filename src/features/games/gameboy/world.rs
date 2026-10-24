@@ -15,6 +15,7 @@ use super::any::Sight;
 use super::map::{AreaMap, Dir, Pos};
 use super::moves::Outcome;
 use super::near::Thing;
+use super::path::Motion;
 use super::ram::{Search, Watch};
 use super::red::Trust;
 use super::skills::Skill;
@@ -50,6 +51,10 @@ pub struct World {
     /// What was near her at the last action's end (`near.rs`). Not saved.
     #[serde(skip)]
     pub near: Vec<Thing>,
+    /// Presses that carried her further than a step, the last of each (`path.rs`), saved
+    /// with her skills.
+    #[serde(default)]
+    pub motions: Vec<Motion>,
 }
 
 /// A step, as the look after it is told.

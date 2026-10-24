@@ -241,7 +241,7 @@ async fn the_puzzle_helper_solves_a_maze_of_arrows() {
         "Arrow Room: pushed steps can't be seen on the map.",
         "tried",
     )];
-    let asked = puzzle::ask("Arrow Room", &map, start, &wanted, &surprises, &notes);
+    let asked = puzzle::ask("Arrow Room", &map, start, &wanted, &surprises, &[], &notes);
     let model = setting("VIVY_GB_STRATEGIST", "gpt-6-astra");
     let db = spend_db().await;
     let openai = openai(&http(), &db, &model, "high");

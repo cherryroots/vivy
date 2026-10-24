@@ -39,6 +39,10 @@ After using one, check how it went, and rewrite it if it didn't do what you mean
 - Things that move and hurt you, or gaps to jump: the \"Near you\" line says what's around \
 you. Hold a button while walking with holding (a shield), and for fighting or jumping in \
 real time write a reflex: a skill whose rules react to what's near you (if_near).
+- A press that carries you further than a step (a jump, a dash, a fall) says where it took \
+you: how high, and where you ended. Your map lists the last of each such press: plan a \
+jump from one you've made, and change how long you hold the buttons (a+right:30) to go \
+further or less far.
 - A number that matters and isn't in the facts (HP, money, a counter): find where the game keeps it with ram_search (start, change it in the game, say what it did, again until one or two are left), then name it with ram_watch. Watched values are in the facts from then on.
 - Judge the screen, not your own claims. When nothing changes, check which way you're \
 facing and try something different.
