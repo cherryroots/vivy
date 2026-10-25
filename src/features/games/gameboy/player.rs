@@ -12,6 +12,7 @@ use super::actions::{self, Acted, SCREEN_SCALE};
 use super::any::Sight;
 use super::console::{Machine, console};
 use super::map::AreaMap;
+use super::novelty::{self, Moment};
 use super::pictures::png_marked;
 use super::screen::TileKey;
 use super::session::Game;
@@ -109,5 +110,14 @@ impl Game for OnConsole {
 
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()> {
         on_game(move |_, m, _| m.load_state(&state)).await?
+    }
+
+    async fn mess_around(
+        &mut self,
+        frames: u64,
+        most: usize,
+    ) -> anyhow::Result<(usize, Vec<Moment>)> {
+        let seed = fastrand::u64(..);
+        on_game(move |_, m, _| novelty::moments(m, frames, seed, most)).await?
     }
 }

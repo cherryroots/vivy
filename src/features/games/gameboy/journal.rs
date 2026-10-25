@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+use super::insights::Insight;
 use super::notes::{Milestone, Note};
 use super::world::World;
 
@@ -42,6 +43,10 @@ pub struct Journal {
     pub notes: Vec<Note>,
     /// Steps toward the goal, reached ones first, checked by code after each episode.
     pub milestones: Vec<Milestone>,
+    /// What messing around suggested about how the game works (`insights.rs`).
+    pub insights: Vec<Insight>,
+    /// Whether she has messed around in this game: once, before her first session.
+    pub messed: bool,
     /// What the paid models have cost while she played this game, ever (USD).
     pub usd: f64,
     /// Sessions started, ever.
