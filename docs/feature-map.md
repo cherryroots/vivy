@@ -228,6 +228,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #117 | | Game Boy: a press that fires or throws something says what it sent out: which way it went, how far, and whether it went off the screen, was gone next to something (a hit) or came back; the last of each is listed under her map |
 | #118 | | Game Boy: when a puzzle helper's move leaves her somewhere other than planned, it plans again from where she is, telling the solver how the plans so far went, up to 3 times; each button of a press can be held its own frames (`a:20+right:60`), her pace each way and when a jump peaked and landed are measured and listed, the solver plans jump frames from them, and a jump landing one step off walks the last step |
 | #119 | | Game Boy: practice on save states: the strategist asks to practise a move with a goal code measures (stand on a spot, reach an area, get past a line, a watched value changes, without dying); tries planned by Haiku then Astra are run, measured and loaded back, up to 6; one that works is tested from two later starts and kept as her skill with how often it worked |
+| #119+ | | Game Boy: practice tries start from the same reading: loading a state forgets the frames recorded before it and the frame count goes on (code had followed her through the last try's frames), and a goal on the map needs the map showing at the end (a game over's screen isn't where she ended). Includes #119. |
 
 ## Not built yet
 
