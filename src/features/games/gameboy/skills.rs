@@ -17,6 +17,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::map::Pos;
 use super::near::{self, Thing};
 use super::presses;
 use super::world::View;
@@ -62,6 +63,11 @@ pub struct Skill {
     /// (78, 7)" (`practice.rs`); empty for one written in play. A rewrite starts fresh.
     #[serde(default)]
     pub practised: String,
+    /// Where it was practised: the area and her step there. It only runs from within a
+    /// step of it, since a move practised once is exact for that spot (a jump kept in one
+    /// place and used in another killed her).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub practised_at: Option<(String, Pos)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,6 +261,7 @@ impl Skill {
             uses: 0,
             last: String::new(),
             practised: String::new(),
+            practised_at: None,
         })
     }
 
@@ -399,6 +406,27 @@ fn on_screen(text: &str, words: &str) -> bool {
         .any(|w| w == wanted.as_slice())
 }
 
+/// Why a practised skill can't run from where she is, if it can't: it only worked from
+/// within a step of `spot` in `area`.
+pub fn away_from_practice(name: &str, area: &str, spot: Pos, view: &View) -> Option<String> {
+    let (x, y) = spot;
+    let steps = (view.at.0 - x).abs().max((view.at.1 - y).abs());
+    if view.area == area && steps <= 1 {
+        return None;
+    }
+    let away = if view.area == area {
+        format!("{steps} steps away")
+    } else {
+        format!("in {}", view.area)
+    };
+    Some(format!(
+        "Didn't use {name}: it was practised at {area} ({x}, {y}) and only worked from there, \
+         and you're at ({}, {}), {away}. Get within a step of that spot first, or press the \
+         move yourself and check where it takes you.",
+        view.at.0, view.at.1
+    ))
+}
+
 /// Saves `skill`, replacing one with the same name, or says why it can't.
 pub fn save(skills: &mut Vec<Skill>, skill: Skill) -> Result<(), String> {
     if let Some(old) = skills
@@ -507,6 +535,35 @@ mod tests {
             "stop_words": ["Can't escape"]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_practised_skill_runs_only_from_where_it_was_practised() {
+        let at = |area: &str, x, y| View {
+            area: area.to_string(),
+            at: (x, y),
+            ..view("", true)
+        };
+        let from = |v: &View| away_from_practice("jump_gap", "Place 3", (20, 1), v);
+        assert_eq!(from(&at("Place 3", 20, 1)), None);
+        assert_eq!(from(&at("Place 3", 21, 0)), None);
+        assert!(
+            from(&at("Place 3", 25, 1))
+                .unwrap()
+                .contains("5 steps away")
+        );
+        assert!(from(&at("Place 4", 20, 1)).unwrap().contains("in Place 4"));
+        // Kept with the skill, and old skills without it still load.
+        let mut skill = run_away();
+        skill.practised_at = Some(("Place 3".to_string(), (20, 1)));
+        let back: Skill = serde_json::from_str(&serde_json::to_string(&skill).unwrap()).unwrap();
+        assert_eq!(back.practised_at, skill.practised_at);
+        let old = serde_json::to_string(&run_away()).unwrap();
+        assert!(!old.contains("practised_at"));
+        assert_eq!(
+            serde_json::from_str::<Skill>(&old).unwrap().practised_at,
+            None
+        );
     }
 
     #[test]
