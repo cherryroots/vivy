@@ -73,6 +73,11 @@ pub const LETTERS_SCALE: u32 = 4;
 /// before, and how many of them must look the same.
 const KNOWN_AFTER: usize = 12;
 const KNOWN_SHARE: f32 = 0.9;
+/// The share that must look the same after a game over, which puts her back somewhere she
+/// has been: which place it is, not whether it's one. Mega Man's checkpoint after a
+/// Continue looked 87% like the stage start (her steps drift as she jumps, and steps seen
+/// from a drifted count hold other pictures), and each Continue became a new place.
+const BACK_SHARE: f32 = 0.75;
 /// A picture on a fifth of the steps or more is too common to tell places apart.
 const COMMON_SHARE: usize = 5;
 /// The fewest of the other pictures that must also look the same, when that many were seen.
@@ -700,11 +705,13 @@ impl Sight {
 
     /// The same, for steps counted from wherever she came in (a game she walks across):
     /// the place, and how far its steps are from the ones she counted. Each picture seen
-    /// before at some step suggests a shift; the ones most suggested are tried.
+    /// before at some step suggests a shift; the ones most suggested are tried. `share` of
+    /// the steps seen before must look the same.
     fn known_place_shifted(
         &self,
         seen: &[(Pos, u64)],
         may_be: impl Fn(&str) -> bool,
+        share: f32,
     ) -> Option<(String, Pos)> {
         let telling = without_common(seen);
         let shifted = |seen: &[(Pos, u64)], by: Pos| -> Vec<(Pos, u64)> {
@@ -724,7 +731,7 @@ impl Sight {
             shifts.sort_unstable_by(|a, b| b.cmp(a));
             for &(_, by) in shifts.iter().take(SHIFTS_TRIED) {
                 let alike = |(same, both): (usize, usize), after| {
-                    both < after || same as f32 >= both as f32 * KNOWN_SHARE
+                    both < after || same as f32 >= both as f32 * share
                 };
                 let (same, both) = compare(pictures, &shifted(seen, by));
                 if both >= KNOWN_AFTER
@@ -1739,8 +1746,10 @@ fn arrive(
         .cloned();
     // Back through a door she came through before: the area byte holds what it held
     // the first time she came in.
-    // Or a place she knows by its look: the same.
-    let back = led.or_else(|| sight.known_place(seen, &old_area));
+    // Or a place she knows by its look: the same. After a game over, that may be the
+    // place she was in.
+    let left = if relocated { "" } else { old_area.as_str() };
+    let back = led.or_else(|| sight.known_place(seen, left));
     if let Some(then) = back.as_ref().and_then(|name| sight.live.arrived.get(name)) {
         let then = then.clone();
         sight.finder().areas.same_place(&then, memory);
@@ -1776,9 +1785,9 @@ fn arrive(
     let walks_across = sight.live.walks_across;
     let shifted = walks_across
         .then(|| match &led {
-            Some(place) => sight.known_place_shifted(seen, |name| name == place),
-            None if relocated => sight.known_place_shifted(seen, |_| true),
-            None => sight.known_place_shifted(seen, |name| name != old_area),
+            Some(place) => sight.known_place_shifted(seen, |name| name == place, KNOWN_SHARE),
+            None if relocated => sight.known_place_shifted(seen, |_| true, BACK_SHARE),
+            None => sight.known_place_shifted(seen, |name| name != old_area, KNOWN_SHARE),
         })
         .flatten();
     let door = (old_area.clone(), gone);
@@ -1791,12 +1800,13 @@ fn arrive(
         sight.live.at = came;
     }
     let name = match sight.area_byte() {
-        // The byte can't name the place she just left: she stepped somewhere new.
+        // The byte can't name the place she just left: she stepped somewhere new (unless
+        // a game over put her back somewhere in it).
         Some(byte) => sight
             .place_by(byte, memory)
-            .filter(|name| *name != old_area),
+            .filter(|name| relocated || *name != old_area),
         None if shifted.is_some() => shifted.map(|(name, _)| name),
-        None => led.or_else(|| sight.known_place(seen, &old_area)),
+        None => led.or_else(|| sight.known_place(seen, if relocated { "" } else { &old_area })),
     }
     .unwrap_or_else(|| sight.new_place());
     if !relocated {
@@ -2631,6 +2641,52 @@ mod tests {
         assert!(!looks_different(place, &room[..5]));
         // Not the place she just left, however alike.
         assert_eq!(sight.known_place(&room, "Place 1"), None);
+    }
+
+    #[test]
+    fn a_game_over_puts_her_back_somewhere_she_has_been() {
+        // The stage start, 10 steps across and 8 down, seen with her at (0, 0) on its
+        // fourth row.
+        let start = |key: fn(i32, i32) -> u64| -> Vec<(Pos, u64)> {
+            (0..80)
+                .map(|i| ((i % 10 - 2, i / 10 - 3), key(i % 10, i / 10)))
+                .filter(|&(pos, _)| pos != (0, 0))
+                .collect()
+        };
+        let seen_then = start(|x, y| (y * 10 + x) as u64);
+        // Seen again after a Continue, its last two columns hold other pictures where
+        // drifted steps were seen there: 63 of 79 the same.
+        let back = start(|x, y| (y * 10 + x) as u64 + if x >= 8 { 500 } else { 0 });
+        let arrive_from = |relocated: bool| {
+            let mut sight = Sight {
+                places: 2,
+                ..Sight::default()
+            };
+            sight.live.walks_across = true;
+            sight.live.area = "Place 2".to_string();
+            sight.pictures.insert(
+                "Place 1".to_string(),
+                Pictures(seen_then.iter().copied().collect()),
+            );
+            // Where she died, 11 steps on in Place 2: the steps keep counting from there.
+            sight.live.at = (11, 0);
+            let counted: Vec<(Pos, u64)> =
+                back.iter().map(|&((x, y), k)| ((x + 11, y), k)).collect();
+            sight.live.relocated = relocated;
+            let mut areas = HashMap::new();
+            let memory = Memory::from_bytes(vec![0; Memory::LEN]);
+            arrive(&mut sight, &mut areas, &memory, &counted, (11, 0), true);
+            (sight, areas)
+        };
+        // After a game over (no door): back at the stage start, where she stands.
+        let (sight, areas) = arrive_from(true);
+        assert_eq!(sight.live.area, "Place 1");
+        assert_eq!(sight.live.at, (0, 0));
+        assert!(areas.get("Place 2").is_none_or(|map| map.doors.is_empty()));
+        // Through a door, a place must look more alike to be one she knows.
+        let (sight, areas) = arrive_from(false);
+        assert_eq!(sight.live.area, "Place 3");
+        assert_eq!(areas["Place 2"].doors[&(11, 0)], "Place 3");
     }
 
     #[test]
