@@ -849,6 +849,7 @@ async fn gate_session() {
     let (now, watching) = tokio::sync::watch::channel(super::session::Now::default());
     let session = Session {
         provider: provider.as_ref(),
+        planner: provider.as_ref(),
         openai: Some(&strategist),
         spends: &spends,
         game: game.clone(),

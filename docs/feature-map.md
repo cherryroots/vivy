@@ -235,6 +235,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #124 | | Game Boy: `/games gameboy watch` shows values from a game's memory on the dashboard, picked by hand (a cheat list's addresses, or ones she found); her tools can't change those. |
 | #125 | | Game Boy: places with no name from the game are called what the strategist says (shown as Called in the facts, usable in notes and milestones); status bars are read into the facts with the learned font, their tiles named once by Haiku. |
 | #126 | | Game Boy: after a game over she's matched to a place she has been (three in four steps alike, the place she died in included), so a Continue in Mega Man no longer makes a new place or reaches a milestone. |
+| #127 | | Game Boy: `paid_planner` (chat or openai) picks who plans once the free tokens are used up, on the `game_plan_paid` job, so GPT-6.1 Sol, Sonnet or Opus can plan past them instead of Haiku. |
 
 ## Not built yet
 

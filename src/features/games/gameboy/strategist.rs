@@ -374,9 +374,14 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
     }
 }
 
-/// Asks the cheap model (the supervisor's, the `game_play` job) instead, once the free
-/// tokens are used up or OpenAI isn't set up: the same instructions, with the answer as
-/// a call to its one tool, `plan`. Its cost shows on the spend card under `game_play`.
+/// The job that plans once the free tokens are used up: `[ai.<provider>.jobs.game_plan_paid]`
+/// picks its model (Claude Haiku or GPT-6.1 Sol unless set).
+pub const PAID_JOB: &str = "game_plan_paid";
+
+/// Asks a paid model instead (`planner` in the session, the `game_plan_paid` job), once
+/// the free tokens are used up or OpenAI isn't set up: the same instructions, with the
+/// answer as a call to its one tool, `plan`. Its cost shows on the spend card under
+/// `game_plan_paid`.
 pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow::Result<Plan> {
     let request = ChatRequest {
         system: format!("{PROMPT}\n\nAnswer by calling plan."),
@@ -394,7 +399,7 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
             parameters: schema(true, true),
         }],
         cache_key: "vivy:gameboy-plan".to_string(),
-        job: "game_play",
+        job: PAID_JOB,
     };
     let done = finish_stream(provider, request).await?;
     let call = done

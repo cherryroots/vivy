@@ -154,5 +154,6 @@ mod tests {
         assert_eq!(settings.hunger_games.lobby_minutes, 10);
         assert_eq!(settings.gameboy.roms_dir, "roms");
         assert_eq!(settings.gameboy.saves_dir, "gameboy");
+        assert_eq!(settings.gameboy.paid_planner, gameboy::PaidPlanner::Chat);
     }
 }
