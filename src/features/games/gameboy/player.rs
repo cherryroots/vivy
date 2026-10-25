@@ -14,6 +14,7 @@ use super::console::{Machine, console};
 use super::map::AreaMap;
 use super::novelty::{self, Moment};
 use super::pictures::png_marked;
+use super::ram;
 use super::screen::TileKey;
 use super::session::Game;
 use super::skills::Skill;
@@ -100,8 +101,12 @@ impl Game for OnConsole {
         on_game(move |world, _, _| world.sight = sight).await
     }
 
-    async fn set_world(&mut self, world: World) -> anyhow::Result<()> {
-        on_game(move |w, _, _| *w = world).await
+    async fn set_world(&mut self, mut world: World) -> anyhow::Result<()> {
+        on_game(move |w, _, _| {
+            world.watches = ram::with_hand_watches(std::mem::take(&mut world.watches), &w.watches);
+            *w = world;
+        })
+        .await
     }
 
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {

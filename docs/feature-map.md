@@ -232,6 +232,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #121 | | Game Boy: a practised skill only runs from within a step of where it was practised (`practised_at`), and the skill review adds a reflex when something moving cost her; a game over's password screen already reads as not walkable since #120. Doors through a long fade count, by her own presses or a step code takes (Harvest Moon's house was counted as the farm), her sprite is looked for again after a fade, and an episode doesn't start mid-fade. |
 | #122 | | Game Boy: `/games gameboy reset` starts the game that's in afresh (folder moved aside, memory cleared, game restarted; `keep_skills`, `keep_game`). |
 | #123 | | Game Boy stage 6: messing around (code presses at random from saved screens before her first session in a game, and picks the moments worth a look), insights Haiku writes from them, confirmed or struck in play by the strategist; the stage table brought up to date. |
+| #124 | | Game Boy: `/games gameboy watch` shows values from a game's memory on the dashboard, picked by hand (a cheat list's addresses, or ones she found); her tools can't change those. |
 
 ## Not built yet
 

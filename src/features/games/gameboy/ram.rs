@@ -108,6 +108,9 @@ pub struct Watch {
     pub name: String,
     pub address: u16,
     pub format: Format,
+    /// Set by hand (`/games gameboy watch`): her own tools can't replace or stop it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_hand: bool,
 }
 
 /// What a round keeps.
@@ -268,9 +271,33 @@ fn answer(left: &[(u16, Format, u32)], started: bool) -> String {
 
 /// Names a value from the tool's arguments, or stops watching one.
 pub fn watch(watches: &mut Vec<Watch>, args: &Value) -> Result<String, String> {
+    set(watches, args, false)
+}
+
+/// Names a value by hand, or stops watching one: `address` empty stops it.
+pub fn watch_by_hand(
+    watches: &mut Vec<Watch>,
+    name: &str,
+    address: &str,
+    format: Option<&str>,
+) -> Result<String, String> {
+    let mut args = json!({"name": name, "address": address});
+    if let Some(format) = format {
+        args["format"] = json!(format);
+    }
+    set(watches, &args, true)
+}
+
+fn set(watches: &mut Vec<Watch>, args: &Value, by_hand: bool) -> Result<String, String> {
     let name = args["name"].as_str().unwrap_or("").trim().to_string();
     if name.is_empty() {
         return Err("Give the value a name.".to_string());
+    }
+    if !by_hand && watches.iter().any(|w| w.name == name && w.by_hand) {
+        return Err(format!(
+            "{name} is watched for the people watching and stays as it is: give yours \
+             another name."
+        ));
     }
     let address = args["address"].as_str().unwrap_or("").trim();
     if address.is_empty() {
@@ -304,8 +331,20 @@ pub fn watch(watches: &mut Vec<Watch>, args: &Value) -> Result<String, String> {
         name: name.clone(),
         address,
         format,
+        by_hand,
     });
     Ok(format!("Watching {name}: it's in the facts from now on."))
+}
+
+/// Watches from a world put back (practice loads a save after each try), with the ones set
+/// by hand as they are now: one added or stopped meanwhile stays added or stopped.
+pub fn with_hand_watches(put_back: Vec<Watch>, now: &[Watch]) -> Vec<Watch> {
+    let mut watches: Vec<Watch> = put_back.into_iter().filter(|w| !w.by_hand).collect();
+    for hand in now.iter().filter(|w| w.by_hand) {
+        watches.retain(|w| w.name != hand.name);
+        watches.push(hand.clone());
+    }
+    watches
 }
 
 /// The watched values now, as a line of the facts (empty when nothing is watched).
@@ -394,7 +433,8 @@ mod tests {
             vec![Watch {
                 name: "money".to_string(),
                 address: 0xD348,
-                format: Format::Byte
+                format: Format::Byte,
+                by_hand: false,
             }]
         );
         assert!(watch(&mut watches, &json!({"name": "hp", "address": "8000"})).is_err());
@@ -404,6 +444,37 @@ mod tests {
             Ok("Stopped watching money.".to_string())
         );
         assert!(watches.is_empty());
+    }
+
+    #[test]
+    fn a_watch_set_by_hand_stays_as_it_is() {
+        let mut watches = Vec::new();
+        watch_by_hand(&mut watches, "rupees", "DB5D", Some("bcd2")).unwrap();
+        assert!(watches[0].by_hand);
+        assert_eq!(watches[0].format, Format::Bcd2);
+        // Her tools can't replace it or stop it; other names are fine.
+        assert!(watch(&mut watches, &json!({"name": "rupees", "address": "C000"})).is_err());
+        assert!(watch(&mut watches, &json!({"name": "rupees", "address": ""})).is_err());
+        watch(&mut watches, &json!({"name": "hearts", "address": "DB5A"})).unwrap();
+        assert_eq!(watches.len(), 2);
+        // By hand it can be.
+        watch_by_hand(&mut watches, "rupees", "", None).unwrap();
+        assert_eq!(watches.len(), 1);
+        // A world put back keeps the ones set by hand as they are now (rupees was stopped
+        // meanwhile, a key count added), and hers as they were in it.
+        let mut now = Vec::new();
+        watch_by_hand(&mut now, "keys", "DBD0", None).unwrap();
+        let mut put_back = Vec::new();
+        watch_by_hand(&mut put_back, "rupees", "DB5D", None).unwrap();
+        watch(&mut put_back, &json!({"name": "x", "address": "FF98"})).unwrap();
+        let names: Vec<String> = with_hand_watches(put_back, &now)
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
+        assert_eq!(names, ["x", "keys"]);
+        // Saved without the flag when it's hers, so older files read the same.
+        let saved = serde_json::to_value(&watches[0]).unwrap();
+        assert!(saved.get("by_hand").is_none());
     }
 
     /// On Red, the way she'd do it: money by the number on screen, and her x by walking
