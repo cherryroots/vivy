@@ -16,6 +16,7 @@ use anyhow::Context as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::insights::{self, Checked, Insight};
 use super::notes::{Milestone, Note};
 use super::practice::{self, Goal};
 use super::puzzle::Wanted;
@@ -77,6 +78,13 @@ WRONG: ...] means fix or drop it. A note about where something is (a door, a per
 way on) names its area and spot as the facts write it, like \"<the place>'s door is at \
 x <n>, y <n> in <area>\", so code can check it. Don't note what the facts show (HP, levels, money, where \
 the player stands): they change by themselves.
+
+Insights: before she first played, code pressed buttons at random and a model wrote what \
+the new screens suggested about how the game works (what buttons do, menus, doors). They \
+start unconfirmed and can be wrong. When the last task relied on one, say in \
+insights_checked whether it held (its number, worked true or false): one that works is \
+confirmed, one that fails twice is struck. Leave out the ones the last task didn't test. \
+Use them when picking tasks; don't copy them into the notes.
 
 Milestones: up to 8 story steps toward the goal, next first, each bigger than a task (a \
 new town or route, a key item got, a boss beaten; not a room or a staircase), and each \
@@ -159,6 +167,8 @@ pub struct Plan {
     pub practice: Option<Goal>,
     /// Changes to her skills, as `skills::review` takes them.
     pub skill_changes: Vec<Value>,
+    /// Which insights the last task relied on, and whether they held.
+    pub insights_checked: Vec<Checked>,
     /// Tokens used, for the free daily tokens.
     pub tokens: u64,
     /// What it would cost at list prices.
@@ -181,6 +191,8 @@ struct Answer {
     practice: Option<Goal>,
     #[serde(default)]
     skill_changes: Option<Vec<Value>>,
+    #[serde(default)]
+    insights_checked: Option<Vec<Checked>>,
 }
 
 /// A note in an answer: with its source, or (from a sloppy answer) only the text.
@@ -219,6 +231,7 @@ impl Answer {
             puzzle: self.puzzle.take().filter(|p| !p.what.trim().is_empty()),
             practice: self.practice.take().filter(Goal::wanted),
             skill_changes: self.skill_changes.take().unwrap_or_default(),
+            insights_checked: self.insights_checked.take().unwrap_or_default(),
             tokens,
             usd,
         }
@@ -231,6 +244,8 @@ pub struct Ask<'a> {
     pub notes: &'a [Note],
     /// Steps toward the goal, the reached ones first.
     pub milestones: &'a [Milestone],
+    /// What messing around suggested, struck ones too (they keep their numbers).
+    pub insights: &'a [Insight],
     pub skills: &'a [Skill],
     /// What the last task did.
     pub digest: &'a str,
@@ -257,9 +272,17 @@ impl Ask<'_> {
         };
         let notes = lines(notes.iter().map(Note::for_plan).collect());
         let milestones = lines(self.milestones.iter().map(Milestone::for_plan).collect());
+        let insights = match insights::for_plan(self.insights) {
+            shown if shown.is_empty() => String::new(),
+            shown => format!(
+                "\n\nInsights from pressing around (numbered):\n{}",
+                lines(shown)
+            ),
+        };
         let mut text = format!(
             "Goal: {}\n\nMilestones (code checks them):\n{milestones}\n\nYour notes:\n\
-             {notes}\n\nThe executor's skills:\n{}\n\nThe last task:\n{}\n\nNow:\n{}",
+             {notes}{insights}\n\nThe executor's skills:\n{}\n\nThe last task:\n{}\n\n\
+             Now:\n{}",
             self.goal,
             skills::for_review(self.skills),
             self.digest,
@@ -330,6 +353,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 puzzle: second.puzzle,
                 practice: second.practice,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
+                insights_checked: first_answer.insights_checked.unwrap_or_default(),
                 tokens,
                 usd,
             })
@@ -388,7 +412,12 @@ fn schema(notes: bool, task: bool) -> Value {
         properties["notes"] = json!({"type": "array", "items": note});
         properties["milestones"] = json!({"type": "array", "items": milestone});
         properties["skill_changes"] = json!({"type": "array", "items": skill_change()});
-        required.extend(["notes", "milestones", "skill_changes"]);
+        let checked = strict(json!({
+            "number": {"type": "integer"},
+            "worked": {"type": "boolean"}
+        }));
+        properties["insights_checked"] = json!({"type": "array", "items": checked});
+        required.extend(["notes", "milestones", "skill_changes", "insights_checked"]);
     }
     if task {
         properties["next_task"] = json!({"type": "string"});
@@ -468,6 +497,7 @@ mod tests {
                 "notes",
                 "milestones",
                 "skill_changes",
+                "insights_checked",
                 "next_task",
                 "essential",
                 "puzzle",
@@ -482,7 +512,7 @@ mod tests {
             json!(["if_near", "if_words", "press"])
         );
         assert_eq!(both["additionalProperties"], false);
-        for (field, keys) in [("notes", 2), ("milestones", 4)] {
+        for (field, keys) in [("notes", 2), ("milestones", 4), ("insights_checked", 2)] {
             let item = &both["properties"][field]["items"];
             assert_eq!(item["additionalProperties"], false, "{field}");
             assert_eq!(item["required"].as_array().unwrap().len(), keys, "{field}");
@@ -522,5 +552,16 @@ mod tests {
         assert_eq!(plan.task, "go");
         let bare: Answer = serde_json::from_value(json!({"next_task": "go"})).unwrap();
         assert!(bare.plan(0, 0.0).milestones.is_empty());
+        let checked: Answer = serde_json::from_value(json!({
+            "insights_checked": [{"number": 2, "worked": false}]
+        }))
+        .unwrap();
+        assert_eq!(
+            checked.plan(0, 0.0).insights_checked,
+            [Checked {
+                number: 2,
+                worked: false
+            }]
+        );
     }
 }

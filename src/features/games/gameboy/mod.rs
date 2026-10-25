@@ -37,6 +37,7 @@ mod emulator;
 mod files;
 #[cfg(test)]
 mod gate;
+mod insights;
 mod journal;
 mod letters;
 mod map;
@@ -44,6 +45,7 @@ mod moves;
 mod narrate;
 mod near;
 mod notes;
+mod novelty;
 mod path;
 mod pictures;
 mod player;

@@ -35,9 +35,11 @@ use super::actions::Acted;
 use super::any::{Sight, Whereabouts};
 use super::budget::Today;
 use super::files;
+use super::insights::{self, State};
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
 use super::map::{AreaMap, Pos};
 use super::notes::{self, Note, Reached};
+use super::novelty::Moment;
 use super::practice;
 use super::puzzle::{self, Move, Wanted};
 use super::screen::TileKey;
@@ -88,6 +90,15 @@ pub trait Game: Player {
     async fn set_world(&mut self, world: World) -> anyhow::Result<()>;
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>;
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()>;
+    /// Presses at random for `frames` frames, then puts the game back (`novelty.rs`): the
+    /// screens seen and the `most` moments most worth a look. None by default.
+    async fn mess_around(
+        &mut self,
+        _frames: u64,
+        _most: usize,
+    ) -> anyhow::Result<(usize, Vec<Moment>)> {
+        Ok((0, Vec::new()))
+    }
 }
 
 /// When a session stops.
@@ -466,6 +477,9 @@ pub async fn play<G: Game>(
             game.set_sight(sight).await?;
         }
     }
+    if !journal.messed && !session.stop.is_cancelled() {
+        mess_around_first(session, game, &mut journal).await?;
+    }
     let mut today = Today::on(read_json(&files::today_path(dir)).await?, Utc::now());
     if let Some(now) = &session.now {
         let skills = game.world().await?.skills;
@@ -565,6 +579,7 @@ pub async fn play<G: Game>(
         };
         journal.notes = plan.notes.clone();
         notes::replace_ahead(&mut journal.milestones, plan.milestones.clone());
+        check_insights(session, &mut journal, &plan);
         let mut world = game.world().await?;
         notes::check_all(&mut journal.notes, &world);
         let reviewed = skills::review(&mut world.skills, &plan.skill_changes);
@@ -645,6 +660,13 @@ pub async fn play<G: Game>(
             before_task.push(line);
         }
         let helped = (!before_task.is_empty()).then(|| before_task.join("\n"));
+        // What she knows going in: what came before the task, and the insights.
+        let known: Vec<String> = helped
+            .iter()
+            .cloned()
+            .chain(insights::for_task(&journal.insights))
+            .collect();
+        let known = (!known.is_empty()).then(|| known.join("\n"));
 
         let look = game.look().await?;
         let area = look.view.area;
@@ -669,7 +691,7 @@ pub async fn play<G: Game>(
             blacked_out: None,
         };
         let episode = tokio::select! {
-            episode = run_task(session.provider, &mut watched, &session.game, &task, helped.as_deref(), EPISODE_ACTIONS) => episode,
+            episode = run_task(session.provider, &mut watched, &session.game, &task, known.as_deref(), EPISODE_ACTIONS) => episode,
             () = session.stop.cancelled() => {
                 stopped = true;
                 Ok(Episode::default())
@@ -808,6 +830,62 @@ async fn wait_after_failure(stop: &CancellationToken) {
     }
 }
 
+/// Before her first session in a game: code presses at random for a while, and the
+/// supervisor's model says what the new screens suggest (`insights.rs`). When the model
+/// can't be asked, that's logged and she tries again next session.
+async fn mess_around_first<G: Game>(
+    session: &Session<'_>,
+    game: &mut G,
+    journal: &mut Journal,
+) -> anyhow::Result<()> {
+    if let Some(now) = &session.now {
+        now.send_modify(|now| now.task = "Messing around first, to learn the game".to_string());
+    }
+    let (screens, moments) = game
+        .mess_around(insights::MESS_FRAMES, insights::MOMENTS)
+        .await?;
+    if !moments.is_empty() {
+        match insights::learn(session.provider, &session.game, &moments).await {
+            Ok(found) => journal.insights = found,
+            Err(err) => {
+                let line = format!("🔎 Messing around found {screens} screens, but: {err:#}");
+                journal.log(line.clone());
+                let _ = session.report.send(Report::line(Reported::Other, line));
+                return Ok(());
+            }
+        }
+    }
+    journal.messed = true;
+    if screens > 0 {
+        let line = insights::line(screens, &journal.insights);
+        journal.log(line.clone());
+        let _ = session.report.send(Report::line(Reported::Other, line));
+    }
+    let (dir, rom) = (session.saves_dir.as_path(), session.rom.as_str());
+    write_json(&files::journal_path(dir, rom), journal).await
+}
+
+/// Counts the strategist's word on the insights, with a line when one is confirmed or
+/// struck.
+fn check_insights(session: &Session<'_>, journal: &mut Journal, plan: &Plan) {
+    let before: Vec<State> = journal.insights.iter().map(|i| i.state()).collect();
+    insights::check(&mut journal.insights, &plan.insights_checked);
+    let mut lines = Vec::new();
+    for (insight, was) in journal.insights.iter().zip(before) {
+        lines.push(match (was, insight.state()) {
+            (State::Unconfirmed, State::Confirmed) => {
+                format!("💡 Insight confirmed in play: {}", insight.text)
+            }
+            (State::Struck, _) | (_, State::Confirmed | State::Unconfirmed) => continue,
+            (_, State::Struck) => format!("💡 Insight struck, it failed twice: {}", insight.text),
+        });
+    }
+    for line in lines {
+        journal.log(line.clone());
+        let _ = session.report.send(Report::line(Reported::Other, line));
+    }
+}
+
 /// The next plan: the strategist while the free tokens last, else the cheap model. Says
 /// whether the cheap model made it.
 async fn plan<G: Game>(
@@ -876,6 +954,7 @@ async fn plan<G: Game>(
         goal: &journal.goal,
         notes: &journal.notes,
         milestones: &journal.milestones,
+        insights: &journal.insights,
         skills: &world.skills,
         digest,
         now: &now,
@@ -1231,6 +1310,10 @@ mod tests {
         world: World,
         /// Whether a press blacks her out, back to the first room.
         faints: bool,
+        /// Whether messing around finds a moment (by default it finds nothing), and the
+        /// times she messed around.
+        messes: bool,
+        messed: u32,
     }
 
     impl Rooms {
@@ -1239,6 +1322,8 @@ mod tests {
                 room: 0,
                 world: World::default(),
                 faints: false,
+                messes: false,
+                messed: 0,
             };
             rooms.see();
             rooms
@@ -1321,6 +1406,18 @@ mod tests {
             self.room = String::from_utf8(state)?.parse()?;
             Ok(())
         }
+        async fn mess_around(
+            &mut self,
+            frames: u64,
+            most: usize,
+        ) -> anyhow::Result<(usize, Vec<Moment>)> {
+            assert_eq!((frames, most), (insights::MESS_FRAMES, insights::MOMENTS));
+            self.messed += 1;
+            if !self.messes {
+                return Ok((0, Vec::new()));
+            }
+            Ok((5, vec![Moment::for_test(&["select:6"])]))
+        }
     }
 
     /// Plans with `plan` (counting them, and keeping what each was told), then plays each
@@ -1336,6 +1433,10 @@ mod tests {
         milestones: Value,
         /// The puzzle help each plan asks for (by default none).
         puzzle: Value,
+        /// What each plan says about the insights, in turn (by default nothing).
+        checked: Mutex<VecDeque<Value>>,
+        /// The supervisor's first message in each episode.
+        told: Mutex<Vec<String>>,
     }
 
     impl Scripted {
@@ -1348,6 +1449,8 @@ mod tests {
                 notes: None,
                 milestones: json!([]),
                 puzzle: json!({"what": "", "x": 0, "y": 0}),
+                checked: Mutex::new(VecDeque::new()),
+                told: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1364,7 +1467,19 @@ mod tests {
             &self,
             request: ChatRequest,
         ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
-            let (name, args) = if request.tools.iter().any(|t| t.name == "plan") {
+            let first = match &request.input {
+                crate::ai::Input::Full(turns) => format!("{:?}", turns[0].parts),
+                _ => String::new(),
+            };
+            let (name, args) = if request.tools.iter().any(|t| t.name == "insights") {
+                (
+                    "insights",
+                    json!({"insights": [
+                        {"text": "Select shows the date.", "moments": [1]},
+                        {"text": "B runs.", "moments": [1]}
+                    ]}),
+                )
+            } else if request.tools.iter().any(|t| t.name == "plan") {
                 let told = match &request.input {
                     crate::ai::Input::Full(turns) => format!("{:?}", turns[0].parts),
                     _ => String::new(),
@@ -1381,18 +1496,28 @@ mod tests {
                     json!([])
                 };
                 let notes = self.notes.clone().unwrap_or(json!([format!("note {n}")]));
+                let checked = self
+                    .checked
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(json!([]));
                 (
                     "plan",
                     json!({"reasoning": "", "notes": notes, "milestones": self.milestones,
                         "skill_changes": changes, "next_task": format!("task {n}"),
-                        "puzzle": self.puzzle}),
+                        "puzzle": self.puzzle, "insights_checked": checked}),
                 )
             } else if std::mem::replace(&mut *self.acted.lock().unwrap(), true) {
                 ("finish", json!({"done": true, "summary": "ok"}))
-            } else if self.walks.lock().unwrap().pop_front().unwrap_or(false) {
-                ("walk_to", self.to.clone())
             } else {
-                ("press", json!({"buttons": "a"}))
+                // An episode's first action: keep what the supervisor was told.
+                self.told.lock().unwrap().push(first);
+                if self.walks.lock().unwrap().pop_front().unwrap_or(false) {
+                    ("walk_to", self.to.clone())
+                } else {
+                    ("press", json!({"buttons": "a"}))
+                }
             };
             let (tx, rx) = mpsc::channel(4);
             tx.send(Ok(ChatEvent::Done(Done {
@@ -1480,6 +1605,57 @@ mod tests {
         // It comes right after its episode's line.
         let at = sent.iter().position(|l| l.starts_with("💀")).unwrap();
         assert!(sent[at - 1].starts_with("#2 "), "{sent:#?}");
+    }
+
+    #[tokio::test]
+    async fn she_messes_around_once_and_play_confirms_or_strikes_what_it_suggested() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Scripted::new(&[]);
+        provider.checked.lock().unwrap().extend([
+            json!([]),
+            json!([{"number": 1, "worked": true}, {"number": 2, "worked": false}]),
+            json!([{"number": 2, "worked": false}]),
+        ]);
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let session = session(&provider, dir.path(), 3, report);
+        let mut game = Rooms::new();
+        game.messes = true;
+        play(&session, &mut game, None).await.unwrap();
+        let mut sent = Vec::new();
+        while let Ok(report) = lines.try_recv() {
+            sent.push(report.line);
+        }
+        assert_eq!(
+            sent[0],
+            "🔎 **She messed around first:** 20 game minutes of pressing at random, 5 \
+             different screens. What they suggest:\n- ❔ Select shows the date.\n- ❔ B runs."
+        );
+        assert!(sent.contains(&"💡 Insight confirmed in play: Select shows the date.".to_string()));
+        assert!(sent.contains(&"💡 Insight struck, it failed twice: B runs.".to_string()));
+        {
+            let plans = provider.plans.lock().unwrap();
+            assert!(plans[0].contains("1. Select shows the date. [unconfirmed]"));
+            assert!(plans[2].contains("1. Select shows the date. [confirmed: worked 1, failed 0]"));
+            assert!(plans[2].contains("2. B runs. [unconfirmed]"));
+            let told = provider.told.lock().unwrap();
+            assert!(
+                told[0].contains("Select shows the date. (unconfirmed)"),
+                "{}",
+                told[0]
+            );
+            assert!(told[1].contains("- Select shows the date.\\n- B runs. (unconfirmed)"));
+            assert!(!told[2].contains("B runs"));
+        }
+        let journal: Journal = read_json(&files::journal_path(dir.path(), "test.gb"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(journal.messed);
+        assert_eq!(journal.insights[1].state(), State::Struck);
+
+        // Once per game: the next session plays straight away.
+        play(&session, &mut game, None).await.unwrap();
+        assert_eq!(game.messed, 1);
     }
 
     #[tokio::test]

@@ -110,6 +110,28 @@ pub fn png_part(screen: &[u8], (x, y, w, h): (u32, u32, u32, u32), scale: u32) -
     Ok(out.into_inner())
 }
 
+/// Two screens side by side as a PNG, `scale` times bigger, with a dark gap between: a
+/// moment's before and after, for a model to compare.
+pub fn png_pair(before: &[u8], after: &[u8], scale: u32) -> Result<Vec<u8>> {
+    const GAP: u32 = 8;
+    let (w, h) = (WIDTH as u32, HEIGHT as u32);
+    let mut both = RgbImage::new(w * 2 + GAP, h);
+    for (screen, x) in [(before, 0), (after, w + GAP)] {
+        let image =
+            RgbImage::from_raw(w, h, screen.to_vec()).context("a screen of the wrong size")?;
+        image::imageops::replace(&mut both, &image, i64::from(x), 0);
+    }
+    let big = image::imageops::resize(
+        &both,
+        both.width() * scale,
+        both.height() * scale,
+        FilterType::Nearest,
+    );
+    let mut out = std::io::Cursor::new(Vec::new());
+    big.write_to(&mut out, ImageFormat::Png)?;
+    Ok(out.into_inner())
+}
+
 /// Screens as an animated GIF, `scale` times bigger, playing at the game's speed when they
 /// were taken every `every` frames. A screen the same as the one before it isn't repeated;
 /// the one before just stays up longer. Plays once (Discord loops GIFs anyway).

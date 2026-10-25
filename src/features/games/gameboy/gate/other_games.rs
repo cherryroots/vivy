@@ -608,3 +608,68 @@ async fn names_letters() {
         println!("  letters named so far: {votes}");
     }
 }
+
+/// Messing around (`novelty.rs`) from `VIVY_GB_FROM` for `VIVY_GB_MINUTES` minutes of play
+/// (20 unless set): how many screens it found and how long it took, and the moments most
+/// worth a look saved as before and after pictures. No model, unless VIVY_GB_INSIGHTS is 1.
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_OTHER and a state in VIVY_GB_FROM"]
+async fn messing_around() {
+    use crate::features::games::gameboy::insights;
+    use crate::features::games::gameboy::novelty::{mess_around, pick};
+
+    let (_, rom) = other();
+    let info = RomInfo::read(&rom).unwrap();
+    let folder = results(&format!("mess-{}", info.title.trim().replace(' ', "_")));
+    let mut m = Machine::new("other.gb", &rom).unwrap();
+    let from = std::env::var("VIVY_GB_FROM").expect("VIVY_GB_FROM");
+    m.load_state(&std::fs::read(from).unwrap()).unwrap();
+    let minutes: u64 = std::env::var("VIVY_GB_MINUTES")
+        .ok()
+        .and_then(|m| m.parse().ok())
+        .unwrap_or(20);
+    let timer = std::time::Instant::now();
+    let found = mess_around(&mut m, minutes * 60 * 60, 1).unwrap();
+    let found_cells = found.cells;
+    println!(
+        "{}: {} screens in {} frames, {:.1} s",
+        info.title,
+        found.cells,
+        found.frames,
+        timer.elapsed().as_secs_f64()
+    );
+    let picked = pick(&found.moments, insights::MOMENTS);
+    for (i, moment) in picked.iter().enumerate() {
+        println!(
+            "{:02}: {:?} {:.0}% changed after {}",
+            i + 1,
+            moment.kind,
+            moment.changed * 100.0,
+            moment.presses.join(" ")
+        );
+        std::fs::write(
+            folder.join(format!("{:02}-a.png", i + 1)),
+            png_at(&moment.before, 2).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join(format!("{:02}-b.png", i + 1)),
+            png_at(&moment.after, 2).unwrap(),
+        )
+        .unwrap();
+    }
+    // With VIVY_GB_INSIGHTS=1, the player's model writes the insights (costs a cent or so).
+    if super::setting("VIVY_GB_INSIGHTS", "") == "1" {
+        let (http, db) = (super::http(), super::spend_db().await);
+        let model = super::setting("VIVY_GB_PLAYER", "claude-haiku-5-5");
+        let (provider, _) = super::player_model(&http, &db, &model);
+        let moments: Vec<_> = picked.into_iter().cloned().collect();
+        let found = insights::learn(provider.as_ref(), &info.title, &moments)
+            .await
+            .unwrap();
+        let line = insights::line(found_cells, &found);
+        println!("{line}\n${:.4}", super::spent(&db).await);
+        std::fs::write(folder.join("insights.md"), line).unwrap();
+    }
+    println!("{}", folder.display());
+}

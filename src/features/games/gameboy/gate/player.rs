@@ -9,6 +9,7 @@ use crate::features::games::gameboy::actions::{self, Acted};
 use crate::features::games::gameboy::any::{self, Sight};
 use crate::features::games::gameboy::console::Machine;
 use crate::features::games::gameboy::map::AreaMap;
+use crate::features::games::gameboy::novelty::{self, Moment};
 use crate::features::games::gameboy::pictures::png_marked;
 use crate::features::games::gameboy::red::State;
 use crate::features::games::gameboy::screen::TileKey;
@@ -120,5 +121,13 @@ impl Game for Local {
 
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()> {
         self.machine.load_state(&state)
+    }
+
+    async fn mess_around(
+        &mut self,
+        frames: u64,
+        most: usize,
+    ) -> anyhow::Result<(usize, Vec<Moment>)> {
+        novelty::moments(&mut self.machine, frames, 1, most)
     }
 }
