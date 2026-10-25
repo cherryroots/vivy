@@ -90,6 +90,11 @@ pub trait Game: Player {
     async fn set_world(&mut self, world: World) -> anyhow::Result<()>;
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>;
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()>;
+    /// Calls a place with no name from the game (`Place 3`) something; says whether it
+    /// took it. Only games read with no memory map have such places.
+    async fn name_place(&mut self, _area: &str, _called: &str) -> anyhow::Result<bool> {
+        Ok(false)
+    }
     /// Presses at random for `frames` frames, then puts the game back (`novelty.rs`): the
     /// screens seen and the `most` moments most worth a look. None by default.
     async fn mess_around(
@@ -580,6 +585,7 @@ pub async fn play<G: Game>(
         journal.notes = plan.notes.clone();
         notes::replace_ahead(&mut journal.milestones, plan.milestones.clone());
         check_insights(session, &mut journal, &plan);
+        name_place(session, game, &mut journal, &plan.place_name).await?;
         let mut world = game.world().await?;
         notes::check_all(&mut journal.notes, &world);
         let reviewed = skills::review(&mut world.skills, &plan.skill_changes);
@@ -790,7 +796,14 @@ pub async fn play<G: Game>(
         (paid, today.usd, summary.usd) = (now_paid, today.usd + usd, summary.usd + usd);
         journal.usd += usd;
         notes::check_all(&mut journal.notes, &world);
-        let reached = reach_milestones(game, &mut journal, &episode.entered).await?;
+        // A place code only numbers counts by what it's called, too.
+        let names = game.world().await?.sight.names;
+        let entered: Vec<String> = episode
+            .entered
+            .iter()
+            .flat_map(|area| std::iter::once(area.clone()).chain(names.get(area).cloned()))
+            .collect();
+        let reached = reach_milestones(game, &mut journal, &entered).await?;
         keep(session, game, &journal, &world, &today).await?;
         let _ = session.report.send(Report::line(Reported::Episode, line));
         if let Some(blackout) = blackout {
@@ -863,6 +876,27 @@ async fn mess_around_first<G: Game>(
     }
     let (dir, rom) = (session.saves_dir.as_path(), session.rom.as_str());
     write_json(&files::journal_path(dir, rom), journal).await
+}
+
+/// Calls the place she's in what the strategist said, where code only numbers places, with
+/// a line in the log when the name is new.
+async fn name_place<G: Game>(
+    session: &Session<'_>,
+    game: &mut G,
+    journal: &mut Journal,
+    called: &str,
+) -> anyhow::Result<()> {
+    if called.trim().is_empty() {
+        return Ok(());
+    }
+    let area = game.look().await?.view.area;
+    let before = game.world().await?.sight.names.get(&area).cloned();
+    if game.name_place(&area, called).await? && before.as_deref() != Some(called.trim()) {
+        let line = format!("🏷️ {area} is called {}", called.trim());
+        journal.log(line.clone());
+        let _ = session.report.send(Report::line(Reported::Other, line));
+    }
+    Ok(())
 }
 
 /// Counts the strategist's word on the insights, with a line when one is confirmed or
@@ -1418,6 +1452,13 @@ mod tests {
             }
             Ok((5, vec![Moment::for_test(&["select:6"])]))
         }
+        async fn name_place(&mut self, area: &str, called: &str) -> anyhow::Result<bool> {
+            self.world
+                .sight
+                .names
+                .insert(area.to_string(), called.to_string());
+            Ok(true)
+        }
     }
 
     /// Plans with `plan` (counting them, and keeping what each was told), then plays each
@@ -1437,6 +1478,8 @@ mod tests {
         checked: Mutex<VecDeque<Value>>,
         /// The supervisor's first message in each episode.
         told: Mutex<Vec<String>>,
+        /// What each plan calls the place (by default nothing).
+        place_name: String,
     }
 
     impl Scripted {
@@ -1451,6 +1494,7 @@ mod tests {
                 puzzle: json!({"what": "", "x": 0, "y": 0}),
                 checked: Mutex::new(VecDeque::new()),
                 told: Mutex::new(Vec::new()),
+                place_name: String::new(),
             }
         }
     }
@@ -1506,7 +1550,8 @@ mod tests {
                     "plan",
                     json!({"reasoning": "", "notes": notes, "milestones": self.milestones,
                         "skill_changes": changes, "next_task": format!("task {n}"),
-                        "puzzle": self.puzzle, "insights_checked": checked}),
+                        "puzzle": self.puzzle, "insights_checked": checked,
+                        "place_name": self.place_name}),
                 )
             } else if std::mem::replace(&mut *self.acted.lock().unwrap(), true) {
                 ("finish", json!({"done": true, "summary": "ok"}))
@@ -1656,6 +1701,37 @@ mod tests {
         // Once per game: the next session plays straight away.
         play(&session, &mut game, None).await.unwrap();
         assert_eq!(game.messed, 1);
+    }
+
+    #[tokio::test]
+    async fn places_are_called_what_the_strategist_says_and_count_for_milestones() {
+        let dir = tempfile::tempdir().unwrap();
+        // The second episode walks into Room 1, which the plans call the hall.
+        let mut provider = Scripted::new(&[false, true]);
+        provider.place_name = "the hall".to_string();
+        provider.milestones = json!([{"name": "Reach the hall", "area": "the hall",
+            "fact": "", "has": ""}]);
+        let (report, mut lines) = mpsc::unbounded_channel();
+        let session = session(&provider, dir.path(), 3, report);
+        let mut game = Rooms::new();
+        // Room 1 was called the hall before (a session earlier, say).
+        game.world
+            .sight
+            .names
+            .insert("Room 1".to_string(), "the hall".to_string());
+        play(&session, &mut game, None).await.unwrap();
+        let mut sent = Vec::new();
+        while let Ok(report) = lines.try_recv() {
+            sent.push(report.line);
+        }
+        // Room 0 is named once, though every plan says so.
+        let named: Vec<&String> = sent.iter().filter(|l| l.starts_with("🏷️")).collect();
+        assert_eq!(named, ["🏷️ Room 0 is called the hall"], "{sent:#?}");
+        assert!(
+            sent.iter()
+                .any(|l| l.starts_with("🏁 **Milestone: Reach the hall**")),
+            "{sent:#?}"
+        );
     }
 
     #[tokio::test]

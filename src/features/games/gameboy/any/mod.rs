@@ -33,7 +33,7 @@ use super::map::{AreaMap, Dir, Kind, Pos, as_list};
 use super::moves::{Her, Outcome, offset};
 use super::pictures::png_part;
 use super::screen::{COLS, Layer, ROWS, Screen, TileKey};
-use super::text::{Font, Page, Unread, joined, page_of};
+use super::text::{Font, Page, Unread, bar_page, joined, page_of};
 use super::walk::settle;
 use super::world::{Grid, Stepped, View, World};
 use memory::{Areas, Byte, Finder, Memory, Pixel, Pixels, Position, ScreenByte, Screens};
@@ -67,7 +67,7 @@ const UNREAD_MOST: usize = 16;
 const ASKED_MOST: usize = 32;
 
 /// How many times bigger a text box's picture is for the model.
-const LETTERS_SCALE: u32 = 4;
+pub const LETTERS_SCALE: u32 = 4;
 
 /// To know a place again by its look: steps of the screen that must have been seen there
 /// before, and how many of them must look the same.
@@ -94,6 +94,9 @@ const SHIFTS_TRIED: usize = 5;
 /// Steps seen before in the same places that, three in four the same, say it's the same
 /// place whatever else is on screen.
 const VOUCHED_BY: usize = 4;
+
+/// Characters a place's name has at most.
+const NAME_MOST: usize = 40;
 
 /// What code has learned about a game it has no memory map for. Saved with the maps.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -127,6 +130,11 @@ pub struct Sight {
     /// The names of the game's letters, by their pictures.
     #[serde(default)]
     pub font: Font,
+    /// What each place is called, by its name in code ("Place 3"): the game's own name
+    /// once it has shown one (a sign, a text box), else a few words, as the strategist
+    /// gives them. Places keep their names in code, since the maps and notes use them.
+    #[serde(default)]
+    pub names: HashMap<String, String>,
     #[serde(skip)]
     live: Live,
 }
@@ -508,6 +516,20 @@ impl Sight {
         self.live.finder.as_ref().and_then(|f| f.areas.found())
     }
 
+    /// Calls a place (`area`, one this look named) something: what the game showed, or a
+    /// few words. Says whether it took it.
+    pub fn name_place(&mut self, area: &str, called: &str) -> bool {
+        let called = called.trim();
+        let ours = area
+            .strip_prefix("Place ")
+            .is_some_and(|n| n.parse::<u32>().is_ok());
+        if !ours || called.is_empty() || called == area || called.chars().count() > NAME_MOST {
+            return false;
+        }
+        self.names.insert(area.to_string(), called.to_string());
+        true
+    }
+
     /// A new place's name.
     fn new_place(&mut self) -> String {
         self.places += 1;
@@ -546,7 +568,7 @@ impl Sight {
     /// A text box's words, if the font names all its letters; if not, it's kept (with
     /// its picture, `rgb` being the screen) for naming them, unless the same box typed as
     /// far or further is kept already.
-    fn words_on(&mut self, page: Page, screen: &Screen, rgb: &[u8]) -> String {
+    fn words_on(&mut self, page: Page, screen: &Screen, rgb: &[u8], bar: bool) -> String {
         if let Some(text) = self.font.read(&page) {
             return text;
         }
@@ -569,7 +591,7 @@ impl Sight {
         );
         if let Ok(picture) = png_part(rgb, part, LETTERS_SCALE) {
             live.unread.retain(|u| !page.holds(&u.page));
-            live.unread.push(Unread { page, picture });
+            live.unread.push(Unread { page, picture, bar });
             if live.unread.len() > UNREAD_MOST {
                 live.unread.remove(0);
             }
@@ -1030,7 +1052,13 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let free = calm(sight, machine, &screen, dark || faded, stepped.is_some());
     sight.live.page = page.filter(|_| !free);
     let text = match sight.live.page.clone() {
-        Some(page) => sight.words_on(page, &screen, &machine.emulator.screen()),
+        Some(page) => sight.words_on(page, &screen, &machine.emulator.screen(), false),
+        None => String::new(),
+    };
+    // The status bar's words and numbers, once the font names its tiles (a bar with
+    // tiles it doesn't is kept for naming, like a text box).
+    let bar = match bar_page(&screen).filter(|_| free) {
+        Some(page) => sight.words_on(page, &screen, &machine.emulator.screen(), true),
         None => String::new(),
     };
     let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
@@ -1404,12 +1432,19 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         her,
         walks_across: sight.live.walks_across,
     });
+    let mut facts = Vec::new();
+    if let Some(called) = sight.names.get(&area) {
+        facts.push(format!("Called: {called}"));
+    }
+    if !bar.is_empty() {
+        facts.push(format!("Status bar: {}", bar.replace('\n', " · ")));
+    }
     View {
         area,
         at,
         can_walk: steps.is_some(),
         text,
-        facts: String::new(),
+        facts: facts.join("\n"),
         grid: steps.and_then(|s| {
             (s.origin == (0, 0)).then_some(Grid {
                 pixels: STEP,
@@ -2313,6 +2348,22 @@ fn join_keys(keys: [u64; 4]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_numbered_places_are_called_something() {
+        let mut sight = Sight::default();
+        assert!(sight.name_place("Place 3", " Mabe Village "));
+        assert_eq!(sight.names["Place 3"], "Mabe Village");
+        // A better name replaces it; nothing, the same name or a long one doesn't.
+        assert!(sight.name_place("Place 3", "Marin's village"));
+        assert!(!sight.name_place("Place 3", ""));
+        assert!(!sight.name_place("Place 3", "Place 3"));
+        assert!(!sight.name_place("Place 3", &"x".repeat(41)));
+        assert_eq!(sight.names["Place 3"], "Marin's village");
+        // Real names stay as the game gives them.
+        assert!(!sight.name_place("Viridian City", "the green town"));
+        assert!(!sight.name_place("Place of Power", "a cave"));
+    }
 
     #[test]
     fn screens_on_a_grid_are_placed_where_the_others_say() {
