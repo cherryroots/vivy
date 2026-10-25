@@ -38,6 +38,7 @@ use super::files;
 use super::journal::{CHANGE_AT, DEFAULT_GOAL, Journal, ROLLBACK_AT, Rung, STEPS_FOR_CHECKPOINT};
 use super::map::{AreaMap, Pos};
 use super::notes::{self, Note, Reached};
+use super::practice;
 use super::puzzle::{self, Move, Wanted};
 use super::screen::TileKey;
 use super::skills::{self, Skill};
@@ -83,6 +84,8 @@ pub trait Game: Player {
     async fn set_sight(&mut self, _sight: Sight) -> anyhow::Result<()> {
         Ok(())
     }
+    /// Puts back what code knew at a save (practice loads one after each try).
+    async fn set_world(&mut self, world: World) -> anyhow::Result<()>;
     async fn save_state(&mut self) -> anyhow::Result<Vec<u8>>;
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()>;
 }
@@ -573,8 +576,35 @@ pub async fn play<G: Game>(
             plan.task.clone()
         };
 
-        // Puzzle help comes before the task, which then carries on from where it left her.
-        let mut helped = None;
+        // Practice and puzzle help come before the task, which then carries on from where
+        // they left her.
+        let mut before_task: Vec<String> = Vec::new();
+        if let Some(goal) = &plan.practice {
+            let free_before = today.free_tokens;
+            let practised = practice::practise(
+                session.provider,
+                session.openai,
+                session.limits.free_tokens,
+                &mut today,
+                game,
+                goal,
+                &journal.notes,
+                session.now.as_ref(),
+            )
+            .await;
+            summary.free_tokens += today.free_tokens - free_before;
+            let (line, told) = match practised {
+                Ok(practised) => (practised.line, practised.told),
+                Err(err) => {
+                    let line = format!("🎯 Practice failed: {err:#}");
+                    (line.clone(), line)
+                }
+            };
+            journal.log(line.clone());
+            let _ = session.report.send(Report::line(Reported::Other, line));
+            before_task.push(told);
+            world.skills = game.world().await?.skills;
+        }
         if let Some(wanted) = &plan.puzzle {
             if let Some(now) = &session.now {
                 now.send_modify(|now| {
@@ -607,8 +637,9 @@ pub async fn play<G: Game>(
             let _ = session
                 .report
                 .send(Report::line(Reported::Other, line.clone()));
-            helped = Some(line);
+            before_task.push(line);
         }
+        let helped = (!before_task.is_empty()).then(|| before_task.join("\n"));
 
         let look = game.look().await?;
         let area = look.view.area;
@@ -1261,6 +1292,10 @@ mod tests {
         }
         async fn set_areas(&mut self, areas: HashMap<String, AreaMap>) -> anyhow::Result<()> {
             self.world.areas = areas;
+            Ok(())
+        }
+        async fn set_world(&mut self, world: World) -> anyhow::Result<()> {
+            self.world = world;
             Ok(())
         }
         async fn save_state(&mut self) -> anyhow::Result<Vec<u8>> {

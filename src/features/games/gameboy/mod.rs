@@ -48,6 +48,7 @@ mod path;
 mod pictures;
 mod player;
 mod playing;
+mod practice;
 mod presses;
 mod puzzle;
 mod ram;

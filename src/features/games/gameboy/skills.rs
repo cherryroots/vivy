@@ -58,6 +58,10 @@ pub struct Skill {
     /// Times it's been used, and how the last use ended.
     pub uses: u32,
     pub last: String,
+    /// How it did in practice on a save state, like "works 3 of 3, practised at Place 10
+    /// (78, 7)" (`practice.rs`); empty for one written in play. A rewrite starts fresh.
+    #[serde(default)]
+    pub practised: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,6 +254,7 @@ impl Skill {
             holding,
             uses: 0,
             last: String::new(),
+            practised: String::new(),
         })
     }
 
@@ -320,7 +325,12 @@ impl Skill {
             (false, 1) => format!("used once, last: {}", self.last),
             (false, n) => format!("used {n} times, last: {}", self.last),
         };
-        format!("- {}: {} ({used})", self.name, self.use_when)
+        let practised = if self.practised.is_empty() {
+            String::new()
+        } else {
+            format!("practised: {}; ", self.practised)
+        };
+        format!("- {}: {} ({practised}{used})", self.name, self.use_when)
     }
 
     /// The whole skill, for people to read: when, the notes, the rules and how it stops.
@@ -356,6 +366,9 @@ impl Skill {
             stops.extend(self.stop_words.iter().map(|w| format!("\"{w}\"")));
             stops.push(format!("{} rounds", self.most));
             lines.push(format!("- stops at: {}", stops.join(", ")));
+            if !self.practised.is_empty() {
+                lines.push(format!("-# practised: {}", self.practised));
+            }
             lines.push(match self.uses {
                 0 => "-# not used yet".to_string(),
                 n => format!("-# used {n} times, last {}", self.last),
