@@ -253,6 +253,8 @@ struct Live {
     /// (`Machine::recorded`), to see whether it went dark in between.
     was_free: bool,
     recorded: u64,
+    /// Whether the last screen recorded by the last look was dark (`went_dark`).
+    ended_dark: bool,
     /// The frame of the last look (`Emulator::frames`), to follow her sprite from there.
     frame: u64,
     /// The scroll at the last look.
@@ -894,7 +896,9 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
             }
         }
     }
-    let faded = went_dark(machine, sight.live.recorded);
+    let (faded, darkened, ends_dark) =
+        went_dark(machine, sight.live.recorded, sight.live.ended_dark);
+    sight.live.ended_dark = ends_dark;
     // Where her sprite is, in a game where it walks across a still screen: where the
     // step left it, or found again by its pictures near where it was (her own presses
     // may have moved it).
@@ -941,6 +945,13 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         && let Some(last) = sight.live.spot
     {
         sight.live.spot = her_anywhere(&sight.live.her, &screen, last);
+        sight.live.lost = sight.live.spot.is_none();
+    }
+    // Lost through a fade, her pictures weren't on the black screen: once the next one is
+    // drawn they may be (in Harvest Moon's house she came in at the bottom, wasn't found
+    // again by pressing, and the house was never a place).
+    if sight.live.lost && sight.live.spot.is_none() && screen.drawn && !dark && !faded {
+        sight.live.spot = her_anywhere(&sight.live.her, &screen, MIDDLE);
         sight.live.lost = sight.live.spot.is_none();
     }
     // No sprite where she's thought to be: lost (a screen sliding faster than she can be
@@ -1025,8 +1036,10 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     let faded_away = std::mem::take(&mut sight.live.faded_away) || ((dark || faded) && !free);
     // Dark again before she could walk where a door led: another screen came up in
     // between (Link's Awakening's game over menu, then the spot it starts her at again),
-    // so that was no door, and she's somewhere else.
-    if (dark || faded) && !free {
+    // so that was no door, and she's somewhere else. A fade still going isn't again: in
+    // Harvest Moon a press ends as the door's fade starts and the next looks are still
+    // black, and the house she walked into had been counted as the farm.
+    if (dark || darkened) && !free {
         sight.live.door_pending = false;
     }
     if !free {
@@ -1999,12 +2012,26 @@ fn her_anywhere(her: &HashSet<u64>, screen: &Screen, last: (i32, i32)) -> Option
     middle_of(&touching(&[*nearest], &screen.sprites))
 }
 
-/// Whether any screen recorded after `mark` was all one colour: a fade, or the screen off.
-fn went_dark(machine: &Machine, mark: u64) -> bool {
-    machine
+/// Whether a screen recorded after `mark` was all one colour (a fade, or the screen off),
+/// whether one went dark then that wasn't dark just before (not a fade still going from
+/// `was_dark`, the last look's last screen), and whether the last screen is dark.
+fn went_dark(machine: &Machine, mark: u64, was_dark: bool) -> (bool, bool, bool) {
+    let dark: Vec<bool> = machine
         .screens_since(mark)
         .iter()
-        .any(|rgb| rgb.chunks(3).all(|p| p == &rgb[..3]))
+        .map(|rgb| rgb.chunks(3).all(|p| p == &rgb[..3]))
+        .collect();
+    let ends_dark = dark.last().copied().unwrap_or(was_dark);
+    (dark.contains(&true), darkened(was_dark, &dark), ends_dark)
+}
+
+/// Whether a screen in `dark` (each recorded screen, dark or not) went dark that wasn't
+/// just before, `was_dark` being the screen before the first.
+fn darkened(was_dark: bool, dark: &[bool]) -> bool {
+    std::iter::once(was_dark)
+        .chain(dark.iter().copied())
+        .zip(dark)
+        .any(|(before, &now)| now && !before)
 }
 
 /// For finding out why a live run made a place: with `VIVY_GB_SIGHT_TRACE` set to a
@@ -2559,5 +2586,16 @@ mod tests {
         assert_eq!(back.steps[&7].kind(), Some(Kind::Floor));
         assert_eq!(back.found, sight.found);
         assert_eq!(back.pictures["Area 1"].0[&(1, 2)], 9);
+    }
+
+    #[test]
+    fn a_fade_still_going_is_not_dark_again() {
+        // Going dark, from a lit screen or within the look.
+        assert!(darkened(false, &[true, true]));
+        assert!(darkened(true, &[false, false, true]));
+        // Still black from the last look (a door's fade in Harvest Moon spans a few).
+        assert!(!darkened(true, &[true, true]));
+        assert!(!darkened(true, &[false, false]));
+        assert!(!darkened(false, &[]));
     }
 }
