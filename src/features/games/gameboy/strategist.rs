@@ -104,7 +104,9 @@ be around the player (near, ahead, behind, above, below, left, right or coming, 
 while the player walks, stopping when words come up or it can't walk for a moment. holding keeps buttons held while a skill \
 runs (a shield). Each skill shows how its last use ended. Review them: rewrite one \
 whose last use went wrong, merge near-copies into one and delete the rest, delete one \
-that never helped, add one when the last task repeated a job no skill covers. Rules \
+that never helped, add one when the last task repeated a job no skill covers. When something moving cost the player \
+(knocked back, health or a life lost, a game over, a continue or password screen) and no \
+reflex covers it, add a reflex for it: when it's ahead or coming, jump over it or attack it. Rules \
 match words that are really on screen in the text read. Change nothing that works: an \
 empty list keeps them all.";
 

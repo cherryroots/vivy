@@ -158,7 +158,7 @@ struct Planned {
 #[derive(Debug, Clone)]
 enum Try {
     Presses(String),
-    Routine(Skill),
+    Routine(Box<Skill>),
 }
 
 impl Try {
@@ -200,7 +200,7 @@ fn checked(planned: &Planned) -> Result<Try, String> {
             "stop_when_free": false,
             "most": planned.most.clamp(1, ROUNDS_MOST),
         });
-        return Skill::from_args(&args).map(Try::Routine);
+        return Skill::from_args(&args).map(|skill| Try::Routine(Box::new(skill)));
     }
     let typed = planned.presses.trim();
     let parsed = presses::parse(typed)?;
@@ -360,7 +360,7 @@ async fn run<G: Game>(game: &mut G, one: &Try) -> anyhow::Result<Acted> {
             let skills = game.world().await?.skills;
             let mut with = skills.clone();
             skills::forget(&mut with, &skill.name);
-            with.push(skill.clone());
+            with.push(skill.as_ref().clone());
             game.set_skills(with).await?;
             let acted = game.act("use_skill", &json!({ "name": skill.name })).await;
             game.set_skills(skills).await?;
@@ -613,8 +613,9 @@ pub async fn practise<G: Game>(
             uses: 0,
             last: String::new(),
             practised: String::new(),
+            practised_at: None,
         },
-        Try::Routine(skill) => skill,
+        Try::Routine(skill) => *skill,
     };
     skill.name.clone_from(&name);
     skill.use_when = if use_when.trim().is_empty() {
@@ -627,6 +628,7 @@ pub async fn practise<G: Game>(
     };
     skill.notes = format!("Practised on a save state: {}. To {}.", record, goal.line());
     skill.practised.clone_from(&record);
+    skill.practised_at = Some((start.area.clone(), start.at));
     let mut skills = game.world().await?.skills;
     let kept = match skills::save(&mut skills, skill) {
         Ok(()) => {

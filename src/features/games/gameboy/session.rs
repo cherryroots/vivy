@@ -702,6 +702,17 @@ pub async fn play<G: Game>(
         if let Err(err) = save_replay(session, journal.episodes, &replay, &before.0).await {
             tracing::warn!("Couldn't save the replay: {err:#}");
         }
+        // The last action can end just as the screen starts to fade (a walk that ends in
+        // a doorway): let it settle, so the next plan and episode start from the screen
+        // she'll walk on. In Harvest Moon the next episode began on the black screen after
+        // leaving the house, her first press walked her straight back in before code saw
+        // her walk outside, and the house was counted as the ranch from then on.
+        if !stopped {
+            let view = game.look().await?.view;
+            if !view.can_walk && view.text.is_empty() {
+                game.act("press", &json!({ "buttons": "wait:1" })).await?;
+            }
+        }
         let world = game.world().await?;
         let done = !stopped && !failed && matches!(episode.finished, Some((true, _)));
         let found = journal.found(&world, &episode.words, done);

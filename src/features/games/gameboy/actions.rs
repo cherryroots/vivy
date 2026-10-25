@@ -820,6 +820,12 @@ fn use_skill(world: &mut World, machine: &mut Machine, look: Look, name: &str) -
     if skill.know_how() {
         return told(world, machine, look, &format!("{}{notes}", skill.name));
     }
+    if let Some((area, spot)) = &skill.practised_at {
+        let view = look(world, machine);
+        if let Some(why) = skills::away_from_practice(&skill.name, area, *spot, &view) {
+            return told(world, machine, look, &why);
+        }
+    }
     // Checked when it was written.
     let holding = held_buttons(&skill.holding).unwrap_or_default();
     machine.emulator.keep(&holding);
