@@ -218,6 +218,8 @@ fn checked(planned: &Planned) -> Result<Try, String> {
 struct Seen {
     area: String,
     at: Pos,
+    /// The map was showing with her on it: no game over, scene or menu in the way.
+    can_walk: bool,
     watched: Vec<(String, i64)>,
 }
 
@@ -226,6 +228,7 @@ impl Seen {
         Seen {
             area: view.area.clone(),
             at: view.at,
+            can_walk: view.can_walk,
             watched: watched_values(&view.facts),
         }
     }
@@ -280,13 +283,22 @@ fn off(at: Pos, spot: Pos) -> String {
 
 /// Whether the goal was met, from where she started and where she ended, or why not.
 /// Standing on a spot counts within a step of it (a platform's top can be a row from the
-/// spot named); that she's still there is checked by [`measure`].
+/// spot named); that she's still there is checked by [`measure`]. A goal of hers on the
+/// map needs the map showing at the end: where code last counted her means nothing on a
+/// game over's password screen.
 fn check(goal: &Goal, start: &Seen, end: &Seen, words: &[String]) -> Result<(), String> {
     let said = words.join(" ").to_lowercase();
     if goal.survive
         && let Some(died) = DIED.iter().find(|w| said.contains(*w))
     {
         return Err(format!("she died (\"{died}\" came up)"));
+    }
+    if goal.goal != "watched" && !end.can_walk {
+        return Err(
+            "the map wasn't showing at the end, so she wasn't on it (a game over, a scene or a \
+             menu?)"
+                .to_string(),
+        );
     }
     if goal.survive && goal.goal != "area" && end.area != start.area {
         return Err(format!(
@@ -453,6 +465,11 @@ pub async fn practise<G: Game>(
             });
         }
     };
+    // Loading a save forgets the frames before it, which code follows her by, so a look
+    // after a load can read her a step from the look before it. The first try starts
+    // from the save loaded back too, so every try starts from the same reading.
+    let state = game.save_state().await?;
+    game.load_state(state).await?;
     let first = game.look().await?;
     let start = Seen::of(&first.view);
     let situation = game.describe(&first).await?;
@@ -798,6 +815,7 @@ mod tests {
         Seen {
             area: area.to_string(),
             at,
+            can_walk: true,
             watched: watched_values(watched),
         }
     }
@@ -889,6 +907,26 @@ mod tests {
         );
         // Without survive, the same fall still gets past.
         assert!(check(&goal("past_right"), &start, &fell, &[]).is_ok());
+        // A game over's screen, read as where she last stood: not past anything.
+        let over = Seen {
+            can_walk: false,
+            ..past.clone()
+        };
+        assert!(
+            check(&goal("past_right"), &start, &over, &[])
+                .unwrap_err()
+                .contains("map wasn't showing")
+        );
+        // A watched value can change in a menu.
+        let money = Goal {
+            watched: "lives".to_string(),
+            ..goal("watched")
+        };
+        let menu = Seen {
+            can_walk: false,
+            ..seen("Place 10", (78, 7), "Watched: lives 4")
+        };
+        assert!(check(&money, &start, &menu, &[]).is_ok());
     }
 
     #[test]

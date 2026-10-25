@@ -237,7 +237,9 @@ impl Emulator {
         &self.info
     }
 
-    /// Frames run since the ROM or the last state was loaded.
+    /// Frames run since the ROM was put in. Loading a state doesn't start the count again:
+    /// code keeps what it saw by frame number (`Machine::frames_since`), and a frame number
+    /// used twice would mix up two games.
     pub fn frames(&self) -> u64 {
         self.frames
     }
@@ -434,7 +436,6 @@ impl Emulator {
         .context("loading the state")?;
         self.held.clear();
         self.kept.clear();
-        self.frames = 0;
         Ok(())
     }
 }

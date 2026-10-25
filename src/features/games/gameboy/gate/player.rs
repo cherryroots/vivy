@@ -119,8 +119,6 @@ impl Game for Local {
     }
 
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()> {
-        self.machine.emulator.load_state(&state)?;
-        self.machine.run(1);
-        Ok(())
+        self.machine.load_state(&state)
     }
 }

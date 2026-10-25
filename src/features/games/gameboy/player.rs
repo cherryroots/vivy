@@ -108,12 +108,6 @@ impl Game for OnConsole {
     }
 
     async fn load_state(&mut self, state: Vec<u8>) -> anyhow::Result<()> {
-        on_game(move |_, m, _| {
-            m.emulator.load_state(&state)?;
-            // One frame, so the screen shows the saved game.
-            m.run(1);
-            Ok(())
-        })
-        .await?
+        on_game(move |_, m, _| m.load_state(&state)).await?
     }
 }

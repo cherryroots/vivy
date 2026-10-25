@@ -179,6 +179,16 @@ impl Machine {
         self.recent.clear();
         self.sprite_frames.clear();
     }
+
+    /// Goes back to a saved state: the frames recorded since are of another game now, so
+    /// they're forgotten (else following her through a press could read a try that was
+    /// loaded away). Then one frame, so the screen shows the saved game.
+    pub fn load_state(&mut self, state: &[u8]) -> Result<()> {
+        self.emulator.load_state(state)?;
+        self.clear_recording();
+        self.run(1);
+        Ok(())
+    }
 }
 
 type Job = Box<dyn FnOnce(&mut Option<Machine>) + Send>;
@@ -258,6 +268,26 @@ mod tests {
         assert_eq!(RECENT_SCREENS, 199);
         m.clear_recording();
         assert!(m.screens_since(0).is_empty());
+    }
+
+    /// Practice loads its save after every try: what code follows her by must never come
+    /// from a try that was loaded away, even when the next try runs as long.
+    #[test]
+    fn loading_a_state_forgets_the_frames_after_it() {
+        let mut m = machine();
+        m.run(10);
+        let state = m.emulator.save_state().unwrap();
+        let saved_at = m.emulator.frames();
+        m.run(20);
+        let tried = m.emulator.frames();
+        m.load_state(&state).unwrap();
+        // The count goes on, so no frame number is used twice.
+        assert!(m.emulator.frames() > tried);
+        assert!(m.sprites_since(saved_at).is_none());
+        assert!(m.sprites_since(tried).is_none());
+        m.run(20);
+        assert!(m.sprites_since(tried).is_none());
+        assert_eq!(m.sprites_since(tried + 1).map(|f| f.len()), Some(21));
     }
 
     #[test]

@@ -648,12 +648,8 @@ async fn restore(ctx: &CommandCtx, args: GameboyRestore) -> Result<()> {
     };
     ctx.defer().await?;
     let png = on_machine(move |m| {
-        m.emulator
-            .load_state(&state)
+        m.load_state(&state)
             .map_err(|e| user_error(format!("That save doesn't load: {e:#}")))?;
-        m.clear_recording();
-        // One frame, so the screen shows the saved game rather than the one before.
-        m.run(1);
         pictures::png(&m.emulator.screen())
     })
     .await?;
