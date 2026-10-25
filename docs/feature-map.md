@@ -234,6 +234,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #123 | | Game Boy stage 6: messing around (code presses at random from saved screens before her first session in a game, and picks the moments worth a look), insights Haiku writes from them, confirmed or struck in play by the strategist; the stage table brought up to date. |
 | #124 | | Game Boy: `/games gameboy watch` shows values from a game's memory on the dashboard, picked by hand (a cheat list's addresses, or ones she found); her tools can't change those. |
 | #125 | | Game Boy: places with no name from the game are called what the strategist says (shown as Called in the facts, usable in notes and milestones); status bars are read into the facts with the learned font, their tiles named once by Haiku. |
+| #126 | | Game Boy: after a game over she's matched to a place she has been (three in four steps alike, the place she died in included), so a Continue in Mega Man no longer makes a new place or reaches a milestone. |
 
 ## Not built yet
 
