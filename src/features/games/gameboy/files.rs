@@ -102,6 +102,47 @@ pub fn save_name(name: &str) -> Result<&str, String> {
     }
 }
 
+/// Starts a ROM's game afresh on disk: its folder (maps, journal, what code learned,
+/// saves, replays, checkpoints) is moved aside as `<folder> before reset <when>`, so
+/// nothing is lost. With `keep_skills`, her skills and watches are copied into the new
+/// folder. Says where the old folder went, or `None` when there wasn't one yet.
+pub fn reset(
+    saves_dir: &Path,
+    rom: &str,
+    when: &str,
+    keep_skills: bool,
+) -> std::io::Result<Option<PathBuf>> {
+    let folder = saves_folder(saves_dir, rom);
+    if !folder.is_dir() {
+        return Ok(None);
+    }
+    let name = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("game")
+        .to_string();
+    // Two resets in the same minute get a number.
+    let aside = (1..)
+        .map(|n| match n {
+            1 => saves_dir.join(format!("{name} before reset {when}")),
+            n => saves_dir.join(format!("{name} before reset {when} {n}")),
+        })
+        .find(|path| !path.exists())
+        .expect("a free name");
+    std::fs::rename(&folder, &aside)?;
+    if keep_skills {
+        std::fs::create_dir_all(&folder)?;
+        for kept in [skills_path(saves_dir, rom), watches_path(saves_dir, rom)] {
+            if let Some(file) = kept.file_name()
+                && aside.join(file).is_file()
+            {
+                std::fs::copy(aside.join(file), &kept)?;
+            }
+        }
+    }
+    Ok(Some(aside))
+}
+
 /// File names in `dir` ending in one of `extensions` (any case).
 fn names_with(dir: &Path, extensions: &[&str]) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -160,5 +201,43 @@ mod tests {
         for bad in ["", "  ", "../x", "a/b", "a.state", &"x".repeat(41)] {
             assert!(save_name(bad).is_err(), "{bad:?} was allowed");
         }
+    }
+
+    #[test]
+    fn a_reset_puts_the_folder_aside_and_can_keep_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing to put aside yet.
+        assert_eq!(
+            reset(dir.path(), "hm.gb", "2026-10-25 1100", false).unwrap(),
+            None
+        );
+        let folder = saves_folder(dir.path(), "hm.gb");
+        std::fs::create_dir_all(&folder).unwrap();
+        for file in [
+            "maps.json",
+            "sight.json",
+            "skills.json",
+            "watches.json",
+            "latest.state",
+        ] {
+            std::fs::write(folder.join(file), file).unwrap();
+        }
+        let aside = reset(dir.path(), "hm.gb", "2026-10-25 1100", true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(aside, dir.path().join("hm before reset 2026-10-25 1100"));
+        assert!(aside.join("maps.json").is_file());
+        assert!(aside.join("latest.state").is_file());
+        // Only her skills and watches come back.
+        assert_eq!(
+            names_with(&folder, &["json", "state"]),
+            vec!["skills.json", "watches.json"]
+        );
+        // Again in the same minute, without skills: a numbered name, and no folder left.
+        let again = reset(dir.path(), "hm.gb", "2026-10-25 1100", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(again, dir.path().join("hm before reset 2026-10-25 1100 2"));
+        assert!(!folder.exists());
     }
 }

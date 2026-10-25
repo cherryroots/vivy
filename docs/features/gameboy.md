@@ -25,6 +25,7 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy dashboard` | Posts the dashboard here. While she plays, it moves: the old one then links to the new one. Otherwise it shows how her last session left things. |
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
 | `/games gameboy restore name:` | Goes back to a save of the ROM that's in. |
+| `/games gameboy reset [keep_skills:] [keep_game:]` | Starts the game that's in afresh: its folder (maps, journal, what code learned, saves, replays, checkpoints) is moved aside as `<folder> before reset <date time>`, nothing deleted, and what code learned is forgotten in memory too, so the next episode doesn't write the old maps back. The game is switched off and on unless `keep_game`; her skills and watches are kept only with `keep_skills`. Not while she's playing. |
 | `/games gameboy off` | Takes the ROM out. |
 
 What to press is typed as words, with spaces or commas between them:

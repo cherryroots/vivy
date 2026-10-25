@@ -230,6 +230,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #119 | | Game Boy: practice on save states: the strategist asks to practise a move with a goal code measures (stand on a spot, reach an area, get past a line, a watched value changes, without dying); tries planned by Haiku then Astra are run, measured and loaded back, up to 6; one that works is tested from two later starts and kept as her skill with how often it worked |
 | #119+ | | Game Boy: practice tries start from the same reading: loading a state forgets the frames recorded before it and the frame count goes on (code had followed her through the last try's frames), and a goal on the map needs the map showing at the end (a game over's screen isn't where she ended). Practice runs only when she's stuck on an essential task, at most 3 rounds a session. Includes #119. |
 | #121 | | Game Boy: a practised skill only runs from within a step of where it was practised (`practised_at`), and the skill review adds a reflex when something moving cost her; a game over's password screen already reads as not walkable since #120. Doors through a long fade count, by her own presses or a step code takes (Harvest Moon's house was counted as the farm), her sprite is looked for again after a fade, and an episode doesn't start mid-fade. |
+| #122 | | Game Boy: `/games gameboy reset` starts the game that's in afresh (folder moved aside, memory cleared, game restarted; `keep_skills`, `keep_game`). |
 
 ## Not built yet
 

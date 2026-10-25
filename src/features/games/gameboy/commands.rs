@@ -16,6 +16,7 @@
 //! - `skills`: the skills she has written for this game, and forgetting one
 //! - `play`, `stop`, `status`, `dashboard`: she plays by herself for a while (`playing.rs`)
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
+//! - `reset`: start the game afresh, her maps and notes put aside (skills kept if asked)
 //! - `off`: take the ROM out
 
 use std::path::PathBuf;
@@ -30,7 +31,7 @@ use super::playing::{self, not_playing};
 use super::ram::Watch;
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
-use super::world::View;
+use super::world::{View, World};
 use super::{Settings, files, pictures, presses, skills};
 use crate::core::interaction::{Choice, Typed, choice};
 use crate::core::{CommandCtx, Result, user_error};
@@ -85,6 +86,8 @@ pub enum GameboyCommand {
     Save(GameboySave),
     #[command(name = "restore")]
     Restore(GameboyRestore),
+    #[command(name = "reset")]
+    Reset(GameboyReset),
     #[command(name = "off")]
     Off(GameboyOff),
 }
@@ -106,6 +109,7 @@ pub async fn gameboy(ctx: &CommandCtx, command: GameboyCommand) -> Result<()> {
         GameboyCommand::Dashboard(_) => playing::dashboard(ctx).await,
         GameboyCommand::Save(args) => save(ctx, args).await,
         GameboyCommand::Restore(args) => restore(ctx, args).await,
+        GameboyCommand::Reset(args) => reset(ctx, args).await,
         GameboyCommand::Off(_) => off(ctx).await,
     }
 }
@@ -662,6 +666,82 @@ async fn restore(ctx: &CommandCtx, args: GameboyRestore) -> Result<()> {
             .file("gameboy.png", png),
     )
     .await?;
+    Ok(())
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "reset",
+    desc = "Start this game afresh: her maps, notes and saves are put aside"
+)]
+pub struct GameboyReset {
+    /// Keep the skills she has written for this game (default: no)
+    keep_skills: Option<bool>,
+    /// Keep the game where it is instead of switching it off and on (default: no)
+    keep_game: Option<bool>,
+}
+
+/// Moves the game's folder aside (`files::reset`) and forgets what code learned in
+/// memory too: without that, the next episode would write the old maps back.
+async fn reset(ctx: &CommandCtx, args: GameboyReset) -> Result<()> {
+    let GameboyReset {
+        keep_skills,
+        keep_game,
+    } = args;
+    let (keep_skills, keep_game) = (keep_skills.unwrap_or(false), keep_game.unwrap_or(false));
+    let settings = changes(ctx)?;
+    let rom = on_machine(|m| Ok(m.rom.clone())).await?;
+    ctx.defer().await?;
+    let bytes = if keep_game {
+        None
+    } else {
+        let path = files::rom_path(&settings.roms_dir(), &rom)
+            .ok_or_else(|| user_error(format!("`{rom}` isn't in the roms folder any more.")))?;
+        Some(
+            tokio::fs::read(&path)
+                .await
+                .with_context(|| format!("reading {}", path.display()))?,
+        )
+    };
+    let when = chrono::Utc::now().format("%Y-%m-%d %H%M").to_string();
+    let (dir, name) = (settings.saves_dir(), rom.clone());
+    let aside = tokio::task::spawn_blocking(move || files::reset(&dir, &name, &when, keep_skills))
+        .await?
+        .context("putting the game's folder aside")?;
+    let png = on_machine(move |m| {
+        let mut world = World::default();
+        if keep_skills {
+            world.skills = std::mem::take(&mut m.world.skills);
+            world.watches = std::mem::take(&mut m.world.watches);
+        }
+        if let Some(bytes) = bytes {
+            *m = Machine::new(&m.rom.clone(), &bytes).map_err(|e| user_error(format!("{e:#}")))?;
+            // The boot logo and the first moments of the game, as `load` does.
+            m.run(4 * 60);
+        }
+        m.world = world;
+        pictures::png(&m.emulator.screen())
+    })
+    .await?;
+    let mut text = format!("🔄 `{rom}` starts afresh: no maps, notes or journal yet");
+    text.push_str(if keep_skills {
+        ", her skills kept"
+    } else {
+        ", no skills either"
+    });
+    text.push_str(if keep_game {
+        ". The game carries on where it was."
+    } else {
+        ". The game is switched off and on again."
+    });
+    if let Some(aside) = aside {
+        text.push_str(&format!(
+            "\nThe old folder is kept as `{}`.",
+            aside.file_name().and_then(|n| n.to_str()).unwrap_or("?")
+        ));
+    }
+    ctx.send(Draft::new().content(text).file("gameboy.png", png))
+        .await?;
     Ok(())
 }
 
