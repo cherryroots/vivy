@@ -117,6 +117,11 @@ impl Game for OnConsole {
         on_game(move |_, m, _| m.load_state(&state)).await?
     }
 
+    async fn name_place(&mut self, area: &str, called: &str) -> anyhow::Result<bool> {
+        let (area, called) = (area.to_string(), called.to_string());
+        on_game(move |world, _, _| world.sight.name_place(&area, &called)).await
+    }
+
     async fn mess_around(
         &mut self,
         frames: u64,

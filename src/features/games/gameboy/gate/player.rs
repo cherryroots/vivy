@@ -123,6 +123,10 @@ impl Game for Local {
         self.machine.load_state(&state)
     }
 
+    async fn name_place(&mut self, area: &str, called: &str) -> anyhow::Result<bool> {
+        Ok(self.world.sight.name_place(area, called))
+    }
+
     async fn mess_around(
         &mut self,
         frames: u64,

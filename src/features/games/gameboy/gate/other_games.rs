@@ -673,3 +673,59 @@ async fn messing_around() {
     }
     println!("{}", folder.display());
 }
+
+/// The status bar read from a saved state: a few explores until she can walk, then the
+/// bar's tiles named by the player's model (VIVY_GB_PLAYER, Haiku by default; a cent or
+/// less) and the facts printed before and after.
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_OTHER, a state in VIVY_GB_FROM and a model key"]
+async fn status_bar() {
+    use crate::features::games::gameboy::letters::read_bars;
+    use crate::features::games::gameboy::walk::{explore, look_for};
+    use crate::features::games::gameboy::world::World;
+
+    let (_, rom) = other();
+    let info = RomInfo::read(&rom).unwrap();
+    let look = look_for(&info);
+    let mut m = Machine::new("other.gb", &rom).unwrap();
+    let from = std::env::var("VIVY_GB_FROM").expect("VIVY_GB_FROM");
+    m.load_state(&std::fs::read(from).unwrap()).unwrap();
+    let mut world = World::default();
+    let mut view = look(&mut world, &mut m);
+    for _ in 0..10 {
+        if view.can_walk {
+            break;
+        }
+        explore(&mut world, &mut m, look, 4);
+        view = look(&mut world, &mut m);
+    }
+    println!(
+        "{}: can walk {}, facts before: {:?}",
+        info.title, view.can_walk, view.facts
+    );
+    let unread = world.sight.take_unread();
+    let bars: Vec<_> = unread.into_iter().filter(|u| u.bar).collect();
+    println!("{} status bar(s) to name", bars.len());
+    for (i, bar) in bars.iter().enumerate() {
+        println!("shape {:?}", bar.page.shape());
+        let path = std::env::temp_dir().join(format!("bar-{}-{i}.png", info.title.trim()));
+        std::fs::write(&path, &bar.picture).unwrap();
+        println!("{}", path.display());
+    }
+    if bars.is_empty() {
+        return;
+    }
+    let (http, db) = (super::http(), super::spend_db().await);
+    let model = super::setting("VIVY_GB_PLAYER", "claude-haiku-5-5");
+    let (provider, _) = super::player_model(&http, &db, &model);
+    let votes = read_bars(provider.as_ref(), &bars).await.unwrap();
+    println!("{} tiles named", votes.len());
+    let pages: Vec<_> = bars.iter().map(|u| u.page.clone()).collect();
+    world.sight.name_letters(&votes, &pages);
+    let view = look(&mut world, &mut m);
+    println!(
+        "facts after: {:?}\n${:.4}",
+        view.facts,
+        super::spent(&db).await
+    );
+}

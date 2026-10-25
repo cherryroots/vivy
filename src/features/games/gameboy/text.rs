@@ -211,7 +211,21 @@ pub fn page_of(screen: &Screen, changed: &[bool]) -> Option<Page> {
         c0 += usize::from(left);
         c1 -= usize::from(right);
     }
-    let lines: Vec<Vec<Word>> = (r0..=r1)
+    let lines = lines_in(screen, (c0, c1), (r0, r1));
+    (!lines.is_empty()).then_some(Page {
+        cols: page_cols,
+        rows: page_rows,
+        lines,
+    })
+}
+
+/// The rows of letters in part of the screen: a word is tiles with no blank one between.
+fn lines_in(screen: &Screen, (c0, c1): (usize, usize), (r0, r1): (usize, usize)) -> Vec<Vec<Word>> {
+    let blank = |c: usize, r: usize| {
+        let cell = screen.cell(c, r);
+        cell.layer == Layer::Off || is_blank(cell.key)
+    };
+    (r0..=r1)
         .map(|row| {
             let mut words: Vec<Word> = Vec::new();
             let mut last_blank = true;
@@ -234,10 +248,31 @@ pub fn page_of(screen: &Screen, changed: &[bool]) -> Option<Page> {
             words
         })
         .filter(|words| !words.is_empty())
-        .collect();
+        .collect()
+}
+
+/// Rows a status bar has at most: more rows that don't scroll are a menu or a text box.
+const BAR_ROWS_MOST: usize = 4;
+
+/// The status bar on a screen she can walk on, if it has one: whole rows at the bottom
+/// (or else the top) that don't scroll with the map (`Layer::Window`: the window, or rows
+/// drawn with a scroll of their own), at most [`BAR_ROWS_MOST`] of them, with something
+/// on them.
+pub fn bar_page(screen: &Screen) -> Option<Page> {
+    let fixed = |r: usize| (0..COLS).all(|c| screen.cell(c, r).layer == Layer::Window);
+    let bottom = (0..ROWS).rev().take_while(|&r| fixed(r)).count();
+    let top = (0..ROWS).take_while(|&r| fixed(r)).count();
+    let rows = if (1..=BAR_ROWS_MOST).contains(&bottom) {
+        (ROWS - bottom, ROWS - 1)
+    } else if (1..=BAR_ROWS_MOST).contains(&top) {
+        (0, top - 1)
+    } else {
+        return None;
+    };
+    let lines = lines_in(screen, (0, COLS - 1), rows);
     (!lines.is_empty()).then_some(Page {
-        cols: page_cols,
-        rows: page_rows,
+        cols: (0, COLS - 1),
+        rows,
         lines,
     })
 }
@@ -332,6 +367,8 @@ pub fn joined(pages: &[String]) -> String {
 pub struct Unread {
     pub page: Page,
     pub picture: Vec<u8>,
+    /// A status bar's, not a text box's: its words aren't words she read.
+    pub bar: bool,
 }
 
 /// The words in rows of screen text: rows with at least two letters or digits, with box
@@ -417,6 +454,42 @@ mod tests {
         assert_eq!(font.words(&screen), "Hi! H's");
         // Rows that are only borders or empty aren't words.
         assert_eq!(font.words(&screen_of(&[&[5, 5, 5], &[0]])), "");
+    }
+
+    #[test]
+    fn a_status_bar_is_whole_rows_that_dont_scroll_at_an_edge() {
+        let mut screen = screen_of(&[]);
+        assert!(bar_page(&screen).is_none());
+        // The bottom two rows: blank, with "B 12" on the last.
+        for row in 16..ROWS {
+            for col in 0..COLS {
+                screen.cells[row * COLS + col] = Cell {
+                    layer: Layer::Window,
+                    index: 0,
+                    key: BLANK,
+                };
+            }
+        }
+        for (col, index) in [(1, 1), (3, 2), (4, 3)] {
+            screen.cells[17 * COLS + col] = Cell {
+                layer: Layer::Window,
+                index,
+                key: 1000 + u64::from(index),
+            };
+        }
+        let page = bar_page(&screen).unwrap();
+        assert_eq!((page.cols, page.rows), ((0, 19), (16, 17)));
+        assert_eq!(page.shape(), vec![vec![1, 2]]);
+        let mut font = Font::default();
+        for (key, name) in page.votes(&["B 12".to_string()]) {
+            font.vote(key, &name);
+        }
+        assert_eq!(font.read(&page).as_deref(), Some("B 12"));
+        // Most of the screen not scrolling is a menu or a text box, not a bar.
+        for cell in &mut screen.cells[COLS * 10..] {
+            cell.layer = Layer::Window;
+        }
+        assert!(bar_page(&screen).is_none());
     }
 
     #[test]

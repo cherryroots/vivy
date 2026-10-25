@@ -143,7 +143,15 @@ pub fn check(text: &str, world: &World) -> Check {
     if spots.is_empty() {
         return Check::Unchecked;
     }
-    let Some(area) = area_in(text, world.areas.keys()) else {
+    // A place code only numbers can go by what it's called.
+    let names = &world.sight.names;
+    let Some(area) = area_in(text, world.areas.keys()).or_else(|| {
+        let called = area_in(text, names.values())?;
+        names
+            .iter()
+            .find(|&(area, name)| name == called && world.areas.contains_key(area))
+            .map(|(area, _)| area)
+    }) else {
         return Check::Unchecked;
     };
     let map = &world.areas[area];
@@ -403,6 +411,20 @@ mod tests {
         note.check = Check::Agrees("yes".to_string());
         let json = serde_json::to_string(&note).unwrap();
         assert_eq!(serde_json::from_str::<Note>(&json).unwrap(), note);
+    }
+
+    #[test]
+    fn a_note_can_name_a_numbered_place_by_what_its_called() {
+        let mut world = World::default();
+        world.area("Place 3").see((4, 7), Kind::Wall);
+        world
+            .sight
+            .names
+            .insert("Place 3".to_string(), "Mabe Village".to_string());
+        assert_eq!(
+            check("The shop's door is at x 4, y 7 in Mabe Village.", &world),
+            Check::Disagrees("(4, 7) in Place 3 is a wall on the map".to_string())
+        );
     }
 
     #[test]

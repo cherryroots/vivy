@@ -79,6 +79,13 @@ way on) names its area and spot as the facts write it, like \"<the place>'s door
 x <n>, y <n> in <area>\", so code can check it. Don't note what the facts show (HP, levels, money, where \
 the player stands): they change by themselves.
 
+Place names: in a game read with no memory map, code names places Place and a number. \
+When the player is in one, say in place_name what it's called: its name as the game has \
+shown it (a sign, a text box, a title), or until then a few words saying what it is, like \
+\"the house she woke up in\". The facts show it as Called once given; give the game's name \
+when it shows one. Notes and milestones can use these names. Leave it empty in a place \
+that already has its right name, and in a game with real place names.
+
 Insights: before she first played, code pressed buttons at random and a model wrote what \
 the new screens suggested about how the game works (what buttons do, menus, doors). They \
 start unconfirmed and can be wrong. When the last task relied on one, say in \
@@ -169,6 +176,8 @@ pub struct Plan {
     pub skill_changes: Vec<Value>,
     /// Which insights the last task relied on, and whether they held.
     pub insights_checked: Vec<Checked>,
+    /// What the place she's in is called, where code only numbers places (empty: as is).
+    pub place_name: String,
     /// Tokens used, for the free daily tokens.
     pub tokens: u64,
     /// What it would cost at list prices.
@@ -193,6 +202,8 @@ struct Answer {
     skill_changes: Option<Vec<Value>>,
     #[serde(default)]
     insights_checked: Option<Vec<Checked>>,
+    #[serde(default)]
+    place_name: Option<String>,
 }
 
 /// A note in an answer: with its source, or (from a sloppy answer) only the text.
@@ -232,6 +243,7 @@ impl Answer {
             practice: self.practice.take().filter(Goal::wanted),
             skill_changes: self.skill_changes.take().unwrap_or_default(),
             insights_checked: self.insights_checked.take().unwrap_or_default(),
+            place_name: self.place_name.take().unwrap_or_default(),
             tokens,
             usd,
         }
@@ -354,6 +366,7 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
                 practice: second.practice,
                 skill_changes: first_answer.skill_changes.unwrap_or_default(),
                 insights_checked: first_answer.insights_checked.unwrap_or_default(),
+                place_name: second.place_name,
                 tokens,
                 usd,
             })
@@ -438,7 +451,8 @@ fn schema(notes: bool, task: bool) -> Value {
             "watched": {"type": "string"},
             "survive": {"type": "boolean"}
         }));
-        required.extend(["next_task", "essential", "puzzle", "practice"]);
+        properties["place_name"] = json!({"type": "string"});
+        required.extend(["next_task", "essential", "puzzle", "practice", "place_name"]);
     }
     json!({
         "type": "object",
@@ -501,7 +515,8 @@ mod tests {
                 "next_task",
                 "essential",
                 "puzzle",
-                "practice"
+                "practice",
+                "place_name"
             ])
         );
         let change = &both["properties"]["skill_changes"]["items"];
@@ -521,7 +536,14 @@ mod tests {
         assert!(notes["properties"].get("next_task").is_none());
         assert_eq!(
             schema(false, true)["required"],
-            json!(["reasoning", "next_task", "essential", "puzzle", "practice"])
+            json!([
+                "reasoning",
+                "next_task",
+                "essential",
+                "puzzle",
+                "practice",
+                "place_name"
+            ])
         );
         let puzzle = &both["properties"]["puzzle"];
         assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
