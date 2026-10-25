@@ -232,8 +232,8 @@ struct Live {
     lost: bool,
     /// Pressing just found her (`found_her_at`), after any fade since the last look.
     just_found: bool,
-    /// She went through a door by her own presses and can't walk yet where it led.
-    door_pending: bool,
+    /// She went through a door and can't walk yet where it led: the step it was on.
+    door_pending: Option<Pos>,
     /// She's somewhere else, but not through a door: another screen was put up since she
     /// last walked (a game over, a scene), so where she was is no door.
     relocated: bool,
@@ -1040,7 +1040,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
     // Harvest Moon a press ends as the door's fade starts and the next looks are still
     // black, and the house she walked into had been counted as the farm.
     if (dark || darkened) && !free {
-        sight.live.door_pending = false;
+        sight.live.door_pending = None;
     }
     if !free {
         sight.live.faded_away = faded_away;
@@ -1118,7 +1118,15 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         .unwrap_or_default();
     // Where she left the last place: the step she went into, and whether it was dark.
     let mut left = None;
-    if let Some((mut step, before)) = stepped {
+    if stepped.is_some()
+        && let Some(door) = sight.live.door_pending.filter(|_| free)
+    {
+        // Where she walks across the screen, a door a step took her through while she
+        // couldn't walk yet (the room still coming in, her sprite found again by stepping)
+        // counts once she can: the steps after it are in the new place.
+        sight.live.door_pending = None;
+        left = Some((door, true));
+    } else if let Some((mut step, before)) = stepped {
         let pressed = offset(step.direction.button()).unwrap_or((0, 0));
         let from = sight.live.at;
         // Where she walks across the screen, her steps are counted on the screen's own
@@ -1181,6 +1189,12 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         }
         if after_step(sight, &mut world.areas, step, &before, &memory, dark, free) {
             left = Some(((from.0 + pressed.0, from.1 + pressed.1), dark));
+        } else if dark && !free && sight.live.walks_across {
+            // Where she walks across the screen, a step into a fade she can't walk after
+            // yet (the room still coming in, her sprite to be found again) is a door once
+            // she can, as for her own presses: in Harvest Moon, walking into the house
+            // was counted as walking on round the farm.
+            sight.live.door_pending = Some((from.0 + pressed.0, from.1 + pressed.1));
         }
         if astray && let Some(last) = sight.live.spot {
             sight.live.spot = her_anywhere(&sight.live.her, &screen, last);
@@ -1205,11 +1219,14 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
         // (the room still coming in) counts once she can: in Link's Awakening's
         // telephone hut, the look after the fade wasn't free, and the hut never became
         // a place.
-        let door_pending = std::mem::take(&mut sight.live.door_pending)
-            || (through_door && sight.live.spot.is_some());
-        let through_door = through_door || door_pending;
-        if !free && door_pending {
-            sight.live.door_pending = true;
+        let door_pending = sight
+            .live
+            .door_pending
+            .take()
+            .or((through_door && sight.live.spot.is_some()).then_some(sight.live.at));
+        let through_door = through_door || door_pending.is_some();
+        if !free {
+            sight.live.door_pending = door_pending;
         }
         if free
             && sight.live.free.is_some()
@@ -1221,7 +1238,7 @@ pub fn look(world: &mut World, machine: &mut Machine) -> View {
                         .get(&sight.live.area)
                         .is_some_and(|p| looks_different(p, &seen))))
         {
-            left = Some((sight.live.at, true));
+            left = Some((door_pending.unwrap_or(sight.live.at), true));
             sight.live.relocated = !through_door;
         }
         sight.live.at = at;
@@ -1577,9 +1594,11 @@ fn after_step(
                 let learned = sight.steps.entry(key).or_default();
                 // Through a door: it went dark. Somewhere new with no fade is an edge,
                 // which says nothing about the picture (it's ground like any other).
+                // Dark and not free yet says nothing either way (a battle, or a room
+                // still coming in): counted as floor, a door was never settled again.
                 if new_place && dark {
                     learned.doors += 1;
-                } else if !new_place {
+                } else if !new_place && !dark {
                     learned.walked += 1;
                 }
             }

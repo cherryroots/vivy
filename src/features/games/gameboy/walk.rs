@@ -124,7 +124,12 @@ pub fn walk_to(
                     .map_or(dirs[finding % 4], |&(_, dir)| dir);
                 finding += 1;
                 steps += 1;
-                view = take_step(world, machine, look, &view, dir).0;
+                let next = take_step(world, machine, look, &view, dir).0;
+                // Found where a door led (she couldn't walk there until her sprite was).
+                if next.area != view.area {
+                    return done(Walked::NewArea(next.area.clone()), steps, next);
+                }
+                view = next;
                 continue;
             }
             if !view.can_walk {
