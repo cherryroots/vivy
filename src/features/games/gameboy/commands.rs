@@ -16,19 +16,21 @@
 //! - `skills`: the skills she has written for this game, and forgetting one
 //! - `play`, `stop`, `status`, `dashboard`: she plays by herself for a while (`playing.rs`)
 //! - `save` and `restore`: save states, in a folder per ROM under `saves_dir`
+//! - `watch`: show a value from the game's memory on the dashboard and in the facts, by
+//!   its address (from a cheat list, or one she found), or stop showing one
 //! - `reset`: start the game afresh, her maps and notes put aside (skills kept if asked)
 //! - `off`: take the ROM out
 
 use std::path::PathBuf;
 
 use anyhow::Context as _;
-use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_interactions::command::{CommandModel, CommandOption, CreateCommand, CreateOption};
 
 use super::console::{Machine, RECENT_SECONDS, RECORD_EVERY, Timing, console};
 use super::map::LEGEND;
 use super::player::OnConsole;
 use super::playing::{self, not_playing};
-use super::ram::Watch;
+use super::ram::{self, Watch};
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::{View, World};
@@ -86,6 +88,8 @@ pub enum GameboyCommand {
     Save(GameboySave),
     #[command(name = "restore")]
     Restore(GameboyRestore),
+    #[command(name = "watch")]
+    Watch(GameboyWatch),
     #[command(name = "reset")]
     Reset(GameboyReset),
     #[command(name = "off")]
@@ -109,6 +113,7 @@ pub async fn gameboy(ctx: &CommandCtx, command: GameboyCommand) -> Result<()> {
         GameboyCommand::Dashboard(_) => playing::dashboard(ctx).await,
         GameboyCommand::Save(args) => save(ctx, args).await,
         GameboyCommand::Restore(args) => restore(ctx, args).await,
+        GameboyCommand::Watch(args) => watch(ctx, args).await,
         GameboyCommand::Reset(args) => reset(ctx, args).await,
         GameboyCommand::Off(_) => off(ctx).await,
     }
@@ -626,6 +631,115 @@ async fn save(ctx: &CommandCtx, args: GameboySave) -> Result<()> {
         "💾 Saved `{}` for `{rom}`.",
         files::save_name(&name).unwrap_or(&name)
     ))
+    .await?;
+    Ok(())
+}
+
+/// How a watched number is kept in memory.
+#[derive(Debug, Clone, Copy, CommandOption, CreateOption)]
+pub enum WatchFormat {
+    #[option(name = "one byte, 0 to 255", value = "byte")]
+    Byte,
+    #[option(name = "two bytes, low first", value = "le16")]
+    Le16,
+    #[option(name = "two bytes, high first", value = "be16")]
+    Be16,
+    #[option(name = "two bytes of decimal digits, to 9999", value = "bcd2")]
+    Bcd2,
+    #[option(name = "three bytes of decimal digits, to 999999", value = "bcd3")]
+    Bcd3,
+}
+
+impl WatchFormat {
+    fn name(self) -> &'static str {
+        match self {
+            WatchFormat::Byte => "byte",
+            WatchFormat::Le16 => "le16",
+            WatchFormat::Be16 => "be16",
+            WatchFormat::Bcd2 => "bcd2",
+            WatchFormat::Bcd3 => "bcd3",
+        }
+    }
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(
+    name = "watch",
+    desc = "Show a value from the game's memory on the dashboard, or stop showing one"
+)]
+pub struct GameboyWatch {
+    /// What to call it, like `rupees` (leave out to list what's watched)
+    name: Option<String>,
+    /// Its address, like DB5D (leave out to stop watching it)
+    address: Option<String>,
+    /// How the number is kept (default: one byte)
+    format: Option<WatchFormat>,
+}
+
+/// Watches a value by hand: it's in the facts after every action, so it shows on the
+/// dashboard and the models see it, and her own tools can't change or stop it. Works
+/// while she plays.
+async fn watch(ctx: &CommandCtx, args: GameboyWatch) -> Result<()> {
+    let GameboyWatch {
+        name,
+        address,
+        format,
+    } = args;
+    let settings = admin(ctx)?;
+    let Some(name) = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty()) else {
+        let now = on_machine(|m| {
+            let watches = m.world.watches.clone();
+            Ok((ram::watched(&watches, m), watches))
+        })
+        .await?;
+        let text = match now {
+            (_, watches) if watches.is_empty() => {
+                "Nothing is watched in this game yet. `/games gameboy watch` with a name and \
+                 an address adds a value."
+                    .to_string()
+            }
+            (line, watches) => {
+                let lines: Vec<String> = watches
+                    .iter()
+                    .map(|w| {
+                        let who = if w.by_hand { "by hand" } else { "hers" };
+                        format!("- **{}** at `{:04X}` ({who})", w.name, w.address)
+                    })
+                    .collect();
+                format!("{line}\n{}", lines.join("\n"))
+            }
+        };
+        ctx.say(text).await?;
+        return Ok(());
+    };
+    let address = address.unwrap_or_default();
+    let format = format.map(WatchFormat::name);
+    let (rom, answer, watches, now) = on_machine(move |m| {
+        let mut watches = m.world.watches.clone();
+        let answer = ram::watch_by_hand(&mut watches, &name, &address, format);
+        if answer.is_ok() {
+            m.world.watches = watches.clone();
+        }
+        Ok((
+            m.rom.clone(),
+            answer,
+            watches.clone(),
+            ram::watched(&watches, m),
+        ))
+    })
+    .await?;
+    let answer = answer.map_err(user_error)?;
+    let path = files::watches_path(&settings.saves_dir(), &rom);
+    write_file(&path, serde_json::to_string_pretty(&watches)?.as_bytes()).await?;
+    let answer = answer.replace(
+        "it's in the facts",
+        "it's on the dashboard and in the facts",
+    );
+    ctx.say(if now.is_empty() {
+        format!("👁️ {answer}")
+    } else {
+        format!("👁️ {answer}\n{now}")
+    })
     .await?;
     Ok(())
 }
