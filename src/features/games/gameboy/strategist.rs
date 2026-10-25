@@ -60,7 +60,8 @@ getting past an enemy) and it keeps missing in play, ask for practice before the
 Code saves the game, a model plans a try, code runs it and measures it against the goal, \
 then loads the save back for the next try, up to 6; one that works is tried again from \
 two later moments and kept as a skill saying how often it worked, and the game carries on \
-from where it worked. Give what (the move, in a few words) and the goal code measures: \
+from where it worked. It runs only when the task is essential and she has already been \
+stuck on it an episode, at most 3 times a session; other asks are left out. Give what (the move, in a few words) and the goal code measures: \
 stand (on x, y or a step from it, a second later and still), area (reach the one named in area), \
 past_right or past_left (get past x), past_up or past_down (get past y), or watched (the \
 watched value named in watched changes). survive true makes dying fail a try (words like \

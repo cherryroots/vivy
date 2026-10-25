@@ -47,6 +47,17 @@ const LATER_STARTS: [u32; 2] = [5, 11];
 const FRAMES_MOST: u32 = 20 * 60;
 /// Rounds a routine runs at most in a try.
 const ROUNDS_MOST: u64 = 20;
+/// Rounds of practice a session, at most: each costs up to 6 plans.
+pub const SESSION_ROUNDS: u32 = 3;
+
+/// Whether a round of practice the strategist asked for runs: only for a task the story
+/// needs (`essential`) that she's already been stuck on (`stuck` episodes in a row with
+/// nothing new), and only `SESSION_ROUNDS` times a session (`done` so far). A test with practice
+/// on every ask played no further than one without it and used half again the free tokens.
+pub fn allowed(essential: bool, stuck: u32, done: u32) -> bool {
+    essential && stuck > 0 && done < SESSION_ROUNDS
+}
+
 /// Frames she must stay put on the spot: a second.
 const STILL_FRAMES: u32 = 60;
 /// Words that mean she died, in any game that says so.
@@ -987,6 +998,15 @@ mod tests {
             .line(),
             "stand on (83, 5), without dying"
         );
+    }
+
+    #[test]
+    fn practice_waits_for_an_essential_task_she_is_stuck_on() {
+        assert!(allowed(true, 1, 0));
+        assert!(allowed(true, 3, SESSION_ROUNDS - 1));
+        assert!(!allowed(false, 3, 0));
+        assert!(!allowed(true, 0, 0));
+        assert!(!allowed(true, 3, SESSION_ROUNDS));
     }
 
     #[test]
