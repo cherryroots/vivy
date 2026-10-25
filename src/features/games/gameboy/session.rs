@@ -487,6 +487,8 @@ pub async fn play<G: Game>(
         cheap_plans: 0,
     };
     let mut failures = 0;
+    // Rounds of practice this session (`practice::allowed`).
+    let mut practised_rounds = 0;
 
     summary.ended = loop {
         today = Today::on(Some(today), Utc::now());
@@ -579,7 +581,10 @@ pub async fn play<G: Game>(
         // Practice and puzzle help come before the task, which then carries on from where
         // they left her.
         let mut before_task: Vec<String> = Vec::new();
-        if let Some(goal) = &plan.practice {
+        if let Some(goal) = &plan.practice
+            && practice::allowed(journal.essential, journal.stuck, practised_rounds)
+        {
+            practised_rounds += 1;
             let free_before = today.free_tokens;
             let practised = practice::practise(
                 session.provider,
