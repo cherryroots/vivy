@@ -263,6 +263,7 @@ async fn gate_keys_work() {
         tools: Vec::new(),
         cache_key: "vivy:gate".to_string(),
         job,
+        answer_now: false,
     };
     let mut failed = Vec::new();
     for model in [

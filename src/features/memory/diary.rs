@@ -271,6 +271,7 @@ async fn write(ctx: &BotCtx, guild: GuildId, now: i64) -> Result<Option<String>>
         tools: vec![tool::def()],
         cache_key: format!("diary:{scope}"),
         job: "diary",
+        answer_now: false,
     };
     let runner = tool::FolderRunner {
         ctx: ctx.clone(),

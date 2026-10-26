@@ -235,6 +235,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #124 | | Game Boy: `/games gameboy watch` shows values from a game's memory on the dashboard, picked by hand (a cheat list's addresses, or ones she found); her tools can't change those. |
 | #125 | | Game Boy: places with no name from the game are called what the strategist says (shown as Called in the facts, usable in notes and milestones); status bars are read into the facts with the learned font, their tiles named once by Haiku. |
 | #126 | | Game Boy: after a game over she's matched to a place she has been (three in four steps alike, the place she died in included), so a Continue in Mega Man no longer makes a new place or reaches a milestone. |
+| #128 | | Chat, chime-ins and memory jobs: after the last round of tools she answers without them (`answer_now`, the provider's `tool_choice` none) instead of failing, so a chime-in that uses all its rounds of tools still decides; chime-ins get 6 rounds of tools instead of 4. |
 
 ## Not built yet
 

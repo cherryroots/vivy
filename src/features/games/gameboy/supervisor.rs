@@ -164,6 +164,7 @@ pub async fn run_task(
             tools: tools.clone(),
             cache_key: "vivy:gameboy".to_string(),
             job: "game_play",
+            answer_now: false,
         };
         episode.requests += 1;
         let done = finish_stream(provider, request).await?;

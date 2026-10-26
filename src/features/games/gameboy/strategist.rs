@@ -395,6 +395,7 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         }],
         cache_key: "vivy:gameboy-plan".to_string(),
         job: "game_play",
+        answer_now: false,
     };
     let done = finish_stream(provider, request).await?;
     let call = done

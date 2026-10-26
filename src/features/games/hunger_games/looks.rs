@@ -123,6 +123,7 @@ pub async fn describe(
         tools: Vec::new(),
         cache_key: "hunger_games:looks".to_string(),
         job: "hunger_games",
+        answer_now: false,
     };
     match complete(provider.as_ref(), request, &NoTools, 1).await {
         Ok(done) => {

@@ -336,6 +336,10 @@ impl Claude {
             // hidden either way.
             body["thinking"]["display"] = json!("updates");
         }
+        if request.answer_now {
+            // The tools stay listed, so the cached system prompt and tools still match.
+            body["tool_choice"] = json!({"type": "none"});
+        }
         if run.cache_conversation {
             // Caches the conversation up to its newest message, for the next request.
             body["cache_control"] = json!({"type": "ephemeral"});
@@ -874,6 +878,7 @@ mod tests {
             }],
             cache_key: "discord:1".into(),
             job: "chat",
+            answer_now: false,
         }
     }
 
@@ -951,6 +956,7 @@ mod tests {
         let job = |job: &'static str, tools: Vec<ToolDef>| {
             let request = ChatRequest {
                 job,
+                answer_now: false,
                 tools,
                 ..request()
             };
@@ -1015,6 +1021,7 @@ mod tests {
         let claude = client(config);
         let emoji = ChatRequest {
             job: "emoji",
+            answer_now: false,
             tools: Vec::new(),
             ..request()
         };

@@ -157,6 +157,7 @@ async fn check(ctx: &BotCtx, scope: &str, mood: &str, since: i64, zone: Tz) -> R
         tools: Vec::new(),
         cache_key: format!("mood:{scope}"),
         job: "mood",
+        answer_now: false,
     };
     let done = complete(provider.as_ref(), request, &NoTools, 1).await?;
     let Some(new) = clean(&done.text) else {
