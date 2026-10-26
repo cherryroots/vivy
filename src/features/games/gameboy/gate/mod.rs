@@ -123,6 +123,7 @@ fn job(model: &str, effort: &str) -> HashMap<String, Job> {
     };
     HashMap::from([
         ("game_play".to_string(), job.clone()),
+        ("game_plan_paid".to_string(), job.clone()),
         ("game_plan".to_string(), job),
         ("game_review".to_string(), review.clone()),
         ("game_puzzle".to_string(), review),
@@ -131,7 +132,17 @@ fn job(model: &str, effort: &str) -> HashMap<String, Job> {
 
 /// The model that plays, by its name: Claude, Gemini or OpenAI.
 fn player_model(http: &reqwest::Client, db: &Db, model: &str) -> (Box<dyn ChatProvider>, Spend) {
-    let jobs = job(model, &setting("VIVY_GB_EFFORT", "low"));
+    model_at(http, db, model, &setting("VIVY_GB_EFFORT", "low"))
+}
+
+/// A model by its name for the game jobs, at `effort`: Claude, Gemini or OpenAI.
+fn model_at(
+    http: &reqwest::Client,
+    db: &Db,
+    model: &str,
+    effort: &str,
+) -> (Box<dyn ChatProvider>, Spend) {
+    let jobs = job(model, effort);
     if model.starts_with("gemini") {
         let spend = Spend::new(db.clone(), "gemini", 0.0);
         let config = GeminiConfig {
@@ -143,7 +154,7 @@ fn player_model(http: &reqwest::Client, db: &Db, model: &str) -> (Box<dyn ChatPr
         (Box::new(gemini), spend)
     } else if model.starts_with("gpt") {
         (
-            Box::new(openai(http, db, model, "low")),
+            Box::new(openai(http, db, model, effort)),
             Spend::new(db.clone(), "openai", 0.0),
         )
     } else {
@@ -769,7 +780,10 @@ async fn gate_learning() {
 /// from the saves in `VIVY_GB_SAVES` if given, with the default goal or `VIVY_GB_GOAL`, for
 /// `VIVY_GB_MINUTES` (30) or `VIVY_GB_EPISODES` (40). `VIVY_GB_GATE_USD` caps the paid
 /// models (3). The report has every episode's line, her notes and skills at the end, and
-/// the saves folder (journal, maps, skills, checkpoints).
+/// the saves folder (journal, maps, skills, checkpoints). With `VIVY_GB_PAID_PLANNER` (a
+/// model's name, at `VIVY_GB_PLAN_EFFORT`), that model plans once the free tokens are used
+/// up, as `paid_planner` does in the bot (`VIVY_GB_FREE_TOKENS=0` has it plan from the
+/// start).
 #[tokio::test]
 #[ignore = "needs a ROM in VIVY_GB_ROM and the model keys; spends money"]
 async fn gate_session() {
@@ -788,6 +802,14 @@ async fn gate_session() {
         &planner,
         &setting("VIVY_GB_PLAN_EFFORT", "medium"),
     );
+    let paid = std::env::var("VIVY_GB_PAID_PLANNER").ok().map(|name| {
+        let (provider, _) = model_at(&http, &db, &name, &setting("VIVY_GB_PLAN_EFFORT", "medium"));
+        (name, provider)
+    });
+    let planner = match &paid {
+        Some((name, _)) => format!("{planner}, then {name}"),
+        None => planner,
+    };
     let start = setting("VIVY_GB_START", "");
     let goal = std::env::var("VIVY_GB_GOAL").ok();
     let folder = results(&format!("session-{}", file_name(&planner)));
@@ -849,6 +871,7 @@ async fn gate_session() {
     let (now, watching) = tokio::sync::watch::channel(super::session::Now::default());
     let session = Session {
         provider: provider.as_ref(),
+        planner: paid.as_ref().map_or(provider.as_ref(), |(_, p)| p.as_ref()),
         openai: Some(&strategist),
         spends: &spends,
         game: game.clone(),

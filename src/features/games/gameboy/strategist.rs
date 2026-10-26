@@ -374,9 +374,14 @@ pub async fn plan(openai: &OpenAi, calls: Calls, ask: &Ask<'_>) -> anyhow::Resul
     }
 }
 
-/// Asks the cheap model (the supervisor's, the `game_play` job) instead, once the free
-/// tokens are used up or OpenAI isn't set up: the same instructions, with the answer as
-/// a call to its one tool, `plan`. Its cost shows on the spend card under `game_play`.
+/// The job that plans once the free tokens are used up: `[ai.<provider>.jobs.game_plan_paid]`
+/// picks its model (Claude Haiku or GPT-6.1 Sol unless set).
+pub const PAID_JOB: &str = "game_plan_paid";
+
+/// Asks a paid model instead (`planner` in the session, the `game_plan_paid` job), once
+/// the free tokens are used up or OpenAI isn't set up: the same instructions, with the
+/// answer as a call to its one tool, `plan`. Its cost shows on the spend card under
+/// `game_plan_paid`.
 pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow::Result<Plan> {
     let request = ChatRequest {
         system: format!("{PROMPT}\n\nAnswer by calling plan."),
@@ -388,13 +393,12 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         }]),
         tools: vec![ToolDef {
             name: "plan",
-            description: "Your answer: your reasoning, the notes to keep, the milestones \
-                ahead, changes to the executor's skills (an empty list keeps them all) and \
-                its next task.",
-            parameters: schema(true, true),
+            description: "Your answer: the notes to keep, the milestones ahead, changes to \
+                the executor's skills (an empty list keeps them all) and its next task.",
+            parameters: without_reasoning(schema(true, true)),
         }],
         cache_key: "vivy:gameboy-plan".to_string(),
-        job: "game_play",
+        job: PAID_JOB,
     };
     let done = finish_stream(provider, request).await?;
     let call = done
@@ -460,6 +464,19 @@ fn schema(notes: bool, task: bool) -> Value {
         "required": required,
         "additionalProperties": false,
     })
+}
+
+/// The schema without its `reasoning` field, for a model that thinks before it answers
+/// (Claude): asked to write its reasoning into the answer, Claude Opus declined to plan
+/// at all (`reasoning_extraction`).
+fn without_reasoning(mut schema: Value) -> Value {
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        properties.remove("reasoning");
+    }
+    if let Some(required) = schema["required"].as_array_mut() {
+        required.retain(|name| name != "reasoning");
+    }
+    schema
 }
 
 /// An object with these properties, all required and no others (a strict schema).
@@ -545,6 +562,10 @@ mod tests {
                 "place_name"
             ])
         );
+        // The plan tool for models that think first leaves reasoning out.
+        let plan = without_reasoning(schema(false, true));
+        assert!(plan["properties"].get("reasoning").is_none());
+        assert_eq!(plan["required"][0], "next_task");
         let puzzle = &both["properties"]["puzzle"];
         assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
         assert_eq!(puzzle["additionalProperties"], false);

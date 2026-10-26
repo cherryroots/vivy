@@ -3,8 +3,8 @@
 //! it out, and code counts what was new. Plain code, apart from those two models.
 //!
 //! - Planning: GPT-6 Astra (or whichever model `[ai.openai.jobs.game_plan]` names) on the
-//!   free daily tokens, counted in `budget.rs`; past them, or without OpenAI, the cheap
-//!   model plans (`strategist::plan_cheaply`).
+//!   free daily tokens, counted in `budget.rs`; past them, or without OpenAI, a paid
+//!   model plans (`strategist::plan_cheaply`, the session's `planner`).
 //! - Caps: minutes, episodes, and the day's dollars for the paid models (`daily_usd`).
 //! - Checkpoints: a save state each time she reaches an area for the first time, with the
 //!   notes as they were. The newest few are kept.
@@ -119,8 +119,11 @@ pub struct Limits {
 
 /// Everything a session needs apart from the game.
 pub struct Session<'a> {
-    /// The supervisor's model, which also plans once the free tokens are used up.
+    /// The supervisor's model.
     pub provider: &'a dyn ChatProvider,
+    /// Who plans once the free tokens are used up (see `PaidPlanner`): the supervisor's
+    /// provider, or OpenAI.
+    pub planner: &'a dyn ChatProvider,
     /// The strategist, if OpenAI is set up.
     pub openai: Option<&'a OpenAi>,
     /// What each provider cost this month, for the day's dollars.
@@ -1011,10 +1014,7 @@ async fn plan<G: Game>(
         care: Care::Routine,
         ..ask
     };
-    Ok((
-        strategist::plan_cheaply(session.provider, &ask).await?,
-        true,
-    ))
+    Ok((strategist::plan_cheaply(session.planner, &ask).await?, true))
 }
 
 /// Plans the puzzle helper makes after its first, each from where the last one left her:
@@ -1589,6 +1589,7 @@ mod tests {
     ) -> Session<'a> {
         Session {
             provider,
+            planner: provider,
             openai: None,
             spends: &[],
             game: "Test Game".to_string(),
@@ -2102,6 +2103,7 @@ mod tests {
         let unused = Scripted::new(&[]);
         let mut session = session(&unused, dir.path(), 10, report);
         session.provider = &Overloaded;
+        session.planner = &Overloaded;
         let summary = play(&session, &mut Rooms::new(), None).await.unwrap();
         assert_eq!(summary.episodes, 0);
         match summary.ended {

@@ -218,6 +218,8 @@ impl Job {
     ///   the same (it's her voice, and short);
     /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
     ///   with no web or code;
+    /// - "game_plan_paid": a Game Boy plan once the free tokens are used up, the same
+    ///   (on OpenAI, which has no cheap model, its own model: GPT-6.1 Sol);
     /// - "game_plan": the Game Boy strategist (OpenAI only), on GPT-6 Astra, which shares
     ///   the free daily data-sharing tokens and generalised best to new games;
     /// - "game_review": its fresh look at its notes when she's stuck, the same model at
@@ -244,7 +246,7 @@ impl Job {
                 web: off,
                 code: off,
             },
-            "game_play" => Job {
+            "game_play" | "game_plan_paid" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
                 web: off,

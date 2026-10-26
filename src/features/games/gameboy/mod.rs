@@ -118,6 +118,22 @@ pub struct Settings {
     pub web_url: String,
     /// Whether anyone can give her hints with the dashboard's Hint button, or only admins.
     pub hints_from_anyone: bool,
+    /// Who plans once the free tokens are used up.
+    pub paid_planner: PaidPlanner,
+}
+
+/// Who plans once the free tokens are used up, on the `game_plan_paid` job: its model is
+/// `[ai.claude.jobs.game_plan_paid]`'s or `[ai.openai.jobs.game_plan_paid]`'s.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PaidPlanner {
+    /// The bot's chat provider, as the supervisor is (Claude Haiku unless set; Sonnet or
+    /// Opus by naming them there).
+    #[default]
+    Chat,
+    /// OpenAI (GPT-6.1 Sol, the main OpenAI model, unless set), paid past the free tokens.
+    /// Without OpenAI set up, the chat provider plans.
+    Openai,
 }
 
 impl Default for Settings {
@@ -133,6 +149,7 @@ impl Default for Settings {
             web_bind: String::new(),
             web_url: String::new(),
             hints_from_anyone: true,
+            paid_planner: PaidPlanner::Chat,
         }
     }
 }

@@ -25,7 +25,8 @@ use super::player::OnConsole;
 use super::session::{self, Hints, Limits, Now, Report, Session, Summary};
 use super::skills::Skill;
 use super::web;
-use super::{Settings, files};
+use super::{PaidPlanner, Settings, files};
+use crate::ai::ChatProvider;
 use crate::core::interaction::{ComponentInteraction, ModalInteraction, Respond, Response};
 use crate::core::{BotCtx, CommandCtx, Result, user_error};
 use crate::util::discord::{self, ChannelId, Draft, Message, Modal, TextBox, UserId, no_pings};
@@ -525,8 +526,13 @@ async fn run(
     let timer = bot
         .timers
         .add("Game Boy", "an episode at a time while she plays");
+    let planner: &dyn ChatProvider = match (settings.paid_planner, bot.ai.openai.as_deref()) {
+        (PaidPlanner::Openai, Some(openai)) => openai,
+        _ => provider.as_ref(),
+    };
     let session = Session {
         provider: provider.as_ref(),
+        planner,
         openai: bot.ai.openai.as_deref(),
         spends: &bot.ai.spends,
         game: live.game.clone(),
