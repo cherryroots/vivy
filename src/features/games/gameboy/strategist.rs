@@ -393,10 +393,9 @@ pub async fn plan_cheaply(provider: &dyn ChatProvider, ask: &Ask<'_>) -> anyhow:
         }]),
         tools: vec![ToolDef {
             name: "plan",
-            description: "Your answer: your reasoning, the notes to keep, the milestones \
-                ahead, changes to the executor's skills (an empty list keeps them all) and \
-                its next task.",
-            parameters: schema(true, true),
+            description: "Your answer: the notes to keep, the milestones ahead, changes to \
+                the executor's skills (an empty list keeps them all) and its next task.",
+            parameters: without_reasoning(schema(true, true)),
         }],
         cache_key: "vivy:gameboy-plan".to_string(),
         job: PAID_JOB,
@@ -465,6 +464,19 @@ fn schema(notes: bool, task: bool) -> Value {
         "required": required,
         "additionalProperties": false,
     })
+}
+
+/// The schema without its `reasoning` field, for a model that thinks before it answers
+/// (Claude): asked to write its reasoning into the answer, Claude Opus declined to plan
+/// at all (`reasoning_extraction`).
+fn without_reasoning(mut schema: Value) -> Value {
+    if let Some(properties) = schema["properties"].as_object_mut() {
+        properties.remove("reasoning");
+    }
+    if let Some(required) = schema["required"].as_array_mut() {
+        required.retain(|name| name != "reasoning");
+    }
+    schema
 }
 
 /// An object with these properties, all required and no others (a strict schema).
@@ -550,6 +562,10 @@ mod tests {
                 "place_name"
             ])
         );
+        // The plan tool for models that think first leaves reasoning out.
+        let plan = without_reasoning(schema(false, true));
+        assert!(plan["properties"].get("reasoning").is_none());
+        assert_eq!(plan["required"][0], "next_task");
         let puzzle = &both["properties"]["puzzle"];
         assert_eq!(puzzle["required"], json!(["what", "x", "y"]));
         assert_eq!(puzzle["additionalProperties"], false);
