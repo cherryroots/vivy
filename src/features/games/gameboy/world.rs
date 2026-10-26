@@ -17,6 +17,7 @@ use super::moves::Outcome;
 use super::near::Thing;
 use super::path::{Motion, Pace};
 use super::ram::{Search, Watch};
+use super::reach::Landing;
 use super::red::Trust;
 use super::sent::Sent;
 use super::skills::Skill;
@@ -63,6 +64,10 @@ pub struct World {
     /// How far a frame of holding each direction carried her, the latest few (`path.rs`).
     #[serde(default)]
     pub paces: Vec<Pace>,
+    /// Where her jumps would land from where she stood at the last action's end, tried in
+    /// a copy of the game (`reach.rs`). Not saved.
+    #[serde(skip)]
+    pub jumps: Vec<Landing>,
 }
 
 /// A step, as the look after it is told.

@@ -1040,20 +1040,21 @@ pub async fn help_with_puzzle<G: Game>(
     // twice shouldn't come a third time.
     let mut tried: Vec<String> = Vec::new();
     for plan in 0..=REPLANS {
-        let world = game.world().await?;
+        // The look first: it tries her jumps from where she stands (`reach.rs`).
         let view = game.look().await?.view;
+        let world = game.world().await?;
         let area = view.area.clone();
         let map = world.areas.get(&area).cloned().unwrap_or_default();
         let surprises = puzzle::surprises(&world.log, &area, &map);
-        let mut asked = puzzle::ask(
-            &area,
-            &map,
-            view.at,
-            wanted,
-            &surprises,
-            &super::path::presses(&world.motions, &world.paces),
-            notes,
-        );
+        let presses = [
+            super::path::presses(&world.motions, &world.paces),
+            super::reach::list(&world.jumps, view.at),
+        ]
+        .into_iter()
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+        let mut asked = puzzle::ask(&area, &map, view.at, wanted, &surprises, &presses, notes);
         if !tried.is_empty() {
             let (x, y) = view.at;
             asked.push_str(&format!(

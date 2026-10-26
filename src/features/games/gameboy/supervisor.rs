@@ -44,6 +44,10 @@ you: how high, on which frame, and where you ended. Your map lists the last of e
 press, and how far each frame of holding a direction carries you. Plan a jump from those: \
 hold the jump button for the height and the direction for the distance, each its own \
 frames (a:20+right:60), counting the direction's frames from how far you need to go.
+- Once you've jumped, you're also told where jumps from where you stand land, each tried \
+in a copy of the game (yours doesn't move): to get to one of those spots, use that press \
+exactly. Work a jump out yourself only for a spot none of them reaches, or to clear \
+something on the way.
 - A press that fires or throws something says what it sent out: which way it went, how \
 far, and whether it went off the screen or was gone next to something (it may have hit \
 it). Your map lists the last of each: aim from those.

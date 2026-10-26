@@ -16,6 +16,7 @@ use super::path;
 use super::presses::{self, Press};
 use super::puzzle::Move;
 use super::ram;
+use super::reach::{self, Landing};
 use super::sent;
 use super::skills::{self, Around, Skill};
 use super::walk::{Look, Walked, explore, take_step, walk_to};
@@ -219,7 +220,20 @@ pub fn run(
     }
     add_watched(world, machine, &mut acted.view);
     world.near = near_her(world, machine, &acted.view);
+    world.jumps = jumps_from_here(world, machine, &acted.view);
     acted
+}
+
+/// Where her jumps would land from where she stands, while she can walk (`reach.rs`).
+fn jumps_from_here(world: &World, machine: &mut Machine, view: &View) -> Vec<Landing> {
+    if !view.can_walk {
+        return Vec::new();
+    }
+    let Some(spot) = her_spot(world, view) else {
+        return Vec::new();
+    };
+    let step = view.grid.map_or(16, |g| g.pixels);
+    reach::from_here(world, machine, spot, view.at, step)
 }
 
 /// What's near her now and how it moves, while she can walk.
@@ -458,6 +472,7 @@ fn act(world: &mut World, machine: &mut Machine, look: Look, name: &str, args: &
 pub fn look(world: &mut World, machine: &mut Machine, look: Look) -> Acted {
     let mut view = look(world, machine);
     add_watched(world, machine, &mut view);
+    world.jumps = jumps_from_here(world, machine, &view);
     Acted {
         outcome: String::new(),
         words: words_of(&view),
@@ -966,6 +981,7 @@ pub fn describe(world: &World, view: &View) -> String {
         for list in [
             path::presses(&world.motions, &world.paces),
             sent::list(&world.sent),
+            reach::list(&world.jumps, view.at),
         ] {
             if !list.is_empty() {
                 lines.push(list);
