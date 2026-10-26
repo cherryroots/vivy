@@ -237,6 +237,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #126 | | Game Boy: after a game over she's matched to a place she has been (three in four steps alike, the place she died in included), so a Continue in Mega Man no longer makes a new place or reaches a milestone. |
 | #127 | | Game Boy: `paid_planner` (chat or openai) picks who plans once the free tokens are used up, on the `game_plan_paid` job, so GPT-6.1 Sol, Sonnet or Opus can plan past them instead of Haiku. |
 | #129 | | Game Boy: once she has jumped, each look tries her jump button with short to long holds in a copy of the game and lists where each lands (`Jumps from here`), so she picks a landing instead of guessing frames. |
+| #130 | | Game Boy: `load` carries on from her last save (`latest`) when she has played the game, so `play` after it no longer saves a new game over her progress; `reset` puts the old folder in `backup`. |
 | #128 | | Chat, chime-ins and memory jobs: after the last round of tools she answers without them (`answer_now`, the provider's `tool_choice` none) instead of failing, so a chime-in that uses all its rounds of tools still decides; chime-ins get 6 rounds of tools instead of 4. |
 
 ## Not built yet

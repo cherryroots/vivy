@@ -2,7 +2,8 @@
 //! the whole bot, and it only moves when someone presses something here, or while she
 //! plays by herself (`playing.rs`: `play`, `stop`, `status`, `dashboard`).
 //!
-//! - `load`: put a ROM from `roms_dir` in and switch it on
+//! - `load`: put a ROM from `roms_dir` in and switch it on, carrying on from her last save
+//!   (`latest`) when she has played it
 //! - `press`: press buttons, like `a a up*3 start`, and see a GIF of what happened
 //! - `wait`: let it run with nothing pressed
 //! - `screen`: the screen as it is now
@@ -31,6 +32,7 @@ use super::map::LEGEND;
 use super::player::OnConsole;
 use super::playing::{self, not_playing};
 use super::ram::{self, Watch};
+use super::session::LATEST;
 use super::supervisor::run_task;
 use super::walk::{Look, Walked, explore, look_for, walk_to};
 use super::world::{View, World};
@@ -147,29 +149,55 @@ async fn load(ctx: &CommandCtx, args: GameboyLoad) -> Result<()> {
         .with_context(|| format!("reading {}", path.display()))?;
     let known = read_skills(&settings, &rom).await?;
     let watches = read_watches(&settings, &rom).await?;
+    // Where she left off, if she has played it: her maps and journal are of that game, so
+    // starting it over and playing would save a new game over her last one.
+    let latest = files::save_path(&settings.saves_dir(), &rom, LATEST).map_err(user_error)?;
+    let latest = match tokio::fs::read(&latest).await {
+        Ok(state) => Some(state),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            return Err(anyhow::Error::new(e).context(format!("reading {}", latest.display())));
+        }
+    };
     let name = rom.clone();
-    let (title, gif) = console()
+    let (title, carried_on, gif) = console()
         .with(move |machine| -> Result<_> {
-            let mut m = Machine::new(&name, &bytes).map_err(|e| user_error(format!("{e:#}")))?;
-            m.world.skills = known;
-            m.world.watches = watches;
-            // The boot logo and the first moments of the game.
-            m.run(4 * 60);
-            let gif = pictures::gif(&m.screens_since(0), RECORD_EVERY, GIF_SCALE)?;
+            let switched_on = || -> Result<Machine> {
+                let mut m =
+                    Machine::new(&name, &bytes).map_err(|e| user_error(format!("{e:#}")))?;
+                m.world.skills = known.clone();
+                m.world.watches = watches.clone();
+                Ok(m)
+            };
+            let mut m = switched_on()?;
+            let carried_on = latest.map(|state| m.load_state(&state).is_ok());
+            if carried_on == Some(false) {
+                m = switched_on()?;
+            }
+            // A moment of where she left off, or the boot logo and the first moments of a
+            // game starting.
+            let mark = m.recorded();
+            m.run(if carried_on == Some(true) { 30 } else { 4 * 60 });
+            let gif = pictures::gif(&m.screens_since(mark), RECORD_EVERY, GIF_SCALE)?;
             let title = m.emulator.info().title.clone();
             *machine = Some(m);
-            Ok((title, gif))
+            Ok((title, carried_on, gif))
         })
         .await??;
     let title = if title.is_empty() { rom.clone() } else { title };
-    ctx.send(
-        Draft::new()
-            .content(format!(
-                "🎮 **{title}** is on. Press buttons with `/games gameboy press`."
-            ))
-            .file("gameboy.gif", gif),
-    )
-    .await?;
+    let content = match carried_on {
+        Some(true) => format!(
+            "🎮 **{title}** is on, carrying on from her last save (`{LATEST}`). \
+             `/games gameboy reset` starts the game over."
+        ),
+        Some(false) => format!(
+            "🎮 **{title}** is on, from the start: her last save (`{LATEST}`) doesn't load. \
+             Playing now would save over it; `/games gameboy restore` goes back to another save."
+        ),
+        None => format!("🎮 **{title}** is on. Press buttons with `/games gameboy press`."),
+    };
+    ctx.send(Draft::new().content(content).file("gameboy.gif", gif))
+        .await?;
     Ok(())
 }
 
@@ -850,7 +878,8 @@ async fn reset(ctx: &CommandCtx, args: GameboyReset) -> Result<()> {
     });
     if let Some(aside) = aside {
         text.push_str(&format!(
-            "\nThe old folder is kept as `{}`.",
+            "\nThe old folder is kept as `{}/{}`.",
+            files::BACKUP,
             aside.file_name().and_then(|n| n.to_str()).unwrap_or("?")
         ));
     }
