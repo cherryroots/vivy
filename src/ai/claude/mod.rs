@@ -976,6 +976,11 @@ mod tests {
             json!({"type": "ephemeral"})
         );
 
+        // A Game Boy plan past the free tokens: Haiku at low effort, like her moves.
+        let body = job("game_plan_paid", Vec::new());
+        assert_eq!(body["model"], CHEAP_MODEL);
+        assert_eq!(body["output_config"], json!({"effort": "low"}));
+
         // Mood: her own model at low effort.
         let body = job("mood", Vec::new());
         assert_eq!(body["model"], "claude-opus-5-5");

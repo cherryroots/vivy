@@ -148,7 +148,8 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
-| `game_play` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | The Game Boy supervisor choosing its next action (`games/gameboy/supervisor.rs`, which runs its own loop since each tool result carries a screen), and planning once the strategist's free tokens are used up (`strategist::plan_cheaply`). Many small calls, so the cheap model. |
+| `game_play` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | The Game Boy supervisor choosing its next action (`games/gameboy/supervisor.rs`, which runs its own loop since each tool result carries a screen). Many small calls, so the cheap model. |
+| `game_plan_paid` | Claude Haiku (OpenAI: main, GPT-6.1 Sol) | low | no | no | Game Boy planning once the strategist's free tokens are used up (`strategist::plan_cheaply`), on the provider `paid_planner` picks. Name Sonnet or Opus in `[ai.claude.jobs.game_plan_paid]` for a stronger planner. |
 | `game_plan` | GPT-6 Astra | main | no | no | The Game Boy strategist (OpenAI only, `OpenAi::structured` through `Ai::openai`), on the free daily data-sharing tokens. The gate sets its own. |
 | `game_review` | GPT-6 Astra | high | no | no | The Game Boy strategist's fresh look at its notes when she's stuck (OpenAI only). |
 | `game_puzzle` | GPT-6 Astra | high | no | no | The Game Boy puzzle helper: moves for a spot walking can't reach, from the area's map alone (OpenAI only). |
