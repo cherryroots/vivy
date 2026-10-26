@@ -54,6 +54,7 @@ mod practice;
 mod presses;
 mod puzzle;
 mod ram;
+mod reach;
 mod red;
 mod screen;
 mod sent;

@@ -192,6 +192,9 @@ pub struct Emulator {
     directions_pressed: u64,
     /// The direction pressed last, which way she last went.
     last_direction: Option<Button>,
+    /// The picture to show instead of the emulator's until the next frame: the one from
+    /// before a try (`trying`), since loading a state doesn't bring the picture back.
+    shown: Option<Vec<u8>>,
 }
 
 impl Emulator {
@@ -230,6 +233,7 @@ impl Emulator {
             kept: Vec::new(),
             directions_pressed: 0,
             last_direction: None,
+            shown: None,
         })
     }
 
@@ -253,6 +257,7 @@ impl Emulator {
         let mut drawn = false;
         let mut line = u8::MAX;
         self.lines.clear();
+        self.shown = None;
         loop {
             cycles += u32::from(self.gb.clock());
             let ly = self.gb.ppu_ly();
@@ -408,7 +413,10 @@ impl Emulator {
 
     /// The screen as it was last drawn: 160×144 pixels, 3 bytes (red, green, blue) each.
     pub fn screen(&mut self) -> Vec<u8> {
-        self.gb.frame_buffer().to_vec()
+        match &self.shown {
+            Some(shown) => shown.clone(),
+            None => self.gb.frame_buffer().to_vec(),
+        }
     }
 
     /// The whole machine as bytes (about 50 KB), to come back to with `load_state`. It
@@ -438,6 +446,29 @@ impl Emulator {
         self.kept.clear();
         Ok(())
     }
+
+    /// Runs `try_it` on the game, then puts everything back as it was: the game, the
+    /// buttons held, the frame count, the last picture and what it was drawn from. So code
+    /// can try presses in a copy of the game (`reach.rs`) and the game she plays never
+    /// moves on.
+    pub fn trying<T>(&mut self, try_it: impl FnOnce(&mut Emulator) -> T) -> Result<T> {
+        let state = self.save_state()?;
+        let shown = self.screen();
+        let (video, lines, frames) = (self.video.clone(), self.lines.clone(), self.frames);
+        let (held, kept) = (self.held.clone(), self.kept.clone());
+        let (pressed, last) = (self.directions_pressed, self.last_direction);
+        let out = try_it(self);
+        self.load_state(&state)?;
+        self.kept = kept;
+        self.hold(&held);
+        self.directions_pressed = pressed;
+        self.last_direction = last;
+        self.video = video;
+        self.lines = lines;
+        self.frames = frames;
+        self.shown = Some(shown);
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -464,6 +495,29 @@ pub mod tests {
         // The boot ROM takes a couple of seconds before the game starts.
         emu.run(300);
         emu
+    }
+
+    #[test]
+    fn a_try_puts_the_game_back_as_it_was() {
+        let mut emu = booted();
+        emu.keep(&[Button::B]);
+        emu.hold(&[Button::Left]);
+        emu.run(2);
+        let (screen, frames, pressed) = (emu.screen(), emu.frames(), emu.directions_pressed());
+        let pad = emu
+            .trying(|e| {
+                e.hold(&[Button::A, Button::Right]);
+                e.run(40);
+                e.read(PAD)
+            })
+            .unwrap();
+        assert_eq!(pad, 0b0001_0011);
+        assert_eq!(emu.screen(), screen);
+        assert_eq!((emu.frames(), emu.directions_pressed()), (frames, pressed));
+        assert_eq!(emu.kept(), [Button::B]);
+        emu.run(1);
+        // Left and the kept B are held again.
+        assert_eq!(emu.read(PAD), 0b0010_0010);
     }
 
     #[test]

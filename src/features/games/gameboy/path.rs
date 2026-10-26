@@ -30,7 +30,7 @@ const KEPT: usize = 8;
 /// Frames of a hold she must move in for it to show her pace.
 const MOVING_LEAST: u32 = 8;
 /// Frames in a row she stays at one height for a jump to have landed.
-const LEVEL: usize = 12;
+pub const LEVEL: usize = 12;
 /// Paces kept for each direction on the ground and in the air, the latest.
 const PACES_KEPT: usize = 6;
 
@@ -41,6 +41,16 @@ pub type Frame<'a> = (&'a [(i32, i32)], (u8, u8));
 /// followed from `spot` (the middle of her sprite on the first frame). `height` is the
 /// sprites' height. `None` when no sprite was at the spot, or she was lost for long.
 pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i32, i32)>> {
+    follow_blinking(frames, spot, height).map(|(places, _)| places)
+}
+
+/// Like `follow`, with how many frames she was out of sight for a frame or a few: a game
+/// makes her blink like that after something hurt her.
+pub fn follow_blinking(
+    frames: &[Frame],
+    spot: (i32, i32),
+    height: i32,
+) -> Option<(Vec<(i32, i32)>, u32)> {
     let (&(first, _), rest) = frames.split_first()?;
     let off = |p: &(i32, i32)| ((p.0 + 4 - spot.0).abs(), (p.1 + height / 2 - spot.1).abs());
     let mut parts: Vec<(i32, i32)> = first
@@ -64,6 +74,7 @@ pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i3
     let mut parts: Vec<((i32, i32), (i32, i32))> = parts.into_iter().map(|p| (p, p)).collect();
     let scrolled = scrolled(frames);
     let mut lost = 0;
+    let mut blinks = 0;
     let mut places = vec![(0, 0)];
     for (&(sprites, _), &scrolled) in rest.iter().zip(&scrolled[1..]) {
         let mut kept = 0;
@@ -82,6 +93,7 @@ pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i3
         if lost > LOST_MOST {
             return None;
         }
+        blinks += u32::from(kept == 0);
         // The middle way the parts went: one caught on something passing by doesn't pull
         // her along.
         let went = |axis: fn((i32, i32)) -> i32| {
@@ -94,7 +106,7 @@ pub fn follow(frames: &[Frame], spot: (i32, i32), height: i32) -> Option<Vec<(i3
         };
         places.push((went(|p| p.0) + scrolled.0, went(|p| p.1) + scrolled.1));
     }
-    Some(places)
+    Some((places, blinks))
 }
 
 /// A press that carried her somewhere a plain step doesn't: through the air, or further
@@ -171,6 +183,11 @@ impl Motion {
             format!(" and {ended}")
         };
         format!("went up {} {unit} at its highest{timed}", steps(top))
+    }
+
+    /// Whether it took her up into the air and down again: a jump.
+    pub fn jumped(&self) -> bool {
+        self.rise >= RISE
     }
 
     /// Pixels in half steps, the nearest.

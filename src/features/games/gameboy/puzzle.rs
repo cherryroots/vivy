@@ -58,7 +58,8 @@ pixels each frame of holding a direction carries the player, on the ground and i
 air. A jump goes as far as its \
 direction is held while in the air, so hold the direction for the frames the distance \
 needs, and past the landing frame only to keep walking. One unlike any tried yet is a \
-guess, so end the moves soon after it.
+guess, so end the moves soon after it. Jumps tried from where the player stands are listed \
+with where each landed: a first move to one of those spots is that press exactly.
 
 Code presses the moves one at a time. A held press that ends one step from its spot walks \
 that step; otherwise code stops at the first move that doesn't end where you said, so say \

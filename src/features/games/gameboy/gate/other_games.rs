@@ -237,6 +237,52 @@ fn sprites_while_holding() {
     m.emulator.release();
 }
 
+/// Trying presses in a copy of the game (`Emulator::trying`, what `reach.rs` does each
+/// look) leaves the game she plays as it was: the same presses after it give the same
+/// screen and memory as with no tries at all.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_OTHER and a state in VIVY_GB_FROM"]
+fn tries_leave_the_game_as_it_was() {
+    let (_, rom) = other();
+    let state = std::fs::read(std::env::var("VIVY_GB_FROM").unwrap()).unwrap();
+    let play = |tries: bool| {
+        let mut m = Machine::new("other.gb", &rom).unwrap();
+        m.emulator.load_state(&state).unwrap();
+        let mut memory = Vec::new();
+        for round in 0..6 {
+            if tries {
+                for frames in [20, 60] {
+                    m.emulator
+                        .trying(|e| {
+                            e.hold(&[Button::A, Button::Right]);
+                            for _ in 0..frames {
+                                e.frame();
+                            }
+                        })
+                        .unwrap();
+                }
+            }
+            let way = if round % 2 == 0 {
+                Button::Right
+            } else {
+                Button::Left
+            };
+            m.emulator.hold(&[way, Button::B]);
+            m.run(25);
+            m.emulator.release();
+            m.run(10);
+        }
+        for address in 0xc000..0xe000 {
+            memory.push(m.emulator.read(address));
+        }
+        (m.emulator.screen(), memory, m.emulator.frames())
+    };
+    let (with, without) = (play(true), play(false));
+    assert!(with.0 == without.0, "the screens differ");
+    assert!(with.1 == without.1, "the memory differs");
+    assert_eq!(with.2, without.2);
+}
+
 /// Takes the steps in `VIVY_GB_WALK` (like "u u l d") from `VIVY_GB_FROM` with the look
 /// that has no memory map, printing what each step and look gave. A, B and S press those
 /// buttons, F finds her sprite, "pr:20" holds right for 20 frames, and "Pa+right" uses her
@@ -388,6 +434,18 @@ fn steps_by_hand() {
             world.sight.her_spot(),
             world.sight.found
         );
+        // VIVY_GB_JUMPS says where her jumps land from here, the way her look does, and how
+        // long trying them took.
+        if std::env::var("VIVY_GB_JUMPS").is_ok() {
+            use crate::features::games::gameboy::reach;
+            if let Some(spot) = world.sight.her_spot() {
+                let step = next.grid.map_or(16, |g| g.pixels);
+                let started = std::time::Instant::now();
+                let jumps = reach::from_here(&world, &mut m, spot, next.at, step);
+                println!("    jumps in {:?}", started.elapsed());
+                println!("{}", reach::list(&jumps, next.at));
+            }
+        }
         // VIVY_GB_NEAR says what's near her, the way her look does.
         if std::env::var("VIVY_GB_NEAR").is_ok() {
             use crate::features::games::gameboy::{actions, near};
