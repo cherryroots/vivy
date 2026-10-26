@@ -10,7 +10,7 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 
 | Command | What it does |
 |---|---|
-| `/games gameboy load rom:` | Puts a ROM from `roms_dir` in and switches it on, with a GIF of the first 4 seconds. Whatever was in before is gone (save it first). |
+| `/games gameboy load rom:` | Puts a ROM from `roms_dir` in and switches it on. When she has played it, it carries on from her last save (`latest`), so `play` afterwards goes on with the game her maps and journal are of instead of saving a new game over it; otherwise it starts the game, with a GIF of the first 4 seconds. A `latest` that doesn't load starts the game and says so. Whatever was in before is gone (save it first). |
 | `/games gameboy press buttons:` | Presses buttons one after another and posts a GIF of what happened. `hold:` is how many frames each press is held (default 16, one step in most games that walk on a grid), `gap:` how many frames nothing is held after each (default 16). |
 | `/games gameboy wait seconds:` | Lets the game run with nothing pressed (1 to 60 s, default 3), with a GIF. |
 | `/games gameboy screen` | The screen as it is now, as a PNG, with how long it has been played. |
@@ -26,7 +26,7 @@ There's one Game Boy for the whole bot. It only moves when someone presses somet
 | `/games gameboy save name:` | Saves the game exactly as it is, under a name like `before Brock`. |
 | `/games gameboy restore name:` | Goes back to a save of the ROM that's in. |
 | `/games gameboy watch [name:] [address:] [format:]` | Shows a value from the game's memory on the dashboard and in the facts, like `rupees` at `DB5D` (format: one byte by default, two bytes either way round, or two or three bytes of decimal digits). Only a name stops it; nothing lists what's watched. Works while she plays. See "Her own cheat finder". |
-| `/games gameboy reset [keep_skills:] [keep_game:]` | Starts the game that's in afresh: its folder (maps, journal, what code learned, saves, replays, checkpoints) is moved aside as `<folder> before reset <date time>`, nothing deleted, and what code learned is forgotten in memory too, so the next episode doesn't write the old maps back. The game is switched off and on unless `keep_game`; her skills and watches are kept only with `keep_skills`. Not while she's playing. |
+| `/games gameboy reset [keep_skills:] [keep_game:]` | Starts the game that's in afresh: its folder (maps, journal, what code learned, saves, replays, checkpoints) is moved into the `backup` folder as `<folder> before reset <date time>`, nothing deleted, and what code learned is forgotten in memory too, so the next episode doesn't write the old maps back. The game is switched off and on unless `keep_game`; her skills and watches are kept only with `keep_skills`. Not while she's playing. |
 | `/games gameboy off` | Takes the ROM out. |
 
 What to press is typed as words, with spaces or commas between them:

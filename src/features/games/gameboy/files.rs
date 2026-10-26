@@ -102,9 +102,12 @@ pub fn save_name(name: &str) -> Result<&str, String> {
     }
 }
 
+/// The folder under `saves_dir` that games put aside by a reset go in.
+pub const BACKUP: &str = "backup";
+
 /// Starts a ROM's game afresh on disk: its folder (maps, journal, what code learned,
-/// saves, replays, checkpoints) is moved aside as `<folder> before reset <when>`, so
-/// nothing is lost. With `keep_skills`, her skills and watches are copied into the new
+/// saves, replays, checkpoints) is moved aside into `backup` as `<folder> before reset
+/// <when>`, so nothing is lost. With `keep_skills`, her skills and watches are copied into the new
 /// folder. Says where the old folder went, or `None` when there wasn't one yet.
 pub fn reset(
     saves_dir: &Path,
@@ -121,11 +124,13 @@ pub fn reset(
         .and_then(|n| n.to_str())
         .unwrap_or("game")
         .to_string();
+    let backup = saves_dir.join(BACKUP);
+    std::fs::create_dir_all(&backup)?;
     // Two resets in the same minute get a number.
     let aside = (1..)
         .map(|n| match n {
-            1 => saves_dir.join(format!("{name} before reset {when}")),
-            n => saves_dir.join(format!("{name} before reset {when} {n}")),
+            1 => backup.join(format!("{name} before reset {when}")),
+            n => backup.join(format!("{name} before reset {when} {n}")),
         })
         .find(|path| !path.exists())
         .expect("a free name");
@@ -225,7 +230,8 @@ mod tests {
         let aside = reset(dir.path(), "hm.gb", "2026-10-25 1100", true)
             .unwrap()
             .unwrap();
-        assert_eq!(aside, dir.path().join("hm before reset 2026-10-25 1100"));
+        let backup = dir.path().join(BACKUP);
+        assert_eq!(aside, backup.join("hm before reset 2026-10-25 1100"));
         assert!(aside.join("maps.json").is_file());
         assert!(aside.join("latest.state").is_file());
         // Only her skills and watches come back.
@@ -237,7 +243,7 @@ mod tests {
         let again = reset(dir.path(), "hm.gb", "2026-10-25 1100", false)
             .unwrap()
             .unwrap();
-        assert_eq!(again, dir.path().join("hm before reset 2026-10-25 1100 2"));
+        assert_eq!(again, backup.join("hm before reset 2026-10-25 1100 2"));
         assert!(!folder.exists());
     }
 }
