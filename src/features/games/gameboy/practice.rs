@@ -800,6 +800,7 @@ async fn plan_cheaply(
         }],
         cache_key: "vivy:gameboy-practice".to_string(),
         job: "game_play",
+        answer_now: false,
     };
     let done = finish_stream(provider, request).await?;
     let call = done

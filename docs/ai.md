@@ -123,10 +123,12 @@ Some Rust terms here:
 
 The tool loop lives outside the trait, so every provider gets the same tools. There are two copies of it:
 
-- `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows what each tool is doing in the status line (`Feature::tool_status`), and stops on ❌. At most 8 rounds.
+- `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows what each tool is doing in the status line (`Feature::tool_status`), and stops on ❌. At most 8 rounds of tools (`max_tool_rounds`).
 - `ai::complete` in `complete.rs`, for work nobody watches: chime-ins and follow-ups (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), memory's reflection, mood and diary jobs, and Hunger Games rounds (`games/hunger_games/writer.rs`). The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> String`) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
 
 Both work the same way: send the request, read events until `Done`, and if `Done` lists tool calls, run them, then build the next input with `ai::next_input` and send again.
+
+A round limit never ends in an error by itself. After the last round of tools comes one more request with `ChatRequest::answer_now` set, and `ai::last_tools` adds a note to that round's last tool result saying she answers next. The tools stay in the request (they're part of the cached prefix); each provider just forbids calling them: Claude `"tool_choice": {"type": "none"}`, OpenAI `"tool_choice": "none"`, Gemini `generation_config.tool_choice: "none"`. Built-in tools that don't come back as tool calls aren't the loop's concern. Only a model that still calls tools in that round fails with "kept calling tools".
 
 `next_input` (in `mod.rs`) is where the providers differ:
 

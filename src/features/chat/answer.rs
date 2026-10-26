@@ -18,7 +18,7 @@ use tracing::{info, warn};
 
 use crate::ai::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, NativeRound,
-    ToolCall, ToolDef, ToolOutput, ToolReply, next_input,
+    ToolCall, ToolDef, ToolOutput, ToolReply, last_tools, next_input,
 };
 use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Feature};
@@ -321,15 +321,17 @@ async fn stream_answer(
     let mut files = Vec::new();
     screen.show(ctx).await?;
 
-    // At least one round, or she could never answer.
-    let max_rounds = super::chime::settings(ctx).max_tool_rounds.max(1);
-    for _round in 0..max_rounds {
+    // One round more than `max_tool_rounds`: after the last round of tools she has to
+    // answer without them.
+    let max_rounds = super::chime::settings(ctx).max_tool_rounds;
+    for round in 0..=max_rounds {
         let request = ChatRequest {
             system: SYSTEM_PROMPT.to_string(),
             input: input.clone(),
             tools: tools.clone(),
             cache_key: format!("discord:{}", asker.channel),
             job: "chat",
+            answer_now: round == max_rounds,
         };
         let mut events = tokio::select! {
             events = provider.stream(request) => events?,
@@ -382,6 +384,10 @@ async fn stream_answer(
             });
             return Ok(Some((done, rounds, files)));
         }
+        if round == max_rounds {
+            // Asked to answer now and called tools anyway.
+            break;
+        }
 
         // Run the tools, then continue the answer with their results.
         let mut results = Vec::new();
@@ -397,6 +403,9 @@ async fn stream_answer(
                 output: reply.text,
                 images: reply.images,
             });
+        }
+        if round + 1 == max_rounds {
+            last_tools(&mut results);
         }
         screen.status = Some(activity_status(&Activity::Thinking));
         input = next_input(provider, input, &done, &results);

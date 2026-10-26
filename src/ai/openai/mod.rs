@@ -220,7 +220,7 @@ impl OpenAi {
             "instructions": request.system,
             "input": input,
             "tools": tools,
-            "tool_choice": "auto",
+            "tool_choice": if request.answer_now { "none" } else { "auto" },
             "parallel_tool_calls": true,
             "reasoning": {"effort": job.effort.as_deref().unwrap_or(&self.config.reasoning_effort)},
             "text": {"verbosity": self.config.verbosity},
@@ -797,6 +797,7 @@ mod tests {
             }],
             cache_key: "discord:1".into(),
             job: "chat",
+            answer_now: false,
         };
         let body = client().request_body(&request, &[]);
         assert_eq!(body["previous_response_id"], "resp_1");
@@ -820,6 +821,7 @@ mod tests {
         // Background jobs use the default tier, and only the tools they need.
         let mood = ChatRequest {
             job: "mood",
+            answer_now: false,
             ..request
         };
         let body = client().request_body(&mood, &[]);
@@ -878,6 +880,7 @@ mod tests {
             tools: Vec::new(),
             cache_key: String::new(),
             job: "chat",
+            answer_now: false,
         };
         let uploads = [
             Some("file-0".to_string()),

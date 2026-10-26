@@ -410,6 +410,7 @@ pub async fn write(
             tools: Vec::new(),
             cache_key: format!("hunger_games:{channel}"),
             job: "hunger_games",
+            answer_now: false,
         };
         let done = complete(provider.as_ref(), request, &NoTools, 1).await?;
         let problem = match parse(&done.text) {

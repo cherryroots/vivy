@@ -423,6 +423,7 @@ pub async fn say(
         tools: Vec::new(),
         cache_key: format!("{JOB}:{channel}"),
         job: JOB,
+        answer_now: false,
     };
     Ok(complete(provider, request, &NoTools, 1).await?.text)
 }

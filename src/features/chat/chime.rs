@@ -39,7 +39,7 @@ use crate::util::shorten_at_word;
 /// How many messages she reads before deciding.
 const READ_MESSAGES: u16 = 15;
 /// Rounds of tool calls (saving to memory) before she has to decide.
-const MAX_ROUNDS: usize = 4;
+const MAX_ROUNDS: usize = 6;
 /// The longest line she posts.
 const MAX_LINE: usize = 400;
 
@@ -300,6 +300,7 @@ pub async fn speak(
         tools,
         cache_key: format!("discord:{}", asker.channel),
         job: "chime",
+        answer_now: false,
     };
     let runner = Runner {
         ctx: ctx.clone(),

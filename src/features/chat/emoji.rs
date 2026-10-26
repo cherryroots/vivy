@@ -226,6 +226,7 @@ async fn describe(ctx: &BotCtx, emoji: &Emoji) -> Result<String> {
         tools: Vec::new(),
         cache_key: "emoji".to_string(),
         job: "emoji",
+        answer_now: false,
     };
     let done = complete(provider.as_ref(), request, &NoTools, 1).await?;
     let line = done.text.trim().lines().next().unwrap_or_default().trim();

@@ -23,7 +23,7 @@ use tokio::sync::mpsc;
 use crate::util::media::ModelImage;
 
 pub use claude::{Claude, ClaudeConfig};
-pub use complete::{ToolRunner, complete};
+pub use complete::{ToolRunner, complete, last_tools};
 pub use gemini::{Gemini, GeminiConfig};
 pub use openai::images::{Images, PictureRequest};
 pub use openai::{OpenAi, OpenAiConfig};
@@ -182,6 +182,10 @@ pub struct ChatRequest {
     /// What the request is for ("chat", "diary", ...): picks the job's settings (see
     /// [`Job`]) and is what each job costs on the status picture.
     pub job: &'static str,
+    /// The model must answer now, without calling tools. The tools stay in the request
+    /// (they're part of the cached prefix), but it may not call any. For the last round of a
+    /// loop that has a limit on rounds, so the answer doesn't fail there.
+    pub answer_now: bool,
 }
 
 /// The Game Boy strategist's model, unless `[ai.openai.jobs.game_plan]` says otherwise.

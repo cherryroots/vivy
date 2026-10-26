@@ -202,6 +202,7 @@ pub async fn learn(
         }],
         cache_key: "vivy:gameboy-insights".to_string(),
         job: "game_play",
+        answer_now: false,
     };
     let done = finish_stream(provider, request).await?;
     let call = done

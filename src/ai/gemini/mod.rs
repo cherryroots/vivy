@@ -173,6 +173,9 @@ impl Gemini {
         if let Some(previous) = previous {
             body["previous_interaction_id"] = json!(previous);
         }
+        if request.answer_now {
+            body["generation_config"]["tool_choice"] = json!("none");
+        }
         body
     }
 
@@ -730,6 +733,7 @@ mod tests {
             }],
             cache_key: "discord:1".into(),
             job: "chat",
+            answer_now: false,
         };
         let body = gemini.request_body(&request, &[]);
         assert_eq!(body["model"], "gemini-4-argon");
@@ -762,6 +766,7 @@ mod tests {
         // Background jobs get only the tools they need, and no summaries without bot tools.
         let mood = ChatRequest {
             job: "mood",
+            answer_now: false,
             tools: Vec::new(),
             input: Input::Full(Vec::new()),
             ..request

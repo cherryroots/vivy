@@ -155,6 +155,7 @@ pub async fn read_boxes(
         }],
         cache_key: "vivy:gameboy-letters".to_string(),
         job: "game_play",
+        answer_now: false,
     };
     let done = finish_stream(provider, request).await?;
     let call = done
@@ -228,6 +229,7 @@ pub async fn read_bars(
         }],
         cache_key: "vivy:gameboy-bar".to_string(),
         job: "game_play",
+        answer_now: false,
     };
     let done = finish_stream(provider, request).await?;
     let call = done
