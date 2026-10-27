@@ -258,6 +258,9 @@ pub struct Now {
     pub skills: usize,
     /// The skill written last.
     pub newest_skill: Option<String>,
+    /// Her skills written out for people (`Skill::written`), in the order she wrote them,
+    /// for the web page's skills box.
+    pub skills_written: Vec<String>,
     /// USD the paid models cost today, and the free tokens used.
     pub usd: f64,
     pub free_tokens: u64,
@@ -277,6 +280,7 @@ impl Now {
         self.checkpoints = journal.checkpoints;
         self.skills = skills.len();
         self.newest_skill = skills.last().map(|s| s.name.clone());
+        self.skills_written = skills.iter().map(Skill::written).collect();
         self.usd = today.usd;
         self.free_tokens = today.free_tokens;
     }
@@ -1797,6 +1801,7 @@ mod tests {
         assert!(now.episodes[2].starts_with("#13 "));
         assert_eq!((now.stuck, now.checkpoints, now.skills), (1, 2, 1));
         assert_eq!(now.newest_skill.as_deref(), Some("talk"));
+        assert!(now.skills_written[0].starts_with("**talk**"), "{now:?}");
         assert!(now.started > 0);
 
         // The ladder shows in the plans: a warning from 3 episodes without progress, and

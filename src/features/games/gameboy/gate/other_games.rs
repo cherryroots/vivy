@@ -801,6 +801,7 @@ async fn web_page_by_hand() {
 
     use crate::features::games::gameboy::console::console;
     use crate::features::games::gameboy::session::Now;
+    use crate::features::games::gameboy::skills::Skill;
     use crate::features::games::gameboy::walk::look_for;
     use crate::features::games::gameboy::{actions, web};
     let (_, rom) = other();
@@ -838,6 +839,22 @@ async fn web_page_by_hand() {
             .map(|n| format!("Note {n}: something she learned."))
             .collect(),
         last_actions: VecDeque::new(),
+        skills_written: (1..=9)
+            .map(|n| {
+                let skill = Skill::from_args(&serde_json::json!({
+                    "name": format!("skill {n}"),
+                    "use_when": "an enemy is right ahead of me on the ground",
+                    "notes": "Shoot first, then jump over what's left.",
+                    "rules": [
+                        {"if_near": "ahead 2", "press": "b"},
+                        {"press": "a:24+right:40"}
+                    ],
+                    "stop_words": ["READY"]
+                }))
+                .unwrap();
+                skill.written()
+            })
+            .collect(),
         ..Now::default()
     };
     let started = std::time::Instant::now();
