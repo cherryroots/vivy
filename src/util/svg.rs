@@ -394,6 +394,15 @@ impl Svg {
         self.y += 8.0;
     }
 
+    /// The parts drawn so far, moved by `(x, y)`, to place this picture inside another one,
+    /// like a column next to another column. The background is left out.
+    pub fn group(self, x: f32, y: f32) -> String {
+        format!(
+            "<g transform=\"translate({x} {y})\">{}</g>",
+            self.parts.concat()
+        )
+    }
+
     pub fn finish(self) -> String {
         let (width, height) = (self.width, self.y.ceil());
         format!(

@@ -1,6 +1,11 @@
 //! The round as a picture. [`round_svg`] lays the round out as SVG text (pure, tested like
 //! any other string), and [`round_png`] turns that into a PNG with the shared drawing
 //! helpers in `util::svg`, which also explain the fonts.
+//!
+//! Discord on a computer fits a picture in a box wider than it is tall (about 550 × 350),
+//! so a tall picture shows small there, while a phone fits it to the screen's width. An open
+//! round, which grows with every player and option, is therefore wide, in two columns. A
+//! resolved round is one table and stays narrow, which suits both.
 
 use super::ledger::{OutcomeKind, Rules, Standing, TAX_THRESHOLD, outcomes};
 use super::ui::View;
@@ -10,12 +15,16 @@ use crate::util::svg::{
     to_png,
 };
 
-/// Width of the picture in SVG units.
-const WIDTH: f32 = 600.0;
+/// Width of an open round's picture in SVG units.
+const WIDTH: f32 = 960.0;
+/// Width of each of its two columns.
+const COLUMN: f32 = WIDTH / 2.0;
+/// Width of a resolved round's picture.
+const NARROW: f32 = 600.0;
 /// Names longer than this are cut short.
 const MAX_NAME: usize = 14;
-/// How wide a movie under an option's name may be, so it stays clear of the bets.
-const MOVIE_WIDTH: f32 = 300.0;
+/// How wide the bets on an option may be before they wrap to another line.
+const BETS_WIDTH: f32 = 290.0;
 
 /// The round as a PNG. Call it off the async threads (see [`to_png`]).
 pub fn round_png(view: &View) -> anyhow::Result<Vec<u8>> {
@@ -24,26 +33,46 @@ pub fn round_png(view: &View) -> anyhow::Result<Vec<u8>> {
 
 /// The round as SVG: standings and bets while it's open, the payouts once it has a winner.
 pub fn round_svg(view: &View) -> String {
-    let mut svg = Svg::new(WIDTH);
     if view.season.rounds[view.index].winner.is_some() {
+        let mut svg = Svg::new(NARROW);
         resolved(&mut svg, view);
+        svg.finish()
     } else {
+        let mut svg = Svg::new(WIDTH);
         open(&mut svg, view);
+        svg.finish()
     }
-    svg.finish()
 }
 
-/// The open round: who has what, the bets, and who still has to play.
+/// The open round: who has what on the left; the bets and who still has to play on the
+/// right.
 fn open(svg: &mut Svg, view: &View) {
     open_header(svg, view);
-    standings_table(svg, view);
-    bets_table(svg, view);
+    let mut left = Svg::new(COLUMN);
+    standings_table(&mut left, view);
+    let mut right = Svg::new(COLUMN);
+    bets_table(&mut right, view);
+    // The rest goes under whichever column is shorter.
+    let shorter = if left.y <= right.y {
+        &mut left
+    } else {
+        &mut right
+    };
     // Who still has to play, while the round is open.
     if view.active && view.is_latest() {
-        waiting_on(svg, view);
+        waiting_on(shorter, view);
     }
-    already_won(svg, view);
+    already_won(shorter, view);
+    side_by_side(svg, left, right);
     svg.y += 20.0;
+}
+
+/// Puts two columns next to each other under what `svg` already has.
+fn side_by_side(svg: &mut Svg, left: Svg, right: Svg) {
+    let (top, height) = (svg.y, left.y.max(right.y));
+    svg.raw(left.group(0.0, top));
+    svg.raw(right.group(COLUMN, top));
+    svg.y = top + height;
 }
 
 /// "Round 4  OPEN" with the options left, how many of them one may bet on, and the payouts.
@@ -77,9 +106,9 @@ fn standings_table(svg: &mut Svg, view: &View) {
     if standings.is_empty() {
         svg.note("Nobody has played yet. Press Claim to get started.");
     } else {
-        // Phones show the picture at about a third of this size, so the text is big and
-        // there's no decoration: the numbers say it.
-        let (money, bet, percent, note) = (300.0, 380.0, 450.0, WIDTH - 24.0);
+        // Shown small (a third of this size on a phone, about half on a computer), so the
+        // text is big and there's no decoration: the numbers say it.
+        let (money, bet, percent, note) = (236.0, 290.0, 344.0, svg.width - 24.0);
         svg.y += 6.0;
         for (x, label) in [
             (money, "Money"),
@@ -163,112 +192,122 @@ fn standings_table(svg: &mut Svg, view: &View) {
     }
 }
 
-/// The options still on the wheel, most bet on first, with who bet what on each.
+/// The options still on the wheel, most bet on first, with who bet what on each. An
+/// option with bets takes two lines: its name and what is on it, then its movie and the
+/// bets. Options nobody bet on come last, two to a row.
 fn bets_table(svg: &mut Svg, view: &View) {
     let round = &view.season.rounds[view.index];
     let numbers = &view.ledger[view.index];
+    let right = svg.width - 32.0;
     svg.section("Bets this round");
     if numbers.options_left.is_empty() {
         svg.note("Nobody is on the wheel yet. Admins add options with /wheel add.");
-    } else {
-        svg.y += 4.0;
-        let total = |option: u64| numbers.total_on(option);
-        let mut empty_options = 0;
-        let mut options = numbers.options_left.clone();
-        options.sort_by(|a, b| {
-            total(*b)
-                .cmp(&total(*a))
-                .then_with(|| view.name(*a).cmp(view.name(*b)))
-        });
-        for option in options {
-            let pieces: Vec<String> = round
-                .bets
-                .iter()
-                .filter(|b| b.on == option)
-                .map(|b| {
-                    format!(
-                        "{} <tspan fill=\"{TEXT}\" font-weight=\"600\">{}</tspan>",
-                        markup(&short(view.name(b.by))),
-                        b.amount
-                    )
-                })
-                .collect();
-            let plain: Vec<String> = round
-                .bets
-                .iter()
-                .filter(|b| b.on == option)
-                .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
-                .collect();
-            let lines = wrap_pieces(&pieces, &plain, WIDTH - 32.0 - 300.0, 15.0);
-            let movie = view.movie(option);
-            // A movie takes a second line under the name.
-            let rows = lines.len().max(if movie.is_some() { 2 } else { 1 });
-            let height = 34.0 + 22.0 * (rows - 1) as f32;
-            let y = svg.y;
-            if pieces.is_empty() {
-                let dashed = format!("stroke=\"{LINE}\" stroke-dasharray=\"3 3\"");
-                svg.rect([16.0, y, WIDTH - 32.0, height], BG, 6.0, &dashed);
+        return;
+    }
+    svg.y += 4.0;
+    let total = |option: u64| numbers.total_on(option);
+    let mut options = numbers.options_left.clone();
+    options.sort_by(|a, b| {
+        total(*b)
+            .cmp(&total(*a))
+            .then_with(|| view.name(*a).cmp(view.name(*b)))
+    });
+    let (backed, empty): (Vec<u64>, Vec<u64>) = options
+        .into_iter()
+        .partition(|&o| round.bets.iter().any(|b| b.on == o));
+    for option in backed {
+        let bets: Vec<_> = round.bets.iter().filter(|b| b.on == option).collect();
+        let pieces: Vec<String> = bets
+            .iter()
+            .map(|b| {
+                format!(
+                    "{} <tspan fill=\"{TEXT}\" font-weight=\"600\">{}</tspan>",
+                    markup(&short(view.name(b.by))),
+                    b.amount
+                )
+            })
+            .collect();
+        let plain: Vec<String> = bets
+            .iter()
+            .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
+            .collect();
+        let lines = wrap_pieces(&pieces, &plain, BETS_WIDTH, 15.0);
+        let height = 34.0 + 22.0 * lines.len() as f32;
+        let y = svg.y;
+        svg.rect([16.0, y, svg.width - 32.0, height], ROW, 6.0, "");
+        svg.text(
+            32.0,
+            y + 22.0,
+            &short(view.name(option)),
+            Style::new(16.0, TEXT).weight(600),
+        );
+        svg.text(
+            right,
+            y + 22.0,
+            &match numbers.odds(option) {
+                Some(odds) => format!("{} on it  ·  ×{odds:.1}", total(option)),
+                None => format!("{} on it", total(option)),
+            },
+            Style::new(15.0, MUTED).weight(500).end(),
+        );
+        for (n, (line, _)) in lines.iter().enumerate() {
+            svg.raw_text(
+                right,
+                y + 44.0 + 22.0 * n as f32,
+                line,
+                Style::new(15.0, MUTED).end(),
+            );
+        }
+        // The movie shares its line with the first line of bets.
+        if let Some(movie) = view.movie(option) {
+            let width = right - 32.0 - text_width(&lines[0].1, 15.0) - 20.0;
+            svg.text(
+                32.0,
+                y + 43.0,
+                &fit(movie, width, 13.0),
+                Style::new(13.0, DIM).weight(500),
+            );
+        }
+        svg.y += height + 4.0;
+    }
+    if empty.is_empty() {
+        return;
+    }
+    svg.y += 16.0;
+    // Said once here, not on every empty option.
+    let label = match numbers.rules {
+        Rules::Pool => "No bets yet. A bet on one of these takes the whole pot.",
+        Rules::Classic => "No bets yet.",
+    };
+    svg.text(24.0, svg.y, label, Style::new(13.0, DIM));
+    svg.y += 10.0;
+    let width = (svg.width - 40.0) / 2.0;
+    for pair in empty.chunks(2) {
+        let height = if pair.iter().any(|&o| view.movie(o).is_some()) {
+            56.0
+        } else {
+            34.0
+        };
+        for (n, &option) in pair.iter().enumerate() {
+            let x = 16.0 + (width + 8.0) * n as f32;
+            let dashed = format!("stroke=\"{LINE}\" stroke-dasharray=\"3 3\"");
+            svg.rect([x, svg.y, width, height], BG, 6.0, &dashed);
+            svg.text(
+                x + 16.0,
+                svg.y + 22.0,
+                &short(view.name(option)),
+                Style::new(16.0, MUTED).weight(600),
+            );
+            if let Some(movie) = view.movie(option) {
                 svg.text(
-                    32.0,
-                    y + 22.0,
-                    &short(view.name(option)),
-                    Style::new(16.0, DIM).weight(600),
-                );
-                svg.text(
-                    WIDTH - 32.0,
-                    y + 22.0,
-                    "no bets yet",
-                    Style::new(15.0, DIM).end(),
-                );
-                empty_options += 1;
-            } else {
-                svg.rect([16.0, y, WIDTH - 32.0, height], ROW, 6.0, "");
-                svg.text(
-                    32.0,
-                    y + 22.0,
-                    &short(view.name(option)),
-                    Style::new(16.0, TEXT).weight(600),
-                );
-                svg.text(
-                    180.0,
-                    y + 22.0,
-                    &match numbers.odds(option) {
-                        Some(odds) => format!("{} on it  ·  ×{odds:.1}", total(option)),
-                        None => format!("{} on it", total(option)),
-                    },
-                    Style::new(15.0, MUTED).weight(500),
-                );
-                for (n, line) in lines.iter().enumerate() {
-                    svg.raw_text(
-                        WIDTH - 32.0,
-                        y + 22.0 + 22.0 * n as f32,
-                        line,
-                        Style::new(15.0, MUTED).end(),
-                    );
-                }
-            }
-            // Drawn after the row's background, which would cover it.
-            if let Some(movie) = movie {
-                svg.text(
-                    32.0,
-                    y + 42.0,
-                    &fit(movie, MOVIE_WIDTH, 13.0),
+                    x + 16.0,
+                    svg.y + 43.0,
+                    &fit(movie, width - 32.0, 13.0),
                     Style::new(13.0, DIM).weight(500),
                 );
             }
-            svg.y += height + 4.0;
         }
-        // Said once under the table, not on every empty row.
-        if empty_options > 0 && numbers.rules == Rules::Pool {
-            svg.y += 14.0;
-            svg.text(
-                24.0,
-                svg.y,
-                "A bet on an option nobody backed takes the whole pot.",
-                Style::new(13.0, DIM),
-            );
-            svg.y += 14.0;
-        }
+        svg.y += height + 4.0;
     }
 }
 
@@ -303,7 +342,7 @@ fn waiting_on(svg: &mut Svg, view: &View) {
         for (label, names) in groups {
             let names: Vec<String> = names.iter().map(|n| short(n)).collect();
             let pieces: Vec<String> = names.iter().map(|n| markup(n)).collect();
-            for (n, line) in wrap_pieces(&pieces, &names, WIDTH - 32.0 - 190.0, 15.0)
+            for (n, (line, _)) in wrap_pieces(&pieces, &names, svg.width - 32.0 - 190.0, 15.0)
                 .into_iter()
                 .enumerate()
             {
@@ -312,7 +351,7 @@ fn waiting_on(svg: &mut Svg, view: &View) {
         }
         let height = 14.0 + 24.0 * lines.len() as f32;
         svg.rect(
-            [16.0, svg.y, WIDTH - 32.0, height],
+            [16.0, svg.y, svg.width - 32.0, height],
             AMBER,
             8.0,
             "fill-opacity=\"0.10\"",
@@ -329,21 +368,21 @@ fn waiting_on(svg: &mut Svg, view: &View) {
 
 /// "Already won: R1 Alice · R2 Bob", for the earlier rounds of the season.
 fn already_won(svg: &mut Svg, view: &View) {
-    let won: Vec<String> = view.season.rounds[..view.index]
+    let mut won: Vec<String> = view.season.rounds[..view.index]
         .iter()
         .filter_map(|r| {
             r.winner
                 .map(|w| format!("R{} {}", r.number, short(view.name(w))))
         })
         .collect();
-    if !won.is_empty() {
-        svg.y += 26.0;
-        svg.text(
-            24.0,
-            svg.y,
-            &format!("Already won: {}", won.join(" · ")),
-            Style::new(13.0, DIM).weight(500),
-        );
+    if let Some(first) = won.first_mut() {
+        *first = format!("Already won: {first}");
+        let pieces: Vec<String> = won.iter().map(|w| markup(w)).collect();
+        svg.y += 8.0;
+        for (line, _) in wrap_pieces(&pieces, &won, svg.width - 48.0, 13.0) {
+            svg.y += 18.0;
+            svg.raw_text(24.0, svg.y, &line, Style::new(13.0, DIM).weight(500));
+        }
     }
 }
 
@@ -368,12 +407,20 @@ fn resolved(svg: &mut Svg, view: &View) {
         count(round.bets.len(), "bet")
     );
     header(svg, view, "RESOLVED", RED, &sub);
-
     svg.y += 4.0;
+    winner_box(svg, view, winner);
+    svg.y += 14.0;
+    results_table(svg, view);
+    svg.y += 24.0;
+}
+
+/// The winner, with their movie, and which round is open now.
+fn winner_box(svg: &mut Svg, view: &View, winner: u64) {
+    let round = &view.season.rounds[view.index];
     let movie = view.movie(winner);
     let height = if movie.is_some() { 78.0 } else { 56.0 };
     svg.rect(
-        [16.0, svg.y, WIDTH - 32.0, height],
+        [16.0, svg.y, svg.width - 32.0, height],
         GREEN,
         10.0,
         "fill-opacity=\"0.14\"",
@@ -382,7 +429,7 @@ fn resolved(svg: &mut Svg, view: &View) {
         svg.text(
             32.0,
             svg.y + 68.0,
-            &fit(movie, WIDTH - 64.0, 15.0),
+            &fit(movie, svg.width - 64.0, 15.0),
             Style::new(15.0, MUTED).weight(500),
         );
     }
@@ -401,16 +448,22 @@ fn resolved(svg: &mut Svg, view: &View) {
     if view.active && view.index + 2 == view.season.rounds.len() {
         let next = format!("round {} is open", round.number + 1);
         svg.text(
-            WIDTH - 32.0,
+            svg.width - 32.0,
             svg.y + 35.0,
             &next,
             Style::new(14.0, MUTED).weight(500).end(),
         );
     }
-    svg.y += height + 14.0;
+    svg.y += height;
+}
 
+/// Before, bets, tax, after and change for each player, biggest gain first.
+fn results_table(svg: &mut Svg, view: &View) {
+    let round = &view.season.rounds[view.index];
+    let numbers = &view.ledger[view.index];
     svg.section("Results");
-    let (name, before, bets, tax, after, change) = (40.0, 250.0, 330.0, 400.0, 480.0, WIDTH - 28.0);
+    let (name, before, bets, tax, after, change) =
+        (40.0, 250.0, 330.0, 400.0, 480.0, svg.width - 28.0);
     svg.y += 6.0;
     for (x, label) in [
         (before, "Before"),
@@ -494,7 +547,6 @@ fn resolved(svg: &mut Svg, view: &View) {
         );
         svg.y += 16.0;
     }
-    svg.y += 24.0;
 }
 
 /// "Round 4  OPEN" with the season on the right and a summary line under it.
@@ -505,13 +557,13 @@ fn header(svg: &mut Svg, view: &View, state: &str, color: &'static str, sub: &st
     svg.pill(x, 26.0, state, color, 11.0);
     let season = format!("Season {}", view.season.number);
     svg.text(
-        WIDTH - 24.0,
+        svg.width - 24.0,
         30.0,
         &season,
         Style::new(12.0, DIM).weight(500).end(),
     );
     svg.text(
-        WIDTH - 24.0,
+        svg.width - 24.0,
         46.0,
         "Movie wheel",
         Style::new(12.0, DIM).weight(500).end(),
@@ -531,8 +583,13 @@ fn sorted_by_money<'a>(view: &View, standings: &'a [Standing]) -> Vec<&'a Standi
 }
 
 /// Joins `pieces` with " · " into lines that fit `width`. `plain` is the same text without
-/// markup, for measuring.
-fn wrap_pieces(pieces: &[String], plain: &[String], width: f32, size: f32) -> Vec<String> {
+/// markup, for measuring. Each line comes with its plain text.
+fn wrap_pieces(
+    pieces: &[String],
+    plain: &[String],
+    width: f32,
+    size: f32,
+) -> Vec<(String, String)> {
     let mut lines: Vec<(String, String)> = Vec::new();
     for (piece, text) in pieces.iter().zip(plain) {
         match lines.last_mut() {
@@ -547,7 +604,7 @@ fn wrap_pieces(pieces: &[String], plain: &[String], width: f32, size: f32) -> Ve
             _ => lines.push((piece.clone(), text.clone())),
         }
     }
-    lines.into_iter().map(|(line, _)| line).collect()
+    lines
 }
 
 /// The name cut to [`MAX_NAME`] letters' width.
@@ -829,19 +886,115 @@ mod tests {
         }
     }
 
+    /// A big movie night: twelve players, all on the wheel, most of them betting. Also
+    /// written to `$WHEEL_MOCKUP_DIR`, like [`pool_round_pictures`].
+    #[test]
+    fn big_round_pictures() {
+        let people = [
+            "Alice",
+            "Bob",
+            "Charlie",
+            "Dana",
+            "Eve 🎬",
+            "Frank",
+            "Grace",
+            "Heidi",
+            "Ivan",
+            "Judy",
+            "Mallory",
+            "Bartholomew the Third",
+        ];
+        let names: Names = (1..)
+            .zip(people)
+            .map(|(id, n)| (id, n.to_string()))
+            .collect();
+        let movies = [
+            (2, "Alien"),
+            (3, "Paddington 2"),
+            (4, "The Lord of the Rings: The Return of the King"),
+            (5, "Heat"),
+            (7, "Spirited Away"),
+            (8, "Everything Everywhere All at Once"),
+            (10, "The Thing"),
+            (11, "Mad Max: Fury Road"),
+        ];
+        let everyone: Vec<u64> = (1..=12).collect();
+        let season = Season {
+            id: 1,
+            number: 4,
+            rules: Rules::Pool,
+            options: everyone.clone(),
+            movies: movies.map(|(id, m)| (id, m.to_string())).into(),
+            rounds: vec![
+                Round {
+                    id: 1,
+                    number: 1,
+                    winner: Some(6),
+                    claims: everyone.clone(),
+                    bets: vec![
+                        bet(1, 6, 40),
+                        bet(2, 3, 25),
+                        bet(3, 6, 30),
+                        bet(4, 2, 50),
+                        bet(5, 4, 20),
+                        bet(7, 8, 35),
+                        bet(8, 7, 10),
+                        bet(9, 6, 15),
+                        bet(10, 11, 45),
+                        bet(12, 1, 20),
+                    ],
+                },
+                Round {
+                    id: 2,
+                    number: 2,
+                    winner: None,
+                    claims: vec![1, 2, 3, 4, 5, 7, 8, 9, 10, 12],
+                    bets: vec![
+                        bet(1, 2, 60),
+                        bet(2, 4, 45),
+                        bet(3, 2, 30),
+                        bet(5, 3, 15),
+                        bet(7, 8, 40),
+                        bet(8, 2, 20),
+                        bet(9, 11, 25),
+                        bet(10, 8, 50),
+                        bet(12, 4, 30),
+                        bet(4, 7, 35),
+                        bet(1, 8, 10),
+                    ],
+                },
+            ],
+        };
+        let numbers = ledger(&season);
+        for (index, name) in [(1, "big-open"), (0, "big-resolved")] {
+            let view = View {
+                season: &season,
+                ledger: &numbers,
+                index,
+                active: true,
+                names: &names,
+            };
+            let png = round_png(&view).unwrap();
+            assert!(png.starts_with(b"\x89PNG"));
+            if let Ok(dir) = std::env::var("WHEEL_MOCKUP_DIR") {
+                std::fs::write(format!("{dir}/wheel-{name}.png"), png).unwrap();
+            }
+        }
+    }
+
     #[test]
     fn wrapping_and_names() {
         let pieces: Vec<String> = ["Alice 10", "Bob 20", "Charlie 30"]
             .map(String::from)
             .into();
-        assert_eq!(
-            wrap_pieces(&pieces, &pieces, 1000.0, 13.0),
-            ["Alice 10 · Bob 20 · Charlie 30"]
-        );
-        assert_eq!(
-            wrap_pieces(&pieces, &pieces, 150.0, 13.0),
-            ["Alice 10 · Bob 20", "Charlie 30"]
-        );
+        let lines = |width| -> Vec<String> {
+            wrap_pieces(&pieces, &pieces, width, 13.0)
+                .into_iter()
+                .map(|(line, _)| line)
+                .collect()
+        };
+        assert_eq!(lines(1000.0), ["Alice 10 · Bob 20 · Charlie 30"]);
+        assert_eq!(lines(150.0), ["Alice 10 · Bob 20", "Charlie 30"]);
         assert_eq!(short("Bartholomew the Third"), "Bartholomew t…");
         assert_eq!(short(&"🎬".repeat(8)), format!("{}…", "🎬".repeat(6)));
         assert_eq!(signed(5), "+5");
