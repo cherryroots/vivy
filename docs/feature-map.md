@@ -243,6 +243,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #132 | | Wheel: an open round's picture is wide, in two columns (standings left, bets right, options without bets two to a row), so it reads on a PC as well; resolved rounds stay narrow. |
 | #133 | | Wheel: a divider line between Haven't claimed and Claimed, no bet yet in the Waiting on box. |
 | #134 | | Game Boy web page: her skills in a scrolling box under the map, newest first, written out in full; a tab in the background keeps only the newest screen, so coming back no longer stutters or flicks between Live and Thinking. |
+| #136 | | Game Boy: Red's raised ground (Mt Moon's rock ledges) is a wall beside the floor, read from the game's own tile-pair list, and floor she can't walk to from where she stands is drawn `,` on her map and darker on the web map. |
 
 ## Not built yet
 

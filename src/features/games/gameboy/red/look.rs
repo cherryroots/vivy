@@ -8,7 +8,7 @@
 //! checked on the tile at column 2i, row 2j + 1: its bottom left tile.
 
 use super::super::console::Machine;
-use super::super::map::{AreaMap, Kind, Pos};
+use super::super::map::{AreaMap, Dir, Kind, Pos};
 use super::super::screen::Screen;
 use super::super::text::words_of;
 use super::super::world::{Grid, View, World};
@@ -111,7 +111,37 @@ fn see(map: &mut AreaMap, state: &State, tiles: &[u8], screen: &Screen) {
             map.see(pos, kind(state, pos, tile, inside));
         }
     }
+    for (pos, dir) in pair_walls(
+        (i32::from(state.x), i32::from(state.y)),
+        &state.pair_walls,
+        tiles,
+    ) {
+        map.blocked(pos, dir);
+        map.blocked(dir.step(pos), dir.back());
+    }
     map.see_people(people(state, screen));
+}
+
+/// Where she can't step between two steps on screen, though both can be walked on: their
+/// tiles are one of the tileset's wall pairs (raised ground and the floor beside it). Each
+/// as the step on the left or above, and the way to the other. `at` is where she stands.
+fn pair_walls(at: Pos, pairs: &[(u8, u8)], tiles: &[u8]) -> Vec<(Pos, Dir)> {
+    let tile = |i: i32, j: i32| tiles[((2 * j + 1) * 20 + 2 * i) as usize];
+    let walls = |a: u8, b: u8| pairs.iter().any(|&pair| pair == (a, b) || pair == (b, a));
+    let mut found = Vec::new();
+    for j in 0..STEPS_DOWN {
+        for i in 0..STEPS_ACROSS {
+            for (dir, (di, dj)) in [(Dir::Right, (1, 0)), (Dir::Down, (0, 1))] {
+                if i + di < STEPS_ACROSS
+                    && j + dj < STEPS_DOWN
+                    && walls(tile(i, j), tile(i + di, j + dj))
+                {
+                    found.push(((at.0 + i - PLAYER_STEP.0, at.1 + j - PLAYER_STEP.1), dir));
+                }
+            }
+        }
+    }
+    found
 }
 
 fn kind(state: &State, (x, y): Pos, tile: u8, inside: bool) -> Kind {
@@ -157,6 +187,29 @@ fn people(state: &State, screen: &Screen) -> Vec<Pos> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raised_ground_beside_the_floor_is_a_wall_between_them() {
+        // Cave floor (0x05) with raised ground (0x20) in the column left of her and the
+        // step above her; 0x05 to 0x05 and 0x20 to 0x20 are fine.
+        let mut tiles = vec![0x05; 20 * 18];
+        let mut put = |i: usize, j: usize, tile: u8| tiles[(2 * j + 1) * 20 + 2 * i] = tile;
+        for j in 0..9 {
+            put(3, j, 0x20);
+        }
+        put(4, 3, 0x20);
+        let walls = pair_walls((10, 10), &[(0x20, 0x05)], &tiles);
+        // She stands at screen step (4, 4), so screen step (i, j) is (6 + i, 6 + j).
+        assert!(walls.contains(&((9, 10), Dir::Right)), "{walls:?}");
+        assert!(walls.contains(&((10, 9), Dir::Down)), "{walls:?}");
+        assert!(walls.contains(&((8, 6), Dir::Right)), "{walls:?}");
+        assert!(!walls.contains(&((9, 9), Dir::Right)), "{walls:?}");
+        assert!(!walls.contains(&((9, 9), Dir::Down)), "{walls:?}");
+        // 9 down the column's left, 8 down its right (not where the raised step above her
+        // joins it), and that step's top, bottom and right.
+        assert_eq!(walls.len(), 9 + 8 + 3, "{walls:?}");
+        assert!(pair_walls((10, 10), &[], &tiles).is_empty());
+    }
 
     #[test]
     fn a_box_needs_both_corners() {

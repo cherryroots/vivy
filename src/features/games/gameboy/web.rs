@@ -309,6 +309,7 @@ async fn look() -> Option<Seen> {
 fn seen(world: &mut super::world::World, view: super::world::View, mark: u64) -> Seen {
     let map = world.area(&view.area);
     let at = view.at;
+    let letter = map.lettering(at);
     let on_screen = view
         .grid
         .map(|grid| {
@@ -317,7 +318,7 @@ fn seen(world: &mut super::world::World, view: super::world::View, mark: u64) ->
                     (0..grid.across)
                         .map(|i| {
                             let pos = (at.0 + i - grid.player.0, at.1 + j - grid.player.1);
-                            map.letter(pos, at)
+                            letter(pos)
                         })
                         .collect()
                 })
@@ -331,7 +332,7 @@ fn seen(world: &mut super::world::World, view: super::world::View, mark: u64) ->
                 (to.0.max(at.0), to.1.max(at.1)),
             );
             let rows = (from.1..=to.1)
-                .map(|y| (from.0..=to.0).map(|x| map.letter((x, y), at)).collect())
+                .map(|y| (from.0..=to.0).map(|x| letter((x, y))).collect())
                 .collect();
             (from, rows)
         }

@@ -61,6 +61,7 @@ mod address {
     pub const BATTLE_MAX_HP: u16 = 0xd023; // wBattleMonMaxHP
     pub const BATTLE_PP: u16 = 0xd02d; // wBattleMonPP
     pub const STATUS_FLAGS_5: u16 = 0xd730; // wStatusFlags5
+    pub const TILE_PAIR_WALLS: u16 = 0x0c7e; // TilePairCollisionsLand, in bank 0 of the ROM
 }
 
 /// Bytes in one party Pokémon's record (`party_struct`).
@@ -144,6 +145,9 @@ pub struct State {
     pub passable: Vec<u8>,
     /// The tile number of tall grass here (0xFF where there's none).
     pub grass_tile: u8,
+    /// Pairs of walkable tiles she can't step between, either way, in this map's tileset:
+    /// raised ground and the floor beside it, in caves and forests.
+    pub pair_walls: Vec<(u8, u8)>,
     /// The story flags of [`STORY`] that are set, by name.
     pub story: Vec<&'static str>,
     /// The battle going on, if there is one.
@@ -224,6 +228,7 @@ impl State {
             signs,
             tileset: r(emu, TILESET),
             passable: passable_tiles(emu),
+            pair_walls: pair_walls(emu),
             grass_tile: r(emu, GRASS_TILE),
             story,
             // Until both Pokémon are out, the battle copies hold the last battle's.
@@ -432,6 +437,23 @@ fn passable_tiles(emu: &mut Emulator) -> Vec<u8> {
     (0..32)
         .map(|i| emu.read(at + i))
         .take_while(|&tile| tile != 0xff)
+        .collect()
+}
+
+/// The game's list of tile pairs that are a wall between them (`TilePairCollisionsLand`):
+/// tileset, tile, tile, ending at 0xFF. Before a step it checks the tile she stands on and
+/// the one ahead against it, in either order, so raised ground can't be walked onto from
+/// the floor beside it though both can be walked on. Only this map's tileset's pairs.
+fn pair_walls(emu: &mut Emulator) -> Vec<(u8, u8)> {
+    let tileset = emu.read(address::TILESET);
+    (0..16)
+        .map(|i| {
+            let at = address::TILE_PAIR_WALLS + i * 3;
+            [emu.read(at), emu.read(at + 1), emu.read(at + 2)]
+        })
+        .take_while(|entry| entry[0] != 0xff)
+        .filter(|entry| entry[0] == tileset)
+        .map(|entry| (entry[1], entry[2]))
         .collect()
 }
 

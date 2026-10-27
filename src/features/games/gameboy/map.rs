@@ -122,6 +122,16 @@ impl Dir {
         }
     }
 
+    /// The other way.
+    pub fn back(self) -> Dir {
+        match self {
+            Dir::Up => Dir::Down,
+            Dir::Down => Dir::Up,
+            Dir::Left => Dir::Right,
+            Dir::Right => Dir::Left,
+        }
+    }
+
     pub fn step(self, (x, y): Pos) -> Pos {
         let (dx, dy) = offset(self.button()).unwrap_or((0, 0));
         (x + dx, y + dy)
@@ -357,6 +367,7 @@ impl AreaMap {
             at.1,
             at.1 + radius,
         );
+        let letter = self.lettering(at);
         let mut out = String::from("    ");
         for x in min_x..=max_x {
             out.push_str(&x.rem_euclid(10).to_string());
@@ -365,7 +376,7 @@ impl AreaMap {
         for y in min_y..=max_y {
             out.push_str(&format!("{y:>3} "));
             for x in min_x..=max_x {
-                out.push(self.letter((x, y), at));
+                out.push(letter((x, y)));
             }
             out.push('\n');
         }
@@ -373,6 +384,56 @@ impl AreaMap {
     }
 
     /// The letter for `pos` on the map text, with her at `at`.
+    /// Each step's letter, with her at `at`, and floor she can't walk to from there as
+    /// `CUT_OFF` (worked out once for the whole map).
+    pub fn lettering(&self, at: Pos) -> impl Fn(Pos) -> char + '_ {
+        let cut = self.cut_off(at);
+        move |pos| {
+            if pos != at && cut.contains(&pos) && !self.people.contains(&pos) {
+                CUT_OFF
+            } else {
+                self.letter(pos, at)
+            }
+        }
+    }
+
+    /// Floor she can't walk to from `from` as far as the map knows, even through steps not
+    /// seen yet: raised ground beside the floor she's on, below a ledge she'd have to climb,
+    /// or behind walls. People are left out (they move). Nothing when she isn't standing
+    /// on a known step, since then everything would look cut off.
+    pub fn cut_off(&self, from: Pos) -> HashSet<Pos> {
+        let standing = self.walked.contains(&from) || self.kind(from).is_some_and(Kind::walkable);
+        let Some((lo, hi)) = self.bounds().filter(|_| standing) else {
+            return HashSet::new();
+        };
+        // Unseen steps just past what's been seen can join two parts; further out, an
+        // area with no known size would never end.
+        let near =
+            |(x, y): Pos| (lo.0 - 1..=hi.0 + 1).contains(&x) && (lo.1 - 1..=hi.1 + 1).contains(&y);
+        let mut open = self.clone();
+        open.people.clear();
+        let mut reached = HashSet::from([from]);
+        let mut queue = VecDeque::from([from]);
+        while let Some(pos) = queue.pop_front() {
+            if pos != from && open.leaves(pos) {
+                continue;
+            }
+            for dir in Dir::ALL {
+                if let Some(next) = open.step_to(pos, dir, true)
+                    && near(next)
+                    && reached.insert(next)
+                {
+                    queue.push_back(next);
+                }
+            }
+        }
+        self.kinds
+            .iter()
+            .filter(|&(pos, &kind)| kind == Kind::Floor && !reached.contains(pos))
+            .map(|(&pos, _)| pos)
+            .collect()
+    }
+
     pub fn letter(&self, pos: Pos, at: Pos) -> char {
         if pos == at {
             '@'
@@ -480,7 +541,11 @@ pub(super) mod as_list {
 pub const LEGEND: &str = "@ you, . floor, # wall, \" tall grass, D door or stairs, \
 S sign, > edge (walk on to the next area), ↑ ↓ ← → one way (hop over it that way only, \
 like a ledge), * carries you on (floor arrows, a spinner), P person, ! your marker, \
+, floor you can't walk to from here (raised ground, or past a ledge or walls), \
 ? not seen yet";
+
+/// The letter for floor she can't walk to from where she stands.
+pub const CUT_OFF: char = ',';
 
 #[cfg(test)]
 mod tests {
@@ -696,6 +761,32 @@ mod tests {
         );
         // Cut to one step each way (nothing is known above or left of the corner).
         assert_eq!(map.draw((0, 0), 1), "    01\n  0 @#\n  1 #.\n");
+    }
+
+    #[test]
+    fn floor_she_cant_walk_to_from_here_is_drawn_as_cut_off() {
+        // Raised ground on the right: floor too, but walled off from hers on every side.
+        let mut map = map_of(&["######", "#..#.#", "#....#", "######"]);
+        for y in 1..=2 {
+            map.blocked((3, y), Dir::Right);
+            map.blocked((4, y), Dir::Left);
+        }
+        map.blocked((4, 2), Dir::Up);
+        map.blocked((4, 1), Dir::Down);
+        map.blocked((3, 2), Dir::Right);
+        assert_eq!(map.cut_off((1, 1)), HashSet::from([(4, 1), (4, 2)]));
+        assert_eq!(
+            map.draw((1, 1), 10),
+            "    012345\n  0 ######\n  1 #@.#,#\n  2 #...,#\n  3 ######\n"
+        );
+        // From up there, hers is the floor out of reach.
+        assert_eq!(map.cut_off((4, 1)).len(), 6);
+        // Standing on no known step, nothing is said to be cut off.
+        assert!(map.cut_off((0, 0)).is_empty());
+        // A step not seen yet between them might join them.
+        let mut open = map_of(&["#####", "#.#.#", "#####"]);
+        open.kinds.remove(&(2, 1));
+        assert!(open.cut_off((1, 1)).is_empty());
     }
 
     #[test]
