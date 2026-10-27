@@ -1122,6 +1122,13 @@ mod tests {
 
         let (mut local, words) = play("bedroom", &[walk(7, 1)]).await;
         assert!(passes("go downstairs", &mut local, &words));
+        // The stairs she took are a way out of the bedroom, for the strategist's list.
+        let world = &local.world;
+        println!("{}", world.places("Red's House 1F"));
+        assert_eq!(
+            world.areas["Red's House 2F"].ways_out(),
+            vec![("Red's House 1F".to_string(), vec![(7, 1)])]
+        );
         assert!(!passes("potion from the PC", &mut local, &words));
 
         // The PC is at (0, 1): face it from below. WITHDRAW ITEM is the first line.

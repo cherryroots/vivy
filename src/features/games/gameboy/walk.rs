@@ -237,6 +237,11 @@ pub fn take_step(
             world.trust.check(memory, screen);
         }
     }
+    if next.area != view.area {
+        world
+            .area(&view.area)
+            .went_through(view.at, dir, &next.area);
+    }
     world.log(Logged {
         area: view.area.clone(),
         from: view.at,

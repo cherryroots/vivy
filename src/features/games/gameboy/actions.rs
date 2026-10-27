@@ -974,6 +974,10 @@ pub fn describe(world: &World, view: &View) -> String {
             "Map ({LEGEND}):\n{}",
             map.draw(view.at, MAP_RADIUS).trim_end()
         ));
+        let ways = world.ways_out(&view.area);
+        if !ways.is_empty() {
+            lines.push(ways);
+        }
         let near = near::line(&world.near);
         if !near.is_empty() {
             lines.push(near);

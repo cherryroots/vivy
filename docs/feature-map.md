@@ -243,6 +243,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #132 | | Wheel: an open round's picture is wide, in two columns (standings left, bets right, options without bets two to a row), so it reads on a PC as well; resolved rounds stay narrow. |
 | #133 | | Wheel: a divider line between Haven't claimed and Claimed, no bet yet in the Waiting on box. |
 | #134 | | Game Boy web page: her skills in a scrolling box under the map, newest first, written out in full; a tab in the background keeps only the newest screen, so coming back no longer stutters or flicks between Live and Thinking. |
+| #135 | | Game Boy: every way out she goes through is kept, in Red too (Link's Awakening and other games without a memory map already did), and listed: the ways out of where she stands in her look, and every place with where its ways lead for the strategist. |
 
 ## Not built yet
 
