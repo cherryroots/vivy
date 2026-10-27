@@ -11,8 +11,8 @@ use super::ledger::{OutcomeKind, Rules, Standing, TAX_THRESHOLD, outcomes};
 use super::ui::View;
 use crate::util::count;
 use crate::util::svg::{
-    AMBER, BG, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, columns, markup, text_width,
-    to_png,
+    AMBER, BG, BLUE, DIM, GREEN, LINE, MUTED, RED, ROW, Style, Svg, TEXT, columns, markup,
+    text_width, to_png,
 };
 
 /// Width of an open round's picture in SVG units.
@@ -233,8 +233,8 @@ fn bets_table(svg: &mut Svg, view: &View) {
             .iter()
             .map(|b| format!("{} {}", short(view.name(b.by)), b.amount))
             .collect();
-        let lines = wrap_pieces(&pieces, &plain, BETS_WIDTH, 15.0);
-        let height = 34.0 + 22.0 * lines.len() as f32;
+        let lines = wrap_pieces(&pieces, &plain, BETS_WIDTH, 13.0);
+        let height = 56.0 + 18.0 * (lines.len() - 1) as f32;
         let y = svg.y;
         svg.rect([16.0, y, svg.width - 32.0, height], ROW, 6.0, "");
         svg.text(
@@ -250,19 +250,20 @@ fn bets_table(svg: &mut Svg, view: &View) {
                 Some(odds) => format!("{} on it  ·  ×{odds:.1}", total(option)),
                 None => format!("{} on it", total(option)),
             },
-            Style::new(15.0, MUTED).weight(500).end(),
+            Style::new(15.0, BLUE).weight(600).end(),
         );
+        // The bets are as small as the movie, so the total above stands out.
         for (n, (line, _)) in lines.iter().enumerate() {
             svg.raw_text(
                 right,
-                y + 44.0 + 22.0 * n as f32,
+                y + 43.0 + 18.0 * n as f32,
                 line,
-                Style::new(15.0, MUTED).end(),
+                Style::new(13.0, MUTED).weight(500).end(),
             );
         }
         // The movie shares its line with the first line of bets.
         if let Some(movie) = view.movie(option) {
-            let width = right - 32.0 - text_width(&lines[0].1, 15.0) - 20.0;
+            let width = right - 32.0 - text_width(&lines[0].1, 13.0) - 20.0;
             svg.text(
                 32.0,
                 y + 43.0,
@@ -785,7 +786,7 @@ mod tests {
         // Options left in the open round, cut short when long.
         let svg = render(&season, 1);
         assert!(
-            svg.contains(">The Lord of the Rings: The Return of…<"),
+            svg.contains(">The Lord of the Rings: The Return of the…<"),
             "{svg}"
         );
         assert!(!svg.contains(">Alien<"));

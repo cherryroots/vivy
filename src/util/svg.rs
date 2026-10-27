@@ -40,6 +40,8 @@ pub const GREEN: &str = "#23a55a";
 pub const RED: &str = "#f23f43";
 pub const AMBER: &str = "#f0b232";
 pub const ACCENT: &str = "#5865f2";
+/// A lighter blurple, for numbers that need to stand out on a row.
+pub const BLUE: &str = "#949cf7";
 
 static FONTS: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
     let mut db = fontdb::Database::new();
