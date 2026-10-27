@@ -245,6 +245,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #134 | | Game Boy web page: her skills in a scrolling box under the map, newest first, written out in full; a tab in the background keeps only the newest screen, so coming back no longer stutters or flicks between Live and Thinking. |
 | #135 | | Game Boy: every way out she goes through is kept, in Red too (Link's Awakening and other games without a memory map already did), and listed: the ways out of where she stands in her look, and every place with where its ways lead for the strategist. |
 | #136 | | Wheel: each option's total and payout in blue, and its bets in smaller text like the movie under the name. |
+| #137 | | Game Boy: Red's raised ground (Mt Moon's rock ledges) is a wall beside the floor, read from the game's own tile-pair list, and floor she can't walk to from where she stands is drawn `,` on her map and grey on the web map. |
 
 ## Not built yet
 

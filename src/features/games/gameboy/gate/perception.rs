@@ -960,3 +960,59 @@ fn stairs_taken_after_a_menu_are_somewhere_new() {
     assert!(downstairs.can_walk);
     assert_ne!(downstairs.area, upstairs);
 }
+
+/// Mt Moon's rock ledges, on Cherry's save from her 2026-10-27 run (VIVY_GB_RED_SAVES, her
+/// `red` saves folder): the strip along the left wall looked like a corridor next to her,
+/// but it's raised rock that can't be stepped onto from the cave floor. With her maps, a
+/// look from each of her saved spots and a walk down the wall, the strip and
+/// the other ledge tops are out of reach, and the walk never steps onto one.
+#[test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and Cherry's Mt Moon saves"]
+fn rock_ledges_are_out_of_reach() {
+    use std::path::PathBuf;
+    let dir = PathBuf::from(super::setting(
+        "VIVY_GB_RED_SAVES",
+        "/mnt/project-files/gameboy/sessions/red-2026-10-27/red",
+    ));
+    let rom = crate::features::games::gameboy::emulator::tests::real_rom();
+    let at_state = |path: &std::path::Path| {
+        let mut m = Machine::new("red.gb", &rom).unwrap();
+        m.emulator
+            .load_state(&std::fs::read(path).unwrap())
+            .unwrap();
+        m.run(5);
+        m
+    };
+    let mut world = World {
+        areas: serde_json::from_slice(&std::fs::read(dir.join("maps.json")).unwrap()).unwrap(),
+        ..World::default()
+    };
+    let mut saved: Vec<PathBuf> = ["replays", "checkpoints"]
+        .iter()
+        .flat_map(|folder| std::fs::read_dir(dir.join(folder)).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "state"))
+        .collect();
+    saved.sort();
+    for path in &saved {
+        let mut m = at_state(path);
+        look_for(m.emulator.info())(&mut world, &mut m);
+    }
+    let mut m = at_state(&dir.join("replays/130.state"));
+    let look = look_for(m.emulator.info());
+    let walk = walk_to(&mut world, &mut m, look, (2, 9), 100);
+    assert_eq!(walk.result, Walked::Arrived);
+    // On down the wall until something stops her (a wild Pokémon): she has seen it by then.
+    walk_to(&mut world, &mut m, look, (2, 13), 100);
+    let view = look(&mut world, &mut m);
+    assert_eq!(view.area, "Mt Moon 1F");
+    let map = &world.areas[&view.area];
+    println!("{}", map.draw(view.at, 40));
+    let cut = map.cut_off(view.at);
+    for y in 0..=34 {
+        assert!(cut.contains(&(1, y)), "(1, {y}) along the left wall");
+    }
+    // The ledge along the top, and the cave floor she walks on isn't.
+    assert!(cut.contains(&(20, 0)));
+    assert!(!cut.contains(&(5, 9)) && !cut.contains(&(10, 25)));
+}
