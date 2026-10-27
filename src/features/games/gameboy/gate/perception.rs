@@ -983,8 +983,10 @@ fn rock_ledges_are_out_of_reach() {
         m.run(5);
         m
     };
-    let mut world = World::default();
-    world.areas = serde_json::from_slice(&std::fs::read(dir.join("maps.json")).unwrap()).unwrap();
+    let mut world = World {
+        areas: serde_json::from_slice(&std::fs::read(dir.join("maps.json")).unwrap()).unwrap(),
+        ..World::default()
+    };
     let mut saved: Vec<PathBuf> = ["replays", "checkpoints"]
         .iter()
         .flat_map(|folder| std::fs::read_dir(dir.join(folder)).unwrap())
