@@ -969,6 +969,10 @@ async fn plan<G: Game>(
         .unwrap();
     }
     let world = game.world().await?;
+    let places = world.places(&look.view.area);
+    if !places.is_empty() {
+        write!(now, "\n\n{places}").unwrap();
+    }
     let limit = session.limits.free_tokens;
     let mut care = if rung == Rung::Review {
         Care::Review

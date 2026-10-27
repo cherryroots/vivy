@@ -164,6 +164,36 @@ impl AreaMap {
         // person) has gone; only blocks out of her own step are kept as they are.
     }
 
+    /// A step from `from` in `dir` took her to `area`: the way out is the step she took
+    /// when it's one on the map (a door, or past the edge), else the door she stood on (a
+    /// mat she steps off). Neither, and it wasn't a way out (a game over, a scene).
+    pub fn went_through(&mut self, from: Pos, dir: Dir, area: &str) {
+        let to = dir.step(from);
+        let way = if matches!(self.kind(to), Some(Kind::Door | Kind::Edge)) {
+            to
+        } else if self.kind(from) == Some(Kind::Door) {
+            from
+        } else {
+            return;
+        };
+        self.doors.entry(way).or_insert_with(|| area.to_string());
+    }
+
+    /// The ways out she has been through, by where each leads, with the steps that lead
+    /// there top to bottom; the places in the order of their first step.
+    pub fn ways_out(&self) -> Vec<(String, Vec<Pos>)> {
+        let mut doors: Vec<(&Pos, &String)> = self.doors.iter().collect();
+        doors.sort_by_key(|(pos, _)| (pos.1, pos.0));
+        let mut ways: Vec<(String, Vec<Pos>)> = Vec::new();
+        for (pos, area) in doors {
+            match ways.iter_mut().find(|(to, _)| to == area) {
+                Some((_, steps)) => steps.push(*pos),
+                None => ways.push((area.clone(), vec![*pos])),
+            }
+        }
+        ways
+    }
+
     /// A step from `from` in `dir` ended at `to`, not on the next step: two steps on is a
     /// hop over a one-way step, anywhere else she was carried (and goes there again).
     pub fn landed(&mut self, from: Pos, dir: Dir, to: Pos) {

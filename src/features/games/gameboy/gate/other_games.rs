@@ -508,6 +508,7 @@ fn steps_by_hand() {
     }
     let area = view.area.clone();
     println!("{}", world.area(&area).draw(view.at, 6));
+    println!("{}", world.places(&area));
 }
 
 /// Walks around from a save state (`VIVY_GB_FROM`) and says which bytes the cheat finder
