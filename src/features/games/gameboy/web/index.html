@@ -63,6 +63,15 @@
   .facts b { color: var(--teal); font-weight: 600; }
   #map { display: block; image-rendering: pixelated; background: #0b0d0e; }
   .foot { color: var(--muted); font-size: 13px; }
+  /* Her skills scroll in their own box, newest first. */
+  .skillbox { max-height: 45vh; overflow: auto; font-size: 14px; }
+  .skill { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .skill:first-child { padding-top: 0; }
+  .skill:last-child { border-bottom: 0; }
+  .skill b { color: var(--teal); }
+  .skill .rule { padding-left: 12px; color: var(--dim); }
+  .skill .small { color: var(--muted); font-size: 12px; }
+  .skill code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; background: var(--line); padding: 0 4px; border-radius: 4px; }
   /* "Vivy says": her latest commentary, like the dashboard's quote. */
   .said { display: none; border-left: 3px solid var(--teal); }
   .said p { margin: 0; white-space: pre-wrap; }
@@ -110,6 +119,10 @@
         <h2 id="mapTitle">Map</h2>
         <div class="mapbox" id="mapbox"><canvas id="map" width="300" height="200"></canvas></div>
         <div class="sub" id="mapNote"></div>
+      </div>
+      <div class="card">
+        <h2 id="skillsTitle">Her skills</h2>
+        <div class="skillbox" id="skills"><span class="sub">None yet.</span></div>
       </div>
     </section>
     <section class="side">
@@ -166,6 +179,21 @@ let idleSince = performance.now();
 let seen = null;
 let live = null;
 let decoding = Promise.resolve(); // keeps the screens in order while they decode
+let decodingNow = 0;              // screens come in but not decoded yet
+// A tab in the background gets no animation frames, so nothing plays there. Rather than
+// pile up screens to race through when it's looked at again (stuttering, and flicking
+// between Live and Thinking whenever decoding fell behind), it keeps only the newest and
+// starts from there.
+let hiddenNewest = null;
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !hiddenNewest) return;
+  const { mark, png } = hiddenNewest;
+  hiddenNewest = null;
+  decoding = decoding.then(async () => {
+    queue.forEach((f) => f.picture.close?.());
+    queue = [{ mark, picture: await createImageBitmap(png) }];
+  }).catch(() => {});
+});
 
 $("legend").innerHTML = Object.entries(KINDS)
   .filter(([k]) => k !== "@")
@@ -222,7 +250,7 @@ function showPending() {
 }
 
 function settled() {
-  return queue.length === 0 && performance.now() - idleSince > 250;
+  return queue.length === 0 && decodingNow === 0 && performance.now() - idleSince > 250;
 }
 
 function drawOver() {
@@ -351,6 +379,28 @@ function episodeLine(line) {
   return `${before} <span class="${how}">→ ${esc(outcome)}</span>${esc(after.slice(end))}`;
 }
 
+// A skill as `Skill::written` gives it: "**name**: when", her notes, "- " rules with
+// `presses`, and "-# " small lines for how it did. Only redrawn when one changed, so the
+// box keeps where it was scrolled to.
+let skillsShown = null;
+function showSkills(written) {
+  const key = written.join("\u0000");
+  if (key === skillsShown) return;
+  skillsShown = key;
+  $("skillsTitle").textContent = written.length ? `Her skills (${written.length})` : "Her skills";
+  const inline = (text) => esc(text)
+    .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const lines = (skill) => skill.split("\n").map((line) => {
+    if (line.startsWith("-# ")) return `<div class="small">${inline(line.slice(3))}</div>`;
+    if (line.startsWith("- ")) return `<div class="rule">${inline(line.slice(2))}</div>`;
+    return `<div>${inline(line)}</div>`;
+  }).join("");
+  $("skills").innerHTML = written.length
+    ? written.slice().reverse().map((skill) => `<div class="skill">${lines(skill)}</div>`).join("")
+    : '<span class="sub">None yet.</span>';
+}
+
 function showLive() {
   const n = live.now;
   $("title").textContent = `Vivy plays ${live.game || "the Game Boy"}`;
@@ -374,6 +424,7 @@ function showLive() {
   $("goal").textContent = n.goal || "—";
   $("episodes").innerHTML = n.episodes.length ? n.episodes.map((e) => `<li>${episodeLine(e)}</li>`).join("") : '<li class="sub">None yet.</li>';
   $("notes").innerHTML = n.notes.length ? n.notes.map((t) => `<li>${esc(t)}</li>`).join("") : '<li class="sub">None yet.</li>';
+  showSkills(n.skills_written || []);
   $("foot").textContent = `Today $${n.usd.toFixed(2)} on paid models · ${Math.round(n.free_tokens / 1000)}k free tokens · ${n.checkpoints} checkpoints · ${n.skills} skills${n.newest_skill ? " (newest: " + n.newest_skill + ")" : ""}`;
 }
 
@@ -393,7 +444,12 @@ function connect(wait = 1000) {
     const view = new DataView(event.data);
     const mark = Number(view.getBigUint64(0, true));
     const png = new Blob([event.data.slice(8)], { type: "image/png" });
-    decoding = decoding.then(async () => queue.push({ mark, picture: await createImageBitmap(png) }));
+    if (document.hidden) { hiddenNewest = { mark, png }; return; }
+    decodingNow++;
+    // A screen that fails to decode is skipped, not left blocking the ones after it.
+    decoding = decoding.then(async () => {
+      try { queue.push({ mark, picture: await createImageBitmap(png) }); } finally { decodingNow--; }
+    }).catch(() => {});
   };
   socket.onclose = () => {
     $("status").className = "pill"; $("status").textContent = "Reconnecting…";

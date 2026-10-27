@@ -632,6 +632,7 @@ mod tests {
             checkpoints: 5,
             skills: 7,
             newest_skill: Some("win a wild battle".to_string()),
+            skills_written: Vec::new(),
             usd: 0.384,
             free_tokens: 212_400,
             said: String::new(),
