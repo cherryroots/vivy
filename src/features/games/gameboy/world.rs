@@ -148,6 +148,43 @@ impl World {
         self.areas.entry(name.to_string()).or_default()
     }
 
+    /// The ways out of `area` she has been through, as a line for her, or nothing.
+    pub fn ways_out(&self, area: &str) -> String {
+        match self.areas.get(area).map(ways) {
+            Some(ways) if !ways.is_empty() => {
+                format!("Ways out of here you've been through: {ways}.")
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Every place with ways out she has been through, and where each leads, for the
+    /// strategist to plan a way between places: `here` first, then the rest by name.
+    pub fn places(&self, here: &str) -> String {
+        let mut names: Vec<&String> = self
+            .areas
+            .iter()
+            .filter(|(_, map)| !map.doors.is_empty())
+            .map(|(name, _)| name)
+            .collect();
+        names.sort_by_key(|name| (name.as_str() != here, name.as_str()));
+        if names.is_empty() {
+            return String::new();
+        }
+        let lines: Vec<String> = names
+            .into_iter()
+            .map(|name| {
+                let marked = if name == here { " (she's here)" } else { "" };
+                format!("- {name}{marked}: {}", ways(&self.areas[name]))
+            })
+            .collect();
+        format!(
+            "Places and the ways out of each she has been through (code saw where each \
+             led):\n{}",
+            lines.join("\n")
+        )
+    }
+
     pub fn log(&mut self, step: Logged) {
         if self.log.len() == LOG_MOST {
             self.log.pop_front();
@@ -162,9 +199,64 @@ impl World {
     }
 }
 
+/// "to Pallet Town at (5, 7); to Route 1 at (10, -1), (11, -1)", a few steps for each.
+fn ways(map: &AreaMap) -> String {
+    const STEPS_SAID: usize = 3;
+    map.ways_out()
+        .iter()
+        .map(|(to, steps)| {
+            let mut said: Vec<String> = steps
+                .iter()
+                .take(STEPS_SAID)
+                .map(|(x, y)| format!("({x}, {y})"))
+                .collect();
+            if steps.len() > STEPS_SAID {
+                said.push(format!("{} more", steps.len() - STEPS_SAID));
+            }
+            format!("to {to} at {}", said.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::games::gameboy::map::Kind;
+
+    #[test]
+    fn the_ways_out_she_went_through_are_listed_by_where_they_lead() {
+        let mut world = World::default();
+        let town = world.area("Pallet Town");
+        town.see((5, 5), Kind::Door);
+        town.see((10, -1), Kind::Edge);
+        town.see((11, -1), Kind::Edge);
+        town.see((6, 6), Kind::Floor);
+        town.went_through((5, 6), Dir::Up, "Red's House 1F");
+        town.went_through((10, 0), Dir::Up, "Route 1");
+        town.went_through((11, 0), Dir::Up, "Route 1");
+        // Onto floor and somewhere else: not a way out (a game over, a scene).
+        town.went_through((6, 7), Dir::Up, "Viridian City");
+        // A mat she stood on and stepped off.
+        let house = world.area("Red's House 1F");
+        house.see((3, 7), Kind::Door);
+        house.went_through((3, 7), Dir::Down, "Pallet Town");
+        world.area("Route 1");
+
+        assert_eq!(
+            world.ways_out("Pallet Town"),
+            "Ways out of here you've been through: to Route 1 at (10, -1), (11, -1); to \
+             Red's House 1F at (5, 5)."
+        );
+        assert_eq!(world.ways_out("Route 1"), "");
+        assert_eq!(
+            world.places("Red's House 1F"),
+            "Places and the ways out of each she has been through (code saw where each \
+             led):\n- Red's House 1F (she's here): to Pallet Town at (3, 7)\n- Pallet Town: \
+             to Route 1 at (10, -1), (11, -1); to Red's House 1F at (5, 5)"
+        );
+        assert_eq!(World::default().places("Anywhere"), "");
+    }
 
     fn logged(from: Pos, outcome: Outcome, to_area: &str, to: Pos) -> Logged {
         Logged {
