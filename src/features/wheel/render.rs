@@ -21,6 +21,8 @@ const WIDTH: f32 = 960.0;
 const COLUMN: f32 = WIDTH / 2.0;
 /// Width of a resolved round's picture.
 const NARROW: f32 = 600.0;
+/// Extra room between the groups of the Waiting on box, for the divider.
+const GROUP_GAP: f32 = 12.0;
 /// Names longer than this are cut short.
 const MAX_NAME: usize = 14;
 /// How wide the bets on an option may be before they wrap to another line.
@@ -349,7 +351,10 @@ fn waiting_on(svg: &mut Svg, view: &View) {
                 lines.push((if n == 0 { label } else { "" }, line));
             }
         }
-        let height = 14.0 + 24.0 * lines.len() as f32;
+        // A divider between the groups, with some room around it.
+        let groups_after_first = lines.iter().skip(1).filter(|(label, _)| !label.is_empty());
+        let height =
+            14.0 + 24.0 * lines.len() as f32 + GROUP_GAP * groups_after_first.count() as f32;
         svg.rect(
             [16.0, svg.y, svg.width - 32.0, height],
             AMBER,
@@ -357,10 +362,19 @@ fn waiting_on(svg: &mut Svg, view: &View) {
             "fill-opacity=\"0.10\"",
         );
         svg.rect([16.0, svg.y, 4.0, height], AMBER, 2.0, "");
+        let mut y = svg.y + 24.0;
         for (n, (label, line)) in lines.iter().enumerate() {
-            let y = svg.y + 24.0 + 24.0 * n as f32;
+            if n > 0 && !label.is_empty() {
+                let divider = y - 9.0;
+                svg.raw(format!(
+                    "<line x1=\"32\" y1=\"{divider}\" x2=\"{}\" y2=\"{divider}\" stroke=\"{AMBER}\" stroke-opacity=\"0.35\"/>",
+                    svg.width - 32.0
+                ));
+                y += GROUP_GAP;
+            }
             svg.text(32.0, y, label, Style::new(15.0, AMBER).weight(600));
             svg.raw_text(190.0, y, line, Style::new(15.0, TEXT).weight(500));
+            y += 24.0;
         }
         svg.y += height;
     }
@@ -948,7 +962,7 @@ mod tests {
                     id: 2,
                     number: 2,
                     winner: None,
-                    claims: vec![1, 2, 3, 4, 5, 7, 8, 9, 10, 12],
+                    claims: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12],
                     bets: vec![
                         bet(1, 2, 60),
                         bet(2, 4, 45),

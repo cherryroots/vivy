@@ -241,6 +241,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #131 | | Game Boy web page: 60 frames a second, the map and dashboard wait for the frame they belong to so they never run ahead of the screen, catching up by playing a little faster instead of jumping, and three columns on a PC with long maps scrolling in their box. |
 | #128 | | Chat, chime-ins and memory jobs: after the last round of tools she answers without them (`answer_now`, the provider's `tool_choice` none) instead of failing, so a chime-in that uses all its rounds of tools still decides; chime-ins get 6 rounds of tools instead of 4. |
 | #132 | | Wheel: an open round's picture is wide, in two columns (standings left, bets right, options without bets two to a row), so it reads on a PC as well; resolved rounds stay narrow. |
+| #133 | | Wheel: a divider line between Haven't claimed and Claimed, no bet yet in the Waiting on box. |
 
 ## Not built yet
 
