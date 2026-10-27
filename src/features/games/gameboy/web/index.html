@@ -14,15 +14,24 @@
     margin: 0; background: var(--bg); color: var(--text);
     font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 1120px; margin: 0 auto; padding: 16px; }
+  main { max-width: 1680px; margin: 0 auto; padding: 16px; }
   header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 14px; margin-bottom: 12px; }
   h1 { font-size: 22px; margin: 0; }
   .pill { padding: 2px 10px; border-radius: 99px; font-size: 13px; font-weight: 600; background: var(--line); }
   .pill.live { background: rgba(229,72,77,.18); color: #ff8a8d; }
   .pill.thinking { background: rgba(245,184,61,.16); color: var(--amber); }
   .sub { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: minmax(0, 480px) minmax(0, 1fr); gap: 16px; }
-  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  /* Three columns on a wide screen (the screen, the map, what she reads and wrote), two on
+     a narrower one (the map above the rest), and one on a phone, with the map last. */
+  .grid { display: grid; gap: 16px; align-items: start;
+    grid-template-columns: minmax(0, 480px) minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas: "play map side"; }
+  .play { grid-area: play; } .mapcol { grid-area: map; } .side { grid-area: side; }
+  @media (max-width: 1280px) { .grid { grid-template-columns: minmax(0, 480px) minmax(0, 1fr); grid-template-areas: "play map" "play side"; } }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); grid-template-areas: "play" "side" "map"; } }
+  /* A long map scrolls in its own box instead of pushing everything down. */
+  .mapbox { max-height: 70vh; overflow: auto; border-radius: 6px; }
+  .caption { margin-top: 6px; min-height: 1.4em; color: var(--dim); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; }
   .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 8px; }
   .screen { position: relative; width: 100%; aspect-ratio: 10 / 9; background: #000; border-radius: 8px; overflow: hidden; border: 3px solid var(--teal); }
@@ -52,7 +61,7 @@
   .facts div { padding: 2px 0; border-bottom: 1px solid var(--line); }
   .facts div:last-child { border-bottom: 0; }
   .facts b { color: var(--teal); font-weight: 600; }
-  #map { width: 100%; image-rendering: pixelated; background: #0b0d0e; border-radius: 6px; }
+  #map { display: block; image-rendering: pixelated; background: #0b0d0e; }
   .foot { color: var(--muted); font-size: 13px; }
   /* "Vivy says": her latest commentary, like the dashboard's quote. */
   .said { display: none; border-left: 3px solid var(--teal); }
@@ -68,12 +77,13 @@
     <span id="session" class="sub"></span>
   </header>
   <div class="grid">
-    <section>
+    <section class="play">
       <div class="screen">
         <canvas id="game" width="160" height="144"></canvas>
         <canvas id="over" width="480" height="432"></canvas>
         <span id="badge" class="badge">her last look</span>
       </div>
+      <div class="caption" id="caption"></div>
       <div class="toggles">
         <label><input type="checkbox" id="showSeen" checked> What code sees</label>
         <label><input type="checkbox" id="showTiles"> Tile grid</label>
@@ -91,23 +101,25 @@
         <div class="warn" id="stuck"></div>
       </div>
       <div class="card">
-        <h2>From the game's memory</h2>
-        <div class="facts" id="facts"><span class="sub">Nothing read yet.</span></div>
-      </div>
-      <div class="card">
         <h2>Last actions</h2>
         <pre id="actions">—</pre>
       </div>
     </section>
-    <section>
+    <section class="mapcol">
       <div class="card">
         <h2 id="mapTitle">Map</h2>
-        <canvas id="map" width="300" height="200"></canvas>
+        <div class="mapbox" id="mapbox"><canvas id="map" width="300" height="200"></canvas></div>
         <div class="sub" id="mapNote"></div>
       </div>
+    </section>
+    <section class="side">
       <div class="card">
         <h2>On screen</h2>
         <div class="words none" id="words">No text box.</div>
+      </div>
+      <div class="card">
+        <h2>From the game's memory</h2>
+        <div class="facts" id="facts"><span class="sub">Nothing read yet.</span></div>
       </div>
       <div class="card">
         <h2>Goal</h2>
@@ -140,12 +152,15 @@ const KINDS = {
   "?": ["not seen yet", "rgba(120,120,120,0.45)", "#24292c"],
   "@": ["her", "rgba(0,0,0,0)", "#ffffff"],
 };
-const FRAME_MS = 3 * 1000 / 59.7275; // a screen is kept every 3 frames
-const MOST_BEHIND = 200;              // screens (10 s); past this it skips ahead
+const FRAME_MS = 1000 / 59.7275;      // every frame comes, at the game's speed
+const EASY = 120;                     // frames behind (2 s) it plays at the game's speed
+const MOST_BEHIND = 3600;             // frames (a minute); past this it skips ahead
 const $ = (id) => document.getElementById(id);
 const game = $("game").getContext("2d");
 const over = $("over").getContext("2d");
 let queue = [];
+// What code saw and the dashboard, each waiting for the frame it belongs to.
+let pending = [];
 let shownMark = 0;
 let idleSince = performance.now();
 let seen = null;
@@ -161,20 +176,50 @@ function esc(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
-// Plays the screens at the game's speed. She plays in bursts (an action takes a moment,
-// then she thinks), so the queue empties between actions and the last screen stays up.
-setInterval(() => {
-  if (queue.length > MOST_BEHIND) queue = queue.slice(queue.length - MOST_BEHIND / 2);
-  const next = queue.shift();
+// Plays the frames at the game's speed. She plays in bursts (an action takes a moment,
+// then she thinks), so the queue empties between actions and the last frame stays up.
+// Behind by much (a long walk comes all at once), it plays faster until it has caught up,
+// rather than jumping ahead.
+let lastTick = performance.now(), owed = 0;
+function tick(now) {
+  owed = Math.min(owed + (now - lastTick) / FRAME_MS * speed(queue.length), 16);
+  lastTick = now;
+  if (queue.length > MOST_BEHIND) queue.splice(0, queue.length - 60).forEach((f) => f.picture.close?.());
+  let steps = Math.floor(owed);
+  owed -= steps;
+  let next = null;
+  while (steps-- > 0 && queue.length) {
+    next?.picture.close?.();
+    next = queue.shift();
+  }
   if (next) {
     game.drawImage(next.picture, 0, 0);
     next.picture.close?.();
     shownMark = next.mark;
-    idleSince = performance.now();
+    idleSince = now;
   }
+  showPending();
   drawOver();
   showStatus();
-}, FRAME_MS);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+// How much faster than the game it plays, `behind` frames behind: not at all up to 2 s,
+// then a little more the further behind (1.5 times at 5 s, twice at 8 s), at most 4 times.
+function speed(behind) {
+  return Math.min(4, Math.max(1, 1 + (behind - EASY) / 360));
+}
+
+// Shows what code saw and the dashboard once the frame they belong to is up, or when
+// there are no frames left to play.
+function showPending() {
+  while (pending.length && (pending[0].mark <= shownMark || queue.length === 0)) {
+    const { kind, value } = pending.shift();
+    if (kind === "seen") { seen = value; showSeen(); }
+    if (kind === "live") { live = value; showLive(); }
+  }
+}
 
 function settled() {
   return queue.length === 0 && performance.now() - idleSince > 250;
@@ -242,7 +287,8 @@ function drawMap() {
   $("mapTitle").textContent = seen.area ? `Map · ${seen.area}` : "Map";
   if (!rows.length) { canvas.height = 60; canvas.getContext("2d").clearRect(0, 0, canvas.width, 60); $("mapNote").textContent = "Nothing mapped here yet."; return; }
   const across = rows[0].length, down = rows.length;
-  const cell = Math.max(3, Math.min(14, Math.floor(300 / across)));
+  const width = Math.max(200, $("mapbox").clientWidth || 300);
+  const cell = Math.max(3, Math.min(14, Math.floor(width / across)));
   canvas.width = across * cell; canvas.height = down * cell;
   const ctx = canvas.getContext("2d");
   let known = 0;
@@ -262,6 +308,10 @@ function drawMap() {
   ctx.fillStyle = "#2bb3a3";
   ctx.beginPath(); ctx.arc(me[0] * cell + cell / 2, me[1] * cell + cell / 2, Math.max(2, cell / 2), 0, 7); ctx.fill();
   $("mapNote").textContent = `${known} steps seen · she's at x ${seen.at[0]}, y ${seen.at[1]}`;
+  // A map taller or wider than its box scrolls to keep her in view.
+  const box = $("mapbox");
+  box.scrollTop = Math.max(0, me[1] * cell - box.clientHeight / 2);
+  box.scrollLeft = Math.max(0, me[0] * cell - box.clientWidth / 2);
 }
 
 // "17/21 HP" gets a bar like the dashboard mockup's: green, amber under half, red under a fifth.
@@ -314,6 +364,8 @@ function showLive() {
   $("actionsText").textContent = live.playing && n.task
     ? `Action ${n.actions} of 30 · ${n.stuck ? `stuck ${n.stuck}` : "not stuck"}` : "";
   $("actions").innerHTML = n.last_actions.length ? n.last_actions.map(actionLine).join("\n") : "—";
+  const newest = live.playing && n.last_actions.length ? n.last_actions[n.last_actions.length - 1] : "";
+  $("caption").innerHTML = newest ? actionLine(newest) : "";
   const stuck = $("stuck");
   stuck.style.display = live.playing && n.stuck >= 3 ? "block" : "none";
   stuck.innerHTML = `⚠️ <b>Nothing new for ${n.stuck} episodes.</b> <span>She's asked to try a different kind of task, exploring first.</span>`;
@@ -333,9 +385,9 @@ function connect(wait = 1000) {
   socket.onopen = () => { wait = 1000; };
   socket.onmessage = (event) => {
     if (typeof event.data === "string") {
+      // In line with the frames still decoding, so it waits behind them.
       const { kind, value } = JSON.parse(event.data);
-      if (kind === "seen") { seen = value; showSeen(); }
-      if (kind === "live") { live = value; showLive(); }
+      decoding = decoding.then(() => pending.push({ kind, value, mark: value.mark || 0 }));
       return;
     }
     const view = new DataView(event.data);

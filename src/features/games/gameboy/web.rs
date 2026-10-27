@@ -5,14 +5,16 @@
 //! `"127.0.0.1:8787"`, with a web server in front for the public address (`web_url`).
 //!
 //! - `/` is the page (`web/index.html`, built into the bot).
-//! - `/live` is a WebSocket. It sends each new screen as a PNG (after the screen's number,
-//!   8 bytes), and JSON whenever her look or the dashboard's [`Now`] changes.
+//! - `/live` is a WebSocket. It sends every frame as a PNG (after the frame's number, 8
+//!   bytes), and JSON whenever her look or the dashboard's [`Now`] changes, each with the
+//!   frame it belongs to, so the page shows them when it plays that frame.
 //! - `/state.json` is the latest look and `Now`, for checking by hand.
 //!
 //! One feed reads the Game Boy for every viewer, and only while someone is watching.
 
 use std::net::SocketAddr;
 use std::sync::LazyLock;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::Router;
@@ -25,24 +27,24 @@ use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use super::console::console;
+use super::console::{WEB_WATCHING, console};
 use super::map::Pos;
 use super::pictures;
 use super::session::Now;
 use super::walk::look_for;
 use super::world::Grid;
 
-/// How often the feed checks the Game Boy for new screens, in milliseconds.
-const CHECK_EVERY: u64 = 150;
-/// Messages a slow viewer can fall behind before it misses some.
-const BACKLOG: usize = 1024;
+/// How often the feed checks the Game Boy for new frames, in milliseconds.
+const CHECK_EVERY: u64 = 50;
+/// Messages a slow viewer can fall behind before it misses some: 30 s of frames.
+const BACKLOG: usize = 2048;
 
 const PAGE: &str = include_str!("web/index.html");
 
 /// What code sees when it looks at the game, as the page draws it.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Seen {
-    /// Screens recorded when it looked: the page shows this over that screen.
+    /// The frame it looked at (`Emulator::frames`): the page shows this over that frame.
     pub mark: u64,
     pub area: String,
     pub at: Pos,
@@ -63,6 +65,8 @@ pub struct Seen {
 /// What she's doing, from the session (`playing.rs` keeps it up to date).
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 pub struct Live {
+    /// The newest frame when it was sent: the page shows it once it plays that frame.
+    pub mark: u64,
     pub playing: bool,
     pub game: String,
     pub now: Now,
@@ -81,6 +85,7 @@ pub async fn follow(game: String, mut now: watch::Receiver<Now>) {
     loop {
         let current = now.borrow_and_update().clone();
         live().send_replace(Live {
+            mark: 0,
             playing: true,
             game: game.clone(),
             now: current,
@@ -202,8 +207,9 @@ fn json<T: Serialize>(kind: &str, value: &T) -> String {
     serde_json::json!({ "kind": kind, "value": value }).to_string()
 }
 
-/// Reads the Game Boy for the viewers: new screens as they're recorded, her look when the
-/// screen settles, and the dashboard's `Now` when it changes. Idle while nobody watches.
+/// Reads the Game Boy for the viewers: every new frame, her look when the screen settles,
+/// and the dashboard's `Now` when it changes, each with the frame it belongs to. Idle while
+/// nobody watches.
 async fn feed(shared: Shared, shutdown: CancellationToken) {
     let mut mark = None;
     let mut looked_at = None;
@@ -213,27 +219,32 @@ async fn feed(shared: Shared, shutdown: CancellationToken) {
             () = tokio::time::sleep(Duration::from_millis(CHECK_EVERY)) => {}
             () = shutdown.cancelled() => return,
         }
-        if shared.updates.receiver_count() == 0 {
+        let watching = shared.updates.receiver_count() > 0;
+        WEB_WATCHING.store(watching, Ordering::Relaxed);
+        if !watching {
             mark = None;
             continue;
         }
-        if live_now.has_changed().unwrap_or(false) {
-            let current = live_now.borrow_and_update().clone();
-            let _ = shared.updates.send(Update::Live(Box::new(current)));
+        let frames = new_frames(mark).await.unwrap_or_default();
+        let fresh = !frames.is_empty();
+        for (at, png) in frames {
+            mark = Some(at);
+            let _ = shared.updates.send(Update::Screen(at, png));
         }
-        let Some((recorded, screens)) = new_screens(mark).await else {
-            continue;
-        };
-        mark = Some(recorded);
-        for (i, png) in screens.iter().enumerate() {
-            let at = recorded - (screens.len() - 1 - i) as u64;
-            let _ = shared.updates.send(Update::Screen(at, png.clone()));
+        // After the frames, so it shows once the page has played them.
+        if live_now.has_changed().unwrap_or(false) {
+            let mut current = live_now.borrow_and_update().clone();
+            current.mark = mark.unwrap_or(0);
+            let _ = shared.updates.send(Update::Live(Box::new(current)));
         }
         // Look once the screen has stopped changing for a check (between her actions),
         // the way she sees it when she decides.
-        if screens.is_empty() && looked_at != Some(recorded) {
-            looked_at = Some(recorded);
-            if let Some(seen) = look(recorded).await
+        if let Some(at) = mark
+            && !fresh
+            && looked_at != Some(at)
+        {
+            looked_at = Some(at);
+            if let Some(seen) = look().await
                 && *shared.seen.borrow() != seen
             {
                 shared.seen.send_replace(seen.clone());
@@ -243,38 +254,30 @@ async fn feed(shared: Shared, shutdown: CancellationToken) {
     }
 }
 
-/// The screens recorded since `mark` (all that are kept, the first time) as PNGs, with how
-/// many had been recorded. The PNGs are made off the Game Boy's thread.
-async fn new_screens(mark: Option<u64>) -> Option<(u64, Vec<Vec<u8>>)> {
-    let (recorded, screens) = console()
-        .with(move |machine| {
-            let m = machine.as_ref()?;
-            let since = mark.unwrap_or(m.recorded().saturating_sub(1));
-            Some((m.recorded(), m.screens_since(since)))
-        })
+/// The frames after `mark` (the newest alone, the first time) as PNGs, by their numbers.
+/// The PNGs are made off the Game Boy's thread.
+async fn new_frames(mark: Option<u64>) -> Option<Vec<(u64, Vec<u8>)>> {
+    let frames = console()
+        .with(move |machine| Some(machine.as_ref()?.web_frames_after(mark)))
         .await
         .ok()
         .flatten()?;
-    let pngs = tokio::task::spawn_blocking(move || {
-        screens
-            .iter()
-            .filter_map(|screen| pictures::png_at(screen, 1).ok())
-            .collect::<Vec<_>>()
+    tokio::task::spawn_blocking(move || {
+        frames
+            .into_iter()
+            .filter_map(|(at, frame)| Some((at, pictures::png_at(&frame.rgb(), 1).ok()?)))
+            .collect()
     })
     .await
-    .ok()?;
-    Some((recorded, pngs))
+    .ok()
 }
 
-/// The newest screen as a PNG, for a viewer who just came.
+/// The newest screen as a PNG, for a viewer who just came, by its frame's number.
 async fn last_screen() -> Option<(u64, Vec<u8>)> {
-    let (recorded, screen) = console()
+    let (at, screen) = console()
         .with(|machine| {
-            let m = machine.as_ref()?;
-            Some((
-                m.recorded(),
-                m.screens_since(m.recorded().saturating_sub(1)).pop()?,
-            ))
+            let m = machine.as_mut()?;
+            Some((m.emulator.frames(), m.emulator.screen()))
         })
         .await
         .ok()
@@ -283,14 +286,15 @@ async fn last_screen() -> Option<(u64, Vec<u8>)> {
         .await
         .ok()?
         .ok()?;
-    Some((recorded, png))
+    Some((at, png))
 }
 
 /// Looks at the game the way her actions do, and gathers what to draw.
-async fn look(mark: u64) -> Option<Seen> {
+async fn look() -> Option<Seen> {
     console()
         .with(move |machine| {
             let m = machine.as_mut()?;
+            let mark = m.emulator.frames();
             let look = look_for(m.emulator.info());
             // A copy, so watching never changes what she has seen: the page only looks.
             let mut world = m.world.clone();

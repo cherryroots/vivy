@@ -8,6 +8,7 @@
 use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use anyhow::{Context as _, Result, anyhow};
@@ -27,6 +28,54 @@ pub const RECENT_SECONDS: u32 = 10;
 const RECENT_FRAMES: usize = (RECENT_SECONDS as f64 * FPS) as usize;
 
 const RECENT_SCREENS: usize = (RECENT_SECONDS as f64 * FPS / RECORD_EVERY as f64) as usize;
+
+/// Whether the web page has someone watching (`web.rs`): only then is every frame kept for
+/// it.
+pub static WEB_WATCHING: AtomicBool = AtomicBool::new(false);
+
+/// One frame for the web page, small to keep: its colours, and each pixel's colour by
+/// number (a Game Boy shows 4 at a time, a Game Boy Color at most 56).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Indexed {
+    pub colours: Vec<[u8; 3]>,
+    pub pixels: Vec<u8>,
+}
+
+impl Indexed {
+    /// A screen's pixels (3 bytes each) by colour number. Past 256 colours, which no Game
+    /// Boy shows at once, the rest read as the first.
+    pub fn of(screen: &[u8]) -> Indexed {
+        let mut colours: Vec<[u8; 3]> = Vec::new();
+        let pixels = screen
+            .chunks_exact(3)
+            .map(|p| {
+                let colour = [p[0], p[1], p[2]];
+                match colours.iter().position(|c| *c == colour) {
+                    Some(i) => i as u8,
+                    None if colours.len() < 256 => {
+                        colours.push(colour);
+                        (colours.len() - 1) as u8
+                    }
+                    None => 0,
+                }
+            })
+            .collect();
+        Indexed { colours, pixels }
+    }
+
+    /// Back to 3 bytes a pixel.
+    pub fn rgb(&self) -> Vec<u8> {
+        self.pixels
+            .iter()
+            .flat_map(|&i| {
+                self.colours
+                    .get(usize::from(i))
+                    .copied()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+}
 
 /// How long each press lasts, in frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +110,9 @@ pub struct Machine {
     sprite_frames: VecDeque<Recorded>,
     /// What code has learned about the game's world: area maps and the movement log.
     pub world: World,
+    /// Every frame of the last `RECENT_SECONDS` by its number, while the web page has
+    /// someone watching ([`WEB_WATCHING`]), for 60 frames a second there.
+    web_frames: VecDeque<(u64, Indexed)>,
 }
 
 impl Machine {
@@ -72,6 +124,7 @@ impl Machine {
             recorded: 0,
             sprite_frames: VecDeque::with_capacity(RECENT_FRAMES),
             world: World::default(),
+            web_frames: VecDeque::new(),
         })
     }
 
@@ -95,6 +148,29 @@ impl Machine {
             }
             self.recent.push_back(self.emulator.screen());
             self.recorded += 1;
+        }
+        if WEB_WATCHING.load(Ordering::Relaxed) {
+            if self.web_frames.len() == RECENT_FRAMES {
+                self.web_frames.pop_front();
+            }
+            let frame = Indexed::of(&self.emulator.screen());
+            self.web_frames.push_back((self.emulator.frames(), frame));
+        } else if !self.web_frames.is_empty() {
+            self.web_frames.clear();
+        }
+    }
+
+    /// The frames kept for the web page after frame `after` (`Emulator::frames`), or the
+    /// newest alone when `after` is `None`.
+    pub fn web_frames_after(&self, after: Option<u64>) -> Vec<(u64, Indexed)> {
+        match after {
+            Some(after) => self
+                .web_frames
+                .iter()
+                .filter(|(n, _)| *n > after)
+                .cloned()
+                .collect(),
+            None => self.web_frames.back().cloned().into_iter().collect(),
         }
     }
 
@@ -252,6 +328,29 @@ mod tests {
 
     fn machine() -> Machine {
         Machine::new("test.gb", &test_rom::build()).unwrap()
+    }
+
+    #[test]
+    fn every_frame_is_kept_for_the_web_page_only_while_someone_watches() {
+        let mut m = machine();
+        m.run(3);
+        assert_eq!(m.web_frames_after(None), vec![]);
+        WEB_WATCHING.store(true, Ordering::Relaxed);
+        m.run(5);
+        let first = m.emulator.frames() - 4;
+        let numbers =
+            |kept: Vec<(u64, Indexed)>| kept.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(
+            numbers(m.web_frames_after(Some(first))),
+            (first + 1..first + 5).collect::<Vec<_>>()
+        );
+        assert_eq!(numbers(m.web_frames_after(None)), vec![first + 4]);
+        let (_, newest) = m.web_frames_after(None).pop().unwrap();
+        assert_eq!(newest.rgb(), m.emulator.screen());
+        assert!(newest.colours.len() <= 4);
+        WEB_WATCHING.store(false, Ordering::Relaxed);
+        m.run(1);
+        assert_eq!(m.web_frames_after(None), vec![]);
     }
 
     #[test]

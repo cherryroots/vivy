@@ -787,3 +787,90 @@ async fn status_bar() {
         super::spent(&db).await
     );
 }
+
+/// The web page with a game playing on the bot's Game Boy and no model: from
+/// `VIVY_GB_FROM`, the presses in `VIVY_GB_PRESSES` (her press action's way, like
+/// "right:90 a:24+right:40") over and over with a pause after each, as if she were
+/// thinking, and a made-up dashboard, for `VIVY_GB_SECONDS` (default 60). The page is at
+/// `VIVY_GB_WEB` (default 127.0.0.1:8799), to look at in a browser.
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_OTHER and a state in VIVY_GB_FROM"]
+async fn web_page_by_hand() {
+    use std::collections::VecDeque;
+
+    use crate::features::games::gameboy::console::console;
+    use crate::features::games::gameboy::session::Now;
+    use crate::features::games::gameboy::walk::look_for;
+    use crate::features::games::gameboy::{actions, web};
+    let (_, rom) = other();
+    let state = std::fs::read(std::env::var("VIVY_GB_FROM").unwrap()).unwrap();
+    console()
+        .with(move |machine| {
+            let mut m = Machine::new("other.gb", &rom).unwrap();
+            m.load_state(&state).unwrap();
+            *machine = Some(m);
+        })
+        .await
+        .unwrap();
+    let bind = super::setting("VIVY_GB_WEB", "127.0.0.1:8799");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let serving = shutdown.clone();
+    tokio::spawn(async move { web::serve(&bind, serving).await.unwrap() });
+    let presses = super::setting(
+        "VIVY_GB_PRESSES",
+        "right:90 a:24+right:40 left:30 a:8+right:60",
+    );
+    let seconds: u64 = super::setting("VIVY_GB_SECONDS", "60").parse().unwrap();
+    let mut now = Now {
+        started: chrono::Utc::now().timestamp(),
+        session: 1,
+        episode: 3,
+        task: "Cross to the raised metal platform on the right, shooting the enemies on the way."
+            .to_string(),
+        goal: "Get through the first stage.".to_string(),
+        episodes: (1..=12)
+            .map(|n| {
+                format!("#{n} 10-26 19:{n:02} Place {n}: a task → done, 4 actions, new: 3 steps")
+            })
+            .collect(),
+        notes: (1..=8)
+            .map(|n| format!("Note {n}: something she learned."))
+            .collect(),
+        last_actions: VecDeque::new(),
+        ..Now::default()
+    };
+    let started = std::time::Instant::now();
+    'play: loop {
+        for typed in presses.split_whitespace() {
+            if started.elapsed().as_secs() >= seconds {
+                break 'play;
+            }
+            let args = serde_json::json!({ "buttons": typed });
+            let outcome = console()
+                .with(move |machine| {
+                    let m = machine.as_mut().unwrap();
+                    let look = look_for(m.emulator.info());
+                    let mut world = std::mem::take(&mut m.world);
+                    let acted = actions::run(&mut world, m, look, "press", &args);
+                    m.world = world;
+                    acted.outcome
+                })
+                .await
+                .unwrap();
+            now.actions += 1;
+            now.last_actions
+                .push_back(format!("press \"{typed}\": {outcome}"));
+            if now.last_actions.len() > 6 {
+                now.last_actions.pop_front();
+            }
+            web::live().send_replace(web::Live {
+                mark: 0,
+                playing: true,
+                game: "a game".to_string(),
+                now: now.clone(),
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
+    }
+    shutdown.cancel();
+}
