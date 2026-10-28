@@ -29,6 +29,7 @@ use serde_json::json;
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
+use super::emoji;
 use super::look_back::one_line;
 use super::store::{self, NewTurn, StoredPart, Written};
 use super::tools::{format_message, parse_link};
@@ -323,9 +324,14 @@ pub async fn speak(
         continuation_id: done.continuation,
         native_json: serde_json::to_string(&done.rounds).ok(),
     };
+    // Her `:name:` for a server emoji becomes its code, so Discord shows it.
+    let codes = emoji::codes(ctx, asker.guild);
     let (line, reply_to) = match (decision, last) {
-        (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => (line, reply_to),
-        (Decision::React(emoji), Some(msg)) => {
+        (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => {
+            (emoji::with_codes(&line, &codes), reply_to)
+        }
+        (Decision::React(picked), Some(msg)) => {
+            let emoji = emoji::reaction_code(&picked, &codes);
             react(&ctx.http, msg.channel_id, msg.id, &emoji).await?;
             info!("reacted with {emoji}");
             // Saved too, so `look_back_at_answers` lists it when someone asks why she
