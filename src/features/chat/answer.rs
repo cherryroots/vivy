@@ -26,6 +26,7 @@ use crate::util::reply::LiveReply;
 use crate::util::shorten;
 use crate::util::split::{DISCORD_LIMIT, close_code_block, split_message};
 
+use super::emoji;
 use super::store::Written;
 
 /// The fixed instructions. Static, so every request starts the same and hits the cache.
@@ -76,11 +77,14 @@ struct Screen {
     /// What Discord shows now, to skip edits that change nothing.
     shown: Vec<String>,
     message_ids: Arc<Mutex<Vec<MessageId>>>,
+    /// The server's custom emoji codes by name, so her `:name:` shows as the emoji.
+    emoji: HashMap<String, String>,
 }
 
 impl Screen {
     async fn show(&mut self, ctx: &BotCtx) -> anyhow::Result<()> {
-        let parts = render(&self.text, self.note.as_deref(), self.status.as_deref());
+        let text = emoji::with_codes(&self.text, &self.emoji);
+        let parts = render(&text, self.note.as_deref(), self.status.as_deref());
         if parts == self.shown {
             return Ok(());
         }
@@ -229,6 +233,7 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
         status: Some(activity_status(&Activity::Thinking)),
         shown: Vec::new(),
         message_ids: job.message_ids,
+        emoji: emoji::codes(ctx, job.asker.guild),
     };
     let result = stream_answer(
         ctx,
@@ -286,8 +291,10 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
     };
     let mut message_ids = screen.reply.message_ids();
     message_ids.extend(job.asker.posted.ids());
+    // Saved as shown, so her earlier answers show her the codes, not `:name:`.
+    let text = emoji::with_codes(&screen.text, &screen.emoji);
     Outcome {
-        text: with_posted(&screen.text, &job.asker.posted.texts()),
+        text: with_posted(&text, &job.asker.posted.texts()),
         written,
         message_ids,
         end,

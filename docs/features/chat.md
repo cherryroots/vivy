@@ -33,7 +33,7 @@ All under `src/features/chat/`, in a good reading order:
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
-| `emoji.rs` | The `list_server_emoji` tool and the task that describes each custom emoji once |
+| `emoji.rs` | The `list_server_emoji` tool, the task that describes each custom emoji once, and turning her `:name:` into the emoji's code |
 | `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid, how messages and linked messages are tagged); what each tool is for and when to use it is in the tool's own description, so the two can't disagree. The exceptions are which web tool to pick (TinyFish) and that Discord message links are hers to open: without that line she tried her web tools on them, failed, and said she can't open Discord links. And one line on `web_search` called from her code: Anthropic's description of that function says it returns a list, but it returns a JSON string, so her first try at reading it broke |
 
 Chat also leans on a few helpers in `src/util/` (described in [architecture](../architecture.md)): `util::reply::LiveReply` (a reply that spans several messages and is edited in place), `util::split::split_message` (Discord-sized parts that keep code blocks intact), `util::media` (finding and loading pictures, GIFs, videos and files) and `util::text` (attachment and embed text).
@@ -149,6 +149,8 @@ The delivery task sleeps until the next one is due (at most an hour), takes ever
 ### Server emoji
 
 `emoji.rs`. A task waits 30 seconds after start (so the cache has the servers), then once a day describes every custom emoji that has no row in `chat_emoji` yet, in every server where chat is enabled. It loads the picture from Discord's CDN (frames for an animated one) and asks the model for one line with a small system prompt of its own, no tools and `job: "emoji"` (Claude Haiku at low effort, see [Jobs](../ai.md#jobs)). So every emoji is described on the first start, and later only new ones. An emoji that fails isn't tried again until the bot restarts. `list_server_emoji` returns the server's emoji codes (at most 250) with their descriptions.
+
+Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:123>` when it moves); `:name:` alone shows as text. The system prompt tells her to use the code, and `with_codes` fixes it when she doesn't: her `:name:` for one of the server's emoji becomes its code, and a code she wrote herself gets the right id and `a` (a missing or guessed id). Names the server has no emoji for stay as they are. `codes` reads the server's emoji from the cache by name. Answers fix the text each time it's shown and save the fixed text, so her earlier answers show her the codes; chime-in lines are fixed before they're posted, and a chime-in reaction may also be a bare name (`reaction_code`).
 
 ## Chat tools
 

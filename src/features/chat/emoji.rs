@@ -3,8 +3,12 @@
 //! A background task looks at each emoji's picture once and saves a short description
 //! (`chat_emoji`): every emoji at the first start, then only new ones, checked at each
 //! start and once a day ([`CHECK`]), since new emoji are rare. The `list_server_emoji` tool lists them with their descriptions.
+//!
+//! Discord only shows a custom emoji written as its code, `<:name:123>`. Models often write
+//! `:name:` the way people type it, so [`with_codes`] turns her `:name:` into the code before
+//! her messages go out.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -60,6 +64,67 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
         })
         .collect();
     Ok(lines.join("\n"))
+}
+
+/// The codes of a server's custom emoji by name ("pog" → "<:pog:123>"), for
+/// [`with_codes`]. Empty in DMs.
+pub fn codes(ctx: &BotCtx, guild: Option<GuildId>) -> HashMap<String, String> {
+    let Some(guild) = guild else {
+        return HashMap::new();
+    };
+    server_emoji(ctx, guild)
+        .into_iter()
+        .map(|e| (e.name.clone(), e.to_string()))
+        .collect()
+}
+
+/// `text` with every server emoji she wrote by name, `:pog:`, turned into its code,
+/// `<:pog:123>`, so Discord shows it. A code she wrote herself gets the right id and the
+/// `a` of an animated emoji, in case she guessed them. Names the server has no emoji for
+/// stay as they are.
+pub fn with_codes(text: &str, codes: &HashMap<String, String>) -> String {
+    if codes.is_empty() {
+        return text.to_string();
+    }
+    let mut result = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(':') {
+        let after = &rest[start + 1..];
+        // The name runs to the next colon.
+        let code = after
+            .find(':')
+            .and_then(|end| Some((codes.get(&after[..end])?, end)));
+        let Some((code, end)) = code else {
+            result.push_str(&rest[..=start]);
+            rest = after;
+            continue;
+        };
+        let before = &rest[..start];
+        let mut tail = &after[end + 1..];
+        // A code she wrote herself, `<:pog:123>`: replace all of it.
+        let opened = before
+            .strip_suffix("<a")
+            .or_else(|| before.strip_suffix('<'));
+        if let Some(opened) = opened {
+            result.push_str(opened);
+            tail = tail.trim_start_matches(|c: char| c.is_ascii_digit());
+            tail = tail.strip_prefix('>').unwrap_or(tail);
+        } else {
+            result.push_str(before);
+        }
+        result.push_str(code);
+        rest = tail;
+    }
+    result.push_str(rest);
+    result
+}
+
+/// A reaction she picked, with a server emoji's bare name ("pog") turned into its code too.
+pub fn reaction_code(emoji: &str, codes: &HashMap<String, String>) -> String {
+    match codes.get(emoji.trim()) {
+        Some(code) => code.clone(),
+        None => with_codes(emoji, codes),
+    }
 }
 
 /// A server's custom emoji, with what this file needs.
@@ -242,5 +307,61 @@ struct NoTools;
 impl ToolRunner for NoTools {
     async fn run(&self, call: &ToolCall) -> String {
         format!("Error: there is no tool named {}.", call.name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_codes() -> HashMap<String, String> {
+        HashMap::from([
+            ("pog".to_string(), "<:pog:123>".to_string()),
+            ("dance".to_string(), "<a:dance:456>".to_string()),
+        ])
+    }
+
+    #[test]
+    fn names_become_codes() {
+        let codes = test_codes();
+        assert_eq!(with_codes("nice :pog:", &codes), "nice <:pog:123>");
+        assert_eq!(
+            with_codes(":dance::pog: yes", &codes),
+            "<a:dance:456><:pog:123> yes"
+        );
+    }
+
+    #[test]
+    fn written_codes_get_the_right_id() {
+        let codes = test_codes();
+        assert_eq!(with_codes("<:pog:123>", &codes), "<:pog:123>");
+        assert_eq!(with_codes("<:pog:999> hi", &codes), "<:pog:123> hi");
+        assert_eq!(with_codes("<:pog:>", &codes), "<:pog:123>");
+        assert_eq!(with_codes("<:dance:456>", &codes), "<a:dance:456>");
+        assert_eq!(with_codes("<a:dance:456>", &codes), "<a:dance:456>");
+    }
+
+    #[test]
+    fn other_colons_stay() {
+        let codes = test_codes();
+        for text in [
+            "at 10:30: lunch",
+            "note: :unknown: here",
+            "<:other:77>",
+            "https://example.com:8080/pog",
+            "pog",
+            "a:pog",
+        ] {
+            assert_eq!(with_codes(text, &codes), text);
+        }
+        assert_eq!(with_codes(":pog:", &HashMap::new()), ":pog:");
+    }
+
+    #[test]
+    fn reactions_by_name() {
+        let codes = test_codes();
+        assert_eq!(reaction_code("pog", &codes), "<:pog:123>");
+        assert_eq!(reaction_code(":dance:", &codes), "<a:dance:456>");
+        assert_eq!(reaction_code("😂", &codes), "😂");
     }
 }
