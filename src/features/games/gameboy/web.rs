@@ -40,6 +40,9 @@ const CHECK_EVERY: u64 = 50;
 const BACKLOG: usize = 2048;
 
 const PAGE: &str = include_str!("web/index.html");
+/// Seconds between the "still here" each viewer gets, so the page can tell a connection
+/// that died quietly (a phone that slept, a laptop lid) from her thinking a while.
+const ALIVE_EVERY: u64 = 5;
 
 /// What code sees when it looks at the game, as the page draws it.
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
@@ -160,8 +163,14 @@ async fn watch_live(mut socket: WebSocket, shared: Shared) {
             return;
         }
     }
+    let mut alive = tokio::time::interval(Duration::from_secs(ALIVE_EVERY));
     loop {
         tokio::select! {
+            _ = alive.tick() => {
+                if socket.send(Message::Text(json("alive", &()).into())).await.is_err() {
+                    return;
+                }
+            }
             update = updates.recv() => match update {
                 Ok(update) => {
                     if socket.send(message(&update)).await.is_err() {
