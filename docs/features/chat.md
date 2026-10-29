@@ -152,6 +152,8 @@ The delivery task sleeps until the next one is due (at most an hour), takes ever
 
 Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:123>` when it moves); `:name:` alone shows as text. The system prompt tells her to use the code, and `with_codes` fixes it when she doesn't: her `:name:` for one of the server's emoji becomes its code, and a code she wrote herself gets the right id and `a` (a missing or guessed id). Names the server has no emoji for stay as they are. `codes` reads the server's emoji from the cache by name. Answers fix the text each time it's shown and save the fixed text, so her earlier answers show her the codes; chime-in lines are fixed before they're posted, and a chime-in reaction may also be a bare name (`reaction_code`).
 
+When a chime-in may react (a reaction roll, or a roll where she may post anything), `emoji::for_chime_in` adds the server's emoji list, codes and descriptions as `list_server_emoji` gives them, after the instructions, so she can react with one of the server's own emoji without looking them up first. Read-only rolls and follow-ups don't get it. It costs about 20 input tokens per emoji on those rolls.
+
 ## Chat tools
 
 Besides the provider's built-in tools (web search and code, see [ai](../ai.md)), the model gets the bot's own function tools. Each feature contributes tools through `Feature::tools`, and chat offers the tools of every feature enabled where the conversation happens. A tool runs as the person who asked (`Asker`, in `src/core/feature.rs`): it only reads channels they can read and only changes their own things.
