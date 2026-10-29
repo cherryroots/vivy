@@ -181,20 +181,6 @@ let seen = null;
 let live = null;
 let decoding = Promise.resolve(); // keeps the screens in order while they decode
 let decodingNow = 0;              // screens come in but not decoded yet
-// A tab in the background gets no animation frames, so nothing plays there. Rather than
-// pile up screens to race through when it's looked at again (stuttering, and flicking
-// between Live and Thinking whenever decoding fell behind), it keeps only the newest and
-// starts from there.
-let hiddenNewest = null;
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden || !hiddenNewest) return;
-  const { mark, png } = hiddenNewest;
-  hiddenNewest = null;
-  decoding = decoding.then(async () => {
-    queue.forEach((f) => f.picture.close?.());
-    queue = [{ mark, picture: await createImageBitmap(png) }];
-  }).catch(() => {});
-});
 
 $("legend").innerHTML = Object.entries(KINDS)
   .filter(([k]) => k !== "@")
@@ -429,35 +415,77 @@ function showLive() {
   $("foot").textContent = `Today $${n.usd.toFixed(2)} on paid models · ${Math.round(n.free_tokens / 1000)}k free tokens · ${n.checkpoints} checkpoints · ${n.skills} skills${n.newest_skill ? " (newest: " + n.newest_skill + ")" : ""}`;
 }
 
-function connect(wait = 1000) {
+// The connection: a fresh one each time the page is looked at. A tab in the background
+// gets no animation frames, so nothing plays there; rather than pile up screens to race
+// through later, it lets go while hidden (and the bot stops keeping every frame when
+// nobody watches). Coming back, a connection that died quietly while away (a phone
+// switching apps, a laptop asleep) could leave the page frozen with no close ever coming,
+// so it never reuses one, and it starts again whenever the bot has been silent too long:
+// the bot says it's still there every 5 s.
+const SILENT_MOST = 15000;
+let socket = null;
+let tries = 0;          // in a row that didn't open, for waiting longer each time
+let heard = 0;          // when the bot last said anything
+let retry = null;
+
+function connect() {
+  clearTimeout(retry);
+  if (socket) { socket.onclose = null; socket.close(); }
+  // What was on its way belongs to the old connection.
+  queue.forEach((f) => f.picture.close?.());
+  queue = [];
+  pending = [];
+  decodingNow = 0;
+  decoding = Promise.resolve();
   const url = new URL("live", location.href);
   url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  const socket = new WebSocket(url);
-  socket.binaryType = "arraybuffer";
-  socket.onopen = () => { wait = 1000; };
-  socket.onmessage = (event) => {
+  const mine = new WebSocket(url);
+  socket = mine;
+  heard = performance.now();
+  mine.binaryType = "arraybuffer";
+  mine.onopen = () => { tries = 0; };
+  mine.onmessage = (event) => {
+    if (mine !== socket) return;
+    heard = performance.now();
     if (typeof event.data === "string") {
-      // In line with the frames still decoding, so it waits behind them.
       const { kind, value } = JSON.parse(event.data);
-      decoding = decoding.then(() => pending.push({ kind, value, mark: value.mark || 0 }));
+      if (kind === "alive") return;
+      // In line with the frames still decoding, so it waits behind them.
+      decoding = decoding.then(() => { if (mine === socket) pending.push({ kind, value, mark: value.mark || 0 }); });
       return;
     }
     const view = new DataView(event.data);
     const mark = Number(view.getBigUint64(0, true));
     const png = new Blob([event.data.slice(8)], { type: "image/png" });
-    if (document.hidden) { hiddenNewest = { mark, png }; return; }
     decodingNow++;
     // A screen that fails to decode is skipped, not left blocking the ones after it.
     decoding = decoding.then(async () => {
-      try { queue.push({ mark, picture: await createImageBitmap(png) }); } finally { decodingNow--; }
-    }).catch(() => {});
+      const picture = await createImageBitmap(png).catch(() => null);
+      if (mine !== socket) { picture?.close?.(); return; }
+      decodingNow--;
+      if (picture) queue.push({ mark, picture });
+    });
   };
-  socket.onclose = () => {
+  mine.onclose = () => {
+    if (mine !== socket) return;
+    socket = null;
     $("status").className = "pill"; $("status").textContent = "Reconnecting…";
-    setTimeout(() => connect(Math.min(wait * 2, 15000)), wait);
+    if (!document.hidden) retry = setTimeout(connect, Math.min(1000 * 2 ** tries++, 15000));
   };
 }
-connect();
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearTimeout(retry);
+    if (socket) { socket.onclose = null; socket.close(); socket = null; }
+  } else {
+    connect();
+  }
+});
+setInterval(() => {
+  if (socket && !document.hidden && performance.now() - heard > SILENT_MOST) connect();
+}, 2000);
+if (!document.hidden) connect();
 setInterval(() => { if (live) showLive(); }, 30000);
 </script>
 </body>
