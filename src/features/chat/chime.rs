@@ -221,7 +221,11 @@ impl Chime {
             posted: Default::default(),
         };
         let allowed = self.settings(ctx).allowed(fastrand::f64());
-        let instructions = format!("{READ_ALONG}{}", allowed_instructions(allowed));
+        let mut instructions = format!("{READ_ALONG}{}", allowed_instructions(allowed));
+        // When she may react, the server's own emoji are hers to pick from too.
+        if allowed != Allowed::ReadOnly {
+            instructions.push_str(&emoji::for_chime_in(ctx, asker.guild).await);
+        }
         speak(ctx, &asker, Some(msg), &instructions, None, allowed).await
     }
 
