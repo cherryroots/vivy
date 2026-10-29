@@ -46,24 +46,51 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     let Some(guild) = asker.guild else {
         return Ok("Direct messages have no server emoji.".to_string());
     };
+    let lines = described(ctx, guild).await?;
+    if lines.is_empty() {
+        return Ok("This server has no custom emoji.".to_string());
+    }
+    Ok(lines.join("\n"))
+}
+
+/// The server's emoji for a chime-in that may react, so she can pick one of them without
+/// looking them up first. Empty when the server has none (or in DMs).
+pub async fn for_chime_in(ctx: &BotCtx, guild: Option<GuildId>) -> String {
+    let Some(guild) = guild else {
+        return String::new();
+    };
+    match described(ctx, guild).await {
+        Ok(lines) if !lines.is_empty() => format!(
+            "\n\nBesides plain emoji you can use this server's own, in a line or as your reaction, written as their code:\n{}",
+            lines.join("\n")
+        ),
+        Ok(_) => String::new(),
+        Err(err) => {
+            warn!("listing the server's emoji: {err:#}");
+            String::new()
+        }
+    }
+}
+
+/// One line per emoji of the server: its code and what it shows, when that's known yet.
+async fn described(ctx: &BotCtx, guild: GuildId) -> Result<Vec<String>> {
     let emoji = server_emoji(ctx, guild);
     if emoji.is_empty() {
-        return Ok("This server has no custom emoji.".to_string());
+        return Ok(Vec::new());
     }
     let id = guild.get();
     let described = ctx
         .db
         .call(move |conn| Ok(store::emoji_descriptions(conn, id)?))
         .await?;
-    let lines: Vec<String> = emoji
+    Ok(emoji
         .iter()
         .take(MAX_LISTED)
         .map(|e| match described.get(&e.id.get()) {
             Some(text) => format!("{e}: {text}"),
             None => e.to_string(),
         })
-        .collect();
-    Ok(lines.join("\n"))
+        .collect())
 }
 
 /// The codes of a server's custom emoji by name ("pog" → "<:pog:123>"), for

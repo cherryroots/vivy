@@ -247,6 +247,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #136 | | Wheel: each option's total and payout in blue, and its bets in smaller text like the movie under the name. |
 | #137 | | Game Boy: Red's raised ground (Mt Moon's rock ledges) is a wall beside the floor, read from the game's own tile-pair list, and floor she can't walk to from where she stands is drawn `,` on her map and grey on the web map. |
 | #138 | | Chat: her server emoji show up. `:name:` (and a code with a missing or wrong id) becomes the full code `<:name:123>` in answers, chime-ins and reactions, and the prompt tells her to write the code. |
+| #139 | | Chat: chime-ins that may react get the server's emoji list, so her reactions can be the server's own emoji too. |
 
 ## Not built yet
 
