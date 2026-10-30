@@ -249,6 +249,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #138 | | Chat: her server emoji show up. `:name:` (and a code with a missing or wrong id) becomes the full code `<:name:123>` in answers, chime-ins and reactions, and the prompt tells her to write the code. |
 | #139 | | Chat: chime-ins that may react get the server's emoji list, so her reactions can be the server's own emoji too. |
 | #140 | | Game Boy web page: no more freezing after coming back to it: it lets go of the connection while hidden and opens a fresh one when shown, and the bot says it's alive every 5 s so a connection that died quietly is replaced after 15 s. |
+| #141 | | Chat: `react_to_message` tool, so she can react to messages in normal conversation too (plain or server emoji). |
 
 ## Not built yet
 

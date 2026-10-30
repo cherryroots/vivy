@@ -30,6 +30,7 @@ All under `src/features/chat/`, in a good reading order:
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `find_message_links`, `linked_message`, `can_read`) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels the asker can read |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
+| `react.rs` | The `react_to_message` tool: her own emoji reactions while she answers |
 | `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
 | `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
@@ -154,6 +155,8 @@ Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:1
 
 When a chime-in may react (a reaction roll, or a roll where she may post anything), `emoji::for_chime_in` adds the server's emoji list, codes and descriptions as `list_server_emoji` gives them, after the instructions, so she can react with one of the server's own emoji without looking them up first. Read-only rolls and follow-ups don't get it. It costs about 20 input tokens per emoji on those rolls.
 
+In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji` (a plain one, a server emoji's code, or its bare name, through `emoji::reaction_code`) and an optional `link`, which must be a message in the same channel; without it the reaction goes on the message she's answering. The tool description says to use it as well as her words, not instead of them. Chime-ins don't get the tool (it isn't in `UNPROMPTED_TOOLS`); they keep `REACT`. Her own reactions don't trigger ❌ or 🔁, since the dispatcher skips the bot's own reactions.
+
 ## Chat tools
 
 Besides the provider's built-in tools (web search and code, see [ai](../ai.md)), the model gets the bot's own function tools. Each feature contributes tools through `Feature::tools`, and chat offers the tools of every feature enabled where the conversation happens. A tool runs as the person who asked (`Asker`, in `src/core/feature.rs`): it only reads channels they can read and only changes their own things.
@@ -176,6 +179,7 @@ Chat's own tools:
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
 | `schedule_follow_up` | `follow_up.rs` | Plans a check-in with the asker after something they mentioned |
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
+| `react_to_message` | `react.rs` | Adds an emoji reaction (plain or the server's own) to the message she's answering, or to another message in the channel by its link |
 
 Tools from other features:
 
