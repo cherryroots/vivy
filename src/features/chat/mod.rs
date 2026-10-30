@@ -11,6 +11,7 @@
 //! - `chime.rs`: chiming in now and then without being mentioned
 //! - `follow_up.rs`: check-ins Vivy plans for herself, and their delivery
 //! - `emoji.rs`: the server's custom emoji, described once from their pictures
+//! - `react.rs`: the `react_to_message` tool, her own reactions while she answers
 //! - `prompt.md`: the system prompt
 //!
 //! Reactions on an answer, from the person who asked: ❌ stops it while it's being written
@@ -24,6 +25,7 @@ mod emoji;
 mod follow_up;
 mod history;
 mod look_back;
+mod react;
 mod search;
 mod store;
 mod tools;
@@ -118,6 +120,7 @@ impl Feature for Chat {
         defs.push(emoji::def());
         defs.push(follow_up::def());
         defs.push(look_back::def());
+        defs.push(react::def());
         defs
     }
 
@@ -135,6 +138,7 @@ impl Feature for Chat {
             "list_server_events" => "📅 Checking the events…",
             "list_server_emoji" => "😀 Looking at the emoji…",
             look_back::TOOL => "🪞 Looking back at what I did…",
+            react::TOOL => "✨ Reacting…",
             // Check-ins are a quiet surprise, so the status doesn't give them away.
             "schedule_follow_up" => "💭 Thinking…",
             _ => return None,
@@ -152,6 +156,7 @@ impl Feature for Chat {
             "list_server_emoji" => emoji::list(ctx, asker).await,
             "schedule_follow_up" => follow_up::schedule(ctx, asker, args, &self.follow_ups).await,
             look_back::TOOL => look_back::run(ctx, asker, args).await,
+            react::TOOL => react::run(ctx, asker, args).await,
             _ => tools::run(ctx, asker, name, args).await,
         }
     }
