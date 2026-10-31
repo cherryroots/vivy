@@ -34,6 +34,8 @@ const TIMES_MOST: u32 = 20;
 const PRESSES_MOST: u32 = 120;
 /// Surprising steps the solver is told at most, the latest.
 const SURPRISES_MOST: usize = 20;
+/// Rides the solver is told at most (B2F of Red's Rocket Hideout has about 60).
+const RIDES_MOST: usize = 120;
 /// Steps the map shows each way around her: enough for any Game Boy area.
 const MAP_RADIUS: i32 = 80;
 
@@ -60,6 +62,13 @@ direction is held while in the air, so hold the direction for the frames the dis
 needs, and past the landing frame only to keep walking. One unlike any tried yet is a \
 guess, so end the moves soon after it. Jumps tried from where the player stands are listed \
 with where each landed: a first move to one of those spots is that press exactly.
+
+A * step carries the player on by itself (floor arrows, a spinner, ice). Where a ride \
+ends depends on the step it was entered from and the way pressed, not on how long a \
+button is held: the rides code has seen are listed with where each ended, so plan with \
+those, and plain presses (up, down, left, right) are all a ride needs. A * step entered \
+from a side not listed is a guess: end the moves right after it, and code asks again \
+from wherever it ends.
 
 Code presses the moves one at a time. A held press that ends one step from its spot walks \
 that step; otherwise code stops at the first move that doesn't end where you said, so say \
@@ -180,6 +189,16 @@ pub fn ask(
         wanted.what.trim(),
         map.draw(at, MAP_RADIUS)
     );
+    let rides = map.rides();
+    if !rides.is_empty() {
+        text.push_str(
+            "\nRides code has seen here (from a step, the way pressed: where it ended):\n",
+        );
+        let skip = rides.len().saturating_sub(RIDES_MOST);
+        for ((x, y), dir, (to_x, to_y)) in rides.into_iter().skip(skip) {
+            text.push_str(&format!("- ({x}, {y}) {}: ({to_x}, {to_y})\n", dir.name()));
+        }
+    }
     text.push_str("\nSteps here whose results surprised code:\n");
     if surprises.is_empty() {
         text.push_str("- (none seen yet)\n");
@@ -441,6 +460,29 @@ mod tests {
                 "Hideout (1, 0) right: moved to (5, 0)"
             ]
         );
+    }
+
+    #[test]
+    fn the_solver_is_told_the_rides_the_map_knows() {
+        let mut map = room();
+        map.landed((1, 2), Dir::Right, (5, 2));
+        map.landed((0, 1), Dir::Down, (0, 1));
+        let wanted = Wanted {
+            x: 5,
+            y: 0,
+            what: String::new(),
+        };
+        let text = ask("Hideout", &map, (0, 0), &wanted, &[], "", &[]);
+        assert!(
+            text.contains(
+                "Rides code has seen here (from a step, the way pressed: where it ended):\n\
+                 - (1, 2) right: (5, 2)\n"
+            ),
+            "{text}"
+        );
+        // A ride back to the start is a blocked way, not a ride.
+        assert!(!text.contains("(0, 1) down"), "{text}");
+        assert!(!ask("Hideout", &room(), (0, 0), &wanted, &[], "", &[]).contains("Rides code"));
     }
 
     #[test]
