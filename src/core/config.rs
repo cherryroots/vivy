@@ -22,13 +22,8 @@ use tracing::warn;
 pub struct Config {
     /// User IDs allowed to run admin commands.
     pub admins: Vec<u64>,
-    /// The server voltgpt ran in. voltgpt's movie wheel had one game for the whole bot, so
-    /// the import puts it in this server.
-    pub main_server: Option<u64>,
     /// The SQLite file.
     pub database: String,
-    /// voltgpt's database, imported on startup if it exists.
-    pub old_database: String,
     pub logging: LoggingConfig,
     /// Model settings, per provider.
     pub ai: crate::ai::AiConfig,
@@ -51,9 +46,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             admins: Vec::new(),
-            main_server: None,
             database: "vivy.db".to_string(),
-            old_database: "old.db".to_string(),
             logging: LoggingConfig::default(),
             ai: crate::ai::AiConfig::default(),
             features: HashMap::new(),

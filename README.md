@@ -108,7 +108,7 @@ sudo chmod 600 /opt/vivy/.env
 Then fill in the two files:
 
 - `.env` holds the secrets: `DISCORD_TOKEN`, plus `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` and/or `GEMINI_API_KEY` for whichever providers `[ai]` names (`OPENAI_TOKEN` also turns on drawing), and optionally `ELEVENLABS_API_KEY`, `TINYFISH_API_KEY` and the two admin keys.
-- `config.toml` holds everything else: your user ID in `admins`, `main_server`, the log and status channel IDs, and per-feature settings.
+- `config.toml` holds everything else: your user ID in `admins`, the log and status channel IDs, and per-feature settings.
 
 ### 4. Run with systemd
 
@@ -140,7 +140,3 @@ sudo systemctl restart vivy
 ```
 
 When running from the repo folder, just rebuild and restart the bot.
-
-### Coming from voltgpt
-
-Copy voltgpt's `voltgpt.db` into the bot's folder (`/opt/vivy`) as `old.db` before starting. Its reminders and movie wheel game are imported once (the wheel into `main_server`), then the file is renamed to `old.db.imported`.

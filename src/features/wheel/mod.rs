@@ -10,12 +10,10 @@
 //! - `render.rs`: the round as a picture
 //! - `names.rs`: display names for the stored user IDs
 //! - `commands.rs`: `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`
-//! - `import.rs`: the running game from voltgpt's database
 //! - `tools.rs`: `get_wheel_status` for chat
 
 mod actions;
 mod commands;
-mod import;
 mod ledger;
 mod names;
 mod render;
@@ -30,8 +28,7 @@ use tracing::warn;
 
 use crate::ai::ToolDef;
 use crate::core::{
-    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, ModalInteraction, Result,
-    Stat,
+    Asker, BotCtx, Command, ComponentInteraction, Feature, ModalInteraction, Result, Stat,
 };
 use crate::util::discord::GuildId;
 
@@ -49,13 +46,6 @@ impl Feature for Wheel {
 
     fn migrations(&self) -> &'static [&'static str] {
         store::MIGRATIONS
-    }
-
-    fn legacy_import(&self) -> Option<LegacyImport> {
-        Some(LegacyImport {
-            part: "wheel",
-            run: import::import,
-        })
     }
 
     fn tools(&self) -> Vec<ToolDef> {

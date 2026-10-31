@@ -150,15 +150,6 @@ pub fn start_season(
     Ok(season)
 }
 
-/// Changes how a season pays out.
-pub fn set_rules(conn: &Connection, season: i64, rules: Rules) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE wheel_seasons SET rules = ?2 WHERE id = ?1",
-        params![season, rules.as_str()],
-    )?;
-    Ok(())
-}
-
 /// Ends a season. Its rounds stay, so it can still be viewed.
 pub fn end_season(conn: &Connection, season: i64, now: i64) -> rusqlite::Result<()> {
     conn.execute(
@@ -452,7 +443,12 @@ mod tests {
         assert_eq!(loaded.rounds.len(), 1);
         assert_eq!(loaded.rounds[0].number, 1);
         assert_eq!(loaded.rules, Rules::Pool);
-        set_rules(&conn, season, Rules::Classic).unwrap();
+        // Seasons from before pool betting are stored as classic.
+        conn.execute(
+            "UPDATE wheel_seasons SET rules = 'classic' WHERE id = ?1",
+            [season],
+        )
+        .unwrap();
         assert_eq!(load_season(&conn, season).unwrap().rules, Rules::Classic);
     }
 

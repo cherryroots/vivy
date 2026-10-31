@@ -43,7 +43,7 @@ The layer only puts lines in a queue (capacity 1000; a full queue drops the line
 
 Lifecycle lines:
 
-- 🟢 **Started**: version, git commit, the bot's name, the features that started, and what was imported from voltgpt's `old.db` (`src/main.rs`).
+- 🟢 **Started**: version, git commit, the bot's name, and the features that started (`src/main.rs`).
 - 🔴 **Shutting down** (`src/main.rs`).
 
 Drops and reconnects are not lifecycle lines. Discord drops every bot's connection every few hours (usually close code 4000) and Twilight resumes a second later, so `run_shard` in `src/main.rs` only writes those to stdout ("Discord closed the connection (4000 Unknown Error), reconnecting", "🔌 Reconnected to Discord"). `Reconnects` in `src/core/gateway.rs` decides when the log channel hears about it:

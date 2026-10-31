@@ -10,7 +10,6 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use twilight_model::gateway::GatewayReaction;
 
-use super::config::Config;
 use super::interaction::{Command, ComponentInteraction, ModalInteraction};
 use super::{BotCtx, BotEvent, Result};
 use crate::ai::{ToolDef, ToolReply};
@@ -38,11 +37,6 @@ pub trait Feature: Send + Sync + 'static {
     /// feature that lists "remind me". Matching ignores case; the longest prefix wins.
     fn mention_prefixes(&self) -> &'static [&'static str] {
         &[]
-    }
-
-    /// How to import this feature's data from voltgpt's database. See [`crate::core::legacy`].
-    fn legacy_import(&self) -> Option<LegacyImport> {
-        None
     }
 
     /// Functions this feature offers to the chat model, like `create_reminder`. Chat lists
@@ -265,19 +259,4 @@ impl Panel {
             picture: None,
         }
     }
-}
-
-/// A part of voltgpt's database that a feature imports.
-pub struct LegacyImport {
-    /// The name recorded in `legacy_imports`, so the part is imported only once.
-    /// Must be listed in [`crate::core::legacy::PARTS`].
-    pub part: &'static str,
-    /// Reads from voltgpt's database (`old`) and writes into ours (`new`). Runs inside one
-    /// transaction: if it fails, nothing is written and the next start tries again.
-    /// Returns the number of rows imported.
-    pub run: fn(
-        old: &rusqlite::Connection,
-        new: &rusqlite::Transaction,
-        config: &Config,
-    ) -> anyhow::Result<usize>,
 }

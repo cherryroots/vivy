@@ -12,7 +12,7 @@ The movie wheel is a betting game for movie night. Admins put people (the "optio
 - **Buttons under an open round**: Claim, Bet, Remove bet, Winner (admins), and in a second row Change Name and Help.
 - **Buttons under a resolved round**: View Current Round, Undo Winner (admins, only when allowed), Change Name, Help.
 
-Admins are the `admins` list at the top of `config.toml`. The feature's own section is `[features.wheel]` (only the common keys); the import uses the top-level `main_server`. `config.example.toml` explains them. Setup is in the README.
+Admins are the `admins` list at the top of `config.toml`. The feature's own section is `[features.wheel]` (only the common keys). `config.example.toml` explains them. Setup is in the README.
 
 ## Files
 
@@ -28,7 +28,6 @@ All in `src/features/wheel/`, starting with the pure logic.
 | `actions.rs` | The handlers for buttons, menus and modals, and `status_message`, which builds a status picture with its buttons. |
 | `commands.rs` | `/wheel` and its five subcommands (`status`, `add`, `movie`, `bet`, `reset`): the enum `WheelCommand` has one variant per subcommand, each a struct with its options (`twilight-interactions`). Each subcommand function keeps its old name (`wheel_status`, `insert_bet`, …). |
 | `tools.rs` | The chat tool `get_wheel_status`. |
-| `import.rs` | voltgpt's running game, read from its `game_state` JSON. |
 | `sim.rs` | Simulated games that compare the payout rules. Test-only (`#[cfg(test)]`, an ignored test). |
 | `mod.rs` | The `Wheel` struct and its `Feature` implementation. |
 
@@ -115,7 +114,6 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | `name` | `"wheel"`: the config section, the custom ID prefix and the log label. |
 | `commands` | `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`. |
 | `migrations` | `store::MIGRATIONS`. |
-| `legacy_import` | The `wheel` part, run by `import::import`. |
 | `tools`, `run_tool` | `get_wheel_status`. |
 | `tool_status` | "🎡 Checking the wheel…" in chat's status line. |
 | `start` | Loads the fonts and looks up the players' names in the background, so the first button press is fast. |
@@ -180,11 +178,7 @@ None. `start` only runs a one-off name lookup and font load.
 
 ## Importing from voltgpt
 
-voltgpt keeps the whole game as one JSON value in `game_state (id = 1, data)`, with full Discord user objects for every player, option, claim and bet. `import.rs` reads that JSON and keeps only the user IDs. Go writes empty lists as `null`, so every field reads `null` as empty.
-
-voltgpt has one game for the whole bot, so it goes to the server in `main_server` in `config.toml`. Without `main_server` the import fails with a message saying so; `old.db` is kept and the next start tries again. The game becomes that server's active season with classic rules: its options, then each round's claims and bets, and each winner (which starts the next round, as it did in voltgpt). If the server already has a game, that game stays active and the imported one is filed as an ended season. Bets of 0 or less and IDs that are not numbers are logged and skipped. voltgpt's `players` list is not imported, because players are derived from claims and bets. A test (`same_balances_as_voltgpt`) checks that the imported season gives the same balances the Go bot showed.
-
-The old.db import code is planned for removal once the imports are confirmed: `src/core/legacy.rs`, `Feature::legacy_import`, each feature's `import.rs`, the call in `main.rs`, and the `old_database` config key. The `legacy_imports` table stays. See [architecture](../architecture.md) for how the import runs.
+voltgpt's running game was copied once from its database at the cutover, into the main server as a season with classic rules. The import code was removed in #144; classic seasons still pay out as before.
 
 ## Compared to voltgpt
 

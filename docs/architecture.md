@@ -33,7 +33,7 @@ All of this is in `src/main.rs`, top to bottom:
 1. **Secrets and settings.** `dotenvy` loads `.env` into the environment. `Config::load` reads `config.toml` (or the file `VIVY_CONFIG` names). A missing file isn't an error: every feature is then on everywhere, with a warning.
 2. **Logging.** `logging::init` sets up `tracing`. Lines meant for the Discord log channel wait in a queue until the bot is connected, so even startup errors reach Discord.
 3. **Features.** `features::all()` builds the list of every feature.
-4. **Database.** `Db::open` opens the SQLite file. Migrations run for the core, for Claude's upload table, then for every feature. If voltgpt's `old.db` is there, its reminders and wheel game are imported (see "Importing from voltgpt" below).
+4. **Database.** `Db::open` opens the SQLite file. Migrations run for the core, for Claude's upload table, then for every feature.
 5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`. With `ANTHROPIC_ADMIN_KEY`, a task starts that reads Anthropic's bill hourly.
 6. **Commands.** Every feature's slash commands are collected, each tagged with its feature's name (`FeatureCommand`), so the gate check knows whose command it is.
 7. **Connect.** Twilight's `Http` client asks Discord who the bot is and who owns it. The gateway connections ("shards", one per 2500 servers, so one for Vivy) are made with the intents the bot needs; Message Content and Presences are privileged and must be turned on in the Developer Portal (without them Discord closes the connection with code 4014). The `BotCtx` is built and the log channel poster starts. Then one task per shard reads its events (`run_shard`): the cache sees each event first, then the dispatcher. On the first Ready, `on_first_ready` registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
@@ -53,7 +53,6 @@ pub trait Feature: Send + Sync + 'static {
     fn commands(&self) -> Vec<Command>;                          // slash commands
     fn migrations(&self) -> &'static [&'static str];             // its tables
     fn mention_prefixes(&self) -> &'static [&'static str];       // "remind me", ...
-    fn legacy_import(&self) -> Option<LegacyImport>;             // voltgpt's data
     fn tools(&self) -> Vec<ToolDef>;                             // functions the chat model may call
     fn tool_status(&self, tool: &str, args: &Value) -> Option<&'static str>;  // "🎨 Drawing…" while one runs
     async fn run_tool(&self, ctx, asker: &Asker, name, args) -> Result<String>;
@@ -107,7 +106,6 @@ Which feature uses which hook:
 | `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
 | `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
 | `mention_prefixes` | `""` | `remind me`, ... | | | | | | | | |
-| `legacy_import` | | ✓ | ✓ | | | | | | | |
 | `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | | ✓ |
 | `chat_context` | | | | ✓ | | | | | | |
 | `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | | |
@@ -221,7 +219,7 @@ Inside the closure everything is ordinary synchronous Rust, and the connection i
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
-Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `legacy_imports`, `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
+Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
 
 For tests, `db::test_connection(owner, migrations)` gives an in-memory database with the core tables and one feature's tables.
 
@@ -276,9 +274,7 @@ Since features never import each other, the core gives them four ways to work to
 
 ## Importing from voltgpt
 
-If `old.db` (voltgpt's database, `old_database` in config.toml) exists at startup, `core/legacy.rs` opens it read-only and runs every feature's `legacy_import`, each in its own transaction. `legacy_imports` records the parts that are done, so a restart never imports twice. Once every part in `legacy::PARTS` (`reminders`, `wheel`) is done, the file is renamed to `old.db.imported`. The results are listed in the 🟢 Started line.
-
-This code is temporary. Once Cherry has confirmed the imports, it goes: `core/legacy.rs`, `Feature::legacy_import` and `LegacyImport`, each feature's `import.rs`, the call in `main.rs`, and the `old_database` setting. The `legacy_imports` table stays, since dropping it would need a new migration.
+At the cutover, voltgpt's reminders and running wheel game were copied once from its database (`old.db`). That code was removed in #144 once the imports were confirmed; core migration 5 drops its `legacy_imports` table.
 
 ## Adding a feature
 

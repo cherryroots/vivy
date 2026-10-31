@@ -140,6 +140,9 @@ pub const CORE_MIGRATIONS: &[&str] = &[
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
     );",
+    // 5: the one-time import from voltgpt's database is gone, and with it the table that
+    // recorded which parts were done.
+    "DROP TABLE legacy_imports;",
 ];
 
 /// An in-memory database with the core tables and the given migrations, for tests.
