@@ -251,6 +251,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #140 | | Game Boy web page: no more freezing after coming back to it: it lets go of the connection while hidden and opens a fresh one when shown, and the bot says it's alive every 5 s so a connection that died quietly is replaced after 15 s. |
 | #141 | | Chat: `react_to_message` tool, so she can react to messages in normal conversation too (plain or server emoji). |
 | #142 | | Game Boy: rides on floor arrows and spinners are learned. A step waits for the ride to end before reading where it went, a ride back to the start isn't a step taken, taps teach the map, and exploring tries rides not taken yet. From Cherry's Rocket Hideout saves, code alone now gets through B2F and reaches B3F's stairs. |
+| #143 | | Game Boy: a rise while only up is held isn't a jump (spinner rides in Red read as jumps), and the puzzle helper is told the rides the map has learned and that a ride needs only plain presses. |
 
 ## Not built yet
 

@@ -142,9 +142,17 @@ impl Motion {
         let landed = (peak..places.len())
             .find(|&i| places[i..].iter().take(LEVEL).all(|p| p.1 == places[i].1))
             .unwrap_or(places.len());
+        // Going up while up is held, with no other button, is walking or climbing up, not
+        // a jump: in a game seen from above, a step up onto a spinner that carried her
+        // sideways had read as a jump, and the puzzle helper planned jumps in Red.
+        let words: Vec<&str> = press.split([' ', '+', ':']).collect();
+        let up_only = words.contains(&"up")
+            && !words
+                .iter()
+                .any(|w| matches!(*w, "a" | "b" | "start" | "select"));
         let motion = Motion {
             press: press.to_string(),
-            rise: ended.1.min(0) - highest,
+            rise: if up_only { 0 } else { ended.1.min(0) - highest },
             top: -highest,
             ended,
             step,
@@ -442,6 +450,15 @@ mod tests {
             "went up 1 step at its highest (frame 1) and came down where it started (landed \
              by frame 2)"
         );
+        // A step up that a spinner carried on sideways and back down a step (Red's Rocket
+        // Hideout): a ride, not a jump.
+        let ride = [(0, 0), (0, -16), (-48, -16), (-112, 0)];
+        let carried = Motion::of("up", &ride, 16).unwrap();
+        assert!(!carried.jumped());
+        assert_eq!(carried.words(), "went 7 left from the start");
+        assert!(!Motion::of("up holding up", &ride, 16).unwrap().jumped());
+        // Jumping while holding up is still a jump.
+        assert!(Motion::of("a+up", &hop, 16).unwrap().jumped());
     }
 
     #[test]

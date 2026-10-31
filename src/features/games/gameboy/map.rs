@@ -248,10 +248,16 @@ impl AreaMap {
         }
     }
 
-    /// How many steps she knows carry her somewhere other than the next step.
-    #[cfg(test)]
-    pub fn rides(&self) -> usize {
-        self.moves.len()
+    /// The steps she knows carry her somewhere other than the next step: from where, the
+    /// way pressed and where she ended, top to bottom.
+    pub fn rides(&self) -> Vec<(Pos, Dir, Pos)> {
+        let mut rides: Vec<(Pos, Dir, Pos)> = self
+            .moves
+            .iter()
+            .map(|(&(from, dir), &to)| (from, dir, to))
+            .collect();
+        rides.sort_by_key(|&((x, y), dir, _)| (y, x, dir.name()));
+        rides
     }
 
     pub fn kind(&self, pos: Pos) -> Option<Kind> {

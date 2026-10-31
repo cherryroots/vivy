@@ -156,7 +156,7 @@ async fn exploring_from_an_episode() {
         }
     }
     let map = world.area(&area);
-    println!("After {steps} steps, rides known: {}", map.rides());
+    println!("After {steps} steps, rides known: {}", map.rides().len());
     let mut wanted: Vec<(i32, i32)> = map.ways_out().into_iter().flat_map(|(_, s)| s).collect();
     if let Ok(want) = std::env::var("VIVY_GB_WANT") {
         let (x, y) = want.split_once(',').unwrap();
