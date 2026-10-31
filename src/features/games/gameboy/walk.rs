@@ -40,6 +40,12 @@ const BACK_FOR: u32 = 20;
 /// When something stops her walking, how long to wait for its words (or for it to pass).
 const WORDS_WITHIN: u32 = 120;
 
+/// After a step, how long the game may carry her on by itself: a ride over a few spinners
+/// in a row can take ten seconds.
+const RIDE_MOST: u32 = 1800;
+/// Frames she must stay free on one step for a ride to be over.
+const RIDE_BEAT: u32 = 16;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Walked {
     /// She's there.
@@ -219,14 +225,6 @@ pub fn take_step(
         settle(machine);
         next = look(world, machine);
     }
-    // Where the step took her, if not onto the next step: over a ledge, or carried along
-    // (the step waits until the screen stops scrolling, so a ride is over by now).
-    if let Outcome::Moved(_) = taken.outcome
-        && next.area == view.area
-        && next.can_walk
-    {
-        world.area(&view.area).landed(view.at, dir, next.at);
-    }
     if let Outcome::Moved(n) = taken.outcome
         && next.area == view.area
     {
@@ -236,6 +234,49 @@ pub fn take_step(
         if screen.0.abs().max(screen.1.abs()) == n {
             world.trust.check(memory, screen);
         }
+    }
+    // Still being carried (floor arrows, a spinner, ice): the game moves her by itself for
+    // a while, so the step ended part way. Where the ride ends is where the step took her.
+    // Looked at mid ride, a ride that brought her back where she started read as a step
+    // taken, and walking took it 60 times. One ride can end on the start of the next and
+    // leave her free for a frame between them, so a ride is only over once she's still
+    // free, on the same step, a beat later.
+    if let Outcome::Moved(_) = taken.outcome
+        && !world.sight.finding_her()
+    {
+        let mut waited = 0;
+        let mut carried = next.at != dir.step(view.at);
+        while next.text.is_empty() && next.area == view.area && waited < RIDE_MOST {
+            if next.can_walk {
+                if !carried {
+                    break;
+                }
+                machine.run(RIDE_BEAT);
+                waited += RIDE_BEAT;
+                let again = look(world, machine);
+                let over = again.can_walk && again.at == next.at;
+                next = again;
+                if over {
+                    break;
+                }
+                continue;
+            }
+            carried = true;
+            machine.run(10);
+            waited += 10;
+            next = look(world, machine);
+        }
+        if next.area != view.area {
+            settle(machine);
+            next = look(world, machine);
+        }
+    }
+    // Where the step took her, if not onto the next step: over a ledge, or carried along.
+    if let Outcome::Moved(_) = taken.outcome
+        && next.area == view.area
+        && next.can_walk
+    {
+        world.area(&view.area).landed(view.at, dir, next.at);
     }
     if next.area != view.area {
         world

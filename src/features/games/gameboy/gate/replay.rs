@@ -107,3 +107,94 @@ async fn replay_episodes() {
         folder.display()
     );
 }
+
+/// From the start of a replay (`VIVY_GB_REPLAY`, one `<n>.json`), code explores the area by
+/// itself, with no model, for `VIVY_GB_STEPS` steps (300 by default), then walks to each way
+/// out it knows (or `VIVY_GB_WANT` as "x,y"), and prints the map and where the walks went.
+/// For a floor of arrows or spinners: whether riding them teaches the map the way through.
+#[tokio::test]
+#[ignore = "needs a ROM in VIVY_GB_ROM and a replay in VIVY_GB_REPLAY"]
+async fn exploring_from_an_episode() {
+    use crate::features::games::gameboy::emulator::Button;
+    use crate::features::games::gameboy::presses::Press;
+    use crate::features::games::gameboy::walk::{Walked, explore, look_for, walk_to};
+    let json = PathBuf::from(std::env::var("VIVY_GB_REPLAY").expect("VIVY_GB_REPLAY"));
+    let most: u32 = std::env::var("VIVY_GB_STEPS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    let rom = crate::features::games::gameboy::emulator::tests::real_rom();
+    let replay: Replay = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    let mut machine = Machine::new("game.gb", &rom).unwrap();
+    machine
+        .emulator
+        .load_state(&std::fs::read(json.with_extension("state")).unwrap())
+        .unwrap();
+    let look = look_for(machine.emulator.info());
+    let mut world = replay.world;
+    let start = look(&mut world, &mut machine);
+    let area = start.area.clone();
+    println!("{} at {:?}", area, start.at);
+    let mut steps = 0;
+    while steps < most {
+        let view = look(&mut world, &mut machine);
+        if view.area != area {
+            println!("Left for {} at {:?}", view.area, view.at);
+            break;
+        }
+        if !view.can_walk {
+            // A battle or words: pressed through, as a player would.
+            machine.press(&[Press::of(vec![Button::B])], Default::default());
+            machine.run(30);
+            steps += 1;
+            continue;
+        }
+        let walk = explore(&mut world, &mut machine, look, (most - steps).min(60));
+        steps += walk.steps.max(1);
+        if walk.result == Walked::NoWay {
+            break;
+        }
+    }
+    let map = world.area(&area);
+    println!("After {steps} steps, rides known: {}", map.rides());
+    let mut wanted: Vec<(i32, i32)> = map.ways_out().into_iter().flat_map(|(_, s)| s).collect();
+    if let Ok(want) = std::env::var("VIVY_GB_WANT") {
+        let (x, y) = want.split_once(',').unwrap();
+        wanted = vec![(x.trim().parse().unwrap(), y.trim().parse().unwrap())];
+    }
+    let view = look(&mut world, &mut machine);
+    println!("{}", world.area(&area).draw(view.at, 40));
+    for to in wanted {
+        let way = world.area(&area).path(view.at, to, false);
+        println!(
+            "A way from {:?} to {to:?}: {:?}",
+            view.at,
+            way.map(|w| w.len())
+        );
+        world.log.clear();
+        let walk = walk_to(&mut world, &mut machine, look, to, 200);
+        if std::env::var("VIVY_GB_STEPS_LOG").is_ok() {
+            for step in &world.log {
+                println!("      {step}");
+            }
+        }
+        println!(
+            "Walked there: {:?} after {} steps, at {} {:?}",
+            walk.result, walk.steps, walk.view.area, walk.view.at
+        );
+        if walk.view.area != area {
+            break;
+        }
+        // What kept her from walking, and for how long.
+        let mut frames = 0;
+        while !look(&mut world, &mut machine).can_walk && frames < 3000 {
+            machine.run(10);
+            frames += 10;
+        }
+        let now = look(&mut world, &mut machine);
+        println!(
+            "Free again after {frames} frames at {:?}: {:?}",
+            now.at, now.text
+        );
+    }
+}

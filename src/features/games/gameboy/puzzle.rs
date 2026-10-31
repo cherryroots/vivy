@@ -408,6 +408,13 @@ mod tests {
         }
     }
 
+    fn blocked(from: Pos, direction: Dir) -> Logged {
+        Logged {
+            outcome: Outcome::Blocked,
+            ..logged(from, direction, from)
+        }
+    }
+
     #[test]
     fn surprises_are_steps_that_went_somewhere_else_or_hit_floor() {
         let map = room();
@@ -416,9 +423,9 @@ mod tests {
             // Carried along four steps.
             logged((1, 0), Dir::Right, (5, 0)),
             // Blocked on floor: something unseen in the way.
-            logged((0, 2), Dir::Right, (0, 2)),
+            blocked((0, 2), Dir::Right),
             // Blocked by the wall the map shows: no surprise.
-            logged((1, 1), Dir::Right, (1, 1)),
+            blocked((1, 1), Dir::Right),
             // The same surprise again counts once, as the latest.
             logged((1, 0), Dir::Right, (5, 0)),
             Logged {

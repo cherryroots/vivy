@@ -204,11 +204,20 @@ impl AreaMap {
         ways
     }
 
-    /// A step from `from` in `dir` ended at `to`, not on the next step: two steps on is a
-    /// hop over a one-way step, anywhere else she was carried (and goes there again).
+    /// A step from `from` in `dir` that moved her ended at `to`, not on the next step: two
+    /// steps on is a hop over a one-way step, anywhere else she was carried (and goes there
+    /// again). Back where she started, the next step carried her back: it's a step that
+    /// carries her, and taking it from here gets nowhere.
     pub fn landed(&mut self, from: Pos, dir: Dir, to: Pos) {
         let next = dir.step(from);
-        if to == from || to == next {
+        if to == next {
+            return;
+        }
+        if to == from {
+            if self.kind(next) != Some(Kind::Door) {
+                self.see(next, Kind::Mover);
+            }
+            self.blocked(from, dir);
             return;
         }
         if to == dir.step(next) {
@@ -237,6 +246,12 @@ impl AreaMap {
             Some(Kind::OneWay(_)) => Some(dir.step(next)),
             _ => Some(next),
         }
+    }
+
+    /// How many steps she knows carry her somewhere other than the next step.
+    #[cfg(test)]
+    pub fn rides(&self) -> usize {
+        self.moves.len()
     }
 
     pub fn kind(&self, pos: Pos) -> Option<Kind> {
@@ -326,9 +341,12 @@ impl AreaMap {
     }
 
     /// Unseen steps next to steps she can reach from `from`: where exploring goes next,
-    /// nearest first.
+    /// nearest first. Then steps that carry her, from a side she hasn't ridden them from:
+    /// where a ride goes is only known by taking it, and on a floor of them the way on is
+    /// often a ride not taken yet.
     pub fn frontier(&self, from: Pos) -> Vec<Pos> {
         let mut found = Vec::new();
+        let mut rides = Vec::new();
         let mut reached = HashSet::from([from]);
         let mut queue = VecDeque::from([from]);
         while let Some(pos) = queue.pop_front() {
@@ -355,6 +373,13 @@ impl AreaMap {
                     }
                     continue;
                 }
+                if self.kind(next) == Some(Kind::Mover)
+                    && !self.moves.contains_key(&(pos, dir))
+                    && self.can_step(pos, dir, false)
+                    && !rides.contains(&next)
+                {
+                    rides.push(next);
+                }
                 if let Some(to) = self.step_to(pos, dir, false)
                     && reached.insert(to)
                 {
@@ -362,6 +387,7 @@ impl AreaMap {
                 }
             }
         }
+        found.extend(rides.into_iter().filter(|pos| *pos != from));
         found
     }
 
@@ -778,6 +804,40 @@ mod tests {
         let back: AreaMap = serde_json::from_str(&serde_json::to_string(&map).unwrap()).unwrap();
         assert_eq!(back.step_to((0, 2), Dir::Right, false), Some((5, 2)));
         assert_eq!(back.kind((2, 1)), Some(Kind::OneWay(Dir::Down)));
+    }
+
+    #[test]
+    fn rides_not_taken_yet_are_somewhere_to_explore() {
+        let mut map = map_of(&[
+            "#####", //
+            "#...#", //
+            "#...#", //
+            "#...#", //
+            "#####", //
+        ]);
+        map.landed((1, 2), Dir::Right, (3, 3));
+        assert_eq!(map.kind((2, 2)), Some(Kind::Mover));
+        // Ridden from the left; from above, below and the right it's still to try.
+        assert_eq!(map.frontier((1, 1)), [(2, 2)]);
+        map.landed((2, 1), Dir::Down, (3, 3));
+        map.landed((3, 2), Dir::Left, (3, 3));
+        map.landed((2, 3), Dir::Up, (3, 3));
+        assert!(map.frontier((1, 1)).is_empty());
+    }
+
+    #[test]
+    fn a_step_that_carries_her_back_is_not_a_way() {
+        let mut map = map_of(&[
+            "...", //
+            "...", //
+            "...", //
+        ]);
+        // Down from the middle of the top row, and the step below carried her back up.
+        map.landed((1, 0), Dir::Down, (1, 0));
+        assert_eq!(map.kind((1, 1)), Some(Kind::Mover));
+        assert_eq!(map.step_to((1, 0), Dir::Down, false), None);
+        // A way down goes around it, not through it.
+        assert_eq!(names(&map.path((1, 0), (1, 2), false).unwrap()), "lddr");
     }
 
     #[test]

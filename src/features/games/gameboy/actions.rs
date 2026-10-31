@@ -562,8 +562,10 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
     for one in &presses {
         let spot = view.can_walk.then(|| her_spot(world, &view)).flatten();
         let start = machine.emulator.frames();
+        let from = view.clone();
         machine.press(std::slice::from_ref(one), Timing::default());
         view = settle(world, machine, look, &mut words);
+        learn_step(world, &from, one, &view);
         carried_lines.extend(after_press(world, machine, start, spot, one, &view));
     }
     // Her own presses haven't shown which sprite is her: pressing each way does.
@@ -590,6 +592,25 @@ fn press(world: &mut World, machine: &mut Machine, look: Look, buttons: &str) ->
         outcome,
         view,
         words,
+    }
+}
+
+/// One tap of a direction that took her somewhere on the map teaches it as a step walking
+/// took would: over a ledge, or carried along by the step ahead. A tap that left her where
+/// she was says nothing (it may only have turned her).
+fn learn_step(world: &mut World, from: &View, one: &Press, to: &View) {
+    let tap = one.frames.is_none() && one.shorter.is_empty();
+    let dir = match one.buttons.as_slice() {
+        [button] => Dir::ALL.into_iter().find(|d| d.button() == *button),
+        _ => None,
+    };
+    let Some(dir) = dir.filter(|_| tap) else {
+        return;
+    };
+    if from.can_walk && to.can_walk && from.area == to.area && from.at != to.at {
+        let map = world.area(&to.area);
+        map.landed(from.at, dir, to.at);
+        map.walked(to.at);
     }
 }
 

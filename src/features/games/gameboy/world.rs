@@ -106,6 +106,7 @@ impl fmt::Display for Logged {
         }
         match self.outcome {
             _ if self.to != self.from => write!(f, "moved to ({}, {})", self.to.0, self.to.1),
+            Outcome::Moved(_) => write!(f, "moved, and was carried back"),
             Outcome::Turned => write!(f, "turned"),
             _ => write!(f, "blocked"),
         }
