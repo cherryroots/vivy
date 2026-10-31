@@ -9,6 +9,7 @@ mod util;
 use std::error::Error as _;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
@@ -27,9 +28,8 @@ use crate::core::config::Config;
 use crate::core::db::{self, Db};
 use crate::core::gateway::{self, Gateway, Reconnects};
 use crate::core::interaction::FeatureCommand;
-use crate::core::legacy::{self, Outcome};
 use crate::core::logging::{self, LogLine};
-use crate::core::{BotCtx, Feature, Timers, dispatcher};
+use crate::core::{BotCtx, Timers, dispatcher};
 use crate::util::discord::{ChannelId, GuildId, Http};
 use crate::util::env_key;
 
@@ -58,7 +58,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         .build()
         .context("creating the HTTP client")?;
 
-    // Database: open, run every owner's migrations, then import voltgpt's data if present.
+    // Database: open, then run every owner's migrations.
     let db = Db::open(&config.database)
         .await
         .context("opening the database")?;
@@ -75,7 +75,6 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     })
     .await
     .context("running migrations")?;
-    let import_summary = import_legacy(&db, &features, &config).await;
     info!("database {} is ready", config.database);
     let (ai, keep_warm) = ai_from_env(&config, &web, &db);
     // Made before the bot connects, so the bill reader below can report to it too.
@@ -206,7 +205,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     }
 
     // One task per shard reads its events. The first Ready starts the features.
-    let started = Arc::new(std::sync::Mutex::new(Some(import_summary)));
+    let started = Arc::new(AtomicBool::new(false));
     info!("connecting to Discord");
     let mut shard_tasks = tokio::task::JoinSet::new();
     for (number, shard) in shards.into_iter().enumerate() {
@@ -242,14 +241,9 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
 }
 
 /// Reads one shard's events until the bot stops: the cache sees each one first, then the
-/// dispatcher hands it to the features. `started` holds the import summary until the first
-/// Ready, which runs [`on_first_ready`].
-async fn run_shard(
-    bot: BotCtx,
-    mut shard: Shard,
-    number: usize,
-    started: Arc<std::sync::Mutex<Option<String>>>,
-) {
+/// dispatcher hands it to the features. The first Ready on any shard flips `started` and
+/// runs [`on_first_ready`].
+async fn run_shard(bot: BotCtx, mut shard: Shard, number: usize, started: Arc<AtomicBool>) {
     let mut reconnects = Reconnects::default();
     while let Some(item) = shard.next_event(EventTypeFlags::all()).await {
         let event = match item {
@@ -307,10 +301,9 @@ async fn run_shard(
         bot.gateway
             .record_latency(number, shard.latency().average());
         if let Event::Ready(ready) = &event {
-            let summary = started.lock().unwrap().take();
-            if let Some(summary) = summary {
+            if !started.swap(true, Ordering::SeqCst) {
                 let guilds = ready.guilds.iter().map(|guild| guild.id).collect();
-                on_first_ready(&bot, guilds, summary).await;
+                on_first_ready(&bot, guilds).await;
             }
         }
         dispatcher::handle_event(&bot, event).await;
@@ -319,7 +312,7 @@ async fn run_shard(
 
 /// Runs once, when Discord first says we're connected: registers the slash commands, starts
 /// delivering bot events, and starts every enabled feature. Then the 🟢 Started line.
-async fn on_first_ready(bot: &BotCtx, guilds: Vec<GuildId>, import_summary: String) {
+async fn on_first_ready(bot: &BotCtx, guilds: Vec<GuildId>) {
     // Failing to register isn't worth stopping for: the ones from the last start keep working.
     if let Err(err) = register_commands(bot, &guilds).await {
         error!("{err:#}");
@@ -339,12 +332,11 @@ async fn on_first_ready(bot: &BotCtx, guilds: Vec<GuildId>, import_summary: Stri
 
     info!(
         target: "lifecycle",
-        "🟢 **Started** Vivy {} (`{}`) as {} · features: {}{}",
+        "🟢 **Started** Vivy {} (`{}`) as {} · features: {}",
         crate::core::VERSION,
         crate::core::GIT_COMMIT,
         bot.bot_name,
         started.join(", "),
-        import_summary,
     );
 }
 
@@ -461,32 +453,6 @@ fn ai_from_env(
     let mut ai = ai::Ai::new(main, backup, spends, images);
     ai.openai = openai;
     (ai, keep_warm)
-}
-
-/// Imports voltgpt's `old.db` if it's there. Returns a summary for the start notice.
-async fn import_legacy(db: &Db, features: &[Arc<dyn Feature>], config: &Arc<Config>) -> String {
-    let path = Path::new(&config.old_database);
-    match legacy::import(db, features, path, config.clone()).await {
-        Ok(None) => String::new(),
-        Ok(Some(outcomes)) if outcomes.is_empty() => String::new(),
-        Ok(Some(outcomes)) => {
-            let mut parts = Vec::new();
-            for outcome in outcomes {
-                match outcome {
-                    Outcome::Imported { part, rows } => parts.push(format!("{part} ({rows} rows)")),
-                    Outcome::Failed { part, error } => {
-                        error!("importing {part} from {} failed: {error}", path.display());
-                        parts.push(format!("{part} failed"));
-                    }
-                }
-            }
-            format!(" · imported from {}: {}", path.display(), parts.join(", "))
-        }
-        Err(err) => {
-            error!("importing {} failed: {err:#}", path.display());
-            String::new()
-        }
-    }
 }
 
 /// Waits for Ctrl+C, or SIGTERM from `systemctl stop`.

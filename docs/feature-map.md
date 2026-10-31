@@ -66,7 +66,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 
 | Owner | Tables |
 |---|---|
-| core | `schema_migrations`, `user_settings`, `legacy_imports`, `ai_spend`, `ai_spend_jobs` |
+| core | `schema_migrations`, `user_settings`, `bot_settings`, `ai_spend`, `ai_spend_jobs` |
 | claude (in `ai/`) | `claude_uploads` |
 | chat | `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
 | reminders | `reminders`, `reminder_images` |
@@ -106,7 +106,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | `response_ids` (OpenAI response IDs) | Replaced by `chat_turns`, which works with any provider | `chat/store.rs` |
 | New in Vivy | Voice messages, moods, faces, banners, nickname, diary, the control panel, Claude, spend tracking for Claude and OpenAI | |
 
-voltgpt's reminders and running wheel game are imported once from `old.db` (see [architecture.md](architecture.md#importing-from-voltgpt)). Its image hashes, chat history and memory are not.
+voltgpt's reminders and running wheel game were imported once from `old.db` at the cutover (see [architecture.md](architecture.md#importing-from-voltgpt)); the import code is gone since #144. Its image hashes, chat history and memory were not imported.
 
 ## How it was built
 
@@ -252,12 +252,12 @@ The port went in stages, one pull request each, all merged into `main`.
 | #141 | | Chat: `react_to_message` tool, so she can react to messages in normal conversation too (plain or server emoji). |
 | #142 | | Game Boy: rides on floor arrows and spinners are learned. A step waits for the ride to end before reading where it went, a ride back to the start isn't a step taken, taps teach the map, and exploring tries rides not taken yet. From Cherry's Rocket Hideout saves, code alone now gets through B2F and reaches B3F's stairs. |
 | #143 | | Game Boy: a rise while only up is held isn't a jump (spinner rides in Red read as jumps), and the puzzle helper is told the rides the map has learned and that a ride needs only plain presses. |
+| #144 | | Cutover done: the one-time import of voltgpt's `old.db` (reminders and the wheel game) is removed, with the `old_database` and `main_server` settings and the `legacy_imports` table. |
 
 ## Not built yet
 
 | Idea | Notes |
 |---|---|
-| Remove the `old.db` import | Once Cherry has confirmed the imports. What to delete is listed in [architecture.md](architecture.md#importing-from-voltgpt). |
 | Sentry | Error grouping through the `sentry` crate's `tracing` integration, on when `SENTRY_DSN` is set. GlitchTip is a self-hostable server for it. |
 | Wheel: `/wheel_spin` and balance history | A random winner with an animation, and each player's money over time |
 | More faces | Mischievous, grossed out, lonely, celebrating |

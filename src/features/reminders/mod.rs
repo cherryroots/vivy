@@ -7,11 +7,9 @@
 //! - `scheduler.rs`: the background task that delivers reminders
 //! - `commands.rs`: `/reminders` and `/timezone`
 //! - `ui.rs`: message texts, buttons and the delete menu
-//! - `import.rs`: reminders from voltgpt's database
 //! - `tools.rs`: create, list and cancel reminders from chat
 
 mod commands;
-mod import;
 mod parse;
 mod scheduler;
 mod store;
@@ -33,8 +31,8 @@ use self::store::{Image, NewReminder};
 use self::ui::Action;
 use crate::ai::ToolDef;
 use crate::core::{
-    Asker, BotCtx, Command, ComponentInteraction, Feature, LegacyImport, Mention, ModalInteraction,
-    Respond as _, Response, Result, Stat, settings, user_error,
+    Asker, BotCtx, Command, ComponentInteraction, Feature, Mention, ModalInteraction, Respond as _,
+    Response, Result, Stat, settings, user_error,
 };
 use crate::util::discord::{Draft, Message, UserId, no_pings};
 use crate::util::media::download;
@@ -61,13 +59,6 @@ impl Feature for Reminders {
 
     fn mention_prefixes(&self) -> &'static [&'static str] {
         &["remind me", "reminder", "remind"]
-    }
-
-    fn legacy_import(&self) -> Option<LegacyImport> {
-        Some(LegacyImport {
-            part: "reminders",
-            run: import::import,
-        })
     }
 
     fn tools(&self) -> Vec<ToolDef> {

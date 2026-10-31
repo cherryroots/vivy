@@ -26,7 +26,6 @@ All in `src/features/reminders/`, in a reading order that starts with the pure l
 | `scheduler.rs` | The one background task that delivers due reminders, with retries. |
 | `commands.rs` | The slash commands `/reminders` and `/timezone`, each a struct deriving `CommandModel` and `CreateCommand` (`twilight-interactions`). |
 | `tools.rs` | The chat tools `create_reminder`, `list_reminders`, `cancel_reminder`. |
-| `import.rs` | Reading reminders from voltgpt's database. |
 | `mod.rs` | Wires it all in: the `Reminders` struct, its `Feature` implementation, the mention handler, the cancel, snooze and delete handlers, and image downloads. |
 
 ## How it works
@@ -133,7 +132,6 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 | `commands` | `/reminders` and `/timezone`. |
 | `migrations` | `store::MIGRATIONS`. |
 | `mention_prefixes` | `remind me`, `reminder`, `remind` (the dispatcher picks the longest match). |
-| `legacy_import` | The `reminders` part, run by `import::import`. |
 | `tools`, `run_tool` | The three chat tools. |
 | `tool_status` | "⏰ Setting a reminder…" and similar in chat's status line. |
 | `stats` | Control panel lines: Pending, Next, Sent this week, and Failing to send when any are retrying. |
@@ -177,9 +175,7 @@ One timer, registered in `scheduler::run` as `ctx.timers.add("Reminders", "at th
 
 ## Importing from voltgpt
 
-`import.rs` copies voltgpt's `reminders` table from `old.db` (see [architecture](../architecture.md) for how the import runs). voltgpt stored IDs as text, an empty `guild_id` in DMs, and images as JSON with base64 data. For each row the import reads the IDs as numbers (empty becomes none), decodes the images into `reminder_images` blobs, and keeps `fire_at` and `created_at`. A broken row is logged and skipped instead of failing the whole part. Imported reminders have no `source_message_id`, so their "Reminder set" line has no link. Reminders that came due while the bot was down go out right after startup.
-
-The old.db import code is planned for removal once the imports are confirmed: `src/core/legacy.rs`, `Feature::legacy_import`, each feature's `import.rs`, the call in `main.rs`, and the `old_database` config key. The `legacy_imports` table stays.
+voltgpt's reminders were copied once from its database at the cutover. The import code was removed in #144. Reminders imported then have no `source_message_id`, so their "Reminder set" line has no link.
 
 ## Compared to voltgpt
 

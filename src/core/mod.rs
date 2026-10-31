@@ -12,7 +12,6 @@ pub mod events;
 pub mod feature;
 pub mod gateway;
 pub mod interaction;
-pub mod legacy;
 pub mod logging;
 pub mod settings;
 pub mod timers;
@@ -20,7 +19,7 @@ pub mod timers;
 pub use ctx::BotCtx;
 pub use errors::user_error;
 pub use events::BotEvent;
-pub use feature::{Asker, Feature, LegacyImport, Mention, Panel, Stat};
+pub use feature::{Asker, Feature, Mention, Panel, Stat};
 pub use interaction::{
     Command, CommandCtx, ComponentInteraction, ModalInteraction, Respond, Response,
 };
