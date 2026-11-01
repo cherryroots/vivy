@@ -4,7 +4,7 @@
 use chrono::{DateTime, TimeDelta, Utc};
 
 use super::format::{month_bounds, plain};
-use super::graphs::{path, scale, series};
+use super::graphs::{long_enough, path, scale, series};
 use super::history;
 use super::{Dashboard, GAP, LEFT, RIGHT, SpendView, card_title, section};
 use crate::ai::display_name;
@@ -310,14 +310,18 @@ fn month_chart(
             );
         }
         let (nx, ny) = scale(&[(now.timestamp(), line.usd)], area, span, range)[0];
+        // The pace line and the month's line are left out while too short to draw: the
+        // pace line in the month's last minutes, the month's line in its first.
         if let Some(pace) = line.pace {
             let (ex, ey) = scale(&[(span.1, pace)], area, span, range)[0];
-            svg.raw(format!(
-                "<path d=\"M{nx:.1},{ny:.1} L{ex:.1},{ey:.1}\" stroke=\"{color}\" stroke-opacity=\"0.6\" stroke-width=\"1.5\" stroke-dasharray=\"2 4\" stroke-linecap=\"round\"/>"
-            ));
+            if long_enough(&[(nx, ny), (ex, ey)]) {
+                svg.raw(format!(
+                    "<path d=\"M{nx:.1},{ny:.1} L{ex:.1},{ey:.1}\" stroke=\"{color}\" stroke-opacity=\"0.6\" stroke-width=\"1.5\" stroke-dasharray=\"2 4\" stroke-linecap=\"round\"/>"
+                ));
+            }
         }
-        if line.points.len() >= 2 {
-            let coords = scale(&line.points, area, span, range);
+        let coords = scale(&line.points, area, span, range);
+        if long_enough(&coords) {
             let path = path(&coords);
             svg.raw(format!(
                 "<path d=\"{path} L{nx:.1},{:.1} L{:.1},{:.1} Z\" fill=\"{color}\" fill-opacity=\"0.12\"/>",

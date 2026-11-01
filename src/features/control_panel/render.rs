@@ -879,6 +879,44 @@ mod tests {
         )
     }
 
+    /// The month graph leaves out lines too short to draw, which resvg logs as "path
+    /// dashing failed" / "path stroking failed": the pace line in the month's last
+    /// minutes, the month's line in its first.
+    #[test]
+    fn month_graph_at_the_months_edges() {
+        let pace = "stroke-dasharray=\"2 4\"";
+        let month_line = "fill=\"none\" stroke=\"#d97757\" stroke-width=\"2\"";
+
+        let svg = online_svg(&sample(at("2026-10-20T12:00:00Z")));
+        assert!(svg.contains(pace) && svg.contains(month_line));
+
+        let svg = online_svg(&sample(at("2026-10-31T23:59:30Z")));
+        assert!(
+            !svg.contains(pace),
+            "pace line from the month's end to itself"
+        );
+        assert!(svg.contains(month_line));
+
+        // A minute into the month: one sample at midnight and nothing spent yet.
+        let now = at("2026-11-01T00:01:00Z");
+        let mut first = sample(now);
+        for spend in &mut first.spends {
+            if let Ok(view) = spend.view.as_mut() {
+                view.usd = 0.0;
+            }
+        }
+        for provider in ["claude", "openai"] {
+            let midnight = month_bounds(now).0.timestamp();
+            first
+                .history
+                .insert(history::spend_key(provider), vec![(midnight, 0.0)]);
+        }
+        let svg = online_svg(&first);
+        assert!(!svg.contains(pace) && !svg.contains(month_line));
+        // The dot still marks today.
+        assert!(svg.contains("r=\"3.5\" fill=\"#d97757\""));
+    }
+
     /// Also writes the pictures to `$STATUS_MOCKUP_DIR` when it's set, to look at them.
     #[test]
     fn draws_the_status() {

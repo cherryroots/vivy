@@ -9,7 +9,7 @@
 
 use anyhow::Context as _;
 use async_trait::async_trait;
-use chrono::{DateTime, Datelike, TimeZone, Utc};
+use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Utc};
 use serde_json::Value;
 
 use super::{API, VERSION};
@@ -34,16 +34,14 @@ impl Bill for Billing {
     }
 
     async fn this_month(&self, now: DateTime<Utc>) -> anyhow::Result<f64> {
-        let start = Utc
-            .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
-            .unwrap()
-            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let (start, end) = month_so_far(now);
         let mut cents = 0.0;
         let mut page: Option<String> = None;
         // One page holds up to 31 daily buckets, so this is usually one request.
         loop {
             let mut query = vec![
                 ("starting_at", start.clone()),
+                ("ending_at", end.clone()),
                 ("bucket_width", "1d".to_string()),
                 ("limit", "31".to_string()),
             ];
@@ -76,6 +74,22 @@ impl Bill for Billing {
     }
 }
 
+/// The days to ask for: from the month's first midnight to the next midnight, both UTC,
+/// so today's bucket is in. Without `ending_at` Anthropic ends at today's midnight, which
+/// on the 1st (UTC) is the start itself, and it answers "Invalid date range".
+fn month_so_far(now: DateTime<Utc>) -> (String, String) {
+    let midnight = |day: DateTime<Utc>| {
+        Utc.with_ymd_and_hms(day.year(), day.month(), day.day(), 0, 0, 0)
+            .unwrap()
+    };
+    let start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .unwrap();
+    let end = midnight(now) + TimeDelta::days(1);
+    let text = |time: DateTime<Utc>| time.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    (text(start), text(end))
+}
+
 /// Adds up every amount in one page of the cost report. Amounts are decimal strings, in
 /// cents.
 fn total_cents(page: &Value) -> f64 {
@@ -103,5 +117,25 @@ mod tests {
         });
         assert_eq!(total_cents(&page), 1400.0);
         assert_eq!(total_cents(&json!({})), 0.0);
+    }
+
+    #[test]
+    fn asks_for_the_month_up_to_tomorrow() {
+        let at = |text: &str| DateTime::parse_from_rfc3339(text).unwrap().to_utc();
+        let range = |start: &str, end: &str| (start.to_string(), end.to_string());
+        // Early on the 1st: still a whole day, not an empty range.
+        assert_eq!(
+            month_so_far(at("2026-11-01T00:50:00Z")),
+            range("2026-11-01T00:00:00Z", "2026-11-02T00:00:00Z")
+        );
+        assert_eq!(
+            month_so_far(at("2026-11-17T13:05:00Z")),
+            range("2026-11-01T00:00:00Z", "2026-11-18T00:00:00Z")
+        );
+        // The last day ends at the next month's first midnight.
+        assert_eq!(
+            month_so_far(at("2026-12-31T23:59:00Z")),
+            range("2026-12-01T00:00:00Z", "2027-01-01T00:00:00Z")
+        );
     }
 }
