@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use futures::future::join_all;
 use serde_json::{Value, json};
-use tracing::warn;
+use tracing::{info, warn};
 use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
@@ -690,12 +690,18 @@ pub(super) async fn can_read(
     // The link's server part is just text, so check the channel really is in the
     // asker's server. Otherwise a link could reach into another server.
     if target.guild_id != Some(guild_id) {
+        info!(%channel, "not reading a channel of another server");
         return Ok(false);
     }
-    // The parent from Discord, since archived threads aren't in the cache.
-    Ok(ctx
-        .gate("chat")
-        .allows(asker.guild, channel, target.parent_id))
+    // A thread also counts as its parent channel; the parent comes from Discord, since
+    // archived threads aren't in the cache. Any other channel's parent is its category,
+    // which the config's channel lists don't mean.
+    let parent = target.parent_id.filter(|_| target.kind.is_thread());
+    let allowed = ctx.gate("chat").allows(asker.guild, channel, parent);
+    if !allowed {
+        info!(%channel, ?parent, "not reading a channel: [features.chat] gating turns chat off there");
+    }
+    Ok(allowed)
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
