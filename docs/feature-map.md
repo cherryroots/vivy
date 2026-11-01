@@ -260,6 +260,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #150 | | Journal lines are the short readable lines again (module, channel and message, the fields), with the level as a `<N>` prefix systemd reads, so `journalctl` still colours them by level; `tracing-journald` (#146) is gone. |
 | #151 | | Chat: reading another channel checks the config for that channel only (a thread also by its parent), not for its category, and a refused channel is logged with the reason, so "chat is turned off there" can be traced to the config. |
 | #152 | | Chat: a linked message that won't open says exactly why (another server and its id, someone's DM, or chat turned off in that channel by the config), and a fetch Discord refuses (deleted, or no Read Message History) is logged as a warning. |
+| #153 | | Chat: a question with a link that got no preview (like a Discord message link) is read again for previews, and that copy from Discord's REST API has no server id, so she took the question for a DM and refused every linked message. The server id and member from the gateway are kept now. |
 
 ## Not built yet
 
