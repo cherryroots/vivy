@@ -1,8 +1,10 @@
 # Game Boy
 
-Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. **Stages 1 to 3 are done: the emulator, played by hand with admin commands; code that reads Pokémon Red's screen and memory, keeps a map of each area and walks her anywhere on it; and a cheap model (the supervisor) that carries out one short task at a time, with the gate that measures how well it does. Stage 4 is under way: so far, skills she writes herself, and playing by herself in capped sessions with a journal, checkpoints and a stuck ladder. She doesn't post about it in her own voice yet (stage 5).**
+Vivy will play Game Boy games by herself: work out the controls and what the game wants, play in short capped sessions, and post now and then in a Discord thread about how far she has got. This is being built in stages, one pull request each. Stages 1 to 4 are done and 5 to 7 are under way; the stage table at the bottom of this page says what each one added.
 
-The plan, with the research behind it and every decision, is the "Vivy plays any Game Boy game" doc in the project. The stages are at the bottom of this page.
+Two rules from Cherry shape every part of it. **No game-specific code:** the goal is that she picks up any Game Boy game, so code only gives her perception (the screen, memory she searches herself, maps, how she moves) and her behaviour comes from skills; no game names or per-game addresses in the bot's code (per-game data, if ever, only as data files). **Her skills are her own:** she and the strategist's review write them. Two more follow from play: on a task progression needs she keeps at it another way instead of wandering off, and she always plans from where an action actually left her, since games aren't entirely deterministic.
+
+The plan, with the research behind it and every decision, is the ["Vivy plays any Game Boy game"](https://claude.ai/code/artifact/760e9284-7cec-4e1d-ab7f-0c23138995a2) doc, and the plan for practising on save states (#119) is [its own doc](https://claude.ai/artifact/RPqVYg7B6sxYz57w6aCaeV). The stages are at the bottom of this page.
 
 ## Playing by hand
 
@@ -269,6 +271,19 @@ Before her first session in a game, code plays it by itself for a moment, and a 
 - **The moments worth a look** (`novelty::pick`). Each new screen is a moment, with the screen before, the screen after and the last presses before it. Most are only walking on, so how much a moment changed is measured with the screen lined up by how far it scrolled (found by matching the two screens, since games like Harvest Moon change their scroll partway down the screen and the registers can't say it). Moments a button brought (a menu, a text box, a tool used) and ones where walking went through a dark screen (a door) come first, the biggest changes first; walking that only scrolled fills at most a quarter. A moment like one already picked is left out: the same screen, or the same part of it changing (Harvest Moon's date box opened, or closed, over a dozen spots on the farm). 24 are kept.
 - **Insights** (`insights.rs`). The supervisor's model (Haiku) gets the 24 moments once, before and after side by side with the presses that led there, and writes up to 8 insights, one sentence each, like "Pressing Select on the field brings up a small menu with options such as Pet, Memo, and Horse" (Harvest Moon) or "Pressing START opens a pause screen with the weapon bars" (Mega Man). Under a tenth of a cent. They go to the log and into the journal (`insights`), and `messed` says it's done, so it happens once per game; `/games gameboy reset` starts a game afresh and does it again. When the model can't be asked, she tries again next session.
 - **Confirmed or struck in play.** Insights start unconfirmed: the model only saw pictures, and some are guesses. The strategist gets them numbered with every plan and says, in `insights_checked`, which ones the last task relied on and whether they held. One that works is confirmed (✅), one that fails twice is struck, and the log says so. The supervisor is told the ones not struck at the start of each task, the unconfirmed ones marked as such, and the strategist is told not to copy them into its notes.
+
+## Games tried so far
+
+What test runs found out about each game, so the next run doesn't have to. The addresses here are for test scripts that check code against the game's own numbers; the bot never reads them.
+
+- **Pokémon Red.** The main test game, with its memory map. Cherry's saves from her live runs: Mt Moon (2026-10-27) and a 464-episode run that reached the Rainbow Badge and stuck on the Rocket Hideout's spinners (2026-10-31, fixed in #142).
+- **Link's Awakening.** No single area byte (the outdoor room byte changes per screen, houses share a map id), so places come from looks and doors. Link's x and y on screen are `FF98`/`FF99`, the room `FFF6`, indoors `DBA5`; the screen vote finds `DB54`. Link starts with the shield only, no sword; held B pushes the beach's sea urchins aside.
+- **Harvest Moon.** The town is a cursor menu drawn with a sprite, not ground. The farm is wider than 16 steps, which needed the second byte vote (#112).
+- **Mega Man V.** Jump height is about 39 px for any hold of 20 frames or more; the hold mostly sets how far right she drifts (about 1.2 px a frame), and the same press lands 0 to 5 steps away depending on ledges. That's why jumps are tried in a copy first (#129). Lives use a tall digit the font can't read; use a watch.
+- **Contra.** `up+b` fires upward; a good state for testing what a press sends out.
+- **Pokémon Trading Card Game.** In the lab an A press starts a scene that moves part of the map, not a text box.
+
+Start states for each are kept in the project's shared folder (`gameboy/starts/`).
 
 ## Settings
 

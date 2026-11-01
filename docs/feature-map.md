@@ -7,6 +7,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | Doc | What's in it |
 |---|---|
 | [README](../README.md) | What each feature does for people, and how to set the bot up |
+| [CLAUDE.md](../CLAUDE.md) | Working rules for Claude sessions: how Cherry likes to work, the PR workflow, the server, tokens and test keys, behaviour that's intended, ideas decided against, the Game Boy rules |
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
@@ -255,6 +256,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #144 | | Cutover done: the one-time import of voltgpt's `old.db` (reminders and the wheel game) is removed, with the `old_database` and `main_server` settings and the `legacy_imports` table. |
 | #145 | | AI spend on the 1st of the month: Anthropic's bill is asked up to tomorrow's midnight (UTC), so it no longer answers "Invalid date range" all day on the 1st, and the status picture's month graph leaves out lines too short to draw (pace line at the month's end, month line at its start), which logged "path dashing/stroking failed" to #log. |
 | #146 | | Logging under systemd goes straight into the journal with `tracing-journald`, so `journalctl` shows each line in its level's colour (errors red, warnings yellow), with the module and span in journal fields; a terminal still gets the short lines. |
+| #147 | | Docs: `CLAUDE.md` with the working rules that lived only in the Claude project; the Game Boy page's intro brought up to date, with Cherry's rules and what test runs found per game; Hunger Games ideas not built yet |
 
 ## Not built yet
 
