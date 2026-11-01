@@ -2,22 +2,26 @@
 //! `search_messages` lives in `search.rs`.
 //!
 //! Each tool runs as the person who asked ([`Asker`]): it only reads channels that person
-//! can read. Results are plain text, which is what the model reads best.
+//! can read. Results are plain text, which is what the model reads best; `get_message`
+//! also shows the message's pictures.
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use futures::future::join_all;
 use serde_json::{Value, json};
+use tracing::warn;
 use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
 
 use super::{channels, search};
-use crate::ai::ToolDef;
+use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::discord::{
     Channel, ChannelId, ChannelType, GuildId, Member, Message, MessageId, Permissions, UserId,
     display_name, get_channel, get_member, get_message, get_user, member_display_name, to_chrono,
 };
+use crate::util::media;
 use crate::util::shorten;
 
 /// Most messages `read_recent_messages` returns.
@@ -79,7 +83,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_message",
-            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
+            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions, and shows you its pictures, GIFs and videos. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
             parameters: json!({
                 "type": "object",
                 "properties": {"link": {"type": "string"}},
@@ -443,7 +447,7 @@ async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<Stri
     Ok(lines.join("\n"))
 }
 
-/// "[2026-10-09 14:02] Cherry: text (2 attachments)"
+/// "[2026-10-09 14:02] Cherry: text (2 attachments: cat.png, notes.pdf)"
 pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
     format_message_up_to(ctx, msg, zone, MAX_MESSAGE_CHARS).await
 }
@@ -463,7 +467,20 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
     let text = channels::name_channels(ctx, &text).await;
     let mut line = format!("[{time}] {name}: {}", shorten(&text, max_chars));
     if !msg.attachments.is_empty() {
-        line.push_str(&format!(" ({} attachments)", msg.attachments.len()));
+        let names: Vec<&str> = msg
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        let word = if names.len() == 1 {
+            "attachment"
+        } else {
+            "attachments"
+        };
+        line.push_str(&format!(" ({} {word}: {})", names.len(), names.join(", ")));
+    }
+    for sticker in &msg.sticker_items {
+        line.push_str(&format!(" [sticker: {}]", sticker.name));
     }
     for embed in &msg.embeds {
         if let Some(title) = &embed.title {
@@ -585,6 +602,69 @@ pub(super) async fn format_linked(ctx: &BotCtx, asker: &Asker, msg: &Message) ->
 async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<String> {
     let msg = linked_message(ctx, asker, link).await?;
     Ok(format_linked(ctx, asker, &msg).await)
+}
+
+/// At most this many pictures, GIFs or videos of a message are shown by `get_message`.
+const LINKED_PICTURES: usize = 4;
+/// Each is shrunk to fit in this many pixels: enough to read a screenshot.
+const LINKED_PICTURE_SIDE: u32 = 1024;
+/// A GIF or video shows at most this many frame grids.
+const LINKED_GRIDS: usize = 2;
+
+/// `get_message` with the message's pictures, GIFs and videos for the model to look at.
+pub(super) async fn message_with_pictures(
+    ctx: &BotCtx,
+    asker: &Asker,
+    args: &Value,
+) -> Result<ToolReply> {
+    let link = args["link"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| user_error("`link` is required."))?;
+    let msg = linked_message(ctx, asker, link).await?;
+    let mut text = format_linked(ctx, asker, &msg).await;
+    let found = media::find_media(&msg);
+    let loads = found
+        .iter()
+        .take(LINKED_PICTURES)
+        .map(|m| media::load_small(m, LINKED_PICTURE_SIDE, LINKED_GRIDS));
+    let mut images = Vec::new();
+    let mut failed = 0;
+    for result in join_all(loads).await {
+        match result {
+            Ok(loaded) => images.extend(loaded),
+            Err(err) => {
+                warn!("couldn't load a picture of {link}: {err:#}");
+                failed += 1;
+            }
+        }
+    }
+    text.push_str(&picture_note(found.len(), LINKED_PICTURES, failed));
+    Ok(ToolReply { text, images })
+}
+
+/// What the model is told about a message's `found` pictures when at most `shown` are
+/// shown and `failed` of those couldn't be loaded, so it doesn't answer as if it saw them
+/// all. Empty without pictures.
+fn picture_note(found: usize, shown: usize, failed: usize) -> String {
+    if found == 0 {
+        return String::new();
+    }
+    let shown = found.min(shown);
+    let mut parts = vec![if shown == failed {
+        "none could be shown".to_string()
+    } else {
+        format!("{} shown below", shown - failed)
+    }];
+    if failed > 0 && shown > failed {
+        parts.push(format!("{failed} couldn't be loaded"));
+    }
+    if found > shown {
+        parts.push(format!("{} more left out", found - shown));
+    }
+    let word = if found == 1 { "picture" } else { "pictures" };
+    format!("\n[{found} {word}: {}]", parts.join(", "))
 }
 
 /// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
@@ -856,5 +936,16 @@ Category Voice:
             format_time(now, Tz::Europe__Oslo),
             "Friday 2026-10-09 00:53 in Europe/Oslo (UTC+02:00). Unix time 1791500000."
         );
+    }
+
+    #[test]
+    fn says_which_pictures_she_got() {
+        assert_eq!(picture_note(0, 4, 0), "");
+        assert_eq!(picture_note(1, 4, 0), "\n[1 picture: 1 shown below]");
+        assert_eq!(
+            picture_note(6, 4, 1),
+            "\n[6 pictures: 3 shown below, 1 couldn't be loaded, 2 more left out]"
+        );
+        assert_eq!(picture_note(2, 4, 2), "\n[2 pictures: none could be shown]");
     }
 }

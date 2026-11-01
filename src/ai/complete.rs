@@ -2,13 +2,16 @@
 //! tools the model asks for, and continue until it's done. For background work like
 //! chiming in or tidying memory; chat's answers stream into Discord with their own loop.
 
-use super::{ChatEvent, ChatProvider, ChatRequest, NativeRound, ToolCall, ToolOutput, next_input};
+use super::{
+    ChatEvent, ChatProvider, ChatRequest, NativeRound, ToolCall, ToolOutput, ToolReply, next_input,
+};
 use async_trait::async_trait;
 
-/// Runs the tool calls of [`complete`]. Whatever happens, the model gets text back.
+/// Runs the tool calls of [`complete`]. Whatever happens, the model gets text back, and
+/// sometimes pictures with it.
 #[async_trait]
 pub trait ToolRunner: Send + Sync {
-    async fn run(&self, call: &ToolCall) -> String;
+    async fn run(&self, call: &ToolCall) -> ToolReply;
 }
 
 /// A finished answer.
@@ -86,10 +89,11 @@ pub async fn complete(
         }
         let mut results = Vec::new();
         for call in &done.tool_calls {
+            let reply = tools.run(call).await;
             results.push(ToolOutput {
                 call_id: call.id.clone(),
-                output: tools.run(call).await,
-                images: Vec::new(),
+                output: reply.text,
+                images: reply.images,
             });
         }
         if round + 1 == max_rounds {
@@ -172,8 +176,8 @@ mod tests {
 
     #[async_trait]
     impl ToolRunner for Saved {
-        async fn run(&self, _call: &ToolCall) -> String {
-            "saved".into()
+        async fn run(&self, _call: &ToolCall) -> ToolReply {
+            "saved".to_string().into()
         }
     }
 

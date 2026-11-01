@@ -18,7 +18,9 @@ use serde_json::json;
 use tracing::{Instrument as _, error, info, info_span, warn};
 
 use super::store;
-use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolDef, ToolRunner, Turn, complete};
+use crate::ai::{
+    ChatRequest, Input, Part, Role, ToolCall, ToolDef, ToolReply, ToolRunner, Turn, complete,
+};
 use crate::core::{Asker, BotCtx, Result};
 use crate::util::discord::{EmojiId, GuildId};
 use crate::util::media::{self, Media, MediaKind};
@@ -332,8 +334,8 @@ struct NoTools;
 
 #[async_trait]
 impl ToolRunner for NoTools {
-    async fn run(&self, call: &ToolCall) -> String {
-        format!("Error: there is no tool named {}.", call.name)
+    async fn run(&self, call: &ToolCall) -> ToolReply {
+        format!("Error: there is no tool named {}.", call.name).into()
     }
 }
 

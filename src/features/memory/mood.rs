@@ -14,7 +14,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::{face, reflect, store, tool};
-use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete};
+use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolReply, ToolRunner, Turn, complete};
 use crate::core::{BotCtx, Result};
 
 const SYSTEM: &str = "You are Vivy, a Discord bot. Nobody is talking to you right now: this is a quiet moment where you check in with yourself, and nothing you write is posted. \
@@ -250,8 +250,8 @@ struct NoTools;
 
 #[async_trait::async_trait]
 impl ToolRunner for NoTools {
-    async fn run(&self, call: &ToolCall) -> String {
-        format!("Error: there is no tool named {}.", call.name)
+    async fn run(&self, call: &ToolCall) -> ToolReply {
+        format!("Error: there is no tool named {}.", call.name).into()
     }
 }
 
