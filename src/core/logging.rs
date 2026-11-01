@@ -1,5 +1,5 @@
-//! Logging setup: readable lines (or JSON) on stdout, plus a copy of the important lines in
-//! a Discord channel.
+//! Logging setup: readable lines (or JSON) on stdout, or straight into the systemd journal
+//! when stdout goes there, plus a copy of the important lines in a Discord channel.
 //!
 //! Log with the `tracing` macros (`info!`, `warn!`, `error!`). The dispatcher wraps every
 //! handler in a span with the feature, server, channel and message, so a log line inside a
@@ -15,6 +15,8 @@ use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
 use std::fs::File;
 use std::io::IsTerminal as _;
+use std::os::fd::AsFd as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
@@ -34,6 +36,7 @@ use tracing_subscriber::layer::{Context, SubscriberExt as _};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer, filter};
 
+use tracing_journald::{Priority, PriorityMappings};
 use tracing_log::{AsLog as _, LogTracer};
 
 use super::config::LoggingConfig;
@@ -54,9 +57,17 @@ pub struct LogLine {
 /// [`spawn_discord_poster`] empties once the bot is connected. Lines logged before then wait
 /// in the queue, so startup errors still reach Discord.
 pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
-    // RUST_LOG picks what goes to stdout, for example `info,vivy::features::chat=debug`.
+    // RUST_LOG picks what goes to stdout (or the journal), for example
+    // `info,vivy::features::chat=debug`.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let stdout = if std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json") {
+    let json = std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json");
+    let journal = if json { None } else { journald_layer() };
+    let output = if let Some(journal) = journal {
+        // Under systemd: each line goes to the journal with its level, so `journalctl` colours
+        // errors red and warnings yellow. Nothing is written to stdout, or every line would be
+        // in the journal twice.
+        journal.boxed()
+    } else if json {
         tracing_subscriber::fmt::layer()
             .json()
             .with_writer(log_out)
@@ -92,7 +103,7 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
     }));
 
     let subscriber = tracing_subscriber::registry()
-        .with(stdout.with_filter(env_filter))
+        .with(output.with_filter(env_filter))
         .with(discord);
     tracing::subscriber::set_global_default(subscriber)?;
     bridge_log_crate()?;
@@ -115,6 +126,40 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
     }));
 
     Ok(receiver)
+}
+
+/// A layer that writes to the systemd journal, when stdout goes to the journal anyway (the bot
+/// runs as a systemd service). `None` in a terminal, or if the journal can't be reached.
+fn journald_layer() -> Option<tracing_journald::Layer> {
+    // systemd sets JOURNAL_STREAM to "device:inode" of the journal stream it gave the service.
+    // Comparing it with stdout tells "our stdout is the journal" apart from a program started
+    // from a service that inherited the variable but writes somewhere else.
+    let stream = std::env::var("JOURNAL_STREAM").ok()?;
+    let stdout = File::from(std::io::stdout().as_fd().try_clone_to_owned().ok()?);
+    let meta = stdout.metadata().ok()?;
+    if !is_journal_stream(&stream, meta.dev(), meta.ino()) {
+        return None;
+    }
+    match tracing_journald::layer() {
+        // journald's own levels. tracing-journald puts INFO at "notice" by default, which
+        // journalctl shows in bold; "info" keeps ordinary lines plain, and debug lines grey.
+        Ok(layer) => Some(layer.with_priority_mappings(PriorityMappings {
+            error: Priority::Error,
+            warn: Priority::Warning,
+            info: Priority::Informational,
+            debug: Priority::Debug,
+            trace: Priority::Debug,
+        })),
+        Err(err) => {
+            eprintln!("couldn't open the systemd journal ({err}); logging to stdout instead");
+            None
+        }
+    }
+}
+
+/// Whether `JOURNAL_STREAM` ("device:inode") names the file with this device and inode.
+fn is_journal_stream(stream: &str, dev: u64, ino: u64) -> bool {
+    stream.split_once(':') == Some((&dev.to_string(), &ino.to_string()))
 }
 
 /// A copy of stdout as it was when the bot started, for log lines. `None` if it couldn't be
@@ -444,7 +489,7 @@ where
             }
         }
 
-        // If the queue is full the line is dropped; stdout still has it.
+        // If the queue is full the line is dropped; stdout (or the journal) still has it.
         let _ = self.sender.try_send(LogLine {
             level: *meta.level(),
             lifecycle: meta.target() == "lifecycle",
@@ -655,6 +700,14 @@ mod tests {
         let messages = render(&lines);
         assert!(messages.len() > 1);
         assert!(messages.iter().all(|m| m.len() <= 2000));
+    }
+
+    #[test]
+    fn journal_stream_matches_device_and_inode() {
+        assert!(is_journal_stream("8:1234", 8, 1234));
+        assert!(!is_journal_stream("8:1234", 8, 999));
+        assert!(!is_journal_stream("8:1234", 9, 1234));
+        assert!(!is_journal_stream("garbage", 8, 1234));
     }
 
     #[test]

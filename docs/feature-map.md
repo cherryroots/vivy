@@ -254,6 +254,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #143 | | Game Boy: a rise while only up is held isn't a jump (spinner rides in Red read as jumps), and the puzzle helper is told the rides the map has learned and that a ride needs only plain presses. |
 | #144 | | Cutover done: the one-time import of voltgpt's `old.db` (reminders and the wheel game) is removed, with the `old_database` and `main_server` settings and the `legacy_imports` table. |
 | #145 | | AI spend on the 1st of the month: Anthropic's bill is asked up to tomorrow's midnight (UTC), so it no longer answers "Invalid date range" all day on the 1st, and the status picture's month graph leaves out lines too short to draw (pace line at the month's end, month line at its start), which logged "path dashing/stroking failed" to #log. |
+| #146 | | Logging under systemd goes straight into the journal with `tracing-journald`, so `journalctl` shows each line in its level's colour (errors red, warnings yellow), with the module and span in journal fields; a terminal still gets the short lines. |
 
 ## Not built yet
 
