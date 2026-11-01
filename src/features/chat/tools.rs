@@ -578,14 +578,14 @@ pub(super) fn find_message_links(text: &str) -> Vec<String> {
     found
 }
 
-/// The message `link` points to, if the asker can read the place it's in.
+/// The message `link` points to, if she may read the place it's in ([`can_read`]).
 pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<Message> {
     let (guild, channel, message) =
         parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
     let channel = ChannelId::new(channel);
     if !can_read(ctx, asker, guild, channel).await? {
         return Err(user_error(
-            "That message is in a place the asker can't read.",
+            "That message is in another server, someone else's DM, or a channel chat is turned off in.",
         ));
     }
     get_message(&ctx.http, channel, MessageId::new(message))
@@ -667,8 +667,10 @@ fn picture_note(found: usize, shown: usize, failed: usize) -> String {
     format!("\n[{found} {word}: {}]", parts.join(", "))
 }
 
-/// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
-/// server, channels in the same server where they can view and read history.
+/// Whether she may read messages in `channel` for the asker (Cherry's rule): in a DM only
+/// the DM itself; in a server, any channel of the same server that chat isn't turned off in
+/// by the config (`[features.chat]` gating, a thread by its parent channel too). Whether
+/// the asker can see the channel doesn't matter. `guild` is the server a link names.
 pub(super) async fn can_read(
     ctx: &BotCtx,
     asker: &Asker,
@@ -690,23 +692,10 @@ pub(super) async fn can_read(
     if target.guild_id != Some(guild_id) {
         return Ok(false);
     }
-    // Threads use their parent channel's permissions. Private threads also need
-    // membership, which isn't checked here, so they're refused.
-    let target = match target.kind {
-        ChannelType::PrivateThread => return Ok(false),
-        ChannelType::PublicThread | ChannelType::AnnouncementThread => {
-            let Some(parent) = target.parent_id else {
-                return Ok(false);
-            };
-            get_channel(&ctx.http, parent).await?
-        }
-        _ => target,
-    };
-    let member = get_member(&ctx.http, guild_id, asker.user).await?;
-    let Some(permissions) = ctx.permissions_in(guild_id, asker.user, &member.roles, &target) else {
-        return Ok(false);
-    };
-    Ok(permissions.contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY))
+    // The parent from Discord, since archived threads aren't in the cache.
+    Ok(ctx
+        .gate("chat")
+        .allows(asker.guild, channel, target.parent_id))
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {

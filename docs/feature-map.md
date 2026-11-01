@@ -256,6 +256,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #145 | | AI spend on the 1st of the month: Anthropic's bill is asked up to tomorrow's midnight (UTC), so it no longer answers "Invalid date range" all day on the 1st, and the status picture's month graph leaves out lines too short to draw (pace line at the month's end, month line at its start), which logged "path dashing/stroking failed" to #log. |
 | #146 | | Logging under systemd goes straight into the journal with `tracing-journald`, so `journalctl` shows each line in its level's colour (errors red, warnings yellow), with the module and span in journal fields; a terminal still gets the short lines. |
 | #148 | | Chat: chime-ins see pictures. She sees the newest 3 pictures, GIFs or videos people posted in the 15 messages she reads, shrunk to 512 px (about 350 tokens each); older ones are listed by file name. `get_message` shows her a message's pictures too (up to 4, 1024 px), in answers and chime-ins. Message lines name attachments and stickers. |
+| #149 | | Chat reads the whole server (Cherry's rule): message links, `get_message`, `search_messages` and `look_back_at_answers` reach any channel of the server that chat isn't turned off in by the config, whether or not the asker can see it, so she no longer answers "that message is in a channel you don't have access to". Chime-ins aren't kept to their own channel any more either. Other servers and other people's DMs with her still don't open. |
 
 ## Not built yet
 

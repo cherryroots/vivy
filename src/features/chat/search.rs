@@ -1,5 +1,5 @@
 //! `search_messages`: Discord's message search across the server, with every filter the
-//! search API has (see `util::search`), limited to the channels the asker can read.
+//! search API has (see `util::search`), limited to the channels chat may read (`tools::can_read`).
 //!
 //! The model names people, channels and roles the way people do (a mention, an ID or a
 //! name); this file turns them into IDs, and dates in the asker's timezone into message
@@ -40,7 +40,7 @@ pub fn def() -> ToolDef {
         |what: &str| json!({"type": "array", "items": {"type": "string"}, "description": what});
     ToolDef {
         name: "search_messages",
-        description: "Searches the messages of the whole server, like Discord's search bar, with all of its filters. Only returns messages from channels the asker can read. Give at least one filter. The answer starts with how many messages match; use `offset` for the next page. Include the message links it returns when you point people at messages.",
+        description: "Searches the messages of the whole server, like Discord's search bar, with all of its filters. Only returns messages from channels you may read. Give at least one filter. The answer starts with how many messages match; use `offset` for the next page. Include the message links it returns when you point people at messages.",
         parameters: json!({
             "type": "object",
             "properties": {
@@ -100,7 +100,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
         let id = find_channel(ctx, asker, guild, &name)
             .ok_or_else(|| user_error(format!("No channel matches \"{name}\".")))?;
         if !can_read(ctx, asker, Some(guild.get()), id).await? {
-            return Err(user_error(format!("The asker can't read {name}.")));
+            return Err(user_error(format!("Chat is turned off in {name}.")));
         }
         channel_ids.push(id.get());
     }
@@ -173,7 +173,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
 
     let found = search::search(&ctx.web, ctx.token(), guild, &search).await?;
 
-    // Discord searched everything the bot can see; keep what the asker can see.
+    // Discord searched everything the bot can see; keep the channels chat may read.
     let mut readable: HashMap<ChannelId, bool> = HashMap::new();
     let mut lines = Vec::new();
     for message in &found.messages {
@@ -224,7 +224,7 @@ fn answer(found: &search::Found, offset: u32, lines: &[String]) -> String {
     let hidden = found.messages.len() - lines.len();
     if hidden > 0 {
         out.push_str(&format!(
-            " {hidden} of them are in channels the asker can't read, so they're left out."
+            " {hidden} of them are in channels chat is turned off in, so they're left out."
         ));
     }
     if found.indexing {
