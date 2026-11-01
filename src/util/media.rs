@@ -241,7 +241,15 @@ pub async fn with_previews(http: &Http, msg: &Message) -> Message {
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
     match get_message(http, msg.channel_id, msg.id).await {
-        Ok(fresh) => fresh,
+        // Messages read back through the REST API carry no server id or member, so keep
+        // the gateway's. Without the server id, chat took the message for a DM.
+        Ok(mut fresh) => {
+            fresh.guild_id = fresh.guild_id.or(msg.guild_id);
+            if fresh.member.is_none() {
+                fresh.member = msg.member.clone();
+            }
+            fresh
+        }
         Err(err) => {
             warn!("couldn't read the message again for link previews: {err:#}");
             msg.clone()
