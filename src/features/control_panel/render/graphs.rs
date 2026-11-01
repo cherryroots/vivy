@@ -40,6 +40,9 @@ pub(super) fn sparkline(
     let low = points.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
     let high = points.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
     let coords = scale(points, area, span, (low, high));
+    if !long_enough(&coords) {
+        return;
+    }
     let line = path(&coords);
     let [_, y, _, h] = area;
     let (first, last) = (coords[0].0, coords[coords.len() - 1].0);
@@ -90,6 +93,16 @@ pub(super) fn scale(
         .collect()
 }
 
+/// Whether a line through `coords` reaches at least a pixel from where it starts. resvg
+/// can't stroke or dash a line that starts and ends on one spot: it draws nothing and logs
+/// "path stroking failed" or "path dashing failed" (to #log). The month graph meets one
+/// at the month's first minutes and its last.
+pub(super) fn long_enough(coords: &[(f32, f32)]) -> bool {
+    coords
+        .iter()
+        .any(|&(x, y)| (x - coords[0].0).abs() >= 1.0 || (y - coords[0].1).abs() >= 1.0)
+}
+
 /// "M1,2 L3,4 ..."
 pub(super) fn path(coords: &[(f32, f32)]) -> String {
     coords
@@ -111,5 +124,14 @@ mod tests {
             scale(&[(5, 1.0)], [0.0, 0.0, 10.0, 10.0], (0, 10), (1.0, 1.0)),
             [(5.0, 5.0)]
         );
+    }
+
+    #[test]
+    fn a_line_on_one_spot_is_too_short() {
+        assert!(!long_enough(&[]));
+        assert!(!long_enough(&[(3.0, 4.0)]));
+        assert!(!long_enough(&[(3.0, 4.0), (3.2, 4.0), (3.0, 4.5)]));
+        assert!(long_enough(&[(3.0, 4.0), (3.2, 4.0), (4.0, 4.0)]));
+        assert!(long_enough(&[(3.0, 4.0), (3.0, 2.0)]));
     }
 }
