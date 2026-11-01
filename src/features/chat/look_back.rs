@@ -4,8 +4,8 @@
 //!
 //! Everything comes from `chat_turns`. The steps are read from `native_json`, the
 //! provider's own output, which looks different for Claude and OpenAI; [`steps`] reads
-//! both. Only answers in channels the asker can read are shown (in a DM, only that DM),
-//! so a conversation never leaks into another place.
+//! both. Only answers in channels chat may read are shown (in a DM, only that DM), so a
+//! DM never shows up in a server.
 
 use std::collections::HashMap;
 
@@ -44,7 +44,7 @@ pub fn def() -> ToolDef {
             "type": "object",
             "properties": {
                 "answer": {"type": "string", "description": "The answer to show in detail: its number from the list, a link to or ID of one of your messages (or the message you answered), or \"replied\" for the answer the current message replies to."},
-                "channel": {"type": "string", "description": "For the list: a channel mention or ID, or \"all\" for every channel of this server the asker can read. Default: this channel."},
+                "channel": {"type": "string", "description": "For the list: a channel mention or ID, or \"all\" for every channel of this server you may read. Default: this channel."},
                 "before": {"type": "integer", "description": "For the list: only answers older than this answer number, to page back."},
                 "count": {"type": "integer", "description": "For the list: how many, 1 to 20. Default 10."}
             },
@@ -115,7 +115,7 @@ async fn find_answer(ctx: &BotCtx, asker: &Asker, which: &str) -> Result<Turn> {
     };
     if !may_see(ctx, asker, found.channel_id).await? {
         return Err(user_error(
-            "That answer is in a place the asker can't read.",
+            "That answer is in another server, someone else's DM, or a channel chat is turned off in.",
         ));
     }
     Ok(found)
@@ -125,7 +125,7 @@ fn is_answer(turn: &Turn) -> bool {
     turn.role == crate::ai::Role::Assistant
 }
 
-/// Whether the asker can read `channel`: the same rule as reading messages.
+/// Whether she may read `channel` for the asker: the same rule as reading messages.
 async fn may_see(ctx: &BotCtx, asker: &Asker, channel: u64) -> Result<bool> {
     if channel == 0 {
         return Ok(false);
@@ -155,7 +155,7 @@ async fn list(
             let id = parse_channel(text)
                 .ok_or_else(|| user_error("`channel` is a channel mention or ID, or \"all\"."))?;
             if !may_see(ctx, asker, id).await? {
-                return Err(user_error("The asker can't read that channel."));
+                return Err(user_error("Chat is turned off in that channel."));
             }
             id
         }

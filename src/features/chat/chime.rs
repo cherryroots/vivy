@@ -10,7 +10,8 @@
 //!
 //! Nobody asked for these lines (nor for check-ins, which use [`speak`] too), and they're
 //! posted for the whole channel, so she can only use [`UNPROMPTED_TOOLS`]: tools that read
-//! what people in this channel could see anyway, and her own memory.
+//! the server (any channel chat isn't turned off in, see `tools::can_read`) and her own
+//! memory.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -26,14 +27,13 @@ use chrono::Utc;
 use chrono_tz::Tz;
 use futures::future::join_all;
 use serde::Deserialize;
-use serde_json::json;
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
 use super::emoji;
 use super::look_back::one_line;
 use super::store::{self, NewTurn, StoredPart, Written};
-use super::tools::{format_message, parse_link};
+use super::tools::format_message;
 use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolReply, ToolRunner, Turn, complete};
 use crate::core::{Asker, BotCtx, Feature, Result};
 use crate::util::media::{self, Media, ModelImage};
@@ -55,7 +55,7 @@ const PICTURE_SIDE: u32 = 512;
 /// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
 /// someone decides it's safe here. Left out: anything that acts for a person (reminders,
 /// check-ins), and `list_channels`, which lists what one person can see, not everyone here.
-/// `get_message` and `search_messages` only reach this channel (see [`Runner`]). `memory`
+/// `get_message` and `search_messages` reach the channels chat may read (`tools::can_read`). `memory`
 /// is in: what she saves is her own decision. `tinyfish_search` and `tinyfish_fetch` only
 /// read the web, like the providers' own web tools, which chime-ins have too.
 const UNPROMPTED_TOOLS: &[&str] = &[
@@ -675,8 +675,8 @@ fn reply_number(text: &str) -> (Option<usize>, &str) {
 }
 
 /// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message (or the
-/// person she checks in with), but kept to this channel: what she reads ends up in a public
-/// line, so it mustn't come from a channel only that person can read.
+/// person she checks in with). What she reads may come from any channel chat may read
+/// (Cherry's rule), so it can end up in a public line.
 ///
 /// In a server, `memory` runs as Vivy herself: what she saves unprompted is her own call, so
 /// the change log names her, not whoever wrote last. The folder is the server's either way.
@@ -693,48 +693,20 @@ impl ToolRunner for Runner {
         if !UNPROMPTED_TOOLS.contains(&call.name.as_str()) {
             return format!(
                 "Error: {} can't be used when nobody asked you anything. Here you can only \
-                 read this channel and use your memory.",
+                 read the server and use your memory.",
                 call.name
             )
             .into();
         }
-        match here_only(call, self.asker.channel) {
-            Ok(call) if call.name == "memory" && self.asker.guild.is_some() => {
-                let herself = Asker {
-                    user: self.ctx.bot_id,
-                    ..self.asker.clone()
-                };
-                answer::run_tool(&self.ctx, &herself, &self.owners, &call).await
-            }
-            Ok(call) => answer::run_tool(&self.ctx, &self.asker, &self.owners, &call).await,
-            Err(text) => text.into(),
+        if call.name == "memory" && self.asker.guild.is_some() {
+            let herself = Asker {
+                user: self.ctx.bot_id,
+                ..self.asker.clone()
+            };
+            return answer::run_tool(&self.ctx, &herself, &self.owners, call).await;
         }
+        answer::run_tool(&self.ctx, &self.asker, &self.owners, call).await
     }
-}
-
-/// Keeps a tool call to `channel`: a search only searches it, and a message link must point
-/// into it. Returns the call to run, or the error to give the model instead.
-fn here_only(call: &ToolCall, channel: ChannelId) -> Result<ToolCall, String> {
-    let mut call = call.clone();
-    match call.name.as_str() {
-        "search_messages" => match call.args.as_object_mut() {
-            Some(args) => {
-                args.insert("channel".to_string(), json!("here"));
-            }
-            None => call.args = json!({"channel": "here"}),
-        },
-        "get_message" => {
-            let link = call.args["link"].as_str().unwrap_or_default();
-            // A link that doesn't parse is left to the tool, which explains the mistake.
-            if let Some((_, linked, _)) = parse_link(link)
-                && linked != channel.get()
-            {
-                return Err("Error: right now you can only read messages in this channel.".into());
-            }
-        }
-        _ => {}
-    }
-    Ok(call)
 }
 
 #[cfg(test)]
@@ -797,25 +769,6 @@ mod tests {
         assert_eq!(decide("REPLY #3 \"lol\""), reply(3, "lol"));
         assert_eq!(decide("REPLY 3"), Decision::Pass);
         assert_eq!(decide("REPLY all of you"), say("REPLY all of you"));
-    }
-
-    #[test]
-    fn tools_stay_in_this_channel() {
-        let here = ChannelId::new(10);
-        let call = |name: &str, args| ToolCall {
-            id: "1".into(),
-            name: name.into(),
-            args,
-        };
-        let search = here_only(&call("search_messages", json!({"channel": "secret"})), here);
-        assert_eq!(search.unwrap().args["channel"], "here");
-        let search = here_only(&call("search_messages", json!(null)), here);
-        assert_eq!(search.unwrap().args["channel"], "here");
-
-        let link = |channel| json!({"link": format!("https://discord.com/channels/1/{channel}/5")});
-        assert!(here_only(&call("get_message", link(10)), here).is_ok());
-        assert!(here_only(&call("get_message", link(11)), here).is_err());
-        assert!(here_only(&call("get_message", json!({"link": "nonsense"})), here).is_ok());
     }
 
     #[test]

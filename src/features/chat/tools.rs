@@ -578,16 +578,14 @@ pub(super) fn find_message_links(text: &str) -> Vec<String> {
     found
 }
 
-/// The message `link` points to, if it's in the asker's server (or this DM). Any channel
-/// of the server the bot can read is fine, even one the asker can't see (Cherry's call):
-/// a link is something someone chose to share.
+/// The message `link` points to, if she may read the place it's in ([`can_read`]).
 pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<Message> {
     let (guild, channel, message) =
         parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
     let channel = ChannelId::new(channel);
-    if !in_this_server(ctx, asker, guild, channel).await? {
+    if !can_read(ctx, asker, guild, channel).await? {
         return Err(user_error(
-            "That message is in another server or someone else's DM.",
+            "That message is in another server, someone else's DM, or a channel chat is turned off in.",
         ));
     }
     get_message(&ctx.http, channel, MessageId::new(message))
@@ -669,38 +667,10 @@ fn picture_note(found: usize, shown: usize, failed: usize) -> String {
     format!("\n[{found} {word}: {}]", parts.join(", "))
 }
 
-/// Whether `channel` is where the asker is: the DM itself, or any channel of the same
-/// server. `guild` is the server a link names.
-async fn in_this_server(
-    ctx: &BotCtx,
-    asker: &Asker,
-    guild: Option<u64>,
-    channel: ChannelId,
-) -> Result<bool> {
-    Ok(server_channel(ctx, asker, guild, channel).await?.is_some() || channel == asker.channel)
-}
-
-/// `channel`, when it's a channel of the asker's server. `None` in DMs and for other servers.
-async fn server_channel(
-    ctx: &BotCtx,
-    asker: &Asker,
-    guild: Option<u64>,
-    channel: ChannelId,
-) -> Result<Option<Channel>> {
-    let (Some(guild_id), Some(link_guild)) = (asker.guild, guild) else {
-        return Ok(None);
-    };
-    if guild_id.get() != link_guild {
-        return Ok(None);
-    }
-    let target = get_channel(&ctx.http, channel).await?;
-    // The link's server part is just text, so check the channel really is in the
-    // asker's server. Otherwise a link could reach into another server.
-    Ok((target.guild_id == Some(guild_id)).then_some(target))
-}
-
-/// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
-/// server, channels in the same server where they can view and read history.
+/// Whether she may read messages in `channel` for the asker (Cherry's rule): in a DM only
+/// the DM itself; in a server, any channel of the same server that chat isn't turned off in
+/// by the config (`[features.chat]` gating, a thread by its parent channel too). Whether
+/// the asker can see the channel doesn't matter. `guild` is the server a link names.
 pub(super) async fn can_read(
     ctx: &BotCtx,
     asker: &Asker,
@@ -710,29 +680,22 @@ pub(super) async fn can_read(
     if channel == asker.channel {
         return Ok(true);
     }
-    let Some(guild_id) = asker.guild else {
+    let (Some(guild_id), Some(link_guild)) = (asker.guild, guild) else {
         return Ok(false);
     };
-    let Some(target) = server_channel(ctx, asker, guild, channel).await? else {
+    if guild_id.get() != link_guild {
         return Ok(false);
-    };
-    // Threads use their parent channel's permissions. Private threads also need
-    // membership, which isn't checked here, so they're refused.
-    let target = match target.kind {
-        ChannelType::PrivateThread => return Ok(false),
-        ChannelType::PublicThread | ChannelType::AnnouncementThread => {
-            let Some(parent) = target.parent_id else {
-                return Ok(false);
-            };
-            get_channel(&ctx.http, parent).await?
-        }
-        _ => target,
-    };
-    let member = get_member(&ctx.http, guild_id, asker.user).await?;
-    let Some(permissions) = ctx.permissions_in(guild_id, asker.user, &member.roles, &target) else {
+    }
+    let target = get_channel(&ctx.http, channel).await?;
+    // The link's server part is just text, so check the channel really is in the
+    // asker's server. Otherwise a link could reach into another server.
+    if target.guild_id != Some(guild_id) {
         return Ok(false);
-    };
-    Ok(permissions.contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY))
+    }
+    // The parent from Discord, since archived threads aren't in the cache.
+    Ok(ctx
+        .gate("chat")
+        .allows(asker.guild, channel, target.parent_id))
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
