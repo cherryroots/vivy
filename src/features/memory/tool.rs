@@ -11,7 +11,7 @@ use tracing::info;
 
 use super::folder::{self, Command, Folder, ROOT};
 use super::{reflect, store};
-use crate::ai::{ToolCall, ToolDef, ToolRunner};
+use crate::ai::{ToolCall, ToolDef, ToolReply, ToolRunner};
 use crate::core::{Asker, BotCtx, Result, user_error};
 
 /// The most files listed next to a question. The model can view the folder for the rest.
@@ -123,14 +123,14 @@ pub struct FolderRunner {
 
 #[async_trait]
 impl ToolRunner for FolderRunner {
-    async fn run(&self, call: &ToolCall) -> String {
+    async fn run(&self, call: &ToolCall) -> ToolReply {
         if call.name != "memory" {
-            return format!("Error: there is no tool named {}.", call.name);
+            return format!("Error: there is no tool named {}.", call.name).into();
         }
         let user = self.ctx.bot_id.get();
         match run_in(&self.ctx, self.scope.clone(), user, &call.args).await {
-            Ok(text) => text,
-            Err(err) => format!("Error: {err:#}"),
+            Ok(text) => text.into(),
+            Err(err) => format!("Error: {err:#}").into(),
         }
     }
 }
