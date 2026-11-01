@@ -583,14 +583,17 @@ pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> R
     let (guild, channel, message) =
         parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
     let channel = ChannelId::new(channel);
-    if !can_read(ctx, asker, guild, channel).await? {
-        return Err(user_error(
-            "That message is in another server, someone else's DM, or a channel chat is turned off in.",
-        ));
+    if let Some(why) = why_not_readable(ctx, asker, guild, channel).await? {
+        info!(%channel, "not opening a linked message: {why}");
+        return Err(user_error(why));
     }
     get_message(&ctx.http, channel, MessageId::new(message))
         .await
-        .map_err(|_| user_error("I couldn't load that message. It may be deleted."))
+        .map_err(|err| {
+            // Deleted, or the bot lacks View Channel or Read Message History there.
+            warn!(%channel, %message, "couldn't load a linked message: {err:#}");
+            user_error("I couldn't load that message. It may be deleted, or I may not have access to that channel.")
+        })
 }
 
 /// A linked message as the model reads it: [`format_message`] with its whole text.
@@ -677,31 +680,55 @@ pub(super) async fn can_read(
     guild: Option<u64>,
     channel: ChannelId,
 ) -> Result<bool> {
+    Ok(why_not_readable(ctx, asker, guild, channel)
+        .await?
+        .is_none())
+}
+
+/// Why she may not read `channel` for the asker ([`can_read`]), or `None` when she may.
+/// Each reason is its own sentence, so her answer (and the log) says which check said no.
+async fn why_not_readable(
+    ctx: &BotCtx,
+    asker: &Asker,
+    guild: Option<u64>,
+    channel: ChannelId,
+) -> Result<Option<String>> {
     if channel == asker.channel {
-        return Ok(true);
+        return Ok(None);
     }
-    let (Some(guild_id), Some(link_guild)) = (asker.guild, guild) else {
-        return Ok(false);
+    let Some(guild_id) = asker.guild else {
+        return Ok(Some("In a DM I can only read this DM.".to_string()));
+    };
+    let Some(link_guild) = guild else {
+        return Ok(Some("That message is in someone's DM with me.".to_string()));
     };
     if guild_id.get() != link_guild {
-        return Ok(false);
+        return Ok(Some(format!(
+            "That message is in another server ({link_guild}, this one is {guild_id})."
+        )));
     }
     let target = get_channel(&ctx.http, channel).await?;
     // The link's server part is just text, so check the channel really is in the
     // asker's server. Otherwise a link could reach into another server.
     if target.guild_id != Some(guild_id) {
-        info!(%channel, "not reading a channel of another server");
-        return Ok(false);
+        return Ok(Some(format!(
+            "The channel {channel} is in another server ({:?}).",
+            target.guild_id.map(|g| g.get())
+        )));
     }
     // A thread also counts as its parent channel; the parent comes from Discord, since
     // archived threads aren't in the cache. Any other channel's parent is its category,
     // which the config's channel lists don't mean.
     let parent = target.parent_id.filter(|_| target.kind.is_thread());
-    let allowed = ctx.gate("chat").allows(asker.guild, channel, parent);
-    if !allowed {
-        info!(%channel, ?parent, "not reading a channel: [features.chat] gating turns chat off there");
+    if !ctx.gate("chat").allows(asker.guild, channel, parent) {
+        let parent = parent
+            .map(|p| format!(" (thread of {p})"))
+            .unwrap_or_default();
+        return Ok(Some(format!(
+            "Chat is turned off in channel {channel}{parent} by the bot's config."
+        )));
     }
-    Ok(allowed)
+    Ok(None)
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {

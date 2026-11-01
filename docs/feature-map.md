@@ -259,6 +259,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #149 | | Chat reads the whole server (Cherry's rule): message links, `get_message`, `search_messages` and `look_back_at_answers` reach any channel of the server that chat isn't turned off in by the config, whether or not the asker can see it, so she no longer answers "that message is in a channel you don't have access to". Chime-ins aren't kept to their own channel any more either. Other servers and other people's DMs with her still don't open. |
 | #150 | | Journal lines are the short readable lines again (module, channel and message, the fields), with the level as a `<N>` prefix systemd reads, so `journalctl` still colours them by level; `tracing-journald` (#146) is gone. |
 | #151 | | Chat: reading another channel checks the config for that channel only (a thread also by its parent), not for its category, and a refused channel is logged with the reason, so "chat is turned off there" can be traced to the config. |
+| #152 | | Chat: a linked message that won't open says exactly why (another server and its id, someone's DM, or chat turned off in that channel by the config), and a fetch Discord refuses (deleted, or no Read Message History) is logged as a warning. |
 
 ## Not built yet
 
