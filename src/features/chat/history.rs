@@ -174,7 +174,7 @@ const MAX_LINKED: usize = 3;
 
 /// The messages that Discord message links in `text` point to, read like attachments: one
 /// `<linked_messages>` part with who wrote each one and what it says, then their pictures
-/// and files. Only messages in places the asker can read; for the others the model reads
+/// and files. Only messages in the asker's server (or this DM); for the others the model reads
 /// why not. Empty when `text` has no message links.
 pub async fn linked_messages(ctx: &BotCtx, asker: &Asker, text: &str) -> Vec<StoredPart> {
     let links = tools::find_message_links(text);
