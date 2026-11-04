@@ -1,5 +1,5 @@
-//! Logging setup: readable lines (or JSON) on stdout, or straight into the systemd journal
-//! when stdout goes there, plus a copy of the important lines in a Discord channel.
+//! Logging setup: readable lines (or JSON) on stdout, which under systemd is the journal, plus
+//! a copy of the important lines in a Discord channel.
 //!
 //! Log with the `tracing` macros (`info!`, `warn!`, `error!`). The dispatcher wraps every
 //! handler in a span with the feature, server, channel and message, so a log line inside a
@@ -36,7 +36,6 @@ use tracing_subscriber::layer::{Context, SubscriberExt as _};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Layer, filter};
 
-use tracing_journald::{Priority, PriorityMappings};
 use tracing_log::{AsLog as _, LogTracer};
 
 use super::config::LoggingConfig;
@@ -57,28 +56,22 @@ pub struct LogLine {
 /// [`spawn_discord_poster`] empties once the bot is connected. Lines logged before then wait
 /// in the queue, so startup errors still reach Discord.
 pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
-    // RUST_LOG picks what goes to stdout (or the journal), for example
-    // `info,vivy::features::chat=debug`.
+    // RUST_LOG picks what goes to stdout, for example `info,vivy::features::chat=debug`.
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    let json = std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json");
-    let journal = if json { None } else { journald_layer() };
-    let output = if let Some(journal) = journal {
-        // Under systemd: each line goes to the journal with its level, so `journalctl` colours
-        // errors red and warnings yellow. Nothing is written to stdout, or every line would be
-        // in the journal twice.
-        journal.boxed()
-    } else if json {
+    let output = if std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json") {
         tracing_subscriber::fmt::layer()
             .json()
             .with_writer(log_out)
             .boxed()
     } else {
-        // Colours only in a terminal, not in the systemd journal.
+        // Colours only in a terminal; the journal colours lines by their level itself.
         let ansi = std::io::stdout().is_terminal();
         tracing_subscriber::fmt::layer()
             .with_writer(log_out)
             .with_ansi(ansi)
-            .event_format(Compact)
+            .event_format(Compact {
+                journal: stdout_is_journal(),
+            })
             .fmt_fields(CompactFields)
             .boxed()
     };
@@ -128,33 +121,20 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
     Ok(receiver)
 }
 
-/// A layer that writes to the systemd journal, when stdout goes to the journal anyway (the bot
-/// runs as a systemd service). `None` in a terminal, or if the journal can't be reached.
-fn journald_layer() -> Option<tracing_journald::Layer> {
+/// Whether stdout goes to the systemd journal (the bot runs as a systemd service).
+fn stdout_is_journal() -> bool {
     // systemd sets JOURNAL_STREAM to "device:inode" of the journal stream it gave the service.
     // Comparing it with stdout tells "our stdout is the journal" apart from a program started
     // from a service that inherited the variable but writes somewhere else.
-    let stream = std::env::var("JOURNAL_STREAM").ok()?;
-    let stdout = File::from(std::io::stdout().as_fd().try_clone_to_owned().ok()?);
-    let meta = stdout.metadata().ok()?;
-    if !is_journal_stream(&stream, meta.dev(), meta.ino()) {
-        return None;
-    }
-    match tracing_journald::layer() {
-        // journald's own levels. tracing-journald puts INFO at "notice" by default, which
-        // journalctl shows in bold; "info" keeps ordinary lines plain, and debug lines grey.
-        Ok(layer) => Some(layer.with_priority_mappings(PriorityMappings {
-            error: Priority::Error,
-            warn: Priority::Warning,
-            info: Priority::Informational,
-            debug: Priority::Debug,
-            trace: Priority::Debug,
-        })),
-        Err(err) => {
-            eprintln!("couldn't open the systemd journal ({err}); logging to stdout instead");
-            None
-        }
-    }
+    let Ok(stream) = std::env::var("JOURNAL_STREAM") else {
+        return false;
+    };
+    let Ok(stdout) = std::io::stdout().as_fd().try_clone_to_owned() else {
+        return false;
+    };
+    File::from(stdout)
+        .metadata()
+        .is_ok_and(|meta| is_journal_stream(&stream, meta.dev(), meta.ino()))
 }
 
 /// Whether `JOURNAL_STREAM` ("device:inode") names the file with this device and inode.
@@ -224,7 +204,17 @@ fn bridge_log_crate() -> Result<(), tracing_log::log::SetLoggerError> {
 /// Shorter than tracing's own format: the time to the second, our modules without
 /// `vivy::features::`, and the spans without `feature`, `guild` and `user` (see
 /// [`CompactFields`]).
-struct Compact;
+///
+/// In the systemd journal (`journal`), the line starts with its level as a syslog prefix
+/// instead of the time and level word, and systemd takes the prefix off and keeps the level,
+/// so `journalctl` colours errors red and warnings yellow and adds its own time:
+///
+/// ```text
+/// <6>chat::answer message{channel=2 message_id=3}: ran a chat tool tool="x"
+/// ```
+struct Compact {
+    journal: bool,
+}
 
 impl<S, N> FormatEvent<S, N> for Compact
 where
@@ -249,13 +239,22 @@ where
             Level::TRACE => "\x1b[35m",
         });
 
-        write!(
-            writer,
-            "{dim}{}{reset} {colour}{:>5}{reset} {dim}{}{reset}",
-            Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
-            meta.level(),
-            short_target(meta.target()),
-        )?;
+        if self.journal {
+            write!(
+                writer,
+                "<{}>{}",
+                syslog_priority(*meta.level()),
+                short_target(meta.target())
+            )?;
+        } else {
+            write!(
+                writer,
+                "{dim}{}{reset} {colour}{:>5}{reset} {dim}{}{reset}",
+                Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
+                meta.level(),
+                short_target(meta.target()),
+            )?;
+        }
         if let Some(scope) = ctx.event_scope() {
             for span in scope.from_root() {
                 write!(writer, " {bold}{}{reset}", span.name())?;
@@ -269,6 +268,17 @@ where
         write!(writer, ": ")?;
         ctx.format_fields(writer.by_ref(), event)?;
         writeln!(writer)
+    }
+}
+
+/// The syslog priority journald reads from a `<N>` in front of a line: 3 error, 4 warning,
+/// 6 info (plain in `journalctl`), 7 debug (grey).
+fn syslog_priority(level: Level) -> u8 {
+    match level {
+        Level::ERROR => 3,
+        Level::WARN => 4,
+        Level::INFO => 6,
+        Level::DEBUG | Level::TRACE => 7,
     }
 }
 
@@ -489,7 +499,7 @@ where
             }
         }
 
-        // If the queue is full the line is dropped; stdout (or the journal) still has it.
+        // If the queue is full the line is dropped; stdout still has it.
         let _ = self.sender.try_send(LogLine {
             level: *meta.level(),
             lifecycle: meta.target() == "lifecycle",
@@ -637,13 +647,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn compact_format() {
+    /// One warning inside a handler span, as `Compact` writes it.
+    fn compact_line(journal: bool) -> String {
         let captured = Captured::default();
         let writer = captured.clone();
         let subscriber = tracing_subscriber::fmt()
             .with_ansi(false)
-            .event_format(Compact)
+            .event_format(Compact { journal })
             .fmt_fields(CompactFields)
             .with_writer(move || writer.clone())
             .finish();
@@ -656,14 +666,27 @@ mod tests {
                 user = 4u64
             );
             let _entered = span.enter();
-            tracing::info!(target: "vivy::features::chat::answer", tool = "x", "ran a tool");
+            tracing::warn!(target: "vivy::features::chat::answer", tool = "x", "ran a tool");
         });
         let output = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-        let line = output.strip_suffix('\n').unwrap();
+        output.strip_suffix('\n').unwrap().to_string()
+    }
+
+    #[test]
+    fn compact_format() {
+        let line = compact_line(false);
         // "2026-10-09T06:44:13Z " in front.
         assert_eq!(
             &line[21..],
-            r#" INFO chat::answer message{channel=2}: ran a tool tool="x""#
+            r#" WARN chat::answer message{channel=2}: ran a tool tool="x""#
+        );
+    }
+
+    #[test]
+    fn compact_format_in_the_journal() {
+        assert_eq!(
+            compact_line(true),
+            r#"<4>chat::answer message{channel=2}: ran a tool tool="x""#
         );
     }
 

@@ -241,7 +241,15 @@ pub async fn with_previews(http: &Http, msg: &Message) -> Message {
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
     match get_message(http, msg.channel_id, msg.id).await {
-        Ok(fresh) => fresh,
+        // Messages read back through the REST API carry no server id or member, so keep
+        // the gateway's. Without the server id, chat took the message for a DM.
+        Ok(mut fresh) => {
+            fresh.guild_id = fresh.guild_id.or(msg.guild_id);
+            if fresh.member.is_none() {
+                fresh.member = msg.member.clone();
+            }
+            fresh
+        }
         Err(err) => {
             warn!("couldn't read the message again for link previews: {err:#}");
             msg.clone()
@@ -536,6 +544,46 @@ pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
             data,
         })
         .collect())
+}
+
+/// [`load_for_model`] made cheaper, for pictures nobody asked her to look at closely: at
+/// most `max_images` images (a long GIF or video keeps its first frame grids), each shrunk
+/// to fit in `max_side` × `max_side` pixels. Models bill a picture by its size, so a 512 px
+/// one costs about a sixth of a full-size screenshot.
+pub async fn load_small(
+    media: &Media,
+    max_side: u32,
+    max_images: usize,
+) -> anyhow::Result<Vec<ModelImage>> {
+    let mut images = load_for_model(media).await?;
+    images.truncate(max_images);
+    let mut small = Vec::new();
+    for image in images {
+        small.push(shrink(image, max_side).await?);
+    }
+    Ok(small)
+}
+
+/// `image` shrunk to fit in `max_side` × `max_side` pixels, as a PNG. One that already fits
+/// is left as it is.
+async fn shrink(image: ModelImage, max_side: u32) -> anyhow::Result<ModelImage> {
+    tokio::task::spawn_blocking(move || {
+        let picture = image::load_from_memory(&image.data).context("decoding the picture")?;
+        if picture.width() <= max_side && picture.height() <= max_side {
+            return Ok(image);
+        }
+        // Keeps the shape: the longer side becomes `max_side`.
+        let smaller = picture.thumbnail(max_side, max_side);
+        let mut png = Vec::new();
+        smaller
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .context("encoding the PNG")?;
+        Ok(ModelImage {
+            mime: "image/png",
+            data: png,
+        })
+    })
+    .await?
 }
 
 /// The first frame of a GIF as a PNG, decoded without ffmpeg.
@@ -895,5 +943,30 @@ mod tests {
             image("image/png", b"a").file_name(),
             image("image/png", b"b").file_name()
         );
+    }
+
+    fn png(width: u32, height: u32) -> ModelImage {
+        let picture = image::DynamicImage::new_rgb8(width, height);
+        let mut data = Vec::new();
+        picture
+            .write_to(
+                &mut std::io::Cursor::new(&mut data),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        ModelImage {
+            mime: "image/png",
+            data,
+        }
+    }
+
+    #[tokio::test]
+    async fn big_pictures_are_shrunk_small_ones_kept() {
+        let small = png(300, 200);
+        assert_eq!(shrink(small.clone(), 512).await.unwrap(), small);
+        let shrunk = shrink(png(2000, 1000), 512).await.unwrap();
+        let picture = image::load_from_memory(&shrunk.data).unwrap();
+        assert_eq!((picture.width(), picture.height()), (512, 256));
+        assert_eq!(shrunk.mime, "image/png");
     }
 }

@@ -170,6 +170,7 @@ impl Feature for Chat {
     ) -> Result<ToolReply> {
         match name {
             avatar::TOOL => avatar::run(ctx, asker, args).await,
+            "get_message" => tools::message_with_pictures(ctx, asker, args).await,
             _ => Ok(self.run_tool(ctx, asker, name, args).await?.into()),
         }
     }

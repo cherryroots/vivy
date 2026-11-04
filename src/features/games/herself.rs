@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use tracing::debug;
 
-use crate::ai::{ToolCall, ToolRunner};
+use crate::ai::{ToolCall, ToolReply, ToolRunner};
 use crate::core::{Asker, BotCtx};
 use crate::util::discord::{ChannelId, GuildId, MessageId};
 
@@ -16,8 +16,8 @@ pub struct NoTools;
 
 #[async_trait]
 impl ToolRunner for NoTools {
-    async fn run(&self, call: &ToolCall) -> String {
-        format!("Error: there is no tool named {}.", call.name)
+    async fn run(&self, call: &ToolCall) -> ToolReply {
+        format!("Error: there is no tool named {}.", call.name).into()
     }
 }
 

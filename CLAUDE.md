@@ -45,7 +45,9 @@ Game Boy tests that need a ROM or models are `#[ignore]`d; see "Tests" in `docs/
 - Cherry runs `./target/release/vivy` from `~/Vivy` on her server (`https://kirei.moe`), often from a phone over SSH. Web server is Caddy (not nginx); the Game Boy watch page is `https://kirei.moe/vivy/` through Caddy's `handle_path /vivy/*` to `web_bind = "127.0.0.1:8787"`.
 - Vivy lives in one server (about 300 to 1000 messages a day). Her test server has every feature off with `deny_guilds`.
 - Intents and permissions the Discord app needs are in the README's setup steps.
-- Routine gateway closes with code 4000 every few hours are Discord's doing, not a Vivy bug (Twilight resumes; see the control panel page).
+- The server is an Ubuntu 26.04 KVM VM: 8 AMD EPYC cores, 23.5 GB RAM, 295 GB disk, no GPU. Anything that needs a GPU runs on Cherry's own PC instead.
+- Logs: under systemd, stdout lines carry a `<N>` syslog level prefix so `journalctl` colours them by level (#150); no `-o verbose` needed.
+- Routine with code 4000 every few hours are Discord's doing, not a Vivy bug (Twilight resumes; see the control panel page).
 
 ## Money and tokens
 
@@ -66,7 +68,8 @@ Cherry's rulings from the 2026-10-10 bug check and later:
 
 - Self-reposts count as snails; different comments in one Reddit thread are the same post.
 - `/memories/vivy/` (personality, mood, skills) is Vivy's alone: only she changes it, from what she thinks. People can't order her mood. Done through her instructions, not an author lock. Her mood line may mention server-specific people and things.
-- Chime-ins and check-ins only use read-only tools limited to the current channel.
+- Vivy may read and talk about any channel of her server that `[features.chat]` gating doesn't turn off, whether or not the asker can see it (Cherry's rule, #149). Other servers and other people's DMs stay refused.
+- Chime-ins and check-ins only get the read-only `UNPROMPTED_TOOLS`; check-ins only with the person who asked.
 - Channel gates cover threads (the thread id or its parent's).
 - A missing `config.toml` or an unknown key warns, never stops the bot.
 - A reminder mention that doesn't parse goes to chat.
@@ -92,11 +95,13 @@ The Game Boy feature (`src/features/games/gameboy/`, `docs/features/gameboy.md`)
 - **Plan from where she ends up.** "Games aren't entirely deterministic so she should always go from where she ends up after an action and plan accordingly."
 - **Test with replays and save states** when the free tokens are out. Replays replay without a model.
 - **ROMs are Cherry's own** cartridges. Never download a ROM.
-- Make it fun to watch.
+- Make it fun to watch. Cherry gave the Game Boy work free rein for incremental PRs that explore ideas.
 
 Practical gotchas:
 
 - Don't build into a second target folder during a live run; the disk filled once.
+- Messages fetched over Discord's REST API have no `guild_id` or `member`; keep the gateway's when re-reading a message, or a server question looks like a DM (#153).
+- #96 once committed a ~1 GB `target-run/` build folder (removed in #102, ignored as `target-*/`). It stays in git history; purging needs a force push, so only if Cherry asks.
 - Adding frames to the look shifts Red's RNG, so old replays diverge.
 - In waiting loops, never `pgrep -f` or `pkill -f` a string that's in the loop's own command line (it matches itself, and once killed the shell).
 - Gate tests default to files in the project's shared folder: `/mnt/project-files/gameboy/tasks` (Red task states, `VIVY_GB_TASKS`), `gameboy/gate` (results), `gameboy/today.json` (the shared token count) and `gameboy/sessions/red-2026-10-27/red` (Cherry's Mt Moon saves for `rock_ledges_are_out_of_reach`). Start states for other games are in `gameboy/starts/`.

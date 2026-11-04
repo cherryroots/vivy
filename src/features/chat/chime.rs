@@ -10,7 +10,8 @@
 //!
 //! Nobody asked for these lines (nor for check-ins, which use [`speak`] too), and they're
 //! posted for the whole channel, so she can only use [`UNPROMPTED_TOOLS`]: tools that read
-//! what people in this channel could see anyway, and her own memory.
+//! the server (any channel chat isn't turned off in, see `tools::can_read`) and her own
+//! memory.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -24,17 +25,18 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use chrono_tz::Tz;
+use futures::future::join_all;
 use serde::Deserialize;
-use serde_json::json;
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
 use super::emoji;
 use super::look_back::one_line;
 use super::store::{self, NewTurn, StoredPart, Written};
-use super::tools::{format_message, parse_link};
-use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolRunner, Turn, complete};
+use super::tools::format_message;
+use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolReply, ToolRunner, Turn, complete};
 use crate::core::{Asker, BotCtx, Feature, Result};
+use crate::util::media::{self, Media, ModelImage};
 use crate::util::shorten_at_word;
 
 /// How many messages she reads before deciding.
@@ -43,11 +45,17 @@ const READ_MESSAGES: u16 = 15;
 const MAX_ROUNDS: usize = 6;
 /// The longest line she posts.
 const MAX_LINE: usize = 400;
+/// She sees the newest this many pictures, GIFs or videos people posted in what she reads;
+/// older ones are only counted ("2 attachments").
+const PICTURES: usize = 3;
+/// Each picture is shrunk to fit in this many pixels (about 350 tokens with Claude, where a
+/// full-size screenshot is about 1,600), and a GIF or video shows only its first frames.
+const PICTURE_SIDE: u32 = 512;
 
 /// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
 /// someone decides it's safe here. Left out: anything that acts for a person (reminders,
 /// check-ins), and `list_channels`, which lists what one person can see, not everyone here.
-/// `get_message` and `search_messages` only reach this channel (see [`Runner`]). `memory`
+/// `get_message` and `search_messages` reach the channels chat may read (`tools::can_read`). `memory`
 /// is in: what she saves is her own decision. `tinyfish_search` and `tinyfish_fetch` only
 /// read the web, like the providers' own web tools, which chime-ins have too.
 const UNPROMPTED_TOOLS: &[&str] = &[
@@ -287,10 +295,32 @@ pub async fn speak(
 ) -> Result<()> {
     let started_at = Utc::now().timestamp();
     let provider = ctx.ai.chat().context("chat has no model")?;
-    let (transcript, messages) = read_along(ctx, asker.guild, asker.channel, last).await?;
-    let question = format!("{transcript}\n{instructions}");
+    let read = read_along(ctx, asker.guild, asker.channel, last).await?;
+    let messages = read.messages;
     let context = answer::context_for(ctx, asker, true).await;
-    let mut parts = vec![Part::Text(question.clone())];
+    // The transcript, the pictures it points to, then what she's asked.
+    let mut parts = vec![Part::Text(read.transcript.clone())];
+    let mut stored = vec![StoredPart::Text {
+        text: read.transcript,
+    }];
+    for picture in read.pictures {
+        parts.push(Part::Text(picture.label.clone()));
+        parts.extend(picture.images.into_iter().map(Part::Image));
+        stored.push(StoredPart::Text {
+            text: picture.label,
+        });
+        // Saved as a link, like a question's pictures, so a reply to her line shows it again.
+        if let Some(media) = picture.media {
+            stored.push(StoredPart::Media {
+                url: media.url,
+                kind: media.kind.into(),
+                mime: media.mime.to_string(),
+            });
+        }
+    }
+    let instructions = instructions.to_string();
+    parts.push(Part::Text(instructions.clone()));
+    stored.push(StoredPart::Text { text: instructions });
     parts.extend(context.iter().cloned().map(Part::Text));
     // Every tool goes in the request, as for an answer, so the request starts the same as
     // an answer's and reads the system prompt and tools from the prompt cache. The runner
@@ -320,7 +350,6 @@ pub async fn speak(
     }
     let decision = decide(&done.text);
     // What she read and how, saved with whatever she does below.
-    let mut stored = vec![StoredPart::Text { text: question }];
     stored.extend(context.into_iter().map(|text| StoredPart::Context { text }));
     let written = Written {
         provider: provider.name().to_string(),
@@ -448,15 +477,34 @@ async fn save(
     Ok(())
 }
 
+/// What she reads when she reads along.
+struct ReadAlong {
+    /// The numbered transcript, with marks on the messages whose pictures follow.
+    transcript: String,
+    /// The newest pictures in it, shrunk (see [`PICTURES`]).
+    pictures: Vec<Picture>,
+    /// The messages themselves, oldest first, so `REPLY 3` can find the third one.
+    messages: Vec<Message>,
+}
+
+/// One picture from the transcript, ready for the model.
+struct Picture {
+    /// "Picture 2, from message 14:", or a note that it couldn't be loaded.
+    label: String,
+    images: Vec<ModelImage>,
+    /// Where it came from, saved with what she read. `None` when it couldn't be loaded.
+    media: Option<Media>,
+}
+
 /// The last [`READ_MESSAGES`] messages of the channel, oldest first, ending with `last`
-/// when given (otherwise with the newest): the numbered transcript she reads, and the
-/// messages themselves, so `REPLY 3` can find the third one.
+/// when given (otherwise with the newest), and the newest [`PICTURES`] pictures people
+/// posted in them.
 async fn read_along(
     ctx: &BotCtx,
     guild: Option<GuildId>,
     channel: ChannelId,
     last: Option<&Message>,
-) -> Result<(String, Vec<Message>)> {
+) -> Result<ReadAlong> {
     let mut messages = match last {
         Some(msg) => {
             let mut before = ctx
@@ -481,22 +529,90 @@ async fn read_along(
     };
     // Discord gives the newest first.
     messages.reverse();
+
+    // People's pictures only: she knows what she posted herself.
+    let media: Vec<Vec<Media>> = messages
+        .iter()
+        .map(|m| {
+            if m.author.id == ctx.bot_id {
+                Vec::new()
+            } else {
+                media::find_media(m)
+            }
+        })
+        .collect();
+    let picked = pick_pictures(media);
+    let loads = picked
+        .iter()
+        .map(|(_, m)| media::load_small(m, PICTURE_SIDE, 1));
+    let loaded = join_all(loads).await;
+
     let name = guild
         .and_then(|guild| ctx.channel_name(guild, channel))
         .unwrap_or_default();
     let mut lines = Vec::new();
     for (i, m) in messages.iter().enumerate() {
-        lines.push(format!(
-            "{}. {}",
-            i + 1,
-            format_message(ctx, m, Tz::UTC).await
-        ));
+        let mut line = format!("{}. {}", i + 1, format_message(ctx, m, Tz::UTC).await);
+        let shown: Vec<String> = picked
+            .iter()
+            .enumerate()
+            .filter(|(_, (at, _))| *at == i)
+            .map(|(k, _)| (k + 1).to_string())
+            .collect();
+        if !shown.is_empty() {
+            let word = if shown.len() == 1 {
+                "picture"
+            } else {
+                "pictures"
+            };
+            line.push_str(&format!(" [{word} {} below]", shown.join(", ")));
+        }
+        lines.push(line);
     }
     let transcript = format!(
         "<recent_messages channel=\"#{name}\">\n{}\n</recent_messages>",
         lines.join("\n")
     );
-    Ok((transcript, messages))
+
+    let mut pictures = Vec::new();
+    for (k, ((at, media), result)) in picked.into_iter().zip(loaded).enumerate() {
+        let (number, message) = (k + 1, at + 1);
+        pictures.push(match result {
+            Ok(images) => Picture {
+                label: format!("Picture {number}, from message {message}:"),
+                images,
+                media: Some(media),
+            },
+            Err(err) => {
+                warn!("couldn't load a picture to read along: {err:#}");
+                Picture {
+                    label: format!(
+                        "[Picture {number}, from message {message}, couldn't be loaded.]"
+                    ),
+                    images: Vec::new(),
+                    media: None,
+                }
+            }
+        });
+    }
+    Ok(ReadAlong {
+        transcript,
+        pictures,
+        messages,
+    })
+}
+
+/// The newest [`PICTURES`] pictures of messages oldest first, with the index of the message
+/// each is in, in the order they were posted. `media` is each message's pictures.
+fn pick_pictures(media: Vec<Vec<Media>>) -> Vec<(usize, Media)> {
+    let mut picked: Vec<(usize, Media)> = media
+        .into_iter()
+        .enumerate()
+        .flat_map(|(at, found)| found.into_iter().map(move |m| (at, m)))
+        .collect();
+    let skip = picked.len().saturating_sub(PICTURES);
+    picked.drain(..skip);
+    picked
 }
 
 /// Reads her answer: PASS, REACT 😂, or the line to post (maybe after REPLY 7).
@@ -559,8 +675,8 @@ fn reply_number(text: &str) -> (Option<usize>, &str) {
 }
 
 /// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message (or the
-/// person she checks in with), but kept to this channel: what she reads ends up in a public
-/// line, so it mustn't come from a channel only that person can read.
+/// person she checks in with). What she reads may come from any channel chat may read
+/// (Cherry's rule), so it can end up in a public line.
 ///
 /// In a server, `memory` runs as Vivy herself: what she saves unprompted is her own call, so
 /// the change log names her, not whoever wrote last. The folder is the server's either way.
@@ -573,57 +689,24 @@ struct Runner {
 
 #[async_trait]
 impl ToolRunner for Runner {
-    async fn run(&self, call: &ToolCall) -> String {
+    async fn run(&self, call: &ToolCall) -> ToolReply {
         if !UNPROMPTED_TOOLS.contains(&call.name.as_str()) {
             return format!(
                 "Error: {} can't be used when nobody asked you anything. Here you can only \
-                 read this channel and use your memory.",
+                 read the server and use your memory.",
                 call.name
-            );
+            )
+            .into();
         }
-        match here_only(call, self.asker.channel) {
-            Ok(call) if call.name == "memory" && self.asker.guild.is_some() => {
-                let herself = Asker {
-                    user: self.ctx.bot_id,
-                    ..self.asker.clone()
-                };
-                answer::run_tool(&self.ctx, &herself, &self.owners, &call)
-                    .await
-                    .text
-            }
-            Ok(call) => {
-                answer::run_tool(&self.ctx, &self.asker, &self.owners, &call)
-                    .await
-                    .text
-            }
-            Err(text) => text,
+        if call.name == "memory" && self.asker.guild.is_some() {
+            let herself = Asker {
+                user: self.ctx.bot_id,
+                ..self.asker.clone()
+            };
+            return answer::run_tool(&self.ctx, &herself, &self.owners, call).await;
         }
+        answer::run_tool(&self.ctx, &self.asker, &self.owners, call).await
     }
-}
-
-/// Keeps a tool call to `channel`: a search only searches it, and a message link must point
-/// into it. Returns the call to run, or the error to give the model instead.
-fn here_only(call: &ToolCall, channel: ChannelId) -> Result<ToolCall, String> {
-    let mut call = call.clone();
-    match call.name.as_str() {
-        "search_messages" => match call.args.as_object_mut() {
-            Some(args) => {
-                args.insert("channel".to_string(), json!("here"));
-            }
-            None => call.args = json!({"channel": "here"}),
-        },
-        "get_message" => {
-            let link = call.args["link"].as_str().unwrap_or_default();
-            // A link that doesn't parse is left to the tool, which explains the mistake.
-            if let Some((_, linked, _)) = parse_link(link)
-                && linked != channel.get()
-            {
-                return Err("Error: right now you can only read messages in this channel.".into());
-            }
-        }
-        _ => {}
-    }
-    Ok(call)
 }
 
 #[cfg(test)]
@@ -689,25 +772,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_stay_in_this_channel() {
-        let here = ChannelId::new(10);
-        let call = |name: &str, args| ToolCall {
-            id: "1".into(),
-            name: name.into(),
-            args,
-        };
-        let search = here_only(&call("search_messages", json!({"channel": "secret"})), here);
-        assert_eq!(search.unwrap().args["channel"], "here");
-        let search = here_only(&call("search_messages", json!(null)), here);
-        assert_eq!(search.unwrap().args["channel"], "here");
-
-        let link = |channel| json!({"link": format!("https://discord.com/channels/1/{channel}/5")});
-        assert!(here_only(&call("get_message", link(10)), here).is_ok());
-        assert!(here_only(&call("get_message", link(11)), here).is_err());
-        assert!(here_only(&call("get_message", json!({"link": "nonsense"})), here).is_ok());
-    }
-
-    #[test]
     fn no_tools_that_act_for_someone() {
         for name in [
             "create_reminder",
@@ -756,5 +820,32 @@ mod tests {
             1.0
         );
         assert_eq!(settings.chance_for(other, ChannelId::new(999)), 0.05);
+    }
+
+    fn picture(name: &str) -> Media {
+        Media {
+            url: format!("https://cdn.discordapp.com/attachments/1/2/{name}.png"),
+            kind: media::MediaKind::Image,
+            mime: "image/png",
+        }
+    }
+
+    #[test]
+    fn she_sees_the_newest_pictures() {
+        let media = vec![
+            vec![picture("a")],
+            vec![],
+            vec![picture("b"), picture("c")],
+            vec![],
+            vec![picture("d")],
+        ];
+        let picked = pick_pictures(media);
+        let names: Vec<(usize, &str)> = picked
+            .iter()
+            .map(|(at, m)| (*at, m.url.rsplit('/').next().unwrap()))
+            .collect();
+        // The newest three, oldest first, with the message each is in.
+        assert_eq!(names, [(2, "b.png"), (2, "c.png"), (4, "d.png")]);
+        assert!(pick_pictures(vec![vec![], vec![]]).is_empty());
     }
 }

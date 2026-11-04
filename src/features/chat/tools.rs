@@ -2,22 +2,26 @@
 //! `search_messages` lives in `search.rs`.
 //!
 //! Each tool runs as the person who asked ([`Asker`]): it only reads channels that person
-//! can read. Results are plain text, which is what the model reads best.
+//! can read. Results are plain text, which is what the model reads best; `get_message`
+//! also shows the message's pictures.
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use futures::future::join_all;
 use serde_json::{Value, json};
+use tracing::{info, warn};
 use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
 
 use super::{channels, search};
-use crate::ai::ToolDef;
+use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::discord::{
     Channel, ChannelId, ChannelType, GuildId, Member, Message, MessageId, Permissions, UserId,
     display_name, get_channel, get_member, get_message, get_user, member_display_name, to_chrono,
 };
+use crate::util::media;
 use crate::util::shorten;
 
 /// Most messages `read_recent_messages` returns.
@@ -79,7 +83,7 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_message",
-            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
+            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions, and shows you its pictures, GIFs and videos. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
             parameters: json!({
                 "type": "object",
                 "properties": {"link": {"type": "string"}},
@@ -443,7 +447,7 @@ async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<Stri
     Ok(lines.join("\n"))
 }
 
-/// "[2026-10-09 14:02] Cherry: text (2 attachments)"
+/// "[2026-10-09 14:02] Cherry: text (2 attachments: cat.png, notes.pdf)"
 pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
     format_message_up_to(ctx, msg, zone, MAX_MESSAGE_CHARS).await
 }
@@ -463,7 +467,20 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
     let text = channels::name_channels(ctx, &text).await;
     let mut line = format!("[{time}] {name}: {}", shorten(&text, max_chars));
     if !msg.attachments.is_empty() {
-        line.push_str(&format!(" ({} attachments)", msg.attachments.len()));
+        let names: Vec<&str> = msg
+            .attachments
+            .iter()
+            .map(|a| a.filename.as_str())
+            .collect();
+        let word = if names.len() == 1 {
+            "attachment"
+        } else {
+            "attachments"
+        };
+        line.push_str(&format!(" ({} {word}: {})", names.len(), names.join(", ")));
+    }
+    for sticker in &msg.sticker_items {
+        line.push_str(&format!(" [sticker: {}]", sticker.name));
     }
     for embed in &msg.embeds {
         if let Some(title) = &embed.title {
@@ -561,19 +578,22 @@ pub(super) fn find_message_links(text: &str) -> Vec<String> {
     found
 }
 
-/// The message `link` points to, if the asker can read the place it's in.
+/// The message `link` points to, if she may read the place it's in ([`can_read`]).
 pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<Message> {
     let (guild, channel, message) =
         parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
     let channel = ChannelId::new(channel);
-    if !can_read(ctx, asker, guild, channel).await? {
-        return Err(user_error(
-            "That message is in a place the asker can't read.",
-        ));
+    if let Some(why) = why_not_readable(ctx, asker, guild, channel).await? {
+        info!(%channel, "not opening a linked message: {why}");
+        return Err(user_error(why));
     }
     get_message(&ctx.http, channel, MessageId::new(message))
         .await
-        .map_err(|_| user_error("I couldn't load that message. It may be deleted."))
+        .map_err(|err| {
+            // Deleted, or the bot lacks View Channel or Read Message History there.
+            warn!(%channel, %message, "couldn't load a linked message: {err:#}");
+            user_error("I couldn't load that message. It may be deleted, or I may not have access to that channel.")
+        })
 }
 
 /// A linked message as the model reads it: [`format_message`] with its whole text.
@@ -587,46 +607,128 @@ async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<St
     Ok(format_linked(ctx, asker, &msg).await)
 }
 
-/// Whether the asker may read messages in `channel`. In DMs only the DM itself; in a
-/// server, channels in the same server where they can view and read history.
+/// At most this many pictures, GIFs or videos of a message are shown by `get_message`.
+const LINKED_PICTURES: usize = 4;
+/// Each is shrunk to fit in this many pixels: enough to read a screenshot.
+const LINKED_PICTURE_SIDE: u32 = 1024;
+/// A GIF or video shows at most this many frame grids.
+const LINKED_GRIDS: usize = 2;
+
+/// `get_message` with the message's pictures, GIFs and videos for the model to look at.
+pub(super) async fn message_with_pictures(
+    ctx: &BotCtx,
+    asker: &Asker,
+    args: &Value,
+) -> Result<ToolReply> {
+    let link = args["link"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| user_error("`link` is required."))?;
+    let msg = linked_message(ctx, asker, link).await?;
+    let mut text = format_linked(ctx, asker, &msg).await;
+    let found = media::find_media(&msg);
+    let loads = found
+        .iter()
+        .take(LINKED_PICTURES)
+        .map(|m| media::load_small(m, LINKED_PICTURE_SIDE, LINKED_GRIDS));
+    let mut images = Vec::new();
+    let mut failed = 0;
+    for result in join_all(loads).await {
+        match result {
+            Ok(loaded) => images.extend(loaded),
+            Err(err) => {
+                warn!("couldn't load a picture of {link}: {err:#}");
+                failed += 1;
+            }
+        }
+    }
+    text.push_str(&picture_note(found.len(), LINKED_PICTURES, failed));
+    Ok(ToolReply { text, images })
+}
+
+/// What the model is told about a message's `found` pictures when at most `shown` are
+/// shown and `failed` of those couldn't be loaded, so it doesn't answer as if it saw them
+/// all. Empty without pictures.
+fn picture_note(found: usize, shown: usize, failed: usize) -> String {
+    if found == 0 {
+        return String::new();
+    }
+    let shown = found.min(shown);
+    let mut parts = vec![if shown == failed {
+        "none could be shown".to_string()
+    } else {
+        format!("{} shown below", shown - failed)
+    }];
+    if failed > 0 && shown > failed {
+        parts.push(format!("{failed} couldn't be loaded"));
+    }
+    if found > shown {
+        parts.push(format!("{} more left out", found - shown));
+    }
+    let word = if found == 1 { "picture" } else { "pictures" };
+    format!("\n[{found} {word}: {}]", parts.join(", "))
+}
+
+/// Whether she may read messages in `channel` for the asker (Cherry's rule): in a DM only
+/// the DM itself; in a server, any channel of the same server that chat isn't turned off in
+/// by the config (`[features.chat]` gating, a thread by its parent channel too). Whether
+/// the asker can see the channel doesn't matter. `guild` is the server a link names.
 pub(super) async fn can_read(
     ctx: &BotCtx,
     asker: &Asker,
     guild: Option<u64>,
     channel: ChannelId,
 ) -> Result<bool> {
+    Ok(why_not_readable(ctx, asker, guild, channel)
+        .await?
+        .is_none())
+}
+
+/// Why she may not read `channel` for the asker ([`can_read`]), or `None` when she may.
+/// Each reason is its own sentence, so her answer (and the log) says which check said no.
+async fn why_not_readable(
+    ctx: &BotCtx,
+    asker: &Asker,
+    guild: Option<u64>,
+    channel: ChannelId,
+) -> Result<Option<String>> {
     if channel == asker.channel {
-        return Ok(true);
+        return Ok(None);
     }
-    let (Some(guild_id), Some(link_guild)) = (asker.guild, guild) else {
-        return Ok(false);
+    let Some(guild_id) = asker.guild else {
+        return Ok(Some("In a DM I can only read this DM.".to_string()));
+    };
+    let Some(link_guild) = guild else {
+        return Ok(Some("That message is in someone's DM with me.".to_string()));
     };
     if guild_id.get() != link_guild {
-        return Ok(false);
+        return Ok(Some(format!(
+            "That message is in another server ({link_guild}, this one is {guild_id})."
+        )));
     }
     let target = get_channel(&ctx.http, channel).await?;
     // The link's server part is just text, so check the channel really is in the
     // asker's server. Otherwise a link could reach into another server.
     if target.guild_id != Some(guild_id) {
-        return Ok(false);
+        return Ok(Some(format!(
+            "The channel {channel} is in another server ({:?}).",
+            target.guild_id.map(|g| g.get())
+        )));
     }
-    // Threads use their parent channel's permissions. Private threads also need
-    // membership, which isn't checked here, so they're refused.
-    let target = match target.kind {
-        ChannelType::PrivateThread => return Ok(false),
-        ChannelType::PublicThread | ChannelType::AnnouncementThread => {
-            let Some(parent) = target.parent_id else {
-                return Ok(false);
-            };
-            get_channel(&ctx.http, parent).await?
-        }
-        _ => target,
-    };
-    let member = get_member(&ctx.http, guild_id, asker.user).await?;
-    let Some(permissions) = ctx.permissions_in(guild_id, asker.user, &member.roles, &target) else {
-        return Ok(false);
-    };
-    Ok(permissions.contains(Permissions::VIEW_CHANNEL | Permissions::READ_MESSAGE_HISTORY))
+    // A thread also counts as its parent channel; the parent comes from Discord, since
+    // archived threads aren't in the cache. Any other channel's parent is its category,
+    // which the config's channel lists don't mean.
+    let parent = target.parent_id.filter(|_| target.kind.is_thread());
+    if !ctx.gate("chat").allows(asker.guild, channel, parent) {
+        let parent = parent
+            .map(|p| format!(" (thread of {p})"))
+            .unwrap_or_default();
+        return Ok(Some(format!(
+            "Chat is turned off in channel {channel}{parent} by the bot's config."
+        )));
+    }
+    Ok(None)
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
@@ -856,5 +958,16 @@ Category Voice:
             format_time(now, Tz::Europe__Oslo),
             "Friday 2026-10-09 00:53 in Europe/Oslo (UTC+02:00). Unix time 1791500000."
         );
+    }
+
+    #[test]
+    fn says_which_pictures_she_got() {
+        assert_eq!(picture_note(0, 4, 0), "");
+        assert_eq!(picture_note(1, 4, 0), "\n[1 picture: 1 shown below]");
+        assert_eq!(
+            picture_note(6, 4, 1),
+            "\n[6 pictures: 3 shown below, 1 couldn't be loaded, 2 more left out]"
+        );
+        assert_eq!(picture_note(2, 4, 2), "\n[2 pictures: none could be shown]");
     }
 }
