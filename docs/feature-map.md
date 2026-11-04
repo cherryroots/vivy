@@ -7,6 +7,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | Doc | What's in it |
 |---|---|
 | [README](../README.md) | What each feature does for people, and how to set the bot up |
+| [CLAUDE.md](../CLAUDE.md) | Working rules for Claude sessions: how Cherry likes to work, the PR workflow, the server, tokens and test keys, behaviour that's intended, ideas decided against, the Game Boy rules |
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
@@ -255,6 +256,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #144 | | Cutover done: the one-time import of voltgpt's `old.db` (reminders and the wheel game) is removed, with the `old_database` and `main_server` settings and the `legacy_imports` table. |
 | #145 | | AI spend on the 1st of the month: Anthropic's bill is asked up to tomorrow's midnight (UTC), so it no longer answers "Invalid date range" all day on the 1st, and the status picture's month graph leaves out lines too short to draw (pace line at the month's end, month line at its start), which logged "path dashing/stroking failed" to #log. |
 | #146 | | Logging under systemd goes straight into the journal with `tracing-journald`, so `journalctl` shows each line in its level's colour (errors red, warnings yellow), with the module and span in journal fields; a terminal still gets the short lines. |
+| #147 | | Docs: `CLAUDE.md` with the working rules that lived only in the Claude project; the Game Boy page's intro brought up to date, with Cherry's rules and what test runs found per game; Hunger Games ideas not built yet; later, the whole-server reading rule, the server and journal facts, and the WoW idea under Not built yet |
 | #148 | | Chat: chime-ins see pictures. She sees the newest 3 pictures, GIFs or videos people posted in the 15 messages she reads, shrunk to 512 px (about 350 tokens each); older ones are listed by file name. `get_message` shows her a message's pictures too (up to 4, 1024 px), in answers and chime-ins. Message lines name attachments and stickers. |
 | #149 | | Chat reads the whole server (Cherry's rule): message links, `get_message`, `search_messages` and `look_back_at_answers` reach any channel of the server that chat isn't turned off in by the config, whether or not the asker can see it, so she no longer answers "that message is in a channel you don't have access to". Chime-ins aren't kept to their own channel any more either. Other servers and other people's DMs with her still don't open. |
 | #150 | | Journal lines are the short readable lines again (module, channel and message, the fields), with the level as a `<N>` prefix systemd reads, so `journalctl` still colours them by level; `tracing-journald` (#146) is gone. |
@@ -271,3 +273,4 @@ The port went in stages, one pull request each, all merged into `main`.
 | More faces | Mischievous, grossed out, lonely, celebrating |
 | Listeners for bot events | `ReminderFired` and `WheelRoundResolved` are published, but nothing listens yet |
 | Voice channels | Not asked for; voice is messages only |
+| Vivy plays World of Warcraft 1.12 | Explored 2026-11-01, nothing built. Cherry's pick: [benilla](https://github.com/samwhosung/benilla) (a WoW 1.12.1 client in Rust and Bevy, own game files, a vmangos server) runs on her PC with a helper plugin; one Tailscale link carries the game's state out as JSON, actions in and rendered frames out, and Vivy on the server plays from the data and relays the frames to the watch page. The server has no GPU, so not there. Other players would be the server's scripted playerbots; LLM playerbot mods exist only for WotLK (AzerothCore). Minecraft (mineflayer) is the easier alternative |

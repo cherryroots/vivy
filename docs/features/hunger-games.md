@@ -69,7 +69,7 @@ Her mood isn't in the prompt, so it never changes what happens. The prompt asks 
 
 ### Weapons and alliances
 
-The code keeps what each tribute carries and who is allied with whom, so the story stays straight from round to round (Cherry's v3 plan, in /mnt/project-files/hunger-games/brainstorm.md).
+The code keeps what each tribute carries and who is allied with whom, so the story stays straight from round to round (Cherry's v3 plan).
 
 - **Weapons.** Everyone starts unarmed. Weapons are found in the arena's places, and each is themed to the channel it's found in, as creative as she likes but always able to kill (a razor-edged vinyl record in a music channel, a cast-iron skillet in a cooking one). Each tribute carries one at a time: a find replaces it. Her `finds` say who got what, and `Game::apply` keeps it. The brief shows each tribute armed or unarmed, and the dead with the weapon lying where they fell, so others can loot it. The unarmed fight with fists, rocks and traps and usually lose. In pictures, each sprite holds its current weapon, or is empty-handed.
 - **Alliances.** Her `allies` team people up (joining someone brings you into their alliance) and `leaves` walks someone out. Killing an ally ends the killer's alliance by itself, so a betrayal needs no extra field. The brief lists each tribute's living allies.
@@ -170,3 +170,17 @@ Through the games feature (`games/mod.rs`): the `hungergames` and `leaderboard` 
 ## Background loops
 
 None: a task per running game.
+
+## Ideas not built yet
+
+Brainstormed with Cherry on 2026-10-16 and 2026-10-19; nothing here is decided. The next round is written while people read the current one, so anything people press would apply a round later unless a round waits for a vote.
+
+- Sponsors: spectators and the fallen get a 🎁 button per round; the most-sponsored living tribute gets a gift next round, enforced by code like the Octagon prize.
+- Bets on a winner before the Scatter, with points on a leaderboard.
+- Step in or hide: each living tribute picks for themselves when the Octagon opens, overriding nerve.
+- Crowd mercy: the channel votes 👍 or 👎 on an Octagon loser who yields.
+- Gamemaker poll: viewers vote the next arena event (flood a zone, mutts, fog, supply drop).
+- Daily orders: each tribute privately picks Hide, Hunt, Forage or Ally, and Vivy must honour it (most work).
+- Hauntings: each fallen tribute curses one living tribute once.
+- Live last words typed by the fallen instead of an old message.
+- Mutts themed to their channel; a Victor role until the next Games; monthly seasons of points; an awards card; a three-moment highlight reel; a host-chosen arena.
