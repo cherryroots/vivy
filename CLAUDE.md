@@ -47,7 +47,7 @@ Game Boy tests that need a ROM or models are `#[ignore]`d; see "Tests" in `docs/
 - Intents and permissions the Discord app needs are in the README's setup steps.
 - The server is an Ubuntu 26.04 KVM VM: 8 AMD EPYC cores, 23.5 GB RAM, 295 GB disk, no GPU. Anything that needs a GPU runs on Cherry's own PC instead.
 - Logs: under systemd, stdout lines carry a `<N>` syslog level prefix so `journalctl` colours them by level (#150); no `-o verbose` needed.
-- Routine with code 4000 every few hours are Discord's doing, not a Vivy bug (Twilight resumes; see the control panel page).
+- Routine gateway closes with code 4000 every few hours are Discord's doing, not a Vivy bug (Twilight resumes; see the control panel page).
 
 ## Money and tokens
 
