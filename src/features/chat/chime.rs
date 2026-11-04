@@ -25,7 +25,6 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
 use chrono_tz::Tz;
-use futures::future::join_all;
 use serde::Deserialize;
 use tracing::{info, warn};
 
@@ -36,7 +35,6 @@ use super::store::{self, NewTurn, StoredPart, Written};
 use super::tools::format_message;
 use crate::ai::{ChatRequest, Input, Part, Role, ToolCall, ToolReply, ToolRunner, Turn, complete};
 use crate::core::{Asker, BotCtx, Feature, Result};
-use crate::util::media::{self, Media, ModelImage};
 use crate::util::shorten_at_word;
 
 /// How many messages she reads before deciding.
@@ -45,12 +43,6 @@ const READ_MESSAGES: u16 = 15;
 const MAX_ROUNDS: usize = 6;
 /// The longest line she posts.
 const MAX_LINE: usize = 400;
-/// She sees the newest this many pictures, GIFs or videos people posted in what she reads;
-/// older ones are only counted ("2 attachments").
-const PICTURES: usize = 3;
-/// Each picture is shrunk to fit in this many pixels (about 350 tokens with Claude, where a
-/// full-size screenshot is about 1,600), and a GIF or video shows only its first frames.
-const PICTURE_SIDE: u32 = 512;
 
 /// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
 /// someone decides it's safe here. Left out: anything that acts for a person (reminders,
@@ -298,26 +290,13 @@ pub async fn speak(
     let read = read_along(ctx, asker.guild, asker.channel, last).await?;
     let messages = read.messages;
     let context = answer::context_for(ctx, asker, true).await;
-    // The transcript, the pictures it points to, then what she's asked.
+    // The transcript, then what she's asked. No pictures: they cost more tokens than they
+    // were worth here. Message lines name attachments, and `get_message` shows them if she
+    // wants to look.
     let mut parts = vec![Part::Text(read.transcript.clone())];
     let mut stored = vec![StoredPart::Text {
         text: read.transcript,
     }];
-    for picture in read.pictures {
-        parts.push(Part::Text(picture.label.clone()));
-        parts.extend(picture.images.into_iter().map(Part::Image));
-        stored.push(StoredPart::Text {
-            text: picture.label,
-        });
-        // Saved as a link, like a question's pictures, so a reply to her line shows it again.
-        if let Some(media) = picture.media {
-            stored.push(StoredPart::Media {
-                url: media.url,
-                kind: media.kind.into(),
-                mime: media.mime.to_string(),
-            });
-        }
-    }
     let instructions = instructions.to_string();
     parts.push(Part::Text(instructions.clone()));
     stored.push(StoredPart::Text { text: instructions });
@@ -479,26 +458,14 @@ async fn save(
 
 /// What she reads when she reads along.
 struct ReadAlong {
-    /// The numbered transcript, with marks on the messages whose pictures follow.
+    /// The numbered transcript.
     transcript: String,
-    /// The newest pictures in it, shrunk (see [`PICTURES`]).
-    pictures: Vec<Picture>,
     /// The messages themselves, oldest first, so `REPLY 3` can find the third one.
     messages: Vec<Message>,
 }
 
-/// One picture from the transcript, ready for the model.
-struct Picture {
-    /// "Picture 2, from message 14:", or a note that it couldn't be loaded.
-    label: String,
-    images: Vec<ModelImage>,
-    /// Where it came from, saved with what she read. `None` when it couldn't be loaded.
-    media: Option<Media>,
-}
-
 /// The last [`READ_MESSAGES`] messages of the channel, oldest first, ending with `last`
-/// when given (otherwise with the newest), and the newest [`PICTURES`] pictures people
-/// posted in them.
+/// when given (otherwise with the newest).
 async fn read_along(
     ctx: &BotCtx,
     guild: Option<GuildId>,
@@ -530,89 +497,26 @@ async fn read_along(
     // Discord gives the newest first.
     messages.reverse();
 
-    // People's pictures only: she knows what she posted herself.
-    let media: Vec<Vec<Media>> = messages
-        .iter()
-        .map(|m| {
-            if m.author.id == ctx.bot_id {
-                Vec::new()
-            } else {
-                media::find_media(m)
-            }
-        })
-        .collect();
-    let picked = pick_pictures(media);
-    let loads = picked
-        .iter()
-        .map(|(_, m)| media::load_small(m, PICTURE_SIDE, 1));
-    let loaded = join_all(loads).await;
-
     let name = guild
         .and_then(|guild| ctx.channel_name(guild, channel))
         .unwrap_or_default();
     let mut lines = Vec::new();
     for (i, m) in messages.iter().enumerate() {
-        let mut line = format!("{}. {}", i + 1, format_message(ctx, m, Tz::UTC).await);
-        let shown: Vec<String> = picked
-            .iter()
-            .enumerate()
-            .filter(|(_, (at, _))| *at == i)
-            .map(|(k, _)| (k + 1).to_string())
-            .collect();
-        if !shown.is_empty() {
-            let word = if shown.len() == 1 {
-                "picture"
-            } else {
-                "pictures"
-            };
-            line.push_str(&format!(" [{word} {} below]", shown.join(", ")));
-        }
-        lines.push(line);
+        lines.push(format!(
+            "{}. {}",
+            i + 1,
+            format_message(ctx, m, Tz::UTC).await
+        ));
     }
     let transcript = format!(
         "<recent_messages channel=\"#{name}\">\n{}\n</recent_messages>",
         lines.join("\n")
     );
 
-    let mut pictures = Vec::new();
-    for (k, ((at, media), result)) in picked.into_iter().zip(loaded).enumerate() {
-        let (number, message) = (k + 1, at + 1);
-        pictures.push(match result {
-            Ok(images) => Picture {
-                label: format!("Picture {number}, from message {message}:"),
-                images,
-                media: Some(media),
-            },
-            Err(err) => {
-                warn!("couldn't load a picture to read along: {err:#}");
-                Picture {
-                    label: format!(
-                        "[Picture {number}, from message {message}, couldn't be loaded.]"
-                    ),
-                    images: Vec::new(),
-                    media: None,
-                }
-            }
-        });
-    }
     Ok(ReadAlong {
         transcript,
-        pictures,
         messages,
     })
-}
-
-/// The newest [`PICTURES`] pictures of messages oldest first, with the index of the message
-/// each is in, in the order they were posted. `media` is each message's pictures.
-fn pick_pictures(media: Vec<Vec<Media>>) -> Vec<(usize, Media)> {
-    let mut picked: Vec<(usize, Media)> = media
-        .into_iter()
-        .enumerate()
-        .flat_map(|(at, found)| found.into_iter().map(move |m| (at, m)))
-        .collect();
-    let skip = picked.len().saturating_sub(PICTURES);
-    picked.drain(..skip);
-    picked
 }
 
 /// Reads her answer: PASS, REACT 😂, or the line to post (maybe after REPLY 7).
@@ -820,32 +724,5 @@ mod tests {
             1.0
         );
         assert_eq!(settings.chance_for(other, ChannelId::new(999)), 0.05);
-    }
-
-    fn picture(name: &str) -> Media {
-        Media {
-            url: format!("https://cdn.discordapp.com/attachments/1/2/{name}.png"),
-            kind: media::MediaKind::Image,
-            mime: "image/png",
-        }
-    }
-
-    #[test]
-    fn she_sees_the_newest_pictures() {
-        let media = vec![
-            vec![picture("a")],
-            vec![],
-            vec![picture("b"), picture("c")],
-            vec![],
-            vec![picture("d")],
-        ];
-        let picked = pick_pictures(media);
-        let names: Vec<(usize, &str)> = picked
-            .iter()
-            .map(|(at, m)| (*at, m.url.rsplit('/').next().unwrap()))
-            .collect();
-        // The newest three, oldest first, with the message each is in.
-        assert_eq!(names, [(2, "b.png"), (2, "c.png"), (4, "d.png")]);
-        assert!(pick_pictures(vec![vec![], vec![]]).is_empty());
     }
 }
