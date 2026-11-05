@@ -1,6 +1,6 @@
 # Drawing
 
-Vivy can draw pictures with OpenAI's GPT Image 2.5 and post them as a reply. She can also change a picture or draw from one: someone attaches a photo and asks "put a hat on this", or replies to a picture she drew with "make it night".
+Vivy can draw pictures with OpenAI's GPT Image 2.6 and post them as a reply. She can also change a picture or draw from one: someone attaches a photo and asks "put a hat on this", or replies to a picture she drew with "make it night".
 
 ## Using it
 
@@ -33,11 +33,11 @@ All under `src/features/drawing/`. The Image API call itself is in `src/ai/opena
 
 ### The two models
 
-GPT Image 2.5 comes in two versions at the same price. OpenAI suggests Flare for "fast, high-quality everyday image generation" and Sunburst "where editing precision matters most", so the defaults are `model = "gpt-image-2.5-flare"` and `edit_model = "gpt-image-2.5-sunburst"`.
+GPT Image 2.6 (since #155; it replaced 2.5 and draws about 50% faster) comes in two versions at the same price. OpenAI suggests Flare for "fast, high-quality everyday image generation" and Sunburst "where editing precision matters most" (2.6's Sunburst also keeps details more consistent from one edit to the next), so the defaults are `model = "gpt-image-2.6-flare"` and `edit_model = "gpt-image-2.6-sunburst"`.
 
 ### Cost
 
-Pictures are priced per token: text in $5, pictures in $8 and pictures out $30 per million (checked 2026-10-11). Higher `quality` makes more output tokens. Each picture's estimate is added to OpenAI's spend as the job `drawing`, or `game_art` for the games' pictures (each its own line on the status picture under "OpenAI spend this month") and kept per picture in `drawings`. With `OPENAI_ADMIN_KEY`, OpenAI's real bill replaces the month's total.
+Pictures are priced per token: text in $5, pictures in $8 and pictures out $30 per million (checked for 2.5 on 2026-10-11; 2.6's output price is reported unchanged, its input prices weren't rechecked). Higher `quality` makes more output tokens. Each picture's estimate is added to OpenAI's spend as the job `drawing`, or `game_art` for the games' pictures (each its own line on the status picture under "OpenAI spend this month") and kept per picture in `drawings`. With `OPENAI_ADMIN_KEY`, OpenAI's real bill replaces the month's total.
 
 A refusal by OpenAI's safety system (a 400) goes back to her as the tool's result, so she can explain or try a different prompt; it isn't logged as an error.
 

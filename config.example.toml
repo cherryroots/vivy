@@ -241,15 +241,15 @@ monthly_characters = 50000
 max_characters = 1000
 
 [features.drawing]
-# Drawing: Vivy draws pictures with OpenAI's GPT Image 2.5 through chat's `draw_picture`
+# Drawing: Vivy draws pictures with OpenAI's GPT Image 2.6 through chat's `draw_picture`
 # tool, whichever provider chats. Needs OPENAI_TOKEN in .env.
 enabled = true
-# For new pictures. "gpt-image-2.5-flare" is fast and good for everyday pictures;
-# "gpt-image-2.5-sunburst" is the most capable. Both cost the same per token.
-model = "gpt-image-2.5-flare"
+# For new pictures. "gpt-image-2.6-flare" is fast and good for everyday pictures;
+# "gpt-image-2.6-sunburst" is the most capable. Both cost the same per token.
+model = "gpt-image-2.6-flare"
 # For changing a picture or drawing from one (the asker's pictures, or the message they
 # replied to). Sunburst is the most precise at edits.
-edit_model = "gpt-image-2.5-sunburst"
+edit_model = "gpt-image-2.6-sunburst"
 # "low", "medium", "high", "xhigh" or "max". Higher looks better and costs more.
 quality = "medium"
 # "png", "jpeg" or "webp".

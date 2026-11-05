@@ -1,4 +1,4 @@
-//! Drawing pictures with OpenAI's Image API (GPT Image 2.5).
+//! Drawing pictures with OpenAI's Image API (GPT Image 2.6).
 //!
 //! A new picture is `POST /v1/images/generations`; a picture made from others (an edit, or
 //! "draw me in this style") is `POST /v1/images/edits` with those pictures as `data:` URLs.
@@ -156,7 +156,7 @@ mod tests {
 
     fn drawing(pictures: &[ModelImage]) -> PictureRequest<'_> {
         PictureRequest {
-            model: "gpt-image-2.5-flare",
+            model: "gpt-image-2.6-flare",
             prompt: "a cat in a hat",
             pictures,
             size: "1024x1024",
@@ -171,7 +171,7 @@ mod tests {
     fn a_new_picture_is_a_generation() {
         let (path, body) = request_body(&drawing(&[]));
         assert_eq!(path, "/images/generations");
-        assert_eq!(body["model"], "gpt-image-2.5-flare");
+        assert_eq!(body["model"], "gpt-image-2.6-flare");
         assert_eq!(body["quality"], "medium");
         assert!(body.get("images").is_none());
     }
