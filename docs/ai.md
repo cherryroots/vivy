@@ -19,7 +19,7 @@ All three providers are called over plain HTTP with `reqwest` and `serde_json`, 
 | `openai/mod.rs` | The OpenAI provider (Responses API) and `OpenAiConfig` |
 | `openai/price.rs` | List prices per model, and what one response or picture cost |
 | `openai/billing.rs` | Reading OpenAI's Costs API with an Admin key |
-| `openai/images.rs` | `Images`: drawing pictures with the Image API (GPT Image 2.5) |
+| `openai/images.rs` | `Images`: drawing pictures with the Image API (GPT Image 2.6) |
 | `claude/mod.rs` | The Claude provider (Messages API), `ClaudeConfig`, `ContentKey`, pause and retry handling |
 | `claude/messages.rs` | Turns as Claude's messages, the tool list and the system block |
 | `claude/collect.rs` | `Collector`: rebuilds Claude's streamed content blocks and turns them into `ChatEvent`s |
@@ -238,7 +238,7 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - The answer holds the picture in `data[0].b64_json` and the tokens in `usage`, which `price::image_cost` prices; the cost goes to OpenAI's `Spend` as the request's `job`: `"drawing"`, or `"game_art"` for pictures the games ask for, so they get their own line.
 - 429, 500, 502 and 503 are retried twice, after 5 and 15 seconds (or a longer `Retry-After`, up to 60 seconds), and no connection is retried once, like chat (`fallback::send`). A 400 (the safety system refused, or a bad size) becomes a `user_error`, so the model reads why and the log channel isn't bothered.
 
-GPT Image 2.5 comes as `gpt-image-2.5-flare` (fast, everyday pictures) and `gpt-image-2.5-sunburst` (the most capable, best at precise edits). Both cost the same per token: text in $5, pictures in $8, pictures out $30 per million (checked 2026-10-11). Quality goes `low`, `medium`, `high`, `xhigh`, `max`.
+GPT Image 2.6 (2026-11-04, about 50% faster than 2.5) comes as `gpt-image-2.6-flare` (fast, everyday pictures) and `gpt-image-2.6-sunburst` (the most capable, best at precise edits, and keeps details steadier from one edit to the next). It takes the same requests as 2.5: both models drew and Sunburst edited with the bot's exact body on 2026-11-05. Pictures out are still reported at $30 per million; the prices in `price.rs` (text in $5, pictures in $8, out $30, checked for 2.5 on 2026-10-11) weren't rechecked for 2.6 because OpenAI's pricing page can't be reached from the sandbox. Quality goes `low`, `medium`, `high`, `xhigh`, `max`. 2.6's new planning ("complexity") setting and marked-up edits aren't used yet.
 
 ## History and native replay
 

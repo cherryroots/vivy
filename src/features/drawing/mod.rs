@@ -1,4 +1,4 @@
-//! Drawing: Vivy draws pictures with OpenAI's GPT Image 2.5.
+//! Drawing: Vivy draws pictures with OpenAI's GPT Image 2.6.
 //!
 //! Chat gets one tool, `draw_picture`: she writes a prompt, the picture is drawn with the
 //! Image API (`ctx.ai.images`, see `ai/openai/images.rs`) and posted as a reply to the
@@ -48,7 +48,7 @@ const NEIGHBOURS: u16 = 4;
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// For new pictures: "gpt-image-2.5-flare" or "gpt-image-2.5-sunburst".
+    /// For new pictures: "gpt-image-2.6-flare" or "gpt-image-2.6-sunburst".
     pub model: String,
     /// For pictures made from other pictures.
     pub edit_model: String,
@@ -68,8 +68,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            model: "gpt-image-2.5-flare".to_string(),
-            edit_model: "gpt-image-2.5-sunburst".to_string(),
+            model: "gpt-image-2.6-flare".to_string(),
+            edit_model: "gpt-image-2.6-sunburst".to_string(),
             quality: "medium".to_string(),
             format: "png".to_string(),
             moderation: "auto".to_string(),
@@ -478,7 +478,7 @@ mod tests {
         assert_eq!(size_for(Some("round")), "1024x1024");
         assert_eq!(size_for(None), "1024x1024");
         let settings = Settings::default();
-        assert_eq!(settings.model, "gpt-image-2.5-flare");
-        assert_eq!(settings.edit_model, "gpt-image-2.5-sunburst");
+        assert_eq!(settings.model, "gpt-image-2.6-flare");
+        assert_eq!(settings.edit_model, "gpt-image-2.6-sunburst");
     }
 }

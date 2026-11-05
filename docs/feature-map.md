@@ -17,7 +17,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/wheel.md](features/wheel.md) | The movie wheel: the money rules, seasons, the round picture |
 | [features/memory.md](features/memory.md) | Memory: the notes folder, reflection, mood, faces, banners, nickname, diary |
 | [features/voice.md](features/voice.md) | Voice messages through ElevenLabs |
-| [features/drawing.md](features/drawing.md) | Drawing pictures with GPT Image 2.5 |
+| [features/drawing.md](features/drawing.md) | Drawing pictures with GPT Image 2.6 |
 | [features/snails.md](features/snails.md) | Repost detection: link keys, picture fingerprints, backfill |
 | [features/control-panel.md](features/control-panel.md) | The status picture and the log channel |
 | [features/tinyfish.md](features/tinyfish.md) | Web search and reading pages with TinyFish |
@@ -36,7 +36,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`, buttons |
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
-| Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.5 | The `draw_picture` chat tool |
+| Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.6 | The `draw_picture` chat tool |
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
@@ -103,7 +103,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | Movie wheel (`gamble/`) | Ported with tables instead of a JSON blob, seasons, pool betting, a picture, undo winner | `wheel/` |
 | Image hashing (`hasher/`, `/hash_server`, Check Snail) | Redesigned: link keys plus crop-tolerant picture fingerprints, admin-started backfill | `snails/` |
 | Long-term memory (notes, profiles, vector search, `memory_*` commands) | Replaced by the notes folder and `memory` tool | `memory/` |
-| Image and video generation (`/draw`, `/video`, Wavespeed) | Pictures came back as a chat tool on GPT Image 2.5; video is dropped | `drawing/`, `ai/openai/images.rs` |
+| Image and video generation (`/draw`, `/video`, Wavespeed) | Pictures came back as a chat tool on GPT Image 2.6; video is dropped | `drawing/`, `ai/openai/images.rs` |
 | `response_ids` (OpenAI response IDs) | Replaced by `chat_turns`, which works with any provider | `chat/store.rs` |
 | New in Vivy | Voice messages, moods, faces, banners, nickname, diary, the control panel, Claude, spend tracking for Claude and OpenAI | |
 
@@ -264,6 +264,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #152 | | Chat: a linked message that won't open says exactly why (another server and its id, someone's DM, or chat turned off in that channel by the config), and a fetch Discord refuses (deleted, or no Read Message History) is logged as a warning. |
 | #153 | | Chat: a question with a link that got no preview (like a Discord message link) is read again for previews, and that copy from Discord's REST API has no server id, so she took the question for a DM and refused every linked message. The server id and member from the gateway are kept now. |
 | #154 | | Chat: chime-ins don't see pictures again (#148's newest 3 cost tokens on every read). Message lines still name attachments, and `get_message` still shows a message's pictures when she asks for them. |
+| #155 | | Drawing: GPT Image 2.6 (`gpt-image-2.6-flare` for new pictures, `gpt-image-2.6-sunburst` for edits), about 50% faster than 2.5. Same API and settings. Servers with `model`/`edit_model` set in `config.toml` change them by hand. |
 
 ## Not built yet
 
