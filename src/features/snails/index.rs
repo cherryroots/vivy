@@ -21,7 +21,8 @@ const MAX_SMALL_BYTES: usize = 5 * 1024 * 1024;
 /// When the proxy can't serve a picture, the original is fetched up to this size.
 const MAX_ORIGINAL_BYTES: usize = 20 * 1024 * 1024;
 
-/// The link keys in a message. Short links (vm.tiktok.com, t.co...) are followed first.
+/// The link keys in a message: links to known sites (short links like vm.tiktok.com and t.co
+/// are followed first), and articles from other sites that Discord previewed.
 pub async fn link_keys(msg: &Message) -> Vec<String> {
     let mut keys = Vec::new();
     for link in collect::message_links(msg) {
@@ -31,6 +32,13 @@ pub async fn link_keys(msg: &Message) -> Vec<String> {
             link
         };
         if let Some(key) = links::link_key(&link)
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    for link in collect::article_links(msg) {
+        if let Some(key) = links::article_key(&link)
             && !keys.contains(&key)
         {
             keys.push(key);

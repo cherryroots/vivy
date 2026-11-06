@@ -111,6 +111,10 @@ pub const MIGRATIONS: &[&str] = &[
     "ALTER TABLE snail_caught ADD COLUMN channel_id INTEGER;
     ALTER TABLE snail_caught ADD COLUMN original_id INTEGER;
     ALTER TABLE snail_caught ADD COLUMN original_channel_id INTEGER;",
+    // 7: before #156 every site's links were saved, daily games like rngdle.com too. This
+    // asks the next start to drop the ones that no longer count, once (see `drop_old_links`).
+    "CREATE TABLE snail_link_cleanup (pending INTEGER NOT NULL);
+    INSERT INTO snail_link_cleanup VALUES (1);",
 ];
 
 /// A fingerprinted picture of a message.
@@ -292,6 +296,36 @@ pub fn forget(conn: &Connection, message: u64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Once after migration 7: drops saved links for which `counts` is false, and returns how
+/// many went. Does nothing on later starts, so articles saved since stay.
+pub fn drop_old_links(conn: &mut Connection, counts: fn(&str) -> bool) -> rusqlite::Result<usize> {
+    let tx = conn.transaction()?;
+    let pending: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM snail_link_cleanup)",
+        [],
+        |row| row.get(0),
+    )?;
+    if !pending {
+        return Ok(0);
+    }
+    let keys: Vec<(i64, String)> = tx
+        .prepare("SELECT DISTINCT guild_id, key FROM snail_links")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut dropped = 0;
+    for (guild, key) in keys {
+        if !counts(&key) {
+            dropped += tx.execute(
+                "DELETE FROM snail_links WHERE guild_id = ?1 AND key = ?2",
+                params![guild, key],
+            )?;
+        }
+    }
+    tx.execute("DELETE FROM snail_link_cleanup", [])?;
+    tx.commit()?;
+    Ok(dropped)
+}
+
 /// Totals for the control panel: (links, pictures, crawl channels finished, crawl channels).
 pub fn stats(conn: &Connection) -> rusqlite::Result<(u64, u64, u64, u64)> {
     conn.query_row(
@@ -325,6 +359,23 @@ mod tests {
         // Nothing left: the message is gone.
         save_now(&mut conn, &indexed(5, &[], vec![]), 0);
         assert!(!is_indexed(&conn, 5).unwrap());
+    }
+
+    #[test]
+    fn old_links_are_dropped_once() {
+        let mut conn = test_connection("snails", MIGRATIONS);
+        save_now(&mut conn, &indexed(5, &["x:1", "rngdle.com/"], vec![]), 0);
+        let counts = |key: &str| key.starts_with("x:");
+        assert_eq!(drop_old_links(&mut conn, counts).unwrap(), 1);
+        assert_eq!(message_links(&conn, 5).unwrap(), ["x:1"]);
+        // An article saved later stays: the cleanup only runs once.
+        save_now(
+            &mut conn,
+            &indexed(6, &["news.example.com/story"], vec![]),
+            0,
+        );
+        assert_eq!(drop_old_links(&mut conn, counts).unwrap(), 0);
+        assert_eq!(message_links(&conn, 6).unwrap(), ["news.example.com/story"]);
     }
 }
 

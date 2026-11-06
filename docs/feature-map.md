@@ -75,7 +75,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
 | voice | `voice_messages` |
 | drawing | `drawings` |
-| snails | `snail_messages`, `snail_links`, `snail_pictures`, `snail_crawl`, `snail_backfills`, `snail_caught`, `snail_failures`, `snail_dropped` |
+| snails | `snail_messages`, `snail_links`, `snail_pictures`, `snail_crawl`, `snail_backfills`, `snail_caught`, `snail_failures`, `snail_dropped`, `snail_link_cleanup` |
 | control_panel | `control_panel_state`, `control_panel_samples` |
 
 ## Decisions
@@ -265,7 +265,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #153 | | Chat: a question with a link that got no preview (like a Discord message link) is read again for previews, and that copy from Discord's REST API has no server id, so she took the question for a DM and refused every linked message. The server id and member from the gateway are kept now. |
 | #154 | | Chat: chime-ins don't see pictures again (#148's newest 3 cost tokens on every read). Message lines still name attachments, and `get_message` still shows a message's pictures when she asks for them. |
 | #155 | | Drawing: GPT Image 2.6 (`gpt-image-2.6-flare` for new pictures, `gpt-image-2.6-sunburst` for edits), about 50% faster than 2.5. Same API and settings. Servers with `model`/`edit_model` set in `config.toml` change them by hand. |
-| #156 | | Snails: only links to known sites count (social media, video, music, art, and now game stores: Steam, Epic, GOG, PlayStation, Nintendo, Xbox, itch.io, plus SoundCloud). Daily games like rngdle.com and other sites no longer make snails; pictures from them are still compared by fingerprint |
+| #156 | | Snails: links to known sites count (social media, video, music, art, and now game stores: Steam, Epic, GOG, PlayStation, Nintendo, Xbox, itch.io, plus SoundCloud); other sites only when Discord previews them as an article, like a news story. Daily games like rngdle.com no longer make snails; pictures from them are still compared by fingerprint. The first start drops saved links that no longer count (migration 7) |
 
 ## Not built yet
 

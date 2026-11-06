@@ -1,13 +1,14 @@
 //! Link keys: the same post shared twice gives the same key, whichever mirror it came
 //! through and whatever tracking junk it carries.
 //!
-//! Only links to known sites count: social media, video, music, art and game stores. Links
-//! to anything else (a daily game like rngdle.com, a news site, a wiki) get no key, because
-//! people post those again and again without reposting anything.
+//! Links to known sites count: social media, video, music, art and game stores
+//! ([`link_key`]). Links to any other site count only when Discord previews them as an
+//! article, like a news story ([`article_key`]); a daily game like rngdle.com is posted
+//! again and again without reposting anything, and previews as a plain link.
 //!
 //! Known sites key on the post's id: `x:1844012345678901234`, `youtube:dQw4w9WgXcQ`.
-//! A known site's link that isn't one post keys on host + path + the query parameters that
-//! matter. Pure functions, tested below.
+//! Everything else keys on host + path + the query parameters that matter.
+//! Pure functions, tested below.
 
 use reqwest::Url;
 
@@ -320,14 +321,50 @@ pub fn link_key(link: &str) -> Option<String> {
     if is_ignored_site(site, &segs) {
         return None;
     }
-    // Unknown sites never count. Pictures from them are still compared by their
-    // fingerprint (see collect.rs), so a reposted picture is caught either way.
+    // Other sites only count as articles (see article_key). Pictures from them are still
+    // compared by their fingerprint (see collect.rs), so a reposted picture is caught either
+    // way.
     let site = site?;
     if let Some(key) = post_id(site, &host, &segs, &url) {
         return Some(key);
     }
+    Some(plain_key(&url, &host, &segs, site_junk(site)))
+}
 
-    let junk = site_junk(site);
+/// The key of an article on a site we don't know, like a news story: host + path + the
+/// query parameters that matter. Only for links Discord previewed as an article; see
+/// `collect::article_links`. None for known sites, which [`link_key`] keys.
+pub fn article_key(link: &str) -> Option<String> {
+    let url = Url::parse(link).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = host(&url)?;
+    if site_of_host(&host).is_some() {
+        return None;
+    }
+    Some(plain_key(&url, &host, &segments(&url), &[]))
+}
+
+/// Whether a key saved before #156 would still be made: a known site's key. Keys of other
+/// sites were saved for every link then, daily games too, so they are dropped once.
+pub fn is_known_site_key(key: &str) -> bool {
+    // Post ids look like `x:123`; hosts never hold a `:` (ports aren't kept).
+    if let Some((site, id)) = key.split_once(':')
+        && !site.is_empty()
+        && site.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
+    {
+        let segs: Vec<&str> = id.split('/').collect();
+        return !is_ignored_site(Some(site), &segs);
+    }
+    let (host, path) = key.split_once('/').unwrap_or((key, ""));
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    let site = site_of_host(host);
+    site.is_some() && !is_ignored_site(site, &segs)
+}
+
+/// host/path?query, with the query sorted and tracking junk (and `junk`) dropped.
+fn plain_key(url: &Url, host: &str, segs: &[&str], junk: &[&str]) -> String {
     let mut params: Vec<(String, String)> = url
         .query_pairs()
         .filter(|(k, _)| {
@@ -343,7 +380,7 @@ pub fn link_key(link: &str) -> Option<String> {
         key.push(if i == 0 { '?' } else { '&' });
         key.push_str(&format!("{k}={v}"));
     }
-    Some(key)
+    key
 }
 
 /// Short links that hide the post id. Following the redirect gives the full link, which is
@@ -679,9 +716,9 @@ mod tests {
     }
 
     #[test]
-    fn unknown_sites_never_count() {
-        // Daily games, articles, wikis and pictures on other hosts get no key. Pictures are
-        // still compared by fingerprint.
+    fn unknown_sites_only_count_as_articles() {
+        // Daily games, wikis and pictures on other hosts get no link key. Pictures are still
+        // compared by fingerprint.
         for link in [
             "https://rngdle.com/",
             "https://www.nytimes.com/games/wordle/index.html",
@@ -690,6 +727,47 @@ mod tests {
             "https://pbs.twimg.com/media/A.jpg?name=large",
         ] {
             assert_eq!(link_key(link), None, "{link}");
+        }
+        // When Discord previews one as an article, it gets an article key.
+        assert_eq!(
+            article_key("https://www.bbc.co.uk/news/articles/c4g0?utm_source=x&at_medium=y"),
+            Some("bbc.co.uk/news/articles/c4g0?at_medium=y".to_string())
+        );
+        assert_eq!(
+            article_key("https://example.com/article?id=5"),
+            article_key("https://example.com/article?id=5&fbclid=abc")
+        );
+        assert_ne!(
+            article_key("https://example.com/article?id=5"),
+            article_key("https://example.com/article?id=6")
+        );
+        // Known sites already have their own key.
+        assert_eq!(article_key("https://x.com/a/status/1"), None);
+        assert_eq!(article_key("https://tenor.com/view/cat-1"), None);
+    }
+
+    #[test]
+    fn known_site_keys() {
+        for key in [
+            "x:1844012345678901234",
+            "bsky:cherry.bsky.social/3l5abcxyz",
+            "discord-cdn:attachments/1/2/cat.png",
+            "steam:app/1145360",
+            "youtube.com/@channel",
+            "reddit.com/r/memes",
+        ] {
+            assert!(is_known_site_key(key), "{key}");
+        }
+        for key in [
+            "rngdle.com/",
+            "nytimes.com/games/wordle/index.html",
+            "example.com/article?id=5",
+            "pbs.twimg.com/media/A.jpg",
+            "discord-cdn:emojis/123.webp",
+            "gif:cat-1",
+            "discord:1/2/3",
+        ] {
+            assert!(!is_known_site_key(key), "{key}");
         }
     }
 
