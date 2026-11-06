@@ -1,9 +1,13 @@
 //! Link keys: the same post shared twice gives the same key, whichever mirror it came
 //! through and whatever tracking junk it carries.
 //!
+//! Only links to known sites count: social media, video, music, art and game stores. Links
+//! to anything else (a daily game like rngdle.com, a news site, a wiki) get no key, because
+//! people post those again and again without reposting anything.
+//!
 //! Known sites key on the post's id: `x:1844012345678901234`, `youtube:dQw4w9WgXcQ`.
-//! Everything else keys on host + path + the query parameters that matter.
-//! Pure functions, tested below.
+//! A known site's link that isn't one post keys on host + path + the query parameters that
+//! matter. Pure functions, tested below.
 
 use reqwest::Url;
 
@@ -79,11 +83,21 @@ fn site_of_host(host: &str) -> Option<&'static str> {
         "imgur.com" | "i.imgur.com" => "imgur",
         "streamable.com" => "streamable",
         "open.spotify.com" => "spotify",
+        "soundcloud.com" => "soundcloud",
         "pinterest.com" => "pinterest",
         "discord.com" | "ptb.discord.com" | "canary.discord.com" | "discordapp.com" => "discord",
         "cdn.discordapp.com" | "media.discordapp.net" => "discord-cdn",
         "klipy.com" | "tenor.com" | "giphy.com" => "gif",
+        // Game stores.
+        "store.steampowered.com" | "steamcommunity.com" => "steam",
+        "store.epicgames.com" => "epic",
+        "gog.com" => "gog",
+        "store.playstation.com" => "playstation",
+        "nintendo.com" => "nintendo",
+        "xbox.com" => "xbox",
+        "itch.io" => "itch",
         _ if host.ends_with(".tumblr.com") => "tumblr",
+        _ if host.ends_with(".itch.io") => "itch",
         _ => return None,
     })
 }
@@ -211,6 +225,29 @@ fn post_id(site: &str, host: &str, segs: &[&str], url: &Url) -> Option<String> {
             }
         }
         "pinterest" => after(segs, "pin")?.to_string(),
+        // store.steampowered.com/app/<id>/<name>/ and steamcommunity.com/app/<id>, and
+        // workshop items: steamcommunity.com/sharedfiles/filedetails/?id=<id>.
+        "steam" if segs.first() == Some(&"sharedfiles") => format!("file/{}", param("id")?),
+        "steam" => format!("app/{}", after(segs, "app")?),
+        // The stores put the language in the path (/en-US/, /de/), so key on what follows.
+        "epic" => after(segs, "p")?.to_string(),
+        "gog" => after(segs, "game")?.to_string(),
+        "playstation" => match (after(segs, "product"), after(segs, "concept")) {
+            (Some(id), _) => format!("product/{id}"),
+            (_, Some(id)) => format!("concept/{id}"),
+            _ => return None,
+        },
+        "nintendo" => after(segs, "products")?.to_string(),
+        // xbox.com/en-US/games/store/<name>/<id>: the id stays when the name changes.
+        "xbox" => {
+            let i = segs.iter().position(|s| *s == "store")?;
+            segs.get(i + 2)?.to_string()
+        }
+        // <dev>.itch.io/<game>. itch.io itself is the store's own pages.
+        "itch" if host != "itch.io" => {
+            let dev = host.strip_suffix(".itch.io")?;
+            format!("{dev}/{}", first?)
+        }
         "discord" => {
             after(segs, "channels")?;
             segs[1..].join("/")
@@ -228,17 +265,16 @@ fn post_id(site: &str, host: &str, segs: &[&str], url: &Url) -> Option<String> {
 const JUNK_PARAMS: &[&str] = &["fbclid", "gclid", "igsh", "igshid", "mibextid", "ref_src"];
 
 /// Query parameters that are junk only on some sites. Elsewhere a short name like `t` can
-/// matter: a forum's `?t=123` is a thread.
-fn site_junk(site: Option<&str>, host: &str) -> &'static [&'static str] {
+/// matter, so each site lists its own.
+fn site_junk(site: &str) -> &'static [&'static str] {
     match site {
-        Some("x") => &["s", "t"],
-        Some("youtube") => &["si", "feature", "pp", "t"],
-        Some("spotify") => &["si", "context"],
-        Some("reddit") => &["rdt", "share_id", "context", "ref", "ref_source"],
-        Some("threads") => &["xmt"],
-        Some("tiktok") => &["is_from_webapp", "sender_device", "web_id", "_r", "_t"],
-        // X's picture server: ?format=jpg&name=large
-        _ if host == "pbs.twimg.com" => &["format", "name"],
+        "x" => &["s", "t"],
+        "youtube" => &["si", "feature", "pp", "t"],
+        "spotify" => &["si", "context"],
+        "reddit" => &["rdt", "share_id", "context", "ref", "ref_source"],
+        "threads" => &["xmt"],
+        "tiktok" => &["is_from_webapp", "sender_device", "web_id", "_r", "_t"],
+        "steam" => &["snr", "curator_clanid"],
         _ => &[],
     }
 }
@@ -271,8 +307,8 @@ pub fn is_ignored(link: &str) -> bool {
     host(&url).is_some_and(|host| is_ignored_site(site_of_host(&host), &segments(&url)))
 }
 
-/// The key a link is stored under, or None when it isn't a web link or should never count
-/// as a snail (see [`IGNORED_SITES`]).
+/// The key a link is stored under, or None when it isn't a web link, isn't on a site we
+/// know (see the top of this file), or should never count as a snail (see [`IGNORED_SITES`]).
 pub fn link_key(link: &str) -> Option<String> {
     let url = Url::parse(link).ok()?;
     if !matches!(url.scheme(), "http" | "https") {
@@ -284,13 +320,14 @@ pub fn link_key(link: &str) -> Option<String> {
     if is_ignored_site(site, &segs) {
         return None;
     }
-    if let Some(site) = site
-        && let Some(key) = post_id(site, &host, &segs, &url)
-    {
+    // Unknown sites never count. Pictures from them are still compared by their
+    // fingerprint (see collect.rs), so a reposted picture is caught either way.
+    let site = site?;
+    if let Some(key) = post_id(site, &host, &segs, &url) {
         return Some(key);
     }
 
-    let junk = site_junk(site, &host);
+    let junk = site_junk(site);
     let mut params: Vec<(String, String)> = url
         .query_pairs()
         .filter(|(k, _)| {
@@ -446,20 +483,16 @@ mod tests {
                 "https://media.discordapp.net/attachments/1/2/cat.png?ex=d&is=e&hm=f&width=400",
             ),
             (
-                "https://example.com/cat.jpeg",
-                "https://example.com/cat.jpeg?utm_source=discord",
+                "https://www.youtube.com/@channel?utm_source=discord",
+                "https://www.youtube.com/@channel?fbclid=abc",
             ),
             (
-                "https://example.com/page?fbclid=abc",
-                "https://example.com/page?gclid=def",
+                "https://www.reddit.com/r/memes/?gclid=def",
+                "https://www.reddit.com/r/memes/",
             ),
             (
                 "https://www.youtube.com/@channel?si=abc",
                 "https://www.youtube.com/@channel",
-            ),
-            (
-                "https://pbs.twimg.com/media/A.jpg?format=jpg&name=small",
-                "https://pbs.twimg.com/media/A.jpg?name=large",
             ),
             ("https://x.com/user?s=20&t=abc", "https://x.com/user"),
             (
@@ -494,6 +527,39 @@ mod tests {
                 "https://open.spotify.com/user/someone/playlist/37i9dQZF1DXcBWIGoYBM5M",
                 "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
             ),
+            // Game stores, whatever the language or the name in the link.
+            (
+                "https://store.steampowered.com/app/1145360/Hades/?snr=1_7_7_151_150_1",
+                "https://steamcommunity.com/app/1145360",
+            ),
+            (
+                "https://steamcommunity.com/sharedfiles/filedetails/?id=123456",
+                "https://steamcommunity.com/sharedfiles/filedetails?id=123456&searchtext=",
+            ),
+            (
+                "https://store.epicgames.com/en-US/p/hades",
+                "https://store.epicgames.com/de/p/hades",
+            ),
+            (
+                "https://www.gog.com/en/game/hades",
+                "https://www.gog.com/game/hades",
+            ),
+            (
+                "https://store.playstation.com/en-us/concept/10001234",
+                "https://store.playstation.com/de-de/concept/10001234",
+            ),
+            (
+                "https://www.nintendo.com/us/store/products/hades-switch/",
+                "https://www.nintendo.com/en-gb/store/products/hades-switch",
+            ),
+            (
+                "https://www.xbox.com/en-US/games/store/hades/9P8DL6W0JBB8",
+                "https://www.xbox.com/de-DE/games/store/hades-neu/9P8DL6W0JBB8",
+            ),
+            (
+                "https://dev.itch.io/some-game",
+                "https://dev.itch.io/some-game/devlog/1",
+            ),
         ];
         for (a, b) in pairs {
             assert!(
@@ -524,23 +590,18 @@ mod tests {
                 "https://cdn.discordapp.com/attachments/1/2/cat.png",
                 "https://cdn.discordapp.com/attachments/1/3/cat.png",
             ),
-            (
-                "https://example.com/article?id=5",
-                "https://example.com/article?id=6",
-            ),
-            ("https://example.com/a.png", "https://other.com/a.png"),
             // Short parameters only count as junk on the sites that use them that way.
             (
-                "https://forum.example.com/viewtopic.php?t=123",
-                "https://forum.example.com/viewtopic.php?t=456",
+                "https://www.reddit.com/search/?q=cats&t=week",
+                "https://www.reddit.com/search/?q=cats&t=all",
             ),
             (
-                "https://example.com/search?s=cats",
-                "https://example.com/search?s=dogs",
+                "https://store.steampowered.com/app/1145360/",
+                "https://store.steampowered.com/app/2344520/",
             ),
             (
-                "https://example.com/img?width=100&name=a",
-                "https://example.com/img?width=200&name=b",
+                "https://dev.itch.io/some-game",
+                "https://other.itch.io/some-game",
             ),
             // Pages that aren't one post mustn't share a key.
             (
@@ -615,6 +676,21 @@ mod tests {
             "https://cdn.discordapp.com/attachments/1/2/cat.png"
         ));
         assert!(!is_ignored("https://example.com/cat.png"));
+    }
+
+    #[test]
+    fn unknown_sites_never_count() {
+        // Daily games, articles, wikis and pictures on other hosts get no key. Pictures are
+        // still compared by fingerprint.
+        for link in [
+            "https://rngdle.com/",
+            "https://www.nytimes.com/games/wordle/index.html",
+            "https://example.com/article?id=5",
+            "https://en.wikipedia.org/wiki/Snail",
+            "https://pbs.twimg.com/media/A.jpg?name=large",
+        ] {
+            assert_eq!(link_key(link), None, "{link}");
+        }
     }
 
     #[test]

@@ -265,6 +265,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #153 | | Chat: a question with a link that got no preview (like a Discord message link) is read again for previews, and that copy from Discord's REST API has no server id, so she took the question for a DM and refused every linked message. The server id and member from the gateway are kept now. |
 | #154 | | Chat: chime-ins don't see pictures again (#148's newest 3 cost tokens on every read). Message lines still name attachments, and `get_message` still shows a message's pictures when she asks for them. |
 | #155 | | Drawing: GPT Image 2.6 (`gpt-image-2.6-flare` for new pictures, `gpt-image-2.6-sunburst` for edits), about 50% faster than 2.5. Same API and settings. Servers with `model`/`edit_model` set in `config.toml` change them by hand. |
+| #156 | | Snails: only links to known sites count (social media, video, music, art, and now game stores: Steam, Epic, GOG, PlayStation, Nintendo, Xbox, itch.io, plus SoundCloud). Daily games like rngdle.com and other sites no longer make snails; pictures from them are still compared by fingerprint |
 
 ## Not built yet
 
