@@ -54,6 +54,24 @@ pub fn message_links(msg: &Message) -> Vec<String> {
     found
 }
 
+/// The links Discord previewed as an article (a news story, a blog post), from the preview's
+/// own link. Links to sites we don't know only count as snails when they're one of these;
+/// see `links::article_key`.
+pub fn article_links(msg: &Message) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    for embed in &msg.embeds {
+        if embed.kind != "article" {
+            continue;
+        }
+        if let Some(url) = &embed.url
+            && !found.contains(url)
+        {
+            found.push(url.clone());
+        }
+    }
+    found
+}
+
 /// The pictures in a message, always in the same order (it is stored as `position`):
 ///
 /// - attachments with a size: images, GIFs and videos;
@@ -192,6 +210,22 @@ mod tests {
         assert_eq!(
             url,
             "https://media.discordapp.net/x.png?format=webp&width=100&height=100"
+        );
+    }
+
+    #[test]
+    fn articles_from_previews() {
+        let msg = message(json!({
+            "content": "https://rngdle.com/ and https://news.example.com/2026/11/06/story",
+            "embeds": [
+                {"type": "link", "url": "https://rngdle.com/"},
+                {"type": "article", "url": "https://news.example.com/2026/11/06/story"},
+                {"type": "article", "url": "https://news.example.com/2026/11/06/story"}
+            ]
+        }));
+        assert_eq!(
+            article_links(&msg),
+            ["https://news.example.com/2026/11/06/story"]
         );
     }
 

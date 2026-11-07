@@ -40,7 +40,7 @@ use crate::util::discord::{ChannelId, GuildId, Message, MessageId, get_message};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::Deserialize;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::core::{BotCtx, Command, Feature, Result, Stat};
 use crate::util::media;
@@ -105,9 +105,17 @@ impl Feature for Snails {
         store::MIGRATIONS
     }
 
-    /// Carries on with crawls an admin started before the restart, catches up channels
-    /// crawled before, and starts retrying failed pictures. Never starts a new crawl.
+    /// Drops saved links that no longer count (once, after an update), carries on with
+    /// crawls an admin started before the restart, catches up channels crawled before, and
+    /// starts retrying failed pictures. Never starts a new crawl.
     async fn start(&self, ctx: &BotCtx) -> Result<()> {
+        let dropped = ctx
+            .db
+            .call(|conn| Ok(store::drop_old_links(conn, links::is_known_site_key)?))
+            .await?;
+        if dropped > 0 {
+            info!("snails: dropped {dropped} saved links that no longer count");
+        }
         let (running, crawled) = ctx
             .db
             .call(|conn| Ok((store::running_guilds(conn)?, store::crawled_guilds(conn)?)))
