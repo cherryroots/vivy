@@ -232,7 +232,6 @@ Every loop reports to the status picture's Timers box through `ctx.timers` (`src
 | Timer | Feature | Runs |
 |---|---|---|
 | Reminders | reminders | at the next reminder |
-| Check-ins | chat | at the next check-in |
 | Emoji descriptions | chat | daily |
 | Memory upkeep | memory | hourly: reflection, mood checks, faces, banners, diary |
 | Snail picture retries | snails | every 5 minutes |

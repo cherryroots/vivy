@@ -1,24 +1,21 @@
-//! Chiming in: now and then Vivy reads along in a channel and, if she has something to say,
-//! adds one short line or a reaction, without anyone mentioning her.
+//! Chiming in: now and then Vivy reads along in a channel and maybe reacts to the last
+//! message with an emoji, without anyone mentioning her. She never posts a line on her own:
+//! Cherry's friends didn't like it, so only reactions are left.
 //!
 //! After each message there's a small chance (`chime_chance` in `[features.chat]`) that she
 //! reads the last [`READ_MESSAGES`] messages, mostly to learn from them for her memory. A
-//! second roll decides what else she does that time: `chime_say_chance` of the reads she
-//! posts a line, `chime_react_chance` she reacts to the last message, and the rest she only
-//! reads. A channel then waits `chime_cooldown_minutes` before she reads it again. Her line
-//! is saved like an answer, so replying to it continues the conversation.
+//! second roll decides whether she also reacts that time (`chime_react_chance`); the rest she
+//! only reads. A channel then waits `chime_cooldown_minutes` before she reads it again.
 //!
-//! Nobody asked for these lines (nor for check-ins, which use [`speak`] too), and they're
-//! posted for the whole channel, so she can only use [`UNPROMPTED_TOOLS`]: tools that read
-//! the server (any channel chat isn't turned off in, see `tools::can_read`) and her own
-//! memory.
+//! Nobody asked, so she can only use [`UNPROMPTED_TOOLS`]: tools that read the server (any
+//! channel chat isn't turned off in, see `tools::can_read`) and her own memory.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::util::discord::{
-    ChannelId, Draft, GuildId, Message, UserId, display_name, mentions_user, no_pings, react,
+    ChannelId, GuildId, Message, UserId, display_name, mentions_user, react,
 };
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -40,12 +37,10 @@ use crate::util::shorten_at_word;
 const READ_MESSAGES: u16 = 15;
 /// Rounds of tool calls (saving to memory) before she has to decide.
 const MAX_ROUNDS: usize = 6;
-/// The longest line she posts.
-const MAX_LINE: usize = 400;
 
 /// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
-/// someone decides it's safe here. Left out: anything that acts for a person (reminders,
-/// check-ins), and `list_channels`, which lists what one person can see, not everyone here.
+/// someone decides it's safe here. Left out: anything that acts for a person (reminders),
+/// and `list_channels`, which lists what one person can see, not everyone here.
 /// `get_message` and `search_messages` reach the channels chat may read (`tools::can_read`). `memory`
 /// is in: what she saves is her own decision. `tinyfish_search` and `tinyfish_fetch` only
 /// read the web, like the providers' own web tools, which chime-ins have too.
@@ -66,7 +61,7 @@ const UNPROMPTED_TOOLS: &[&str] = &[
     "memory",
 ];
 
-/// `[features.chat]` settings: chiming in, and some limits on answers.
+/// `[features.chat]` settings: reading along, and some limits on answers.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -74,12 +69,8 @@ pub struct Settings {
     pub max_tool_rounds: usize,
     /// How far up a reply chain the history goes, in messages.
     pub history_turns: usize,
-    /// The most check-ins (`schedule_follow_up`) planned with one person at a time.
-    pub follow_ups_per_person: i64,
     /// The chance, from 0 to 1, that a message makes her read along. 0 turns it off.
     pub chime_chance: f64,
-    /// Of those reads, the share where she posts a line (0 to 1).
-    pub chime_say_chance: f64,
     /// Of those reads, the share where she reacts to the last message (0 to 1).
     pub chime_react_chance: f64,
     /// How long a channel waits after she read along.
@@ -124,9 +115,7 @@ impl Settings {
 
     /// What she may do on a read, from a second roll `dice` between 0 and 1.
     fn allowed(&self, dice: f64) -> Allowed {
-        if dice < self.chime_say_chance {
-            Allowed::Anything
-        } else if dice < self.chime_say_chance + self.chime_react_chance {
+        if dice < self.chime_react_chance {
             Allowed::React
         } else {
             Allowed::ReadOnly
@@ -139,9 +128,7 @@ impl Default for Settings {
         Settings {
             max_tool_rounds: 8,
             history_turns: 40,
-            follow_ups_per_person: 5,
             chime_chance: 0.05,
-            chime_say_chance: 0.10,
             chime_react_chance: 0.40,
             chime_cooldown_minutes: 30,
             chime_chance_per_user: Vec::new(),
@@ -154,22 +141,8 @@ impl Default for Settings {
 pub enum Allowed {
     /// Only read, and save to memory what's worth keeping.
     ReadOnly,
-    /// React to the last message with one emoji.
+    /// React to the last message with one emoji (or pass).
     React,
-    /// Post a line (or react, or pass).
-    Anything,
-}
-
-/// What she does after reading along.
-#[derive(Debug, PartialEq)]
-enum Decision {
-    Pass,
-    React(String),
-    /// A line to post, maybe as a reply to one of the messages she read (its number).
-    Say {
-        line: String,
-        reply_to: Option<usize>,
-    },
 }
 
 /// The `[features.chat]` settings, read once.
@@ -197,7 +170,7 @@ impl Chime {
     }
 
     /// Rolls the dice for a message, and reads along if it hits. A second roll decides
-    /// whether she may also post a line or react.
+    /// whether she may also react.
     pub async fn on_message(&self, ctx: &BotCtx, msg: &Message) -> Result<()> {
         let Some(guild) = msg.guild_id.filter(|_| ctx.ai.chat().is_some()) else {
             return Ok(());
@@ -222,10 +195,10 @@ impl Chime {
         let allowed = self.settings(ctx).allowed(fastrand::f64());
         let mut instructions = format!("{READ_ALONG}{}", allowed_instructions(allowed));
         // When she may react, the server's own emoji are hers to pick from too.
-        if allowed != Allowed::ReadOnly {
+        if allowed == Allowed::React {
             instructions.push_str(&emoji::for_chime_in(ctx, asker.guild).await);
         }
-        speak(ctx, &asker, Some(msg), &instructions, allowed).await
+        read_and_react(ctx, &asker, msg, &instructions, allowed).await
     }
 
     /// Whether to read along now: the dice hit (with the author's own chance, if they have
@@ -250,7 +223,7 @@ impl Chime {
 /// ([`allowed_instructions`]). In the question, not the system prompt, so the system prompt
 /// stays the same as for answers and shares their cache.
 const READ_ALONG: &str = "You're reading along in this channel; nobody asked you anything. \
-Reactions after a message show how people took it, your own lines included. \
+Reactions after a message show how people took it, your own included. \
 When someone answers one of your questions later, save what you learned. \
 If you noticed something lasting about the server, its people or yourself, save it with the memory tool. ";
 
@@ -263,38 +236,28 @@ fn allowed_instructions(allowed: Allowed) -> &'static str {
         Allowed::React => {
             "This time, react to the last message: answer REACT followed by one emoji that fits it."
         }
-        Allowed::Anything => {
-            "This time, chime in with something that fits: a joke, a reaction, a fact, an opinion, or a short question about what they're talking about when you don't know it and are curious (what a name or in-joke means, how something turned out). \
-Answer with one short line the way people write on Discord, with no greeting. If no line fits, answer REACT followed by one emoji, or PASS. \
-When your line answers one message in particular, start it with REPLY and that message's number (like REPLY 7 then your line), so it's posted as a reply to it."
-        }
     }
 }
 
-/// Reads the last messages of `asker.channel` (ending with `last`, when given), asks the
-/// model what to do with `instructions`, and does it: posts a line, reacts to `last`, or
-/// nothing. `allowed` limits that: a line when she may only react is dropped, and when she
-/// may only read nothing is posted. A posted line is saved like an answer, so a reply to it continues the
-/// conversation. The line pings nobody, not even a person it names or replies to.
-pub async fn speak(
+/// Reads the last messages of `asker.channel` (ending with `last`), asks the model what to
+/// do with `instructions`, and maybe reacts to `last`. Nothing else is ever posted: on a
+/// read-only roll not even a reaction, and any text she writes is dropped.
+async fn read_and_react(
     ctx: &BotCtx,
     asker: &Asker,
-    last: Option<&Message>,
+    last: &Message,
     instructions: &str,
     allowed: Allowed,
 ) -> Result<()> {
     let started_at = Utc::now().timestamp();
     let provider = ctx.ai.chat().context("chat has no model")?;
-    let read = read_along(ctx, asker.guild, asker.channel, last).await?;
-    let messages = read.messages;
+    let transcript = read_along(ctx, asker.guild, asker.channel, last).await?;
     let context = answer::context_for(ctx, asker, true).await;
     // The transcript, then what she's asked. No pictures: they cost more tokens than they
     // were worth here. Message lines name attachments, and `get_message` shows them if she
     // wants to look.
-    let mut parts = vec![Part::Text(read.transcript.clone())];
-    let mut stored = vec![StoredPart::Text {
-        text: read.transcript,
-    }];
+    let mut parts = vec![Part::Text(transcript.clone())];
+    let mut stored = vec![StoredPart::Text { text: transcript }];
     let instructions = instructions.to_string();
     parts.push(Part::Text(instructions.clone()));
     stored.push(StoredPart::Text { text: instructions });
@@ -325,8 +288,16 @@ pub async fn speak(
         info!("read along without posting");
         return Ok(());
     }
-    let decision = decide(&done.text);
-    // What she read and how, saved with whatever she does below.
+    let Some(picked) = reaction(&done.text) else {
+        info!("read along and passed");
+        return Ok(());
+    };
+    // Her `:name:` for a server emoji becomes its code, so Discord shows it.
+    let codes = emoji::codes(ctx, asker.guild);
+    let emoji = emoji::reaction_code(&picked, &codes);
+    react(&ctx.http, last.channel_id, last.id, &emoji).await?;
+    info!("reacted with {emoji}");
+    // Saved too, so `look_back_at_answers` lists it when someone asks why she reacted.
     stored.extend(context.into_iter().map(|text| StoredPart::Context { text }));
     let written = Written {
         provider: provider.name().to_string(),
@@ -334,63 +305,8 @@ pub async fn speak(
         continuation_id: done.continuation,
         native_json: serde_json::to_string(&done.rounds).ok(),
     };
-    // Her `:name:` for a server emoji becomes its code, so Discord shows it.
-    let codes = emoji::codes(ctx, asker.guild);
-    let (line, reply_to) = match (decision, last) {
-        (Decision::Say { line, reply_to }, _) if allowed == Allowed::Anything => {
-            (emoji::with_codes(&line, &codes), reply_to)
-        }
-        (Decision::React(picked), Some(msg)) => {
-            let emoji = emoji::reaction_code(&picked, &codes);
-            react(&ctx.http, msg.channel_id, msg.id, &emoji).await?;
-            info!("reacted with {emoji}");
-            // Saved too, so `look_back_at_answers` lists it when someone asks why she
-            // reacted. There's no message of hers to link it to.
-            let note = reaction_note(&emoji, display_name(&msg.author), &msg.content);
-            return save(
-                ctx,
-                asker.channel,
-                stored,
-                written,
-                started_at,
-                note,
-                Vec::new(),
-            )
-            .await;
-        }
-        _ => {
-            info!("read along and passed");
-            return Ok(());
-        }
-    };
-    // The message she answers, if she named one: numbers start at 1, oldest first.
-    let target = reply_to
-        .and_then(|n| n.checked_sub(1))
-        .and_then(|i| messages.get(i));
-    // Pings nobody: a reply would ping its author, and a <@id> in the text its person,
-    // unless Discord is told not to. Check-ins name the person but don't ping them either.
-    let mut message = Draft::new()
-        .content(answer::discord_links(&line))
-        .allowed_mentions(no_pings());
-    if let Some(target) = target {
-        message = message.reply_to(target.id);
-    }
-    let sent = message.send(&ctx.http, asker.channel).await?;
-    match target {
-        Some(target) => info!("spoke up on her own, replying to {}", target.id),
-        None => info!("spoke up on her own"),
-    }
-    // Linked to her message, so a reply to her line continues the same conversation.
-    save(
-        ctx,
-        asker.channel,
-        stored,
-        written,
-        started_at,
-        line,
-        vec![sent.id.get()],
-    )
-    .await
+    let note = reaction_note(&emoji, display_name(&last.author), &last.content);
+    save(ctx, asker.channel, stored, written, started_at, note).await
 }
 
 /// What a chime-in reaction is saved as: `(reacted 🐄 to RickyWL: "I Am One Of…")`.
@@ -404,9 +320,8 @@ fn reaction_note(emoji: &str, author: &str, text: &str) -> String {
     format!("(reacted {emoji} to {author}{quote})")
 }
 
-/// Saves a chime-in like a question and its answer: what she read, exactly as the model
-/// read it, and `said`, what she posted (or a note on her reaction). `messages` are her
-/// Discord messages, so a reply to one continues the conversation.
+/// Saves a chime-in reaction like a question and its answer: what she read, exactly as the
+/// model read it, and `said`, a note on her reaction. There's no message of hers to link it to.
 async fn save(
     ctx: &BotCtx,
     channel: ChannelId,
@@ -414,13 +329,12 @@ async fn save(
     written: Written,
     started_at: i64,
     said: String,
-    messages: Vec<u64>,
 ) -> Result<()> {
     let question = NewTurn {
         parent_id: None,
         role: Role::User,
-        // Saved as the bot's own, because nobody asked: nobody can 🔁 or ❌ her line as
-        // if it were their answer (🔁 would run it as a normal answer and post "PASS").
+        // Saved as the bot's own, because nobody asked: nobody can 🔁 it as if it were
+        // their answer (🔁 would run it as a normal answer and post "REACT 😂").
         author_id: ctx.bot_id.get(),
         channel_id: channel.get(),
         parts: stored,
@@ -444,51 +358,30 @@ async fn save(
                 error: None,
                 created_at: Utc::now().timestamp(),
             };
-            store::add_turn(conn, &answer, &messages)
+            store::add_turn(conn, &answer, &[])
         })
         .await
         .context("saving what she did")?;
     Ok(())
 }
 
-/// What she reads when she reads along.
-struct ReadAlong {
-    /// The numbered transcript.
-    transcript: String,
-    /// The messages themselves, oldest first, so `REPLY 3` can find the third one.
-    messages: Vec<Message>,
-}
-
-/// The last [`READ_MESSAGES`] messages of the channel, oldest first, ending with `last`
-/// when given (otherwise with the newest).
+/// The last [`READ_MESSAGES`] messages of the channel as a transcript, oldest first, ending
+/// with `last`.
 async fn read_along(
     ctx: &BotCtx,
     guild: Option<GuildId>,
     channel: ChannelId,
-    last: Option<&Message>,
-) -> Result<ReadAlong> {
-    let mut messages = match last {
-        Some(msg) => {
-            let mut before = ctx
-                .http
-                .channel_messages(channel)
-                .before(msg.id)
-                .limit(READ_MESSAGES - 1)
-                .await?
-                .models()
-                .await?;
-            before.insert(0, msg.clone());
-            before
-        }
-        None => {
-            ctx.http
-                .channel_messages(channel)
-                .limit(READ_MESSAGES)
-                .await?
-                .models()
-                .await?
-        }
-    };
+    last: &Message,
+) -> Result<String> {
+    let mut messages = ctx
+        .http
+        .channel_messages(channel)
+        .before(last.id)
+        .limit(READ_MESSAGES - 1)
+        .await?
+        .models()
+        .await?;
+    messages.insert(0, last.clone());
     // Discord gives the newest first.
     messages.reverse();
 
@@ -496,90 +389,30 @@ async fn read_along(
         .and_then(|guild| ctx.channel_name(guild, channel))
         .unwrap_or_default();
     let mut lines = Vec::new();
-    for (i, m) in messages.iter().enumerate() {
-        lines.push(format!(
-            "{}. {}",
-            i + 1,
-            format_message(ctx, m, Tz::UTC).await
-        ));
+    for m in &messages {
+        lines.push(format_message(ctx, m, Tz::UTC).await);
     }
-    let transcript = format!(
+    Ok(format!(
         "<recent_messages channel=\"#{name}\">\n{}\n</recent_messages>",
         lines.join("\n")
-    );
-
-    Ok(ReadAlong {
-        transcript,
-        messages,
-    })
+    ))
 }
 
-/// Reads her answer: PASS, REACT 😂, or the line to post (maybe after REPLY 7).
-fn decide(text: &str) -> Decision {
-    let text = unquote(text);
-    let word = text
-        .trim_end_matches(|c: char| c.is_ascii_punctuation())
-        .to_ascii_uppercase();
-    let starts_with_pass = text
-        .strip_prefix("PASS")
-        .is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric()));
-    if text.is_empty() || word == "PASS" || starts_with_pass {
-        return Decision::Pass;
-    }
-    if let Some(rest) = text
+/// Reads her answer: `REACT 😂` gives the emoji, anything else (`PASS`, a line) is nothing.
+fn reaction(text: &str) -> Option<String> {
+    let text = text.trim().trim_matches('"').trim();
+    let rest = text
         .strip_prefix("REACT")
-        .or_else(|| text.strip_prefix("React"))
-    {
-        let emoji = rest.trim_start_matches(':').trim();
-        return match emoji.split_whitespace().next() {
-            Some(emoji) => Decision::React(emoji.to_string()),
-            None => Decision::Pass,
-        };
-    }
-    let (reply_to, line) = reply_number(text);
-    let line = unquote(line);
-    if line.is_empty() {
-        return Decision::Pass;
-    }
-    Decision::Say {
-        line: shorten_at_word(line, MAX_LINE),
-        reply_to,
-    }
+        .or_else(|| text.strip_prefix("React"))?;
+    let emoji = rest.trim_start_matches(':').split_whitespace().next()?;
+    Some(emoji.to_string())
 }
 
-/// Takes off quotes around the whole answer, but only when they wrap all of it: a line
-/// that ends with a quote of its own (`the move is "stairs"`) keeps both quotes.
-fn unquote(text: &str) -> &str {
-    let text = text.trim();
-    match text.strip_prefix('"').and_then(|t| t.strip_suffix('"')) {
-        Some(inner) if !inner.contains('"') => inner.trim(),
-        _ => text,
-    }
-}
-
-/// Splits `REPLY 7 the line` into the message number and the line. Without a number, the
-/// whole text is the line.
-fn reply_number(text: &str) -> (Option<usize>, &str) {
-    let Some(rest) = text.strip_prefix("REPLY") else {
-        return (None, text);
-    };
-    let rest = rest.trim_start_matches([':', ' ', '#']);
-    let digits = rest
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(rest.len());
-    match rest[..digits].parse() {
-        Ok(number) => (Some(number), rest[digits..].trim_start_matches([':', ' '])),
-        Err(_) => (None, text),
-    }
-}
-
-/// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message (or the
-/// person she checks in with). What she reads may come from any channel chat may read
-/// (Cherry's rule), so it can end up in a public line.
+/// Runs her tool calls with [`UNPROMPTED_TOOLS`], as the author of the last message. What
+/// she reads may come from any channel chat may read (Cherry's rule).
 ///
-/// In a server, `memory` runs as Vivy herself: what she saves unprompted is her own call, so
-/// the change log names her, not whoever wrote last. The folder is the server's either way.
-/// In a DM (a follow-up) the folder is the person's, so it stays theirs.
+/// `memory` runs as Vivy herself: what she saves unprompted is her own call, so the change
+/// log names her, not whoever wrote last. The folder is the server's either way.
 struct Runner {
     ctx: BotCtx,
     asker: Asker,
@@ -597,7 +430,7 @@ impl ToolRunner for Runner {
             )
             .into();
         }
-        if call.name == "memory" && self.asker.guild.is_some() {
+        if call.name == "memory" {
             let herself = Asker {
                 user: self.ctx.bot_id,
                 ..self.asker.clone()
@@ -613,39 +446,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_her_decision() {
-        assert_eq!(decide("PASS"), Decision::Pass);
-        assert_eq!(decide(" pass. "), Decision::Pass);
-        assert_eq!(decide(""), Decision::Pass);
-        assert_eq!(decide("PASS - nothing to add"), Decision::Pass);
-        assert_eq!(decide("PASSWORD reset day"), say("PASSWORD reset day"));
-        assert_eq!(decide("REACT 😂"), Decision::React("😂".into()));
-        assert_eq!(decide("REACT: 🍿"), Decision::React("🍿".into()));
-        assert_eq!(decide("REACT"), Decision::Pass);
-        assert_eq!(
-            decide("\"that movie was mid tbh\""),
-            say("that movie was mid tbh")
-        );
-        // A quote at the end of the line is part of it.
-        assert_eq!(
-            decide("and the move is \"so what's your relationship with stairs\""),
-            say("and the move is \"so what's your relationship with stairs\"")
-        );
-        assert_eq!(
-            decide("\"stairs\" is the move, not \"elevators\""),
-            say("\"stairs\" is the move, not \"elevators\"")
-        );
-        let Decision::Say { line: long, .. } = decide(&"a".repeat(1000)) else {
-            panic!("not a line");
-        };
-        assert!(long.chars().count() <= MAX_LINE);
-    }
-
-    fn say(line: &str) -> Decision {
-        Decision::Say {
-            line: line.into(),
-            reply_to: None,
-        }
+    fn reads_her_reaction() {
+        assert_eq!(reaction("REACT 😂"), Some("😂".into()));
+        assert_eq!(reaction("REACT: 🍿"), Some("🍿".into()));
+        assert_eq!(reaction("\"React 🐄\""), Some("🐄".into()));
+        assert_eq!(reaction("REACT"), None);
+        assert_eq!(reaction("PASS"), None);
+        assert_eq!(reaction(""), None);
+        // A line is never posted, not even one that mentions reacting.
+        assert_eq!(reaction("that movie was mid tbh"), None);
+        assert_eq!(reaction("I'd REACT 😂 to that"), None);
     }
 
     #[test]
@@ -658,26 +468,8 @@ mod tests {
     }
 
     #[test]
-    fn reads_which_message_she_answers() {
-        let reply = |n, line: &str| Decision::Say {
-            line: line.into(),
-            reply_to: Some(n),
-        };
-        assert_eq!(decide("REPLY 7 netflix has it"), reply(7, "netflix has it"));
-        assert_eq!(decide("REPLY 12: same"), reply(12, "same"));
-        assert_eq!(decide("REPLY #3 \"lol\""), reply(3, "lol"));
-        assert_eq!(decide("REPLY 3"), Decision::Pass);
-        assert_eq!(decide("REPLY all of you"), say("REPLY all of you"));
-    }
-
-    #[test]
     fn no_tools_that_act_for_someone() {
-        for name in [
-            "create_reminder",
-            "cancel_reminder",
-            "list_reminders",
-            "schedule_follow_up",
-        ] {
+        for name in ["create_reminder", "cancel_reminder", "list_reminders"] {
             assert!(!UNPROMPTED_TOOLS.contains(&name), "{name}");
         }
     }
@@ -686,7 +478,6 @@ mod tests {
     fn settings_default_to_a_small_chance() {
         let settings: Settings = toml::from_str("enabled = true").unwrap();
         assert_eq!(settings.chime_chance, 0.05);
-        assert_eq!(settings.chime_say_chance, 0.10);
         assert_eq!(settings.chime_react_chance, 0.40);
         assert_eq!(settings.chime_cooldown_minutes, 30);
         let off: Settings = toml::from_str("chime_chance = 0.0").unwrap();
@@ -694,13 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn second_roll_picks_line_reaction_or_reading() {
+    fn second_roll_picks_reaction_or_reading() {
         let settings = Settings::default();
-        assert_eq!(settings.allowed(0.0), Allowed::Anything);
-        assert_eq!(settings.allowed(0.09), Allowed::Anything);
-        assert_eq!(settings.allowed(0.10), Allowed::React);
-        assert_eq!(settings.allowed(0.49), Allowed::React);
-        assert_eq!(settings.allowed(0.50), Allowed::ReadOnly);
+        assert_eq!(settings.allowed(0.0), Allowed::React);
+        assert_eq!(settings.allowed(0.39), Allowed::React);
+        assert_eq!(settings.allowed(0.40), Allowed::ReadOnly);
         assert_eq!(settings.allowed(0.99), Allowed::ReadOnly);
     }
 

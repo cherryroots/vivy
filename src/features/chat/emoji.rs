@@ -55,7 +55,7 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
-/// The server's emoji for a chime-in that may react, so she can pick one of them without
+/// The server's emoji for a chime-in reaction, so she can pick one of them without
 /// looking them up first. Empty when the server has none (or in DMs).
 pub async fn for_chime_in(ctx: &BotCtx, guild: Option<GuildId>) -> String {
     let Some(guild) = guild else {
@@ -63,7 +63,7 @@ pub async fn for_chime_in(ctx: &BotCtx, guild: Option<GuildId>) -> String {
     };
     match described(ctx, guild).await {
         Ok(lines) if !lines.is_empty() => format!(
-            "\n\nBesides plain emoji you can use this server's own, in a line or as your reaction, written as their code:\n{}",
+            "\n\nBesides plain emoji you can use this server's own, as your reaction, written as their code:\n{}",
             lines.join("\n")
         ),
         Ok(_) => String::new(),
