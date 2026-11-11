@@ -18,8 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::util::discord::{
-    ChannelId, Draft, GuildId, Message, UserId, display_name, mentions_user, no_pings, ping_users,
-    react,
+    ChannelId, Draft, GuildId, Message, UserId, display_name, mentions_user, no_pings, react,
 };
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -226,7 +225,7 @@ impl Chime {
         if allowed != Allowed::ReadOnly {
             instructions.push_str(&emoji::for_chime_in(ctx, asker.guild).await);
         }
-        speak(ctx, &asker, Some(msg), &instructions, None, allowed).await
+        speak(ctx, &asker, Some(msg), &instructions, allowed).await
     }
 
     /// Whether to read along now: the dice hit (with the author's own chance, if they have
@@ -276,13 +275,12 @@ When your line answers one message in particular, start it with REPLY and that m
 /// model what to do with `instructions`, and does it: posts a line, reacts to `last`, or
 /// nothing. `allowed` limits that: a line when she may only react is dropped, and when she
 /// may only read nothing is posted. A posted line is saved like an answer, so a reply to it continues the
-/// conversation. `mention` is the one person the line may ping.
+/// conversation. The line pings nobody, not even a person it names or replies to.
 pub async fn speak(
     ctx: &BotCtx,
     asker: &Asker,
     last: Option<&Message>,
     instructions: &str,
-    mention: Option<UserId>,
     allowed: Allowed,
 ) -> Result<()> {
     let started_at = Utc::now().timestamp();
@@ -369,14 +367,11 @@ pub async fn speak(
     let target = reply_to
         .and_then(|n| n.checked_sub(1))
         .and_then(|i| messages.get(i));
-    // A reply, but without pinging its author: Discord pings unless told not to.
-    let pings = match mention {
-        Some(user) => ping_users([user]),
-        None => no_pings(),
-    };
+    // Pings nobody: a reply would ping its author, and a <@id> in the text its person,
+    // unless Discord is told not to. Check-ins name the person but don't ping them either.
     let mut message = Draft::new()
         .content(answer::discord_links(&line))
-        .allowed_mentions(pings);
+        .allowed_mentions(no_pings());
     if let Some(target) = target {
         message = message.reply_to(target.id);
     }
