@@ -124,7 +124,7 @@ Some Rust terms here:
 The tool loop lives outside the trait, so every provider gets the same tools. There are two copies of it:
 
 - `answer::stream_answer` in `src/features/chat/answer.rs`, for answers in Discord: it also redraws the reply each second, shows what each tool is doing in the status line (`Feature::tool_status`), and stops on ❌. At most 8 rounds of tools (`max_tool_rounds`).
-- `ai::complete` in `complete.rs`, for work nobody watches: chime-ins and follow-ups (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), memory's reflection, mood and diary jobs, and Hunger Games rounds (`games/hunger_games/writer.rs`). The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> ToolReply`: text, and sometimes pictures the model sees with it, like `get_message` in a chime-in) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
+- `ai::complete` in `complete.rs`, for work nobody watches: chime-ins (`chat/chime.rs`), emoji descriptions (`chat/emoji.rs`), memory's reflection, mood and diary jobs, and Hunger Games rounds (`games/hunger_games/writer.rs`). The caller passes a `ToolRunner` (a trait with one method, `run(&ToolCall) -> ToolReply`: text, and sometimes pictures the model sees with it, like `get_message` in a chime-in) and a round limit. It returns `Completed`: the last round's text, the continuation, and every round's `NativeRound`.
 
 Both work the same way: send the request, read events until `Done`, and if `Done` lists tool calls, run them, then build the next input with `ai::next_input` and send again.
 
@@ -143,7 +143,7 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 
 | Job | Model | Effort | Web | Code | Why |
 |---|---|---|---|---|---|
-| `chat`, `chime` | main | main | yes | yes | Her answers and lines. Chime-ins send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so they read the system prompt and tools from the same cache. Neither can change model: their history is saved and continued with the main one. |
+| `chat`, `chime` | main | main | yes | yes | Her answers and chime-in reactions. Chime-ins send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so they read the system prompt and tools from the same cache. Neither can change model: their history is saved and continued with the main one. |
 | `emoji` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | Describing a picture in one line. |
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |

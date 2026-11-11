@@ -8,8 +8,7 @@
 //! - `tools.rs`: chat's own tools (time, channel, users, messages, pins, events)
 //! - `search.rs`: the `search_messages` tool
 //! - `look_back.rs`: the `look_back_at_answers` tool, her own earlier answers step by step
-//! - `chime.rs`: chiming in now and then without being mentioned
-//! - `follow_up.rs`: check-ins Vivy plans for herself, and their delivery
+//! - `chime.rs`: reading along now and then without being mentioned, and maybe reacting
 //! - `emoji.rs`: the server's custom emoji, described once from their pictures
 //! - `react.rs`: the `react_to_message` tool, her own reactions while she answers
 //! - `prompt.md`: the system prompt
@@ -22,7 +21,6 @@ mod avatar;
 mod channels;
 mod chime;
 mod emoji;
-mod follow_up;
 mod history;
 mod look_back;
 mod react;
@@ -39,16 +37,15 @@ use serde_json::Value;
 use twilight_model::channel::message::{EmojiReactionType, MessageFlags};
 
 use crate::util::discord::{
-    GatewayReaction, Message, MessageId, UserId, display_name, get_message, remove_reaction,
+    GatewayReaction, Message, MessageId, UserId, get_message, remove_reaction,
 };
-use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
 use self::answer::{End, Job};
 use self::store::{NewTurn, StoredPart};
 use crate::ai::{ChatProvider, Input, Part, Role, ToolDef, ToolReply};
-use crate::core::{Asker, BotCtx, Feature, Mention, Panel, Result, Stat, user_error};
+use crate::core::{Asker, BotCtx, Feature, Mention, Result, Stat, user_error};
 use crate::util::media;
 use crate::util::reply::LiveReply;
 
@@ -60,8 +57,6 @@ pub struct Chat {
     /// Answers being written right now, so ❌ can stop them.
     running: Mutex<Vec<Running>>,
     chime: chime::Chime,
-    /// Wakes the follow-up task when a check-in is planned.
-    follow_ups: Arc<Notify>,
 }
 
 struct Running {
@@ -87,38 +82,14 @@ impl Feature for Chat {
     }
 
     async fn stats(&self, ctx: &BotCtx) -> Result<Vec<Stat>> {
-        let (answers, follow_ups) = ctx.db.call(|conn| Ok(store::stats(conn)?)).await?;
-        Ok(vec![
-            Stat::new("Answers", answers),
-            Stat::new("Follow-ups", follow_ups),
-        ])
-    }
-
-    /// Her next planned check-in, for the box about her on the status message.
-    async fn panels(&self, ctx: &BotCtx) -> Result<Vec<Panel>> {
-        let (planned, next) = ctx
-            .db
-            .call(|conn| Ok((store::stats(conn)?.1, store::upcoming_follow_up(conn)?)))
-            .await?;
-        let Some((due, user, note)) = next else {
-            return Ok(Vec::new());
-        };
-        let name = match ctx.cache.user(UserId::new(user)) {
-            Some(user) => display_name(&user).to_string(),
-            None => "someone".to_string(),
-        };
-        let row = Stat::new(
-            "Next check-in",
-            format!("<t:{due}:R> with {name} ({planned} planned): {note}"),
-        );
-        Ok(vec![Panel::about_bot(ctx, vec![row])])
+        let answers = ctx.db.call(|conn| Ok(store::answers(conn)?)).await?;
+        Ok(vec![Stat::new("Answers", answers)])
     }
 
     fn tools(&self) -> Vec<ToolDef> {
         let mut defs = tools::defs();
         defs.push(avatar::def());
         defs.push(emoji::def());
-        defs.push(follow_up::def());
         defs.push(look_back::def());
         defs.push(react::def());
         defs
@@ -139,8 +110,6 @@ impl Feature for Chat {
             "list_server_emoji" => "😀 Looking at the emoji…",
             look_back::TOOL => "🪞 Looking back at what I did…",
             react::TOOL => "✨ Reacting…",
-            // Check-ins are a quiet surprise, so the status doesn't give them away.
-            "schedule_follow_up" => "💭 Thinking…",
             _ => return None,
         })
     }
@@ -154,7 +123,6 @@ impl Feature for Chat {
     ) -> Result<String> {
         match name {
             "list_server_emoji" => emoji::list(ctx, asker).await,
-            "schedule_follow_up" => follow_up::schedule(ctx, asker, args, &self.follow_ups).await,
             look_back::TOOL => look_back::run(ctx, asker, args).await,
             react::TOOL => react::run(ctx, asker, args).await,
             _ => tools::run(ctx, asker, name, args).await,
@@ -178,7 +146,6 @@ impl Feature for Chat {
     async fn start(&self, ctx: &BotCtx) -> Result<()> {
         // Read the chime-in settings now, so typos in them are warned about at startup.
         self.chime.settings(ctx);
-        follow_up::spawn(ctx, self.follow_ups.clone());
         emoji::spawn(ctx);
         Ok(())
     }

@@ -69,7 +69,7 @@ Cherry's rulings from the 2026-10-10 bug check and later:
 - Self-reposts count as snails; different comments in one Reddit thread are the same post.
 - `/memories/vivy/` (personality, mood, skills) is Vivy's alone: only she changes it, from what she thinks. People can't order her mood. Done through her instructions, not an author lock. Her mood line may mention server-specific people and things.
 - Vivy may read and talk about any channel of her server that `[features.chat]` gating doesn't turn off, whether or not the asker can see it (Cherry's rule, #149). Other servers and other people's DMs stay refused.
-- Chime-ins and check-ins only get the read-only `UNPROMPTED_TOOLS`; check-ins only with the person who asked.
+- Chime-ins only get the read-only `UNPROMPTED_TOOLS`, and only ever react with an emoji. Text chime-ins and check-ins were removed on purpose (#158): Cherry's friends didn't like Vivy talking unprompted. Don't bring them back.
 - Channel gates cover threads (the thread id or its parent's).
 - A missing `config.toml` or an unknown key warns, never stops the bot.
 - A reminder mention that doesn't parse goes to chat.

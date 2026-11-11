@@ -12,7 +12,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
 | [ai.md](ai.md) | The AI providers (Claude, OpenAI, Gemini), pictures, conversation history, fallback and spend |
-| [features/chat.md](features/chat.md) | Chat: answers, tools, chime-ins, follow-ups, server emoji |
+| [features/chat.md](features/chat.md) | Chat: answers, tools, chime-in reactions, server emoji |
 | [features/reminders.md](features/reminders.md) | Reminders: the time grammar, the scheduler, snooze |
 | [features/wheel.md](features/wheel.md) | The movie wheel: the money rules, seasons, the round picture |
 | [features/memory.md](features/memory.md) | Memory: the notes folder, reflection, mood, faces, banners, nickname, diary |
@@ -69,7 +69,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 |---|---|
 | core | `schema_migrations`, `user_settings`, `bot_settings`, `ai_spend`, `ai_spend_jobs` |
 | claude (in `ai/`) | `claude_uploads` |
-| chat | `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
+| chat | `chat_turns`, `chat_messages`, `chat_emoji` |
 | reminders | `reminders`, `reminder_images` |
 | wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids`, `wheel_status_messages` |
 | memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
@@ -267,6 +267,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #155 | | Drawing: GPT Image 2.6 (`gpt-image-2.6-flare` for new pictures, `gpt-image-2.6-sunburst` for edits), about 50% faster than 2.5. Same API and settings. Servers with `model`/`edit_model` set in `config.toml` change them by hand. |
 | #156 | | Snails: links to known sites count (social media, video, music, art, and now game stores: Steam, Epic, GOG, PlayStation, Nintendo, Xbox, itch.io, plus SoundCloud); other sites only when Discord previews them as an article, like a news story. Daily games like rngdle.com no longer make snails; pictures from them are still compared by fingerprint. The first start drops saved links that no longer count (migration 7) |
 | #157 | | Chat: check-ins no longer ping the person they're for. Nothing `speak` posts (chime-ins and check-ins) pings anyone now; chime-in replies already didn't. |
+| #158 | | Chat: no more unprompted messages. Text chime-ins (`chime_say_chance`) and check-ins (`schedule_follow_up`, `follow_ups_per_person`) are gone, since Cherry's friends didn't like them; chime-ins only react with an emoji now. Migration 4 drops `chat_follow_ups` with any planned check-ins. Remove `chime_say_chance` and `follow_ups_per_person` from `config.toml`, or they warn as unknown keys. |
 
 ## Not built yet
 

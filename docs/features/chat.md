@@ -1,6 +1,6 @@
 # Chat
 
-Chat is how people talk to Vivy. Mention her with a question (with pictures, GIFs, videos or files if you like) and she answers in a reply that streams in as it's written. She can look things up with tools: the time, the channel, older messages, the server's emoji, reminders, her memory. Replying to one of her answers continues the conversation. Now and then she also chimes in on her own, and she can plan to check in with someone later.
+Chat is how people talk to Vivy. Mention her with a question (with pictures, GIFs, videos or files if you like) and she answers in a reply that streams in as it's written. She can look things up with tools: the time, the channel, older messages, the server's emoji, reminders, her memory. Replying to one of her answers continues the conversation. Now and then she also reads along on her own and may react to a message with an emoji. She never posts a message nobody asked for: text chime-ins and check-ins were removed in #158 because people in the server didn't like them.
 
 The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` module, described in [ai](../ai.md). This doc is about the Discord side.
 
@@ -14,7 +14,7 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - Only the person who asked can use ❌ and 🔁.
 - **Her owner** (whoever owns the bot's Discord application) can tell her what to do, even what nobody else can direct (her mood, her notes about herself, how she acts), while owner mode is on: the 👑 button on the status message (see [control panel](control-panel.md#owner-mode)). With it off, their messages are ordinary conversation. Anyone can ask her who her owner is. See [Her owner](#her-owner).
 
-Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `max_tool_rounds` (8 rounds of tool calls per answer), `history_turns` (40 messages up a reply chain), `follow_ups_per_person` (5 planned check-ins), `chime_chance`, `chime_say_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
+Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `max_tool_rounds` (8 rounds of tool calls per answer), `history_turns` (40 messages up a reply chain), `chime_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
 
 ## Files
 
@@ -26,13 +26,12 @@ All under `src/features/chat/`, in a good reading order:
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
 | `history.rs` | Turning a Discord message into stored parts (`read_message`, and `linked_messages` for the messages it links to), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
-| `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_follow_ups`, `chat_emoji` |
+| `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_emoji` |
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `find_message_links`, `linked_message`, `can_read`: which channels she may read for the asker) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels chat may read (`can_read`) |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
 | `react.rs` | The `react_to_message` tool: her own emoji reactions while she answers |
-| `chime.rs` | Chiming in without being mentioned, and `speak`, which follow-ups reuse |
-| `follow_up.rs` | The `schedule_follow_up` tool and the task that delivers check-ins |
+| `chime.rs` | Reading along without being mentioned, and maybe reacting to the last message |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
 | `emoji.rs` | The `list_server_emoji` tool, the task that describes each custom emoji once, and turning her `:name:` into the emoji's code |
 | `prompt.md` | The system prompt, built into the binary with `include_str!`. It holds only general guidance (who Vivy is, her mood and voice, how to explain things, the words to avoid, how messages and linked messages are tagged); what each tool is for and when to use it is in the tool's own description, so the two can't disagree. The exceptions are which web tool to pick (TinyFish) and that Discord message links are hers to open: without that line she tried her web tools on them, failed, and said she can't open Discord links. And one line on `web_search` called from her code: Anthropic's description of that function says it returns a list, but it returns a JSON string, so her first try at reading it broke |
@@ -128,33 +127,27 @@ A provider that watches videos itself (Gemini, `ChatProvider::watches_video`) ge
 
 ### Chiming in
 
-`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.05), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. A second roll (`Settings::allowed`) decides what she may do besides reading: `chime_say_chance` (default 0.10) of the reads she may post a line (`Allowed::Anything`), `chime_react_chance` (default 0.40) she reacts to the last message (`Allowed::React`), and the rest she only reads (`Allowed::ReadOnly`), saving what's worth keeping to memory. Messages that mention her or reply to her are skipped, since they get a real answer.
+`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.05), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. A second roll (`Settings::allowed`) decides whether she also reacts: `chime_react_chance` (default 0.40) of the reads she reacts to the last message (`Allowed::React`), and the rest she only reads (`Allowed::ReadOnly`), saving what's worth keeping to memory. She never posts a line: that (`chime_say_chance`) was removed in #158, since her friends didn't like Vivy talking unprompted. Messages that mention her or reply to her are skipped, since they get a real answer.
 
-On a hit, `speak`:
+On a hit, `read_and_react`:
 
-1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript, numbered from 1 (oldest) so she can name the one she answers. Attachments are listed by file name and stickers by name (`format_message`).
+1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript, oldest first. Attachments are listed by file name and stickers by name (`format_message`).
 2. Shows her no pictures. #148 showed her the newest 3 people posted (shrunk to 512 px, about 350 tokens each), but they cost more than they were worth on every read, so #154 took them out again. She still sees each attachment's file name, and `get_message` shows a message's pictures when she wants to look.
-3. Builds the question: the transcript, then `READ_ALONG` (save what's lasting to memory) and what she may do this time (`allowed_instructions`: only read and answer `DONE`; react with one emoji; or one short line, a short question when she doesn't know what people mean, with a reaction or `PASS` if no line fits; a line that answers one message starts with `REPLY <number>`). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
+3. Builds the question: the transcript, then `READ_ALONG` (save what's lasting to memory) and what she may do this time (`allowed_instructions`: only read and answer `DONE`, or react with one emoji). The instructions are in the question, not the system prompt, so the system prompt is the same as for answers and shares their cache. Features' `chat_context` is added with `fresh = true`.
 4. Runs it with `ai::complete` (the tool loop without Discord output: at most 6 rounds of tools, `MAX_ROUNDS`, then one round where she has to decide without them) and `job: "chime"`. The request carries every tool, like an answer, so it starts the same way and reads the system prompt and tools from the prompt cache; `Runner` turns down any tool outside `UNPROMPTED_TOOLS`.
-5. Reads the answer with `decide`: `PASS`, `REACT <emoji>` (reacts to the last message), or a line (cut to 400 characters) that is posted to the channel. `allowed` limits it: on a read-only roll nothing is posted, and on a reaction roll a line is dropped. Follow-ups pass `Allowed::Anything`. A line that starts with `REPLY <number>` is posted as a Discord reply to that message, without pinging its author (lines ping nobody, whatever they say); a number outside the transcript posts it as a plain message. Quotes around the whole line are taken off, but only when they wrap all of it (`unquote`), so a line that ends with a quote of its own keeps its closing quote.
+5. Reads the answer with `reaction`: `REACT <emoji>` reacts to the last message; anything else (`PASS`, or a line she wrote anyway) posts nothing. On a read-only roll nothing is posted at all.
 
-Nobody asked and the line is public, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `schedule_follow_up`, no `list_channels` (it lists what one person can see). `get_message` and `search_messages` reach every channel `can_read` allows, as in answers, so a line may bring up something from another channel. Tools run as the author of the last message, except `memory` in a server, which runs as Vivy herself, so the memory change log names her.
+Nobody asked, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `list_channels` (it lists what one person can see). `get_message` and `search_messages` reach every channel `can_read` allows, as in answers. Tools run as the author of the last message, except `memory`, which runs as Vivy herself, so the memory change log names her.
 
-A posted line is saved (`save`) as a question turn (the transcript, exactly as the model read it) and an answer turn, so replying to her line continues the conversation. The question's author is the bot, so nobody can 🔁 or ❌ her line as if it were their answer. A reaction is saved the same way, with a note as the answer (`(reacted 🐄 to RickyWL: "I Am One Of…")`, `reaction_note`) and no Discord message linked to it, so `look_back_at_answers` lists it as a chime-in. Before this she once denied a 🐄 her account had put on someone's message, since nothing she could look at showed it.
-
-### Follow-ups
-
-`follow_up.rs`. The `schedule_follow_up` tool takes `hours_from_now` (0.1 to 1440, so at most 60 days) and a `note`. It is always with the person who asked: there is no `user` argument, because delivery reads the channel as that person. At most 5 can be planned per person. The row goes into `chat_follow_ups` and the delivery task is woken through a `tokio::sync::Notify`.
-
-The delivery task sleeps until the next one is due (at most an hour), takes every due row out of the table (`take_due_follow_ups`), and for each one calls `chime::speak` in that channel. The instructions tell the model to answer `PASS` if it was already talked about, otherwise to write one warm message starting with the person's mention. The mention names them but doesn't ping them, like every line `speak` posts. Each check-in is tried once, and skipped if chat is no longer enabled in that server or channel. Since it goes through `speak`, it gets the same limited tools as a chime-in.
+A reaction is saved (`save`) as a question turn (the transcript, exactly as the model read it) and an answer turn holding a note (`(reacted 🐄 to RickyWL: "I Am One Of…")`, `reaction_note`), with no Discord message linked to it, so `look_back_at_answers` lists it as a chime-in. The question's author is the bot, so nobody can 🔁 it as if it were their answer. Before this she once denied a 🐄 her account had put on someone's message, since nothing she could look at showed it. Chime-in lines saved before #158 are still in the table and still show in `look_back_at_answers`.
 
 ### Server emoji
 
 `emoji.rs`. A task waits 30 seconds after start (so the cache has the servers), then once a day describes every custom emoji that has no row in `chat_emoji` yet, in every server where chat is enabled. It loads the picture from Discord's CDN (frames for an animated one) and asks the model for one line with a small system prompt of its own, no tools and `job: "emoji"` (Claude Haiku at low effort, see [Jobs](../ai.md#jobs)). So every emoji is described on the first start, and later only new ones. An emoji that fails isn't tried again until the bot restarts. `list_server_emoji` returns the server's emoji codes (at most 250) with their descriptions.
 
-Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:123>` when it moves); `:name:` alone shows as text. The system prompt tells her to use the code, and `with_codes` fixes it when she doesn't: her `:name:` for one of the server's emoji becomes its code, and a code she wrote herself gets the right id and `a` (a missing or guessed id). Names the server has no emoji for stay as they are. `codes` reads the server's emoji from the cache by name. Answers fix the text each time it's shown and save the fixed text, so her earlier answers show her the codes; chime-in lines are fixed before they're posted, and a chime-in reaction may also be a bare name (`reaction_code`).
+Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:123>` when it moves); `:name:` alone shows as text. The system prompt tells her to use the code, and `with_codes` fixes it when she doesn't: her `:name:` for one of the server's emoji becomes its code, and a code she wrote herself gets the right id and `a` (a missing or guessed id). Names the server has no emoji for stay as they are. `codes` reads the server's emoji from the cache by name. Answers fix the text each time it's shown and save the fixed text, so her earlier answers show her the codes; a chime-in reaction may also be a bare name (`reaction_code`).
 
-When a chime-in may react (a reaction roll, or a roll where she may post anything), `emoji::for_chime_in` adds the server's emoji list, codes and descriptions as `list_server_emoji` gives them, after the instructions, so she can react with one of the server's own emoji without looking them up first. Read-only rolls and follow-ups don't get it. It costs about 20 input tokens per emoji on those rolls.
+When a chime-in may react (a reaction roll), `emoji::for_chime_in` adds the server's emoji list, codes and descriptions as `list_server_emoji` gives them, after the instructions, so she can react with one of the server's own emoji without looking them up first. Read-only rolls don't get it. It costs about 20 input tokens per emoji on those rolls.
 
 In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji` (a plain one, a server emoji's code, or its bare name, through `emoji::reaction_code`) and an optional `link`, which must be a message in the same channel; without it the reaction goes on the message she's answering. The tool description says to use it as well as her words, not instead of them. Chime-ins don't get the tool (it isn't in `UNPROMPTED_TOOLS`); they keep `REACT`. Her own reactions don't trigger ❌ or 🔁, since the dispatcher skips the bot's own reactions.
 
@@ -178,7 +171,6 @@ Chat's own tools:
 | `get_pinned_messages` | `tools.rs` | The current channel's pins (at most 25), newest first, with links |
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
-| `schedule_follow_up` | `follow_up.rs` | Plans a check-in with the asker after something they mentioned |
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
 | `react_to_message` | `react.rs` | Adds an emoji reaction (plain or the server's own) to the message she's answering, or to another message in the channel by its link |
 
@@ -208,7 +200,7 @@ Lines in chime-in transcripts and `read_recent_messages` (`format_message`) are 
 
 `look_back_at_answers` lets her check what she actually did in an earlier answer instead of guessing, for example when someone asks why she said something or says something went wrong. The system prompt has one general line about it ("check what actually happened instead of guessing"); the tool's description says when to use it.
 
-Chime-ins are saved with her answers, reactions included, and show as `(chime-in)` in the list. The system prompt tells her she sometimes reads along and posts or reacts on her own, and that those are hers even if she doesn't remember them. In `format_message` (chime-in transcripts, `read_recent_messages`, `get_message`, `search_messages`) a reaction she added herself says so: `[reactions: 🐄 2 (one is yours)]`, from Discord's `me` flag on the reaction.
+Chime-ins are saved with her answers, reactions included, and show as `(chime-in)` in the list. The system prompt tells her she sometimes reads along and reacts on her own (and used to post lines), and that those are hers even if she doesn't remember them. In `format_message` (chime-in transcripts, `read_recent_messages`, `get_message`, `search_messages`) a reaction she added herself says so: `[reactions: 🐄 2 (one is yours)]`, from Discord's `me` flag on the reaction.
 
 - **Without `answer`** it lists her recent answers in this channel, newest first, one line each: the answer number, time (in the asker's timezone), how long it took, the provider, the tools she called (`web_search ×2`), how it ended if it didn't finish, and the first words of the question and the answer. `channel` picks another channel, or `"all"` for every channel in the server the asker can read (it looks through the newest 200 answers). `before` pages back, `count` is 1 to 20 (default 10).
 - **With `answer`** (a number from the list, a link to or ID of one of her messages or of the question, or `"replied"` for the answer the current message replies to) it shows that answer step by step: the question, the context features added to it, then each round with what she thought (when the provider gives thinking text), wrote and called, each call with its input and what came back, errors included. Then what she sent and, for an answer that didn't finish, the error or that ❌ stopped it.
@@ -226,17 +218,16 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | Hook | What chat does with it |
 |---|---|
 | `name` | `"chat"` |
-| `migrations` | `store::MIGRATIONS` (three migrations, see below) |
+| `migrations` | `store::MIGRATIONS` (four migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
-| `stats` | "Answers" (answer turns so far) and "Follow-ups" (check-ins planned) for the status message |
-| `panels` | The next planned check-in in a server, in the box about Vivy on the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `follow_up::def` and `look_back::def`) |
-| `run_tool` | Runs them: `list_server_emoji`, `schedule_follow_up` and `look_back_at_answers` directly, the rest through `tools::run` |
+| `stats` | "Answers" (answer turns so far) for the status message |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def` and `react::def`) |
+| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers` and `react_to_message` directly, the rest through `tools::run` |
 | `run_tool_with_pictures` | `look_at_profile_picture` and `get_message`, which answer with pictures; every other tool goes to `run_tool`. Chat always calls this one, answers and chime-ins alike |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
-| `start` | Reads the chime settings (so typos are warned about at startup), starts the follow-up and emoji tasks |
+| `start` | Reads the chime settings (so typos are warned about at startup), starts the emoji task |
 | `on_mention` | Answers a question |
-| `on_message` | Maybe chimes in |
+| `on_message` | Maybe reads along and reacts |
 | `on_reaction_add` | ❌ and 🔁 |
 
 ## Tables
@@ -247,15 +238,15 @@ From `store::MIGRATIONS` in `store.rs`:
 |---|---|---|---|
 | 1 | `chat_turns` | ID, parent turn ID, role (`user`/`assistant`), author, channel, `content_json` (stored parts), `native_json` (the provider's raw output), provider, model, `continuation_id`, created time | One row per question or answer; a conversation is the chain from a turn up through `parent_id` |
 | 1 | `chat_messages` | Discord message ID, turn ID | Which turn each Discord message belongs to |
-| 2 | `chat_follow_ups` | ID, server (NULL in DMs), channel, user, the message it was planned from, note, due time, created time | Planned check-ins |
+| 2 | `chat_follow_ups` | ID, server (NULL in DMs), channel, user, the message it was planned from, note, due time, created time | Planned check-ins; dropped by migration 4 |
 | 2 | `chat_emoji` | Emoji ID, server, name, description | One line describing each custom emoji |
 | 3 | `chat_turns` | Adds `error` (why an answer failed or stopped) and `started_at` (when work on an answer began), and an index on channel, role and ID | `look_back_at_answers` |
+| 4 | `chat_follow_ups` | Dropped | Check-ins were removed (#158) |
 
 ## Background loops
 
 | Timer (`ctx.timers.add`) | Schedule | File |
 |---|---|---|
-| `"Check-ins"` | `"at the next check-in"` (at most an hour; woken when one is planned) | `follow_up.rs` |
 | `"Emoji descriptions"` | `"daily"` (first run 30 seconds after start) | `emoji.rs` |
 
 Chime-ins have no loop: they run from `on_message`.

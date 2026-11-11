@@ -162,15 +162,12 @@ enabled = true
 max_tool_rounds = 8
 # How far up a reply chain her history goes, in messages.
 history_turns = 40
-# The most check-ins she plans with one person at a time (schedule_follow_up).
-follow_ups_per_person = 5
 # Now and then Vivy reads the last 15 messages to learn from them for her memory. The chance
 # per message (0 turns it off), and how long a channel waits before she reads it again.
 chime_chance = 0.05
 chime_cooldown_minutes = 30
-# Of those reads, the share where she also posts a line, and the share where she reacts to
-# the last message with an emoji. The rest she only reads.
-chime_say_chance = 0.10
+# Of those reads, the share where she reacts to the last message with an emoji. The rest she
+# only reads. She never posts a line on her own.
 chime_react_chance = 0.40
 # Other chances for some people's messages (0 to 1, like chime_chance): [user ID, chance]
 # for anywhere, or [user ID, chance, channel ID] for one channel, which wins over anywhere.
