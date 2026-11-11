@@ -348,7 +348,8 @@ free_tokens = 1000000
 # Who plans once the free tokens are used up, paid and counted in daily_usd: "chat" (the
 # bot's chat provider; Claude Haiku unless [ai.claude.jobs.game_plan_paid] names Sonnet or
 # Opus) or "openai" (GPT-6.1 Sol unless [ai.openai.jobs.game_plan_paid] says otherwise).
-# Each runs at low effort unless that job's effort says otherwise.
+# Each runs at low effort unless that job's effort says otherwise. "none": nobody, she stops
+# playing once the free tokens are used up.
 paid_planner = "chat"
 # While she plays, the dashboard (a GIF of her play since the last update, and what she's
 # doing) is updated this often, in seconds (at least 5; 0: only at the end). The log goes in

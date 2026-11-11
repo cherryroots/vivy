@@ -268,6 +268,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #156 | | Snails: links to known sites count (social media, video, music, art, and now game stores: Steam, Epic, GOG, PlayStation, Nintendo, Xbox, itch.io, plus SoundCloud); other sites only when Discord previews them as an article, like a news story. Daily games like rngdle.com no longer make snails; pictures from them are still compared by fingerprint. The first start drops saved links that no longer count (migration 7) |
 | #157 | | Chat: check-ins no longer ping the person they're for. Nothing `speak` posts (chime-ins and check-ins) pings anyone now; chime-in replies already didn't. |
 | #158 | | Chat: no more unprompted messages. Text chime-ins (`chime_say_chance`) and check-ins (`schedule_follow_up`, `follow_ups_per_person`) are gone, since Cherry's friends didn't like them; chime-ins only react with an emoji now. Migration 4 drops `chat_follow_ups` with any planned check-ins. Remove `chime_say_chance` and `follow_ups_per_person` from `config.toml`, or they warn as unknown keys. |
+| #159 | | Game Boy: `paid_planner = "none"` ends her play once the free tokens are used up, instead of a paid model planning on until `daily_usd`. Strategist, puzzle and practice calls whose answer can't be read now count their tokens too (`OpenAi::structured_tokens`), so the free count no longer runs low. |
 
 ## Not built yet
 

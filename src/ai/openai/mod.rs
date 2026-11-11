@@ -21,6 +21,7 @@ pub mod images;
 mod price;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
@@ -138,6 +139,9 @@ pub struct OpenAi {
     config: OpenAiConfig,
     /// Where what each response cost is added up; `None` in tests.
     spend: Option<Spend>,
+    /// Input and output tokens of every `structured` answer since the bot started, read
+    /// or not (see [`OpenAi::structured_tokens`]).
+    structured_tokens: AtomicU64,
 }
 
 impl OpenAi {
@@ -163,7 +167,15 @@ impl OpenAi {
             base_url,
             config,
             spend,
+            structured_tokens: AtomicU64::new(0),
         }
+    }
+
+    /// Input and output tokens of every `structured` answer so far. OpenAI uses them even
+    /// when the answer can't be read, so the Game Boy counts its free tokens as the change
+    /// in this around a call, not from what the call returns.
+    pub fn structured_tokens(&self) -> u64 {
+        self.structured_tokens.load(Ordering::Relaxed)
     }
 
     /// The JSON body of a request. `uploads` has the file ID of each attached file and
@@ -309,6 +321,11 @@ impl OpenAi {
         if let Some(spend) = &self.spend {
             spend.add(job, used).await;
         }
+        let usage = &response["usage"];
+        let tokens = usage["input_tokens"].as_u64().unwrap_or(0)
+            + usage["output_tokens"].as_u64().unwrap_or(0);
+        // Counted before the answer is read: a cut-off answer still used its tokens.
+        self.structured_tokens.fetch_add(tokens, Ordering::Relaxed);
         let text: String = response["output"]
             .as_array()
             .into_iter()
@@ -319,11 +336,9 @@ impl OpenAi {
             .collect();
         let value = serde_json::from_str(&text)
             .with_context(|| format!("OpenAI's answer isn't the JSON asked for: {text:.200}"))?;
-        let usage = &response["usage"];
         Ok(Structured {
             value,
-            tokens: usage["input_tokens"].as_u64().unwrap_or(0)
-                + usage["output_tokens"].as_u64().unwrap_or(0),
+            tokens,
             used,
         })
     }
