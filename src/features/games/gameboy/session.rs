@@ -115,6 +115,9 @@ pub struct Limits {
     pub daily_usd: f64,
     /// The free OpenAI tokens a day.
     pub free_tokens: u64,
+    /// Whether a paid model plans once the free tokens are used up. If not, she stops
+    /// then (`paid_planner = "none"`).
+    pub paid_planning: bool,
 }
 
 /// Everything a session needs apart from the game.
@@ -155,6 +158,7 @@ pub enum Ended {
     Time,
     Episodes,
     Money,
+    FreeTokens,
     Stuck,
     Stopped,
     Failing(String),
@@ -166,6 +170,7 @@ impl Ended {
             Ended::Time => "Her time was up.".to_string(),
             Ended::Episodes => "She played all her episodes.".to_string(),
             Ended::Money => "Today's money for playing is spent.".to_string(),
+            Ended::FreeTokens => "Today's free tokens for planning are used up.".to_string(),
             Ended::Stuck => "She was stuck, so she stopped rather than spend more.".to_string(),
             Ended::Stopped => "She was stopped.".to_string(),
             Ended::Failing(why) => format!("The models kept failing: {why}"),
@@ -529,6 +534,9 @@ pub async fn play<G: Game>(
         }
         if today.usd >= session.limits.daily_usd {
             break Ended::Money;
+        }
+        if !session.limits.paid_planning && !can_plan_free(session, &today) {
+            break Ended::FreeTokens;
         }
         let mut rung = journal.rung();
         if rung == Rung::Rollback && journal.rollbacks >= ROLLBACKS_MOST {
@@ -1009,11 +1017,12 @@ async fn plan<G: Game>(
     if let Some(openai) = session.openai
         && today.free_call_fits(limit, care == Care::Review)
     {
-        match strategist::plan(openai, Calls::One, &ask).await {
-            Ok(plan) => {
-                today.used_free(plan.tokens, care == Care::Review);
-                return Ok((plan, false));
-            }
+        let before = openai.structured_tokens();
+        let planned = strategist::plan(openai, Calls::One, &ask).await;
+        // Counted even when the answer couldn't be read: OpenAI used the tokens anyway.
+        today.used_free(openai.structured_tokens() - before, care == Care::Review);
+        match planned {
+            Ok(plan) => return Ok((plan, false)),
             // OpenAI being down shouldn't stop play: the cheap model plans this once.
             Err(err) => tracing::warn!("the Game Boy strategist failed: {err:#}"),
         }
@@ -1126,8 +1135,10 @@ async fn plan_and_follow<G: Game>(
         let last = rejected
             .as_ref()
             .map(|(m, why)| (m.as_slice(), why.as_str()));
-        let solution = puzzle::solve(openai, asked, last).await?;
-        today.used_free(solution.tokens, true);
+        let before = openai.structured_tokens();
+        let solved = puzzle::solve(openai, asked, last).await;
+        today.used_free(openai.structured_tokens() - before, true);
+        let solution = solved?;
         match puzzle::check(&solution.moves, map, at, to) {
             Ok(()) => {
                 let acted = game
@@ -1273,6 +1284,11 @@ async fn save_replay(
         let _ = tokio::fs::remove_file(folder.join(format!("{old}.state"))).await;
     }
     Ok(())
+}
+
+/// Whether the strategist can plan the next episode on the free tokens.
+fn can_plan_free(session: &Session<'_>, today: &Today) -> bool {
+    session.openai.is_some() && today.free_call_fits(session.limits.free_tokens, false)
 }
 
 /// USD this month for playing on paid models: every `game_play` call, and planning on
@@ -1609,6 +1625,7 @@ mod tests {
                 episodes,
                 daily_usd: 1.5,
                 free_tokens: 1_000_000,
+                paid_planning: true,
             },
             stop: CancellationToken::new(),
             report,
@@ -2039,6 +2056,19 @@ mod tests {
         broke.limits.daily_usd = 0.0;
         let summary = play(&broke, &mut Rooms::new(), None).await.unwrap();
         assert_eq!((summary.ended, summary.episodes), (Ended::Money, 0));
+        assert!(provider.plans.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_paid_planning_she_stops_when_the_free_tokens_are_used_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let provider = Scripted::new(&[]);
+        let (report, _lines) = mpsc::unbounded_channel();
+        // No OpenAI here, so there are no free tokens to plan on from the start.
+        let mut free_only = session(&provider, dir.path(), 10, report);
+        free_only.limits.paid_planning = false;
+        let summary = play(&free_only, &mut Rooms::new(), None).await.unwrap();
+        assert_eq!((summary.ended, summary.episodes), (Ended::FreeTokens, 0));
         assert!(provider.plans.lock().unwrap().is_empty());
     }
 

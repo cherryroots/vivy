@@ -500,19 +500,22 @@ pub async fn practise<G: Game>(
         let asked = ask(goal, &start, &situation, &world, notes, &tried, n);
         let strong = n > CHEAP_TRIES && today.free_call_fits(free_tokens, true);
         let (planned, by) = match (openai, strong) {
-            (Some(openai), true) => match plan_strongly(openai, &asked, screen.as_ref()).await {
-                Ok((planned, tokens)) => {
-                    today.used_free(tokens, true);
-                    (planned, Planner::Strategist)
+            (Some(openai), true) => {
+                let before = openai.structured_tokens();
+                let planned = plan_strongly(openai, &asked, screen.as_ref()).await;
+                // Counted even when the answer couldn't be read: OpenAI used the tokens.
+                today.used_free(openai.structured_tokens() - before, true);
+                match planned {
+                    Ok(planned) => (planned, Planner::Strategist),
+                    Err(err) => {
+                        tracing::warn!("the practice planner failed: {err:#}");
+                        (
+                            plan_cheaply(provider, &asked, screen.as_ref()).await?,
+                            Planner::Cheap,
+                        )
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("the practice planner failed: {err:#}");
-                    (
-                        plan_cheaply(provider, &asked, screen.as_ref()).await?,
-                        Planner::Cheap,
-                    )
-                }
-            },
+            }
             _ => (
                 plan_cheaply(provider, &asked, screen.as_ref()).await?,
                 Planner::Cheap,
@@ -765,16 +768,16 @@ fn schema() -> Value {
     }))
 }
 
-/// The strategist's model plans the try, on the free tokens. Gives the tokens used.
+/// The strategist's model plans the try, on the free tokens (counted by the caller).
 async fn plan_strongly(
     openai: &OpenAi,
     asked: &str,
     screen: Option<&ModelImage>,
-) -> anyhow::Result<(Planned, u64)> {
+) -> anyhow::Result<Planned> {
     let answer = openai
         .structured(puzzle::JOB, PROMPT, asked, screen, "practice", &schema())
         .await?;
-    Ok((serde_json::from_value(answer.value)?, answer.tokens))
+    Ok(serde_json::from_value(answer.value)?)
 }
 
 /// The cheap model (the supervisor's, the `game_play` job) plans the try, answering

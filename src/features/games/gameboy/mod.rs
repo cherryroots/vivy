@@ -135,6 +135,8 @@ pub enum PaidPlanner {
     /// OpenAI (GPT-6.1 Sol, the main OpenAI model, unless set), paid past the free tokens.
     /// Without OpenAI set up, the chat provider plans.
     Openai,
+    /// Nobody: she stops playing once the free tokens are used up.
+    None,
 }
 
 impl Default for Settings {

@@ -150,6 +150,7 @@ pub async fn play(ctx: &CommandCtx, args: GameboyPlay) -> Result<()> {
         episodes: episodes.map_or(EPISODES_MOST, |e| e as u32),
         daily_usd: settings.daily_usd,
         free_tokens: settings.free_tokens,
+        paid_planning: settings.paid_planner != PaidPlanner::None,
     };
     // The dashboard before the first episode, from the journal.
     let journal = read_journal(&settings, &rom).await.unwrap_or_default();
