@@ -5,8 +5,6 @@
 //! - `who_said_it/`: `/games whosaidit`, guessing who wrote old messages from the server
 //! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes,
 //!   and `/games leaderboard`, its wins and kills
-//! - `gameboy/`: `/games gameboy ...`, a Game Boy emulator admins play by hand, and Vivy
-//!   plays by herself in sessions
 //!
 //! - `herself.rs`: what a game needs to have her speak as herself (her memory notes)
 //!
@@ -14,7 +12,6 @@
 //! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
 //! words and the arena.
 
-mod gameboy;
 mod herself;
 mod hunger_games;
 mod who_said_it;
@@ -23,10 +20,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use twilight_interactions::command::{CommandModel, CreateCommand};
 
-use crate::core::interaction::{Choice, Typed};
-use crate::core::{
-    BotCtx, Command, CommandCtx, ComponentInteraction, Feature, ModalInteraction, Result,
-};
+use crate::core::{BotCtx, Command, CommandCtx, ComponentInteraction, Feature, Result};
 
 /// `[features.games]` settings: one table per game.
 #[derive(Debug, Default, Deserialize)]
@@ -36,8 +30,6 @@ pub struct Settings {
     pub who_said_it: who_said_it::Settings,
     /// `[features.games.hunger_games]`
     pub hunger_games: hunger_games::Settings,
-    /// `[features.games.gameboy]`
-    pub gameboy: gameboy::Settings,
 }
 
 pub struct Games;
@@ -56,11 +48,6 @@ impl Feature for Games {
         hunger_games::MIGRATIONS
     }
 
-    async fn start(&self, ctx: &BotCtx) -> Result<()> {
-        gameboy::start(ctx);
-        Ok(())
-    }
-
     async fn on_component(
         &self,
         ctx: &BotCtx,
@@ -73,26 +60,11 @@ impl Feature for Games {
         if action.starts_with("hunger:") {
             return hunger_games::on_component(ctx, interaction, action).await;
         }
-        if let Some(action) = action.strip_prefix("gameboy:") {
-            return gameboy::on_component(ctx, interaction, action).await;
-        }
-        Ok(())
-    }
-
-    async fn on_modal(
-        &self,
-        ctx: &BotCtx,
-        interaction: &ModalInteraction,
-        action: &str,
-    ) -> Result<()> {
-        if let Some(action) = action.strip_prefix("gameboy:") {
-            return gameboy::on_modal(ctx, interaction, action).await;
-        }
         Ok(())
     }
 }
 
-/// `/games`: each game is a subcommand (`gameboy` is a group of its own).
+/// `/games`: each game is a subcommand.
 #[derive(CommandModel, CreateCommand)]
 #[command(
     name = "games",
@@ -108,13 +80,10 @@ pub enum GamesCommand {
     Leaderboard(hunger_games::Leaderboard),
     #[command(name = "resetleaderboard")]
     ResetLeaderboard(hunger_games::ResetLeaderboard),
-    #[command(name = "gameboy")]
-    Gameboy(gameboy::GameboyCommand),
 }
 
 pub fn games() -> Command {
     Command::slash::<GamesCommand>(|ctx| Box::pin(run(ctx)))
-        .autocomplete(|ctx, typed| Box::pin(autocomplete(ctx, typed)))
 }
 
 async fn run(ctx: CommandCtx) -> Result<()> {
@@ -126,16 +95,7 @@ async fn run(ctx: CommandCtx) -> Result<()> {
         GamesCommand::ResetLeaderboard(_) => {
             hunger_games::reset_leaderboard(&ctx.ephemeral()).await
         }
-        GamesCommand::Gameboy(command) => gameboy::gameboy(&ctx, command).await,
     }
-}
-
-/// Only the Game Boy commands suggest anything.
-async fn autocomplete(ctx: CommandCtx, typed: Typed) -> Result<Vec<Choice>> {
-    if typed.subcommand.starts_with("gameboy") {
-        return Ok(gameboy::autocomplete(&ctx, &typed).await);
-    }
-    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -152,8 +112,5 @@ mod tests {
         assert_eq!(settings.hunger_games.max_tributes, 24);
         assert_eq!(settings.hunger_games.auto_advance_seconds, 45);
         assert_eq!(settings.hunger_games.lobby_minutes, 10);
-        assert_eq!(settings.gameboy.roms_dir, "roms");
-        assert_eq!(settings.gameboy.saves_dir, "gameboy");
-        assert_eq!(settings.gameboy.paid_planner, gameboy::PaidPlanner::Chat);
     }
 }

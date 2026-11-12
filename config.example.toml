@@ -109,20 +109,6 @@ show_job_costs = true
 # Settings per job work like Claude's ([ai.openai.jobs.mood] and so on), with the same
 # built-in defaults, except that emoji use the main model.
 
-# The Game Boy strategist, on the free daily data-sharing tokens (/games gameboy play).
-# GPT-6 Astra unless set here; "gpt-6.1-sol" is the other free choice. Its reviews when
-# she's stuck are [ai.openai.jobs.game_review] and its puzzle helper is
-# [ai.openai.jobs.game_puzzle] (both the same model, effort "high").
-[ai.openai.jobs.game_plan]
-model = "gpt-6-astra"
-
-# Game Boy planning once the free tokens are used up, paid (paid_planner under
-# [features.games.gameboy] picks the provider). On OpenAI it's GPT-6.1 Sol unless set here;
-# on Claude, [ai.claude.jobs.game_plan_paid] with model = "claude-sonnet-5-5" or
-# "claude-opus-5-5" (Haiku unless set).
-# [ai.openai.jobs.game_plan_paid]
-# effort = "medium"
-
 # Gemini settings. The key goes in .env (GEMINI_API_KEY). Used when `provider` or
 # `fallback` above is "gemini". Gemini watches videos people post (uploaded with its Files
 # API) and YouTube links itself, with their sound, instead of a few frames.
@@ -328,47 +314,6 @@ close_ups = 3
 # "xhigh" or "max". Higher looks better and costs more (medium about 13 cents, high 44).
 picture_quality = "medium"
 victor_picture_quality = "high"
-
-[features.games.gameboy]
-# /games gameboy: a Game Boy (and Game Boy Color) emulator. Admins play it by hand, or let
-# Vivy play by herself with /games gameboy play. The folder with the ROMs (.gb and .gbc
-# files): your own copies of games you own.
-roms_dir = "roms"
-# The folder for save states, a folder per ROM inside it, with her skills, journal and
-# checkpoints.
-saves_dir = "gameboy"
-# Minutes one /games gameboy play lasts, unless it says.
-session_minutes = 60
-# USD a day the paid models may cost while she plays (Haiku acting, and planning once the
-# free tokens are used up), at list prices.
-daily_usd = 1.5
-# OpenAI's free data-sharing tokens a day, which the strategist plans on. It stops before a
-# call could cross this. Its model is [ai.openai.jobs.game_plan]'s (GPT-6 Astra).
-free_tokens = 1000000
-# Who plans once the free tokens are used up, paid and counted in daily_usd: "chat" (the
-# bot's chat provider; Claude Haiku unless [ai.claude.jobs.game_plan_paid] names Sonnet or
-# Opus) or "openai" (GPT-6.1 Sol unless [ai.openai.jobs.game_plan_paid] says otherwise).
-# Each runs at low effort unless that job's effort says otherwise. "none": nobody, she stops
-# playing once the free tokens are used up.
-paid_planner = "chat"
-# While she plays, the dashboard (a GIF of her play since the last update, and what she's
-# doing) is updated this often, in seconds (at least 5; 0: only at the end). The log goes in
-# a thread under it.
-live_seconds = 5
-# While she plays, she talks to the channel in her own voice, like a streamer: hello when
-# a session starts, a recap when it ends, and in between at most this often, in minutes
-# (her own model, at low effort; not counted in daily_usd). 0: she doesn't.
-narrate_minutes = 10
-# Whether anyone can give her a hint with the dashboard's Hint button (one every 2 minutes
-# each, read before her next plan), or only admins.
-hints_from_anyone = true
-# The live web page: her screen at game speed, with what code sees drawn over it (the
-# steps she can walk, the words, the area's map). It listens here, and only while someone
-# watches does it look at the game. Put it behind your web server (it needs WebSockets;
-# docs/features/gameboy.md has a Caddy block); empty: no page.
-# web_bind = "127.0.0.1:8787"
-# The page's public address, for the dashboard's 📺 Watch live button (empty: no button).
-# web_url = "https://kirei.moe/vivy/"
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.

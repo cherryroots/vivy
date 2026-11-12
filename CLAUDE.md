@@ -19,8 +19,6 @@ cargo test                            # no Discord or API key needed
 cargo clippy && cargo fmt
 ```
 
-Game Boy tests that need a ROM or models are `#[ignore]`d; see "Tests" in `docs/features/gameboy.md`.
-
 ## How Cherry likes to work
 
 - **She is learning Rust.** Keep code simple, staged and easy to study. Features are event driven with guards. No clever abstractions.
@@ -42,7 +40,7 @@ Game Boy tests that need a ROM or models are `#[ignore]`d; see "Tests" in `docs/
 
 ## The server
 
-- Cherry runs `./target/release/vivy` from `~/Vivy` on her server (`https://kirei.moe`), often from a phone over SSH. Web server is Caddy (not nginx); the Game Boy watch page is `https://kirei.moe/vivy/` through Caddy's `handle_path /vivy/*` to `web_bind = "127.0.0.1:8787"`.
+- Cherry runs `./target/release/vivy` from `~/Vivy` on her server (`https://kirei.moe`), often from a phone over SSH. Web server is Caddy (not nginx).
 - Vivy lives in one server (about 300 to 1000 messages a day). Her test server has every feature off with `deny_guilds`.
 - Intents and permissions the Discord app needs are in the README's setup steps.
 - The server is an Ubuntu 26.04 KVM VM: 8 AMD EPYC cores, 23.5 GB RAM, 295 GB disk, no GPU. Anything that needs a GPU runs on Cherry's own PC instead.
@@ -52,12 +50,11 @@ Game Boy tests that need a ROM or models are `#[ignore]`d; see "Tests" in `docs/
 ## Money and tokens
 
 - Claude is the main provider: Opus 5.5 for her voice (chat, chime-ins, reflection, diary), cheaper models for background jobs (`[ai.claude.jobs.*]`). Cherry has about $100 a month of API credit.
-- OpenAI: Cherry is in the data-sharing program, so GPT-6 Astra, Luna and 6.1 Sol share 1M free tokens a day (UTC). The bot counts its own tokens because `store: false` calls don't show in OpenAI's logs. Free tokens train on what's sent, which is why OpenAI is only the chat fallback.
-- **Test sessions share one count.** On 2026-10-22 several test sessions each kept their own count, went past 1M together and cost money. Gate tests now read and write one file, `VIVY_GB_TODAY` (default `/mnt/project-files/gameboy/today.json`), and stop at `VIVY_GB_FREE_TOKENS` (default 950,000, Cherry's cap). Check it before starting a run.
+- OpenAI: Cherry is in the data-sharing program, so GPT-6 Astra, Luna and 6.1 Sol share 1M free tokens a day (UTC). Free tokens train on what's sent, which is why OpenAI is only the chat fallback.
 
 ## Cloud sandbox keys
 
-- The cloud environment holds test keys as env vars: `VIVY_ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (valid to about 2026-11-18). `ANTHROPIC_API_KEY` never reaches the sandbox, so the gate tests read `VIVY_ANTHROPIC_API_KEY` first.
+- The cloud environment holds test keys as env vars: `VIVY_ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (valid to about 2026-11-18). `ANTHROPIC_API_KEY` never reaches the sandbox, so tests that call Claude read `VIVY_ANTHROPIC_API_KEY`.
 - A session reads env vars only when it starts: after a key changes, start a new session.
 - `api.openai.com` has to be in the environment's allowed domains. `ai.google.dev` was blocked by the proxy, so Gemini's API shapes came from docs summaries and weren't checked live (see `docs/ai.md`).
 - Check key names only, never print values. Never write keys into the repo, docs or chat.
@@ -84,24 +81,11 @@ Cherry's rulings from the 2026-10-10 bug check and later:
 - **Tool search / trimming tools.** The bot's tools are about 4k tokens and cached, below where tool search pays.
 - **Tools as Anthropic Skills.** Skills are workspace-wide; per-server notes in `/memories/vivy/skills/` instead.
 - **voltgpt's memory system, Wavespeed video.** Dropped in the port.
+- **The Game Boy.** Vivy playing Game Boy games (`games/gameboy/`, #87 to #159) was removed on 2026-11-12 (#162): Cherry didn't like it. Don't bring it back.
 
-## Game Boy rules
-
-The Game Boy feature (`src/features/games/gameboy/`, `docs/features/gameboy.md`) has rules from Cherry that shape every change:
-
-- **No game-specific code.** The goal is that Vivy picks up any Game Boy game. Code gives her perception (screen, memory search, maps, motion); behaviour comes from skills. No game names or per-game addresses in the bot's code. Per-game data, if ever, only as data files. When one game fails, fix the general case and re-run the Red tests before pushing.
-- **Skills are Vivy's own.** She and the strategist's review write them, not Cherry and not us.
-- **Be persistent on essential tasks.** Stuck on something progression needs, she tries another way rather than wandering off.
-- **Plan from where she ends up.** "Games aren't entirely deterministic so she should always go from where she ends up after an action and plan accordingly."
-- **Test with replays and save states** when the free tokens are out. Replays replay without a model.
-- **ROMs are Cherry's own** cartridges. Never download a ROM.
-- Make it fun to watch. Cherry gave the Game Boy work free rein for incremental PRs that explore ideas.
-
-Practical gotchas:
+## Practical gotchas
 
 - Don't build into a second target folder during a live run; the disk filled once.
 - Messages fetched over Discord's REST API have no `guild_id` or `member`; keep the gateway's when re-reading a message, or a server question looks like a DM (#153).
 - #96 once committed a ~1 GB `target-run/` build folder (removed in #102, ignored as `target-*/`). It stays in git history; purging needs a force push, so only if Cherry asks.
-- Adding frames to the look shifts Red's RNG, so old replays diverge.
 - In waiting loops, never `pgrep -f` or `pkill -f` a string that's in the loop's own command line (it matches itself, and once killed the shell).
-- Gate tests default to files in the project's shared folder: `/mnt/project-files/gameboy/tasks` (Red task states, `VIVY_GB_TASKS`), `gameboy/gate` (results), `gameboy/today.json` (the shared token count) and `gameboy/sessions/red-2026-10-27/red` (Cherry's Mt Moon saves for `rock_ledges_are_out_of_reach`). Start states for other games are in `gameboy/starts/`.

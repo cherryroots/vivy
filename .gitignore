@@ -9,7 +9,8 @@ config.toml
 /faces
 /banners
 
-# Game Boy ROMs and save states (never committed)
+# ROMs and save states from the old Game Boy feature (never committed; these lines can
+# go once the folders are deleted on the server)
 /roms/
 /gameboy/
 *.gb

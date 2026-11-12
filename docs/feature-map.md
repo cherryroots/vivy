@@ -7,7 +7,7 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | Doc | What's in it |
 |---|---|
 | [README](../README.md) | What each feature does for people, and how to set the bot up |
-| [CLAUDE.md](../CLAUDE.md) | Working rules for Claude sessions: how Cherry likes to work, the PR workflow, the server, tokens and test keys, behaviour that's intended, ideas decided against, the Game Boy rules |
+| [CLAUDE.md](../CLAUDE.md) | Working rules for Claude sessions: how Cherry likes to work, the PR workflow, the server, tokens and test keys, behaviour that's intended, ideas decided against, practical gotchas |
 | `config.example.toml` | Every setting, explained |
 | This page | The overview: features, tables, decisions, history, what's next |
 | [architecture.md](architecture.md) | How the code fits together: startup, the `Feature` trait, the dispatcher, config, database, logging, adding a feature, where to start reading |
@@ -23,7 +23,6 @@ What Vivy does today, where each feature lives in the code, what happened to eac
 | [features/tinyfish.md](features/tinyfish.md) | Web search and reading pages with TinyFish |
 | [features/who-said-it.md](features/who-said-it.md) | Who said it?: the game, where quotes come from, why it isn't an Activity |
 | [features/hunger-games.md](features/hunger-games.md) | The Hunger Games: the Reaping, rounds Vivy writes, the rules that check them |
-| [features/gameboy.md](features/gameboy.md) | The Game Boy: the emulator, playing it by hand, and the stages to Vivy playing by herself |
 
 ## Features
 
@@ -40,7 +39,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 | Snails | `snails/` | Quietly notes every link and picture, so reposts can be found and counted | "Check Snail" (right-click a message → Apps), `/snails top`, `/snails reset`, `/snails backfill` |
 | Control panel | `control_panel/` | A status picture kept up to date in a channel | Watching the channel |
 | TinyFish | `tinyfish/` | Vivy searches the web and reads pages (Reddit too) with TinyFish, with any chat provider | The `tinyfish_search` and `tinyfish_fetch` chat tools |
-| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker; and a Game Boy emulator (`gameboy/`) that admins play by hand, with code that reads Pokémon Red and walks her anywhere on a map, a cheap model that carries out short tasks there, and sessions where she plays by herself | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, `/games gameboy ...` (with `look`, `walk`, `task`, `play`, `stop`, `status` and `dashboard`), their buttons |
+| Games | `games/` | `/games` and its games: who said it? (`who_said_it/`), where everyone in a channel guesses who wrote old messages from it, another public channel or the whole server; and the Hunger Games (`hunger_games/`), a battle royale between members that Vivy writes as the Gamemaker | `/games whosaidit`, `/games hungergames`, `/games leaderboard`, their buttons |
 
 Not features, but parts of the core everyone uses: the **log channel** (`src/core/logging.rs`), the **AI providers** (`src/ai/`), and the **shared helpers** (`src/util/`).
 
@@ -271,6 +270,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #159 | | Game Boy: `paid_planner = "none"` ends her play once the free tokens are used up, instead of a paid model planning on until `daily_usd`. Strategist, puzzle and practice calls whose answer can't be read now count their tokens too (`OpenAi::structured_tokens`), so the free count no longer runs low. |
 | #160 | | Drawing: a drawn picture is attached to her answer instead of coming as a second message. `draw_picture` takes `pictures`, a list of what to draw from (`"message"` or anyone's profile picture, `"me"` for hers), so she can edit one profile picture with another; `use_pictures` is gone. Chat: pictures in tool results (profile pictures, `get_message`) are saved with the answer, which stops the "Claude left out earlier thinking (prefix_binding_mismatch)" log lines and the cache misses behind them. Profile picture lookup moved to `util/people.rs`. |
 | #161 | | Chat tools more flexible: `draw_picture` also draws from a message link, a custom emoji or a picture's link (message link code moved to `util/message_links.rs`); `read_recent_messages` takes `channel` and `around`/`before`/`after` a message link (`chat/recent.rs`); `get_message` takes up to 5 `links`, `get_user_info` and `look_at_profile_picture` several `users`; new `edit_reminder`; `react_to_message` takes up to 3 emoji and can take her reactions back. Fixes: `parse_link` accepted hosts like notdiscord.com, `get_user_info` in a DM always answered about the asker, `cancel_reminder` refused an ID sent as text. |
+| #162 | | Game Boy removed: `games/gameboy/`, its page, `[features.games.gameboy]`, the `game_*` AI jobs, `OpenAi::structured`, `logging::drop_prints`, and the `boytacean`, `gif`, `axum` and `libc` crates. Its rows above are kept as history. Cherry didn't want it any more. |
 
 ## Not built yet
 

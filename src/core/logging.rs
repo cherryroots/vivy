@@ -7,9 +7,6 @@
 //!
 //! Start and stop notices use the target `"lifecycle"`, which is always posted to Discord:
 //! `info!(target: "lifecycle", "🟢 Started")`.
-//!
-//! Log lines are written to a copy of stdout taken at start ([`log_out`]), so
-//! [`drop_prints`] can send plain `println!`s from other crates nowhere without losing them.
 
 use std::collections::VecDeque;
 use std::fmt::{self, Write as _};
@@ -18,7 +15,7 @@ use std::io::IsTerminal as _;
 use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
 use std::str::FromStr;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::util::discord::{ChannelId, Draft, Http, no_pings};
@@ -61,13 +58,13 @@ pub fn init(config: &LoggingConfig) -> anyhow::Result<mpsc::Receiver<LogLine>> {
     let output = if std::env::var("LOG_FORMAT").is_ok_and(|f| f == "json") {
         tracing_subscriber::fmt::layer()
             .json()
-            .with_writer(log_out)
+            .with_writer(std::io::stdout)
             .boxed()
     } else {
         // Colours only in a terminal; the journal colours lines by their level itself.
         let ansi = std::io::stdout().is_terminal();
         tracing_subscriber::fmt::layer()
-            .with_writer(log_out)
+            .with_writer(std::io::stdout)
             .with_ansi(ansi)
             .event_format(Compact {
                 journal: stdout_is_journal(),
@@ -140,44 +137,6 @@ fn stdout_is_journal() -> bool {
 /// Whether `JOURNAL_STREAM` ("device:inode") names the file with this device and inode.
 fn is_journal_stream(stream: &str, dev: u64, ino: u64) -> bool {
     stream.split_once(':') == Some((&dev.to_string(), &ino.to_string()))
-}
-
-/// A copy of stdout as it was when the bot started, for log lines. `None` if it couldn't be
-/// copied, and then log lines use stdout itself.
-static STDOUT_COPY: LazyLock<Option<File>> = LazyLock::new(|| {
-    use std::os::fd::FromRawFd as _;
-    // SAFETY: dup only makes a new descriptor for stdout; the File owns that new one.
-    let fd = unsafe { libc::dup(libc::STDOUT_FILENO) };
-    // SAFETY: fd is a fresh descriptor nothing else owns.
-    (fd >= 0).then(|| unsafe { File::from_raw_fd(fd) })
-});
-
-/// Where log lines are written.
-fn log_out() -> Box<dyn std::io::Write> {
-    match STDOUT_COPY.as_ref() {
-        Some(file) => Box::new(file),
-        None => Box::new(std::io::stdout()),
-    }
-}
-
-/// From here on, anything printed to stdout with `println!` goes nowhere; log lines still
-/// go out. For crates that print instead of logging: the Game Boy emulator prints a line
-/// every time Pokémon Red writes to a cartridge address it doesn't know, which is often.
-#[cfg_attr(test, allow(dead_code))]
-pub fn drop_prints() {
-    LazyLock::force(&STDOUT_COPY);
-    if STDOUT_COPY.is_none() {
-        return;
-    }
-    let Ok(null) = File::options().write(true).open("/dev/null") else {
-        return;
-    };
-    use std::os::fd::AsRawFd as _;
-    // SAFETY: dup2 points stdout at /dev/null; both descriptors are open, and `null` is
-    // closed afterwards while stdout keeps its own.
-    unsafe {
-        libc::dup2(null.as_raw_fd(), libc::STDOUT_FILENO);
-    }
 }
 
 /// Passes lines from crates that use `log` instead of `tracing` on to `tracing`, at the level

@@ -253,9 +253,6 @@ pub struct ChatRequest {
     pub answer_now: bool,
 }
 
-/// The Game Boy strategist's model, unless `[ai.openai.jobs.game_plan]` says otherwise.
-const STRATEGIST_MODEL: &str = "gpt-6-astra";
-
 /// How one kind of request runs: `[ai.claude.jobs.<job>]` or `[ai.openai.jobs.<job>]` in
 /// config.toml. Anything left out comes from the job's built-in default, and then from the
 /// provider's own settings, so background work can run cheaper than chat answers.
@@ -283,17 +280,6 @@ impl Job {
     ///   voice), with the web for looking things up, but no code;
     /// - "hunger_games": a Hunger Games round, in her own model at low effort so the next
     ///   round is ready while people read this one, with no web or code;
-    /// - "game_narrate": what she says in the channel while she plays a Game Boy game,
-    ///   the same (it's her voice, and short);
-    /// - "game_play": a Game Boy move (the supervisor), on the cheap model at low effort,
-    ///   with no web or code;
-    /// - "game_plan_paid": a Game Boy plan once the free tokens are used up, the same
-    ///   (on OpenAI, which has no cheap model, its own model: GPT-6.1 Sol);
-    /// - "game_plan": the Game Boy strategist (OpenAI only), on GPT-6 Astra, which shares
-    ///   the free daily data-sharing tokens and generalised best to new games;
-    /// - "game_review": its fresh look at its notes when she's stuck, the same model at
-    ///   high effort;
-    /// - "game_puzzle": the Game Boy puzzle helper, the same.
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
@@ -309,27 +295,9 @@ impl Job {
                 web: off,
                 code: off,
             },
-            "hunger_games" | "game_narrate" => Job {
+            "hunger_games" => Job {
                 model: None,
                 effort: Some("low".to_string()),
-                web: off,
-                code: off,
-            },
-            "game_play" | "game_plan_paid" => Job {
-                model: cheap_model.map(str::to_string),
-                effort: Some("low".to_string()),
-                web: off,
-                code: off,
-            },
-            "game_plan" => Job {
-                model: Some(STRATEGIST_MODEL.to_string()),
-                effort: None,
-                web: off,
-                code: off,
-            },
-            "game_review" | "game_puzzle" => Job {
-                model: Some(STRATEGIST_MODEL.to_string()),
-                effort: Some("high".to_string()),
                 web: off,
                 code: off,
             },
@@ -572,9 +540,6 @@ pub struct Ai {
     pub spends: Vec<Spend>,
     /// Drawing pictures with OpenAI's Image API, when `OPENAI_TOKEN` is set.
     pub images: Option<Images>,
-    /// OpenAI for one-off structured answers (the Game Boy strategist), when
-    /// `OPENAI_TOKEN` is set, whichever provider chats. Always OpenAI's own endpoint.
-    pub openai: Option<Arc<OpenAi>>,
 }
 
 impl Ai {
@@ -604,7 +569,6 @@ impl Ai {
             fallback: Some(state),
             spends,
             images,
-            openai: None,
         }
     }
 

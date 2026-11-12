@@ -133,11 +133,9 @@ pub fn choice(name: impl Into<String>, value: impl Into<String>) -> Choice {
 /// The option someone is typing, for [`AutocompleteFn`].
 #[derive(Debug, Clone)]
 pub struct Typed {
-    /// The subcommand it's in, like `"show"` for `/memory show`, or `"gameboy save"`.
+    /// The subcommand it's in, like `"show"` for `/memory show`.
     /// Empty for a command without subcommands.
     pub subcommand: String,
-    /// The option's name.
-    pub option: String,
     /// What they typed so far.
     pub value: String,
 }
@@ -149,7 +147,6 @@ fn find_typed(options: &[CommandDataOption], path: &mut Vec<String>) -> Option<T
             CommandOptionValue::Focused(value, _) => {
                 return Some(Typed {
                     subcommand: path.join(" "),
-                    option: option.name.clone(),
                     value: value.clone(),
                 });
             }

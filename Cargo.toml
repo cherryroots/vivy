@@ -6,16 +6,12 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 async-trait = "0.1.92"
-axum = { version = "0.8.9", features = ["ws"] }
 base64 = "0.22"
-boytacean = "=0.13.2"
 chrono = "0.4.45"
 chrono-tz = { version = "0.10.4", features = ["case-insensitive"] }
 dotenvy = "0.15.7"
 futures = "0.3.31"
 fastrand = "2.5.0"
-gif = "0.14"
-libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 image_hasher = "3.1"
 twilight-cache-inmemory = { version = "0.17.1", features = ["permission-calculator"] }
@@ -46,9 +42,8 @@ winnow = "1.0.4"
 [dev-dependencies]
 twilight-validate = "0.17.0"
 
-# For running the game tests while changing code: as fast as release, but rebuilt
-# incrementally in small pieces, so a one-line change takes seconds, not minutes.
-# `cargo test --profile fast-test`
+# While changing code: as fast as release, but rebuilt incrementally in small pieces,
+# so a one-line change takes seconds, not minutes. `cargo build --profile fast-test`
 [profile.fast-test]
 inherits = "release"
 incremental = true
