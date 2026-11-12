@@ -1,6 +1,6 @@
 # Drawing
 
-Vivy can draw pictures with OpenAI's GPT Image 2.6; each one goes out attached to her answer, so the words and the picture are one message. She can also change pictures or draw from them: someone attaches a photo and asks "put a hat on this", replies to a picture she drew with "make it night", or asks for one person's profile picture mixed with another's ("put Circle in raffle's picture"). She picks which pictures to use herself.
+Vivy can draw pictures with OpenAI's GPT Image 2.6; each one goes out attached to her answer, so the words and the picture are one message. She can also change pictures or draw from them: someone attaches a photo and asks "put a hat on this", replies to a picture she drew with "make it night", or asks for one person's profile picture mixed with another's ("put Circle in raffle's picture"). She can also draw from a picture somewhere else: a message she found with search or that someone links, a custom emoji, or a picture's own link. She picks which pictures to use herself.
 
 ## Using it
 
@@ -17,9 +17,9 @@ All under `src/features/drawing/`. The Image API call itself is in `src/ai/opena
 | File | What it holds |
 |---|---|
 | `store.rs` | The `drawings` table and three queries: record a posted picture, count pictures and their cost since a time, and count one person's pictures since a time. |
-| `mod.rs` | The `Drawing` feature: settings, the tool definition, reading which pictures to draw from (`sources`) and loading them (`load_pictures`, `pictures_around`), and `run_tool_with_pictures`. |
+| `mod.rs` | The `Drawing` feature: settings, the tool definition, reading which pictures to draw from (`sources`, with `emoji_id`, `emoji_name` and `web_link` telling the kinds apart) and loading them (`load_pictures`, `pictures_around`, `still_pictures`, `picture_at`), and `run_tool_with_pictures`. |
 
-Profile pictures are found and downloaded by `src/util/people.rs`, which chat's `look_at_profile_picture` uses too.
+Profile pictures are found and downloaded by `src/util/people.rs`, which chat's `look_at_profile_picture` uses too. Message links are opened by `src/util/message_links.rs` (`linked_message`, with the read rule `can_read`), the same code chat's `get_message` uses. Pictures from links are downloaded by `util::media::load_still`.
 
 ## How it works
 
@@ -29,7 +29,12 @@ Profile pictures are found and downloaded by `src/util/people.rs`, which chat's 
 2. Checks `monthly_pictures` and `per_user_monthly_pictures` (the asker's pictures) against `drawings` for this UTC month (`over_limit`). Past either, she gets an error telling her to say so in text.
 3. Loads the pictures she listed in `pictures`, in her order (each source once, at most 4 pictures in all; the first is the base, and her prompt says what to do with each):
    - `"message"`: fetches the asker's message and takes the still pictures (not GIFs or videos) from it and from the message it replies to, through `util::media` (`pictures_around`). When the reply is to one of Vivy's own answers, her messages right next to that one count too (up to 4 each way, stopping at anyone else's message): a long answer spans several messages, and answers from before #160 had their picture in a message of its own. None found is an error she can read.
+   - a Discord message link (`https://discord.com/channels/...`): the still pictures of that message (not GIFs or videos, at most 4), for a search hit or something from earlier. It obeys the same rule as chat's `get_message` (`util::message_links::linked_message`): any channel of the asker's server that `[features.chat]` gating doesn't turn off, whether or not the asker can see it; in a DM only that DM; never another server. A refusal, a deleted message or one without still pictures is an error she can read.
+   - a custom emoji's code, `<:name:id>` or `<a:name:id>`: the emoji's picture from Discord's CDN as a 512 px PNG (an animated one gives its first frame). Any emoji's code works, since emoji pictures are public. A bare `:name:` is looked up among the asker's server's emoji in the cache (any case); none by that name is an error she can read.
+   - a web link (`http://` or `https://`, `<>` around it is fine): the picture there, downloaded through `util::media`'s safe download (local and private addresses refused, at most 20 MB), its type read from its bytes. JPEG, PNG and WebP go as they are, a GIF gives its first frame, other picture types become PNG. A link that isn't a picture (like a web page) or can't be downloaded is an error she can read, saying why.
    - anything else is a person: a mention, user ID or name (searched in the server), or `"me"` for her own face. Their profile picture for this server if they set one, else their main one, as a 1024 px PNG (`util::people::profile_picture`). Nobody found is an error she can read.
+
+   Which kind each entry is comes from how it's written (`sources`): "message", then a message link, an emoji code, `:name:`, a web link, and anything else is a person, so names keep working as before. Sources are loaded in order and loading stops once there are 4 pictures, so a later one isn't downloaded for nothing.
 4. Draws it with `Images::draw`: `model` for a new picture, `edit_model` when there are pictures to draw from. `shape` picks the size: square 1024x1024 (the default), landscape 1536x1024, portrait 1024x1536.
 5. Hands the picture (`drawing.png`) to chat as a file of the answer (`ToolReply::files`), with the note `[Picture you drew] <prompt>` for the history. Chat attaches it to the answer's last message when the answer ends (even when it stopped or failed), so a reply to it continues the conversation, ❌ deletes it with the answer, and 🔁 replaces it. Records it in `drawings`.
 6. Tells her the picture goes out with her answer, so she writes at most a short line with it.
@@ -48,7 +53,7 @@ A refusal by OpenAI's safety system (a 400) goes back to her as the tool's resul
 
 ## Chat tools
 
-- **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `pictures` (a list, in order: `"message"` for the pictures in the asker's message and the one it replies to, or a person, whose profile picture is used). `use_pictures` (before #160) is gone; `["message"]` does the same.
+- **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `pictures` (a list, in order: `"message"` for the pictures in the asker's message and the one it replies to, a person, whose profile picture is used, a Discord message link for that message's pictures, a custom emoji code, or a picture's https link). `use_pictures` (before #160) is gone; `["message"]` does the same.
 
 Other features run the same tool, so the limits count their pictures too, and can pass arguments the chat model isn't told about: `post: false` hands the picture back in the tool's reply (`run_tool_with_pictures`, as an image) instead of posting it, so the feature can post it with its own message (it's still counted, under a made-up message ID from the time it was drawn), and `job: "game_art"` counts the picture's cost under `game_art` instead of `drawing` and uses the less strict safety filter (`moderation` "low") whatever the setting, since games with deaths in them are chosen by their host. The [Hunger Games](hunger-games.md#pictures) use them.
 
