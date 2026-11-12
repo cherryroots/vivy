@@ -18,10 +18,11 @@ use super::{channels, search};
 use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::discord::{
-    Channel, ChannelId, ChannelType, GuildId, Member, Message, MessageId, Permissions, UserId,
+    Channel, ChannelId, ChannelType, GuildId, Message, MessageId, Permissions, UserId,
     display_name, get_channel, get_member, get_message, get_user, member_display_name, to_chrono,
 };
 use crate::util::media;
+use crate::util::people::find_member;
 use crate::util::shorten;
 
 /// Most messages `read_recent_messages` returns.
@@ -293,7 +294,7 @@ async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<St
 
     let member = match user {
         None => get_member(&ctx.http, guild_id, asker.user).await?,
-        Some(query) => find_member(ctx, guild_id, query).await?,
+        Some(query) => find_member(&ctx.http, guild_id, query).await?,
     };
 
     // Presences come from the gateway (the Presence intent), so only the cache has them.
@@ -391,38 +392,6 @@ fn activity_line(activity: &Activity) -> Option<String> {
         line.push_str(&format!(" ({})", extra.join(", ")));
     }
     Some(line)
-}
-
-/// A server member from a mention, user ID or name.
-pub(super) async fn find_member(ctx: &BotCtx, guild: GuildId, query: &str) -> Result<Member> {
-    match parse_user_id(query) {
-        Some(id) => get_member(&ctx.http, guild, id)
-            .await
-            .map_err(|_| user_error(format!("Nobody with ID {id} is in this server."))),
-        None => ctx
-            .http
-            .search_guild_members(guild, query)
-            .limit(5)
-            .await?
-            .models()
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| user_error(format!("No member matches \"{query}\"."))),
-    }
-}
-
-/// "<@123>", "<@!123>" or "123" → the ID.
-pub(super) fn parse_user_id(text: &str) -> Option<UserId> {
-    let digits = text
-        .trim_start_matches("<@")
-        .trim_start_matches('!')
-        .trim_end_matches('>');
-    digits
-        .parse::<u64>()
-        .ok()
-        .filter(|&id| id > 0)
-        .map(UserId::new)
 }
 
 async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<String> {
@@ -644,7 +613,11 @@ pub(super) async fn message_with_pictures(
         }
     }
     text.push_str(&picture_note(found.len(), LINKED_PICTURES, failed));
-    Ok(ToolReply { text, images })
+    Ok(ToolReply {
+        text,
+        images,
+        files: Vec::new(),
+    })
 }
 
 /// What the model is told about a message's `found` pictures when at most `shown` are
@@ -941,14 +914,6 @@ Category Voice:
         let link = message_link(Some(GuildId::new(1)), ChannelId::new(2), MessageId::new(3));
         assert_eq!(link, "https://discord.com/channels/1/2/3");
         assert_eq!(parse_link(&link), Some((Some(1), 2, 3)));
-    }
-
-    #[test]
-    fn user_ids() {
-        assert_eq!(parse_user_id("<@123>"), Some(UserId::new(123)));
-        assert_eq!(parse_user_id("<@!123>"), Some(UserId::new(123)));
-        assert_eq!(parse_user_id("123"), Some(UserId::new(123)));
-        assert_eq!(parse_user_id("cherry"), None);
     }
 
     #[test]

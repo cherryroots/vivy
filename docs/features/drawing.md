@@ -1,6 +1,6 @@
 # Drawing
 
-Vivy can draw pictures with OpenAI's GPT Image 2.6 and post them as a reply. She can also change a picture or draw from one: someone attaches a photo and asks "put a hat on this", or replies to a picture she drew with "make it night".
+Vivy can draw pictures with OpenAI's GPT Image 2.6; each one goes out attached to her answer, so the words and the picture are one message. She can also change pictures or draw from them: someone attaches a photo and asks "put a hat on this", replies to a picture she drew with "make it night", or asks for one person's profile picture mixed with another's ("put Circle in raffle's picture"). She picks which pictures to use herself.
 
 ## Using it
 
@@ -17,19 +17,24 @@ All under `src/features/drawing/`. The Image API call itself is in `src/ai/opena
 | File | What it holds |
 |---|---|
 | `store.rs` | The `drawings` table and three queries: record a posted picture, count pictures and their cost since a time, and count one person's pictures since a time. |
-| `mod.rs` | The `Drawing` feature: settings, the tool definition, finding the pictures to draw from (`pictures_in`), and `run_tool`. |
+| `mod.rs` | The `Drawing` feature: settings, the tool definition, reading which pictures to draw from (`sources`) and loading them (`load_pictures`, `pictures_around`), and `run_tool_with_pictures`. |
+
+Profile pictures are found and downloaded by `src/util/people.rs`, which chat's `look_at_profile_picture` uses too.
 
 ## How it works
 
-### Steps in `run_tool`
+### Steps in `run_tool_with_pictures`
 
 1. Checks that `ctx.ai.images` exists (it does when `OPENAI_TOKEN` is set) and that the prompt isn't empty.
 2. Checks `monthly_pictures` and `per_user_monthly_pictures` (the asker's pictures) against `drawings` for this UTC month (`over_limit`). Past either, she gets an error telling her to say so in text.
-3. With `use_pictures`, fetches the asker's message and takes the still pictures (not GIFs or videos) from it and from the message it replies to, at most 4, through `util::media` (`pictures_around`). When the reply is to one of Vivy's own answers, her messages right next to that one count too (up to 4 each way, stopping at anyone else's message), because an answer's text and its picture are separate messages: "make it night" works replying to either. None found is an error she can read.
+3. Loads the pictures she listed in `pictures`, in her order (each source once, at most 4 pictures in all; the first is the base, and her prompt says what to do with each):
+   - `"message"`: fetches the asker's message and takes the still pictures (not GIFs or videos) from it and from the message it replies to, through `util::media` (`pictures_around`). When the reply is to one of Vivy's own answers, her messages right next to that one count too (up to 4 each way, stopping at anyone else's message): a long answer spans several messages, and answers from before #160 had their picture in a message of its own. None found is an error she can read.
+   - anything else is a person: a mention, user ID or name (searched in the server), or `"me"` for her own face. Their profile picture for this server if they set one, else their main one, as a 1024 px PNG (`util::people::profile_picture`). Nobody found is an error she can read.
 4. Draws it with `Images::draw`: `model` for a new picture, `edit_model` when there are pictures to draw from. `shape` picks the size: square 1024x1024 (the default), landscape 1536x1024, portrait 1024x1536.
-5. Posts the picture (`drawing.png`) as a reply to the asker, pinging only them.
-6. Adds it to `Asker::posted` as `[Picture you drew] <prompt>`, so chat treats it like part of the answer: a reply to it continues the conversation, ❌ deletes it, and the history keeps what she drew. Records it in `drawings`.
-7. Tells her the picture is her answer, so she writes at most a short line with it.
+5. Hands the picture (`drawing.png`) to chat as a file of the answer (`ToolReply::files`), with the note `[Picture you drew] <prompt>` for the history. Chat attaches it to the answer's last message when the answer ends (even when it stopped or failed), so a reply to it continues the conversation, ❌ deletes it with the answer, and 🔁 replaces it. Records it in `drawings`.
+6. Tells her the picture goes out with her answer, so she writes at most a short line with it.
+
+Before #160 the picture was posted as a message of its own, right after the start of her reply, so an answer with a picture came as two messages: her text (edited as it streamed) and then the picture.
 
 ### The two models
 
@@ -43,7 +48,7 @@ A refusal by OpenAI's safety system (a 400) goes back to her as the tool's resul
 
 ## Chat tools
 
-- **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `use_pictures` (true to draw from the pictures in the asker's message and the one it replies to).
+- **`draw_picture`**: `prompt` (required), `shape` (`square`, `landscape` or `portrait`), `pictures` (a list, in order: `"message"` for the pictures in the asker's message and the one it replies to, or a person, whose profile picture is used). `use_pictures` (before #160) is gone; `["message"]` does the same.
 
 Other features run the same tool, so the limits count their pictures too, and can pass arguments the chat model isn't told about: `post: false` hands the picture back in the tool's reply (`run_tool_with_pictures`, as an image) instead of posting it, so the feature can post it with its own message (it's still counted, under a made-up message ID from the time it was drawn), and `job: "game_art"` counts the picture's cost under `game_art` instead of `drawing` and uses the less strict safety filter (`moderation` "low") whatever the setting, since games with deaths in them are chosen by their host. The [Hunger Games](hunger-games.md#pictures) use them.
 
@@ -53,14 +58,14 @@ Other features run the same tool, so the limits count their pictures too, and ca
 - `migrations`: `store::MIGRATIONS`.
 - `tools`: `draw_picture`, or nothing without `OPENAI_TOKEN`.
 - `tool_status`: "🎨 Drawing, this can take a minute…" in chat's status line.
-- `run_tool`: the steps above.
+- `run_tool_with_pictures`: the steps above.
 - `stats`: "Drawn this month" (drawn, or drawn / limit) and "Cost". Nothing without the key.
 
 ## Tables
 
 From `store.rs`:
 
-1. **`drawings`**: the Discord message ID (key), guild ID (none in DMs), channel ID, who asked, the prompt, the estimated cost in USD, and when it was posted. Indexed by time.
+1. **`drawings`**: an ID (key; a made-up one from the time it was drawn since #160, the picture's Discord message ID before), guild ID (none in DMs), channel ID, who asked, the prompt, the estimated cost in USD, and when it was drawn. Indexed by time.
 
 ## Background loops
 

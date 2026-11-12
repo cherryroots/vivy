@@ -11,12 +11,11 @@ use chrono::{NaiveDate, TimeZone as _};
 use chrono_tz::Tz;
 use serde_json::{Value, json};
 
-use super::tools::{
-    can_read, find_member, format_message, home_zone, message_link, parse_link, parse_user_id,
-};
+use super::tools::{can_read, format_message, home_zone, message_link, parse_link};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
 use crate::util::discord::{ChannelId, GuildId, get_channel};
+use crate::util::people::{find_member, parse_user_id};
 use crate::util::search::{self, AUTHOR_TYPES, EMBED_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
 
 /// How many results when the model doesn't say.
@@ -274,7 +273,7 @@ async fn people(ctx: &BotCtx, guild: GuildId, args: &Value, key: &str) -> Result
     for who in list(args, key) {
         let id = match parse_user_id(&who) {
             Some(id) => id,
-            None => find_member(ctx, guild, &who).await?.user.id,
+            None => find_member(&ctx.http, guild, &who).await?.user.id,
         };
         ids.push(id.get());
     }

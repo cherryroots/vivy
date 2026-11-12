@@ -6,6 +6,7 @@ pub mod discord;
 pub mod frames;
 pub mod http;
 pub mod media;
+pub mod people;
 pub mod reply;
 pub mod search;
 pub mod split;

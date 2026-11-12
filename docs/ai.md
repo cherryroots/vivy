@@ -135,7 +135,9 @@ A round limit never ends in an error by itself. After the last round of tools co
 - With a `continuation` (OpenAI), the next input is `Input::After` with only the tool results. OpenAI remembers its own output.
 - Without one (Claude), it is the whole conversation again, plus an assistant turn holding this round's `Part::Native` output, plus a user turn with the tool results. Claude needs its own tool calls (and the thinking before them) back, exactly as written.
 
-A tool result can carry pictures as well as text (`ToolOutput::images`, from a `ToolReply`), like the profile picture from `look_at_profile_picture`. Claude gets them as `image` blocks inside the `tool_result`; OpenAI gets a `function_call_output` whose output is a list of `input_text` and `input_image`. The pictures aren't saved with the answer's rounds, so when a conversation is read back later only the text is there.
+A tool result can carry pictures as well as text (`ToolOutput::images`, from a `ToolReply`), like the profile picture from `look_at_profile_picture`. Claude gets them as `image` blocks inside the `tool_result`; OpenAI gets a `function_call_output` whose output is a list of `input_text` and `input_image`. The pictures are saved with the answer's rounds (base64 in `native_json`, `saved_images` in `ai/mod.rs`), so a conversation read back later is byte for byte what Claude saw. Until #160 they weren't, and the next answer in the conversation sent that tool result without its picture: Claude saw an earlier turn change, dropped all thinking after it (`Claude left out earlier thinking … (prefix_binding_mismatch)`, with `pattern=tool_results_rewritten`) and missed the prompt cache from there on. A profile picture is about 350 tokens to Claude, cached after the first time. Answers saved before #160 still have no pictures, and age out with `native_json` after 60 days.
+
+A tool can also hand chat files for the answer itself (`ToolReply::files`, each a `ReplyFile` with a name, the bytes and a note for the history), like a picture `draw_picture` drew. Chat attaches them to the reply's last message when the answer ends, so they don't come as a separate message.
 
 ## Jobs
 
