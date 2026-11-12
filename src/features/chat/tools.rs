@@ -1,5 +1,5 @@
 //! Chat's own tools: what the model can look up about Discord and the time.
-//! `search_messages` lives in `search.rs`.
+//! `search_messages` lives in `search.rs`, `read_recent_messages` in `recent.rs`.
 //!
 //! Each tool runs as the person who asked ([`Asker`]): it only reads channels that person
 //! can read. Results are plain text, which is what the model reads best; `get_message`
@@ -14,7 +14,7 @@ use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
 
-use super::{channels, search};
+use super::{channels, recent, search};
 use crate::ai::{ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::discord::{
@@ -25,8 +25,6 @@ use crate::util::media;
 use crate::util::people::find_member;
 use crate::util::shorten;
 
-/// Most messages `read_recent_messages` returns.
-const MAX_RECENT: u64 = 50;
 /// Each message is cut to this many characters in tool results.
 const MAX_MESSAGE_CHARS: usize = 600;
 /// A linked message is cut to this many characters: the longest a Discord message can be,
@@ -72,16 +70,7 @@ pub fn defs() -> Vec<ToolDef> {
             description: "Who your owner is: whoever owns your Discord application (the bot), with their names and IDs, and whether the asker is one of them. Use it when someone asks who owns or made you, or says they're your owner.",
             parameters: json!({"type": "object", "properties": {}}),
         },
-        ToolDef {
-            name: "read_recent_messages",
-            description: "The messages in this channel just before the one you're answering, oldest first. Use it to see what was said before.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "count": {"type": "integer", "description": "How many, 1 to 50. Default 20."}
-                },
-            }),
-        },
+        recent::def(),
         ToolDef {
             name: "get_message",
             description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions, and shows you its pictures, GIFs and videos. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
@@ -113,10 +102,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
         "list_channels" => list_channels(ctx, asker).await,
         "get_user_info" => user_info(ctx, asker, text("user")).await,
         "get_bot_owner" => bot_owner(ctx, asker).await,
-        "read_recent_messages" => {
-            let count = args["count"].as_u64().unwrap_or(20).clamp(1, MAX_RECENT);
-            recent_messages(ctx, asker, count).await
-        }
+        "read_recent_messages" => recent::run(ctx, asker, args).await,
         "get_message" => {
             let link = text("link").ok_or_else(|| user_error("`link` is required."))?;
             message_from_link(ctx, asker, link).await
@@ -392,28 +378,6 @@ fn activity_line(activity: &Activity) -> Option<String> {
         line.push_str(&format!(" ({})", extra.join(", ")));
     }
     Some(line)
-}
-
-async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<String> {
-    let mut messages = ctx
-        .http
-        .channel_messages(asker.channel)
-        .before(asker.message)
-        .limit(count as u16)
-        .await?
-        .models()
-        .await?;
-    if messages.is_empty() {
-        return Ok("There are no earlier messages.".to_string());
-    }
-    // Discord returns newest first.
-    messages.reverse();
-    let zone = home_zone(ctx, asker.user).await;
-    let mut lines = Vec::new();
-    for m in &messages {
-        lines.push(format_message(ctx, m, zone).await);
-    }
-    Ok(lines.join("\n"))
 }
 
 /// "[2026-10-09 14:02] Cherry: text (2 attachments: cat.png, notes.pdf)"
