@@ -269,6 +269,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #157 | | Chat: check-ins no longer ping the person they're for. Nothing `speak` posts (chime-ins and check-ins) pings anyone now; chime-in replies already didn't. |
 | #158 | | Chat: no more unprompted messages. Text chime-ins (`chime_say_chance`) and check-ins (`schedule_follow_up`, `follow_ups_per_person`) are gone, since Cherry's friends didn't like them; chime-ins only react with an emoji now. Migration 4 drops `chat_follow_ups` with any planned check-ins. Remove `chime_say_chance` and `follow_ups_per_person` from `config.toml`, or they warn as unknown keys. |
 | #159 | | Game Boy: `paid_planner = "none"` ends her play once the free tokens are used up, instead of a paid model planning on until `daily_usd`. Strategist, puzzle and practice calls whose answer can't be read now count their tokens too (`OpenAi::structured_tokens`), so the free count no longer runs low. |
+| #160 | | Drawing: a drawn picture is attached to her answer instead of coming as a second message. `draw_picture` takes `pictures`, a list of what to draw from (`"message"` or anyone's profile picture, `"me"` for hers), so she can edit one profile picture with another; `use_pictures` is gone. Chat: pictures in tool results (profile pictures, `get_message`) are saved with the answer, which stops the "Claude left out earlier thinking (prefix_binding_mismatch)" log lines and the cache misses behind them. Profile picture lookup moved to `util/people.rs`. |
 
 ## Not built yet
 

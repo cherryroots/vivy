@@ -1,10 +1,14 @@
 //! Drawing: Vivy draws pictures with OpenAI's GPT Image 2.6.
 //!
 //! Chat gets one tool, `draw_picture`: she writes a prompt, the picture is drawn with the
-//! Image API (`ctx.ai.images`, see `ai/openai/images.rs`) and posted as a reply to the
-//! asker. With `use_pictures`, the pictures in the asker's message and in the message it
-//! replies to go along, so she can change a picture or draw from one ("put a hat on
-//! this", or replying to a picture she drew: "make it night").
+//! Image API (`ctx.ai.images`, see `ai/openai/images.rs`) and handed to chat as a file
+//! of the answer ([`ToolReply::files`]), so it goes out on her reply, with her words.
+//!
+//! With `pictures` she picks what to draw from, in order (the first is the base):
+//! `"message"` for the pictures in the asker's message and the message it replies to, and
+//! anyone's profile picture by mention, ID or name (`"me"` for her own). So she can change
+//! a picture ("put a hat on this", or replying to a picture she drew: "make it night"),
+//! draw from one, or mix several ("put Cherry's cat in Volt's picture").
 //!
 //! New pictures use `model` (Flare: fast, good for everyday pictures); pictures made from
 //! others use `edit_model` (Sunburst: the most precise at edits). Each one's cost counts
@@ -31,16 +35,21 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
-use crate::ai::{PictureRequest, ToolDef, ToolReply};
+use crate::ai::{PictureRequest, ReplyFile, ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
-use crate::util::discord::{Draft, Message, Page, get_message, get_messages, ping_replied};
+use crate::util::discord::{Message, Page, get_message, get_messages};
 use crate::util::media::{self, MediaKind, ModelImage};
+use crate::util::people::{Lookup, profile_picture};
 use crate::util::search::snowflake_at;
 use crate::util::{env_key, month_start};
 
 const TOOL: &str = "draw_picture";
 /// The most pictures sent along to draw from.
 const MAX_PICTURES: usize = 4;
+/// Profile pictures to draw from are fetched this many pixels wide.
+const PROFILE_SIZE: u32 = 1024;
+/// In `pictures`: the pictures in the asker's message and the one it replies to.
+const FROM_MESSAGE: &str = "message";
 /// How many messages before and after one of Vivy's answers are checked for its pictures.
 const NEIGHBOURS: u16 = 4;
 
@@ -124,8 +133,8 @@ fn pictures_in(msg: &Message) -> Vec<media::Media> {
 }
 
 /// [`pictures_in`], plus the rest of Vivy's answer when the message replies to one of hers:
-/// an answer's text and its picture are separate messages, so "make it night" replying to
-/// the text should still find the picture. The answer's other messages are her messages
+/// a long answer is several messages, and older answers had their picture in a message of
+/// its own, so "make it night" replying to the text should still find the picture. The answer's other messages are her messages
 /// right next to the one replied to, up to [`NEIGHBOURS`] each way, until someone else's.
 async fn pictures_around(ctx: &BotCtx, msg: &Message) -> Vec<media::Media> {
     let mut found = pictures_in(msg);
@@ -169,6 +178,66 @@ fn own_run(ctx: &BotCtx, messages: Vec<Message>) -> impl Iterator<Item = Message
         .take_while(move |message| message.author.id == bot)
 }
 
+/// Where a picture to draw from comes from, as the model names it in `pictures`.
+#[derive(Debug, PartialEq)]
+enum Source {
+    /// The pictures in the asker's message and the one it replies to.
+    Message,
+    /// Someone's profile picture: a mention, user ID, name or "me".
+    Profile(String),
+}
+
+/// The sources in `pictures`, in order, each once.
+fn sources(args: &Value) -> Vec<Source> {
+    let mut sources = Vec::new();
+    let names = args["pictures"].as_array().into_iter().flatten();
+    for name in names.filter_map(Value::as_str).map(str::trim) {
+        let source = match name {
+            "" => continue,
+            _ if name.eq_ignore_ascii_case(FROM_MESSAGE) => Source::Message,
+            _ => Source::Profile(name.to_string()),
+        };
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+    sources
+}
+
+/// Downloads the pictures `source` names. Errors are for the model: a person it can't find,
+/// or a message without pictures.
+async fn load_pictures(ctx: &BotCtx, asker: &Asker, source: &Source) -> Result<Vec<ModelImage>> {
+    match source {
+        Source::Profile(who) => {
+            let lookup = Lookup {
+                bot: ctx.bot_id,
+                guild: asker.guild,
+                asker: asker.user,
+            };
+            let picture = profile_picture(&ctx.http, &lookup, Some(who), PROFILE_SIZE).await?;
+            Ok(vec![picture.image])
+        }
+        Source::Message => {
+            let msg = get_message(&ctx.http, asker.channel, asker.message)
+                .await
+                .context("reading the asker's message")?;
+            let mut pictures = Vec::new();
+            for found in pictures_around(ctx, &msg).await {
+                match media::load_for_model(&found).await {
+                    Ok(loaded) => pictures.extend(loaded),
+                    Err(err) => warn!("couldn't download a picture to draw from: {err:#}"),
+                }
+            }
+            if pictures.is_empty() {
+                return Err(user_error(
+                    "there are no pictures in the asker's message or the one it replies to. Leave \"message\" out of `pictures`, or ask for the picture.",
+                ));
+            }
+            Ok(pictures)
+        }
+    }
+}
+
 pub struct Drawing;
 
 #[async_trait]
@@ -187,17 +256,21 @@ impl Feature for Drawing {
         }
         vec![ToolDef {
             name: TOOL,
-            description: "Draw a picture and post it as a reply to the asker. Use it when someone asks you for a picture (to draw, paint or make one) or to change one they show you; not on your own. It makes real pictures: don't draw with code instead. \
+            description: "Draw a picture; it goes out attached to your answer. Use it when someone asks you for a picture (to draw, paint or make one) or to change one; not on your own. It makes real pictures: don't draw with code instead. \
 Write the prompt in English as a clear description of the whole picture: the subject, what's happening, the style (photo, anime, watercolor, pixel art...), colors, light and framing. Put any words that should appear in the picture in quotes. \
-To change a picture or draw from one (\"put a hat on this\", \"me as a knight\", a reply to a picture you drew: \"make it night\"), set use_pictures: the pictures in the asker's message and in the message it replies to are sent along, and the prompt says what to do with them. \
-To draw yourself or someone here, look at their profile picture first (look_at_profile_picture) and describe their looks in the prompt: hair, eyes, clothes, colors. \
+To change a picture or draw from some, list them in `pictures`, and say in the prompt what to do with each (\"keep the first picture, put the character from the second next to him\"). \"message\" is the pictures in the asker's message and the message it replies to (\"put a hat on this\", a reply to a picture you drew: \"make it night\"); a mention, user ID or name is that person's profile picture, and \"me\" is yours. Use them as you see fit: one profile picture as the base and another's character in it, someone's picture redrawn in a new style, or a new picture with people in it. \
+To draw someone without changing their picture, you can also look at it first (look_at_profile_picture) and describe their looks in the prompt. \
 Drawing takes up to a minute. The picture is your answer, so write at most a short line with it.",
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "description": "What to draw, or what to change in the pictures."},
+                    "prompt": {"type": "string", "description": "What to draw, or what to do with the pictures."},
                     "shape": {"type": "string", "enum": ["square", "landscape", "portrait"], "description": "Square if left out."},
-                    "use_pictures": {"type": "boolean", "description": "Send along the pictures in the asker's message and the one it replies to."}
+                    "pictures": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Pictures to draw from, in order, the first being the base. Each is \"message\" (the pictures in the asker's message and the one it replies to), or someone's profile picture: a mention, user ID or name, or \"me\" for yours. Leave out for a new picture."
+                    }
                 },
                 "required": ["prompt"]
             }),
@@ -206,19 +279,6 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
 
     fn tool_status(&self, _tool: &str, _args: &Value) -> Option<&'static str> {
         Some("🎨 Drawing, this can take a minute…")
-    }
-
-    async fn run_tool(
-        &self,
-        ctx: &BotCtx,
-        asker: &Asker,
-        name: &str,
-        args: &Value,
-    ) -> Result<String> {
-        Ok(self
-            .run_tool_with_pictures(ctx, asker, name, args)
-            .await?
-            .text)
     }
 
     async fn run_tool_with_pictures(
@@ -257,22 +317,10 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
         }
 
         let mut pictures: Vec<ModelImage> = Vec::new();
-        if args.get("use_pictures").and_then(Value::as_bool) == Some(true) {
-            let msg = get_message(&ctx.http, asker.channel, asker.message)
-                .await
-                .context("reading the asker's message")?;
-            for found in pictures_around(ctx, &msg).await {
-                match media::load_for_model(&found).await {
-                    Ok(loaded) => pictures.extend(loaded),
-                    Err(err) => warn!("couldn't download a picture to draw from: {err:#}"),
-                }
-            }
-            if pictures.is_empty() {
-                return Err(user_error(
-                    "there are no pictures in the asker's message or the one it replies to. Draw without use_pictures, or ask for the picture.",
-                ));
-            }
+        for source in sources(args) {
+            pictures.extend(load_pictures(ctx, asker, &source).await?);
         }
+        pictures.truncate(MAX_PICTURES);
 
         let shape = args.get("shape").and_then(Value::as_str);
         let model = match pictures.is_empty() {
@@ -294,43 +342,36 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
 
         // Another feature posts the picture itself, with its own message.
         let handed_back = args.get("post").and_then(Value::as_bool) == Some(false);
-        let (message_id, reply) = if handed_back {
+        let reply = if handed_back {
             let mime = match picture.format.as_str() {
                 "jpeg" => "image/jpeg",
                 "webp" => "image/webp",
                 _ => "image/png",
             };
-            let reply = ToolReply {
+            ToolReply {
                 text: "The picture is drawn and handed back, not posted.".to_string(),
                 images: vec![ModelImage {
                     mime,
                     data: picture.data,
                 }],
-            };
-            // Not posted, so there's no message ID: a made-up one from the time, unique
-            // enough to count it.
-            let id = snowflake_at(Utc::now()) + fastrand::u64(..1 << 22);
-            (id, reply)
+                files: Vec::new(),
+            }
         } else {
-            let name = format!("drawing.{}", picture.format);
-            let message = Draft::new()
-                .file(name, picture.data)
-                .reply_to(asker.message)
-                .allowed_mentions(ping_replied())
-                .send(&ctx.http, asker.channel)
-                .await
-                .context("posting the picture")?;
-            asker
-                .posted
-                .add(message.id, format!("[Picture you drew] {prompt}"));
-            (
-                message.id.get(),
-                ToolReply::from("The picture is posted as a reply to the asker. It is your answer: write at most a short line with it, and don't describe it.".to_string()),
-            )
+            ToolReply {
+                text: "The picture is drawn and goes out attached to your answer. It is your answer: write at most a short line with it, and don't describe it.".to_string(),
+                images: Vec::new(),
+                files: vec![ReplyFile {
+                    name: format!("drawing.{}", picture.format),
+                    data: picture.data,
+                    note: format!("[Picture you drew] {prompt}"),
+                }],
+            }
         };
 
+        // The picture's message isn't sent yet (chat sends it with the answer), so the row
+        // gets a made-up ID from the time, unique enough to count it.
         let drawn = store::Drawn {
-            message_id,
+            message_id: snowflake_at(Utc::now()) + fastrand::u64(..1 << 22),
             guild_id: asker.guild.map(|g| g.get()),
             channel_id: asker.channel.get(),
             user_id: asker.user.get(),
@@ -449,6 +490,21 @@ mod tests {
         let urls: Vec<String> = pictures_in(&msg).into_iter().map(|m| m.url).collect();
         assert_eq!(urls, ["https://cdn/a.png", "https://cdn/c.webp"]);
         assert!(pictures_in(&message(Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn reads_which_pictures_to_draw_from() {
+        let args = json!({"pictures": ["<@123>", "Message", "me", "<@123>", " "]});
+        assert_eq!(
+            sources(&args),
+            [
+                Source::Profile("<@123>".into()),
+                Source::Message,
+                Source::Profile("me".into()),
+            ]
+        );
+        assert!(sources(&json!({})).is_empty());
+        assert!(sources(&json!({"pictures": "message"})).is_empty());
     }
 
     #[test]

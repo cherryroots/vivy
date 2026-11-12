@@ -104,24 +104,89 @@ impl NativeRound {
 pub struct ToolOutput {
     pub call_id: String,
     pub output: String,
-    /// Pictures shown to the model with the text, like a profile picture. They aren't
-    /// saved: when the conversation is read back later, only the text is there.
-    #[serde(skip)]
+    /// Pictures shown to the model with the text, like a profile picture. They are saved
+    /// with the answer (as base64), so the conversation goes back to the model exactly as
+    /// it was: a tool result that changed later would make Claude drop its earlier thinking
+    /// and miss the prompt cache.
+    #[serde(default, skip_serializing_if = "Vec::is_empty", with = "saved_images")]
     pub images: Vec<ModelImage>,
 }
 
-/// What one of the bot's tools answers: text, and sometimes pictures for the model to see.
+/// How [`ToolOutput::images`] are saved: `[{"mime": "image/png", "data": "<base64>"}]`.
+mod saved_images {
+    use base64::Engine as _;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use crate::util::media::ModelImage;
+
+    #[derive(Serialize, Deserialize)]
+    struct Saved {
+        mime: String,
+        data: String,
+    }
+
+    pub fn serialize<S: Serializer>(images: &[ModelImage], s: S) -> Result<S::Ok, S::Error> {
+        let saved: Vec<Saved> = images
+            .iter()
+            .map(|image| Saved {
+                mime: image.mime.to_string(),
+                data: base64::engine::general_purpose::STANDARD.encode(&image.data),
+            })
+            .collect();
+        saved.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ModelImage>, D::Error> {
+        let saved = Vec::<Saved>::deserialize(d)?;
+        let mut images = Vec::new();
+        for picture in saved {
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(&picture.data)
+                .map_err(serde::de::Error::custom)?;
+            images.push(ModelImage {
+                mime: known_mime(&picture.mime),
+                data,
+            });
+        }
+        Ok(images)
+    }
+
+    /// The saved type as one of the types models take.
+    fn known_mime(mime: &str) -> &'static str {
+        match mime {
+            "image/jpeg" => "image/jpeg",
+            "image/webp" => "image/webp",
+            "image/gif" => "image/gif",
+            _ => "image/png",
+        }
+    }
+}
+
+/// What one of the bot's tools answers: text, sometimes pictures for the model to see, and
+/// sometimes files for the answer itself.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ToolReply {
     pub text: String,
     pub images: Vec<ModelImage>,
+    /// Files that go out with the answer, like a picture she drew: chat attaches them to
+    /// the reply's last message, so the answer is one message with its picture.
+    pub files: Vec<ReplyFile>,
+}
+
+/// A file a tool made for the answer (see [`ToolReply::files`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReplyFile {
+    pub name: String,
+    pub data: Vec<u8>,
+    /// What the conversation's history keeps of it, like "[Picture you drew] a cat".
+    pub note: String,
 }
 
 impl From<String> for ToolReply {
     fn from(text: String) -> Self {
         ToolReply {
             text,
-            images: Vec::new(),
+            ..ToolReply::default()
         }
     }
 }
@@ -651,6 +716,29 @@ mod tests {
             output: "12:00".into(),
             images: Vec::new(),
         }]
+    }
+
+    #[test]
+    fn tool_pictures_are_saved_with_the_answer() {
+        let round = NativeRound {
+            output: json!([]),
+            results: vec![ToolOutput {
+                call_id: "c1".into(),
+                output: "This is Cherry's profile picture.".into(),
+                images: vec![ModelImage {
+                    mime: "image/webp",
+                    data: vec![1, 2, 3, 255],
+                }],
+            }],
+            setup: None,
+        };
+        let saved = serde_json::to_string(&[&round]).unwrap();
+        assert!(saved.contains(r#""images":[{"mime":"image/webp","data":"AQID/w=="}]"#));
+        assert_eq!(NativeRound::parse_list(&saved), Some(vec![round]));
+        // Answers saved before pictures were kept read back with none.
+        let old = r#"[{"output":[],"results":[{"call_id":"c1","output":"hi"}]}]"#;
+        let rounds = NativeRound::parse_list(old).unwrap();
+        assert!(rounds[0].results[0].images.is_empty());
     }
 
     #[test]

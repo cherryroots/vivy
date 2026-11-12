@@ -6,6 +6,10 @@
 //! answer is done, or turns into `-# ⏹️ Stopped` or `-# ⚠️ Something went wrong: …`.
 //! Above it, while the model works through tools, goes its latest progress note
 //! (`-# 💬 Found the reminder, now moving it`), until it starts writing.
+//!
+//! Files go on the reply's last message when the answer ends: the ones the model made with
+//! code, and the ones tools made for the answer ([`ToolReply::files`]), like a picture she
+//! drew. So a drawing and the words that go with it are one message.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -18,7 +22,7 @@ use tracing::{info, warn};
 
 use crate::ai::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, NativeRound,
-    ToolCall, ToolDef, ToolOutput, ToolReply, last_tools, next_input,
+    ReplyFile, ToolCall, ToolDef, ToolOutput, ToolReply, last_tools, next_input,
 };
 use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Feature};
@@ -79,6 +83,8 @@ struct Screen {
     message_ids: Arc<Mutex<Vec<MessageId>>>,
     /// The server's custom emoji codes by name, so her `:name:` shows as the emoji.
     emoji: HashMap<String, String>,
+    /// Files tools made for the answer, attached when it ends.
+    tool_files: Vec<ReplyFile>,
 }
 
 impl Screen {
@@ -234,6 +240,7 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
         shown: Vec::new(),
         message_ids: job.message_ids,
         emoji: emoji::codes(ctx, job.asker.guild),
+        tool_files: Vec::new(),
     };
     let result = stream_answer(
         ctx,
@@ -245,8 +252,11 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
     )
     .await;
 
+    // The files the model made with code.
+    let mut made = Vec::new();
     let (end, written) = match result {
         Ok(Some((done, rounds, files))) => {
+            made = files;
             // Claude Opus 5.5 turns text written right before a tool call into a progress
             // note, even when it's the answer ("My pick is…", then a tool to remember
             // it). Notes with nothing written after them stay in the reply, unless a
@@ -256,14 +266,11 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
             }
             screen.note = None;
             screen.status = None;
-            if let Err(err) = attach_files(ctx, provider, &mut screen, &files).await {
-                warn!("couldn't attach the answer's files: {err:#}");
-                screen.status = Some("⚠️ Some files couldn't be attached.".into());
-            }
             // A tool's message (like a voice message) can be the whole answer: then the
             // text message goes away.
             if screen.text.trim().is_empty()
-                && files.is_empty()
+                && made.is_empty()
+                && screen.tool_files.is_empty()
                 && job.asker.posted.ids().is_empty()
             {
                 screen.text = EMPTY_ANSWER.to_string();
@@ -285,6 +292,11 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
             (End::Failed(err), None)
         }
     };
+    // Also when the answer stopped or failed: a picture that was drawn is still shown.
+    if let Err(err) = attach_files(ctx, provider, &mut screen, &made).await {
+        warn!("couldn't attach the answer's files: {err:#}");
+        screen.status = Some("⚠️ Some files couldn't be attached.".into());
+    }
     let end = match (screen.show(ctx).await, end) {
         (Err(err), End::Finished) => End::Failed(err.context("showing the answer")),
         (_, end) => end,
@@ -293,15 +305,17 @@ pub async fn run(ctx: &BotCtx, provider: &dyn ChatProvider, job: Job) -> Outcome
     message_ids.extend(job.asker.posted.ids());
     // Saved as shown, so her earlier answers show her the codes, not `:name:`.
     let text = emoji::with_codes(&screen.text, &screen.emoji);
+    let mut notes = job.asker.posted.texts();
+    notes.extend(screen.tool_files.iter().map(|file| file.note.clone()));
     Outcome {
-        text: with_posted(&text, &job.asker.posted.texts()),
+        text: with_posted(&text, &notes),
         written,
         message_ids,
         end,
     }
 }
 
-/// The answer's text for the history, with what the tools' messages said after it.
+/// The answer's text for the history, with what the tools' messages and files said after it.
 pub(super) fn with_posted(text: &str, posted: &[String]) -> String {
     let mut parts: Vec<String> = Vec::new();
     if !text.trim().is_empty() {
@@ -405,6 +419,7 @@ async fn stream_answer(
                 reply = run_tool(ctx, asker, &owners, call) => reply,
                 () = cancel.cancelled() => return Ok(None),
             };
+            screen.tool_files.extend(reply.files);
             results.push(ToolOutput {
                 call_id: call.id.clone(),
                 output: reply.text,
@@ -493,21 +508,31 @@ pub(super) async fn run_tool(
     }
 }
 
-/// Downloads the files the model made, attaches them to the last message, and points the
-/// answer's `sandbox:` links at them.
+/// Attaches the files tools made and the files the model made (downloaded first) to the
+/// last message, and points the answer's `sandbox:` links at them.
 async fn attach_files(
     ctx: &BotCtx,
     provider: &dyn ChatProvider,
     screen: &mut Screen,
-    files: &[GeneratedFile],
+    made: &[GeneratedFile],
 ) -> anyhow::Result<()> {
-    if files.is_empty() {
+    if made.is_empty() && screen.tool_files.is_empty() {
         return Ok(());
+    }
+    // A message can't be only files here: with no text and no status line, showing the
+    // reply would delete its message.
+    if screen.text.trim().is_empty() && screen.status.is_none() {
+        screen.text = "Files attached.".to_string();
     }
     // Make sure the final text is on screen first: attaching edits the last message.
     screen.show(ctx).await?;
     let mut attachments = Vec::new();
-    for file in files.iter().take(MAX_FILES) {
+    for file in &screen.tool_files {
+        attachments.push((file.name.clone(), file.data.clone()));
+    }
+    attachments.truncate(MAX_FILES);
+    let room = MAX_FILES - attachments.len();
+    for file in made.iter().take(room) {
         let data = provider.download_file(file).await?;
         attachments.push((file_name(&file.filename), data));
     }
@@ -518,9 +543,6 @@ async fn attach_files(
         .map(|a| (a.filename.clone(), a.url.clone()))
         .collect();
     screen.text = link_files(&screen.text, &links);
-    if screen.text.trim().is_empty() {
-        screen.text = "Files attached.".to_string();
-    }
     Ok(())
 }
 

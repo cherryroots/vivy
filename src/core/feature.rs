@@ -67,7 +67,8 @@ pub trait Feature: Send + Sync + 'static {
     }
 
     /// Like [`Feature::run_tool`], for a tool that also shows the model pictures, like a
-    /// profile picture. Chat calls this one; by default it runs `run_tool`, with no pictures.
+    /// profile picture, or makes files for the answer, like a drawing. Chat calls this
+    /// one; by default it runs `run_tool`, with no pictures or files.
     async fn run_tool_with_pictures(
         &self,
         ctx: &BotCtx,
