@@ -10,7 +10,7 @@ Reminders let people ask Vivy to ping them later. `@Vivy remind me in 2h30m to c
 - **`/reminders`**: a private list of your pending reminders (soonest first, up to 25 shown, each with "in 3 days" and the full date, recurring ones marked 🔁 with how they repeat, in your own timezone without the zone's name) with a menu to delete one; each menu entry shows its date in your timezone under the text, so two "stretch" reminders can be told apart. The list stays open after a delete, reloaded, so you can delete several.
 - **`/timezone [zone]`**: sets the timezone used for times without one, like `Europe/Oslo` or `CET`. The option autocompletes the abbreviations Vivy knows first, then zone names. An abbreviation is echoed back with the place it means (`CET (Europe/Paris)`). Without a zone it tells you your current setting and the local time there.
 - **Snooze buttons** under a delivered reminder: 10 min, 1 hour, and **Pick a time…**, which opens a box to type a time like `in 30m`, `at 18:00` or `friday`. Only the person the reminder is for can use them.
-- **Chat**: in a normal conversation the model can create, list and cancel reminders with its [chat tools](#chat-tools).
+- **Chat**: in a normal conversation the model can create, list, change and cancel reminders with its [chat tools](#chat-tools).
 
 Settings: the feature has a `[features.reminders]` section with only the common keys (`enabled`, `guilds`, and so on); `config.example.toml` explains them. Setup is in the README.
 
@@ -25,7 +25,7 @@ All in `src/features/reminders/`, in a reading order that starts with the pure l
 | `ui.rs` | Message texts, the Cancel and snooze buttons, the snooze modal, the `/reminders` list and delete menu, and the custom IDs (the `Action` enum). |
 | `scheduler.rs` | The one background task that delivers due reminders, with retries. |
 | `commands.rs` | The slash commands `/reminders` and `/timezone`, each a struct deriving `CommandModel` and `CreateCommand` (`twilight-interactions`). |
-| `tools.rs` | The chat tools `create_reminder`, `list_reminders`, `cancel_reminder`. |
+| `tools.rs` | The chat tools `create_reminder`, `list_reminders`, `edit_reminder`, `cancel_reminder`. |
 | `mod.rs` | Wires it all in: the `Reminders` struct, its `Feature` implementation, the mention handler, the cancel, snooze and delete handlers, and image downloads. |
 
 ## How it works
@@ -78,7 +78,7 @@ If nothing can be made into a reminder (no time, no message text, or a time that
 
 A recurring reminder is a row like any other, plus a `repeat` column with how it repeats, as text the grammar reads back: `describe_repeat` writes `every monday at 9:00 Europe/Oslo` or `every 2 hours`, and `parse_repeat` reads it. The zone is written out (the user's zone when they set it), so a later `/timezone` change doesn't move it; hours are exact, so they need no zone. When a repeat is shown to a person, `repeat_for_display` drops the zone if it is the viewer's own (`every day at 9:00`) and otherwise says `every day at 9:00 in Europe/Oslo`.
 
-When the scheduler delivers one, `scheduler::next_time` works out the next time after the one it was due (or after now, when the bot was offline past it), and `store::repeat` queues a copy (images and all) in the same transaction that marks the delivered one sent. The delivered one keeps its snooze buttons: a snooze brings it back once, with `repeat` cleared, since the series goes on in the copy. The next one is queued even when the delivery is given up after 10 tries, so one bad day doesn't end the series. Deleting the pending copy (in `/reminders`, or with `cancel_reminder`) stops it. The confirmation, the delivered message and `/reminders` show `🔁` and the repeat.
+When the scheduler delivers one, `scheduler::next_time` works out the next time after the one it was due (or after now, when the bot was offline past it), and `store::repeat` queues a copy (images and all) in the same transaction that marks the delivered one sent. The delivered one keeps its snooze buttons: a snooze brings it back once, with `repeat` cleared, since the series goes on in the copy. The next one is queued even when the delivery is given up after 10 tries, so one bad day doesn't end the series. Deleting the pending copy (in `/reminders`, or with `cancel_reminder`) stops it; `edit_reminder` can give it a new schedule or make it a one-off. The confirmation, the delivered message and `/reminders` show `🔁` and the repeat.
 
 ### Saving a reminder
 
@@ -118,9 +118,20 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 |---|---|
 | `create_reminder` | Takes `when` (English, like "in 2h30m", "tomorrow evening" or "every monday at 9:00", parsed by `parse::parse_when`; the description lists the forms and the rules, like one weekday per repeat) and `message`. Sets a reminder in the current channel, linked to the asking message, without images. The answer tells the model the time and says when it was read as UTC because no zone is set. |
 | `list_reminders` | The asker's pending reminders with IDs, soonest first, and how recurring ones repeat. |
+| `edit_reminder` | Takes `id` and a new `when`, a new `message`, or both. Changes the pending reminder in place (`store::edit_pending`), so it keeps its ID, channel, pictures and link, and whatever wasn't given. See below. |
 | `cancel_reminder` | Deletes one of the asker's pending reminders by ID (which stops a recurring one). |
 
-`run_tool` in `mod.rs` wakes the scheduler after a create or cancel.
+The `id` may come as a number or as text (`"12"`); models send both.
+
+`edit_reminder` rules:
+
+- **A new `when` replaces the whole schedule.** It is read like `create_reminder`'s (`reschedule` in `tools.rs`, the same parser): a repeat form (`every day at 9:00`) sets a new repeat starting at its next time, a one-off form (`tomorrow at 9am`) turns a recurring reminder into a single one. One rule, said in the tool's description, rather than guessing whether "move it to tuesday" meant just the next time; the answer tells the model when a reminder stopped repeating (`It no longer repeats (it was every monday at 9:00 …)`).
+- **A time that has passed** is refused by `parse::resolve`, as for a new reminder.
+- **Only the asker's pending reminders.** It looks the ID up in `store::list_pending` for the asker first, so an unknown ID, someone else's reminder or one already delivered all answer "The asker has no pending reminder N." `store::edit_pending`'s `UPDATE` checks owner and `sent_at IS NULL` again. A delivered reminder is changed with its snooze buttons instead.
+- **A new time resets sending:** `next_try_at` and `attempts` start over, so a reminder that was failing to send is tried fresh at the new time.
+- The scheduler reads the next time from the table, so the edit is picked up by waking it: `run_tool` wakes it, and it sleeps until the new earliest `next_try_at` (earlier or later). The "I'll remind you" reply under the original mention still shows the old time, and its Cancel button still works on the edited reminder (same ID).
+
+`run_tool` in `mod.rs` wakes the scheduler after a create, edit or cancel.
 
 ## Feature hooks it uses
 
@@ -132,7 +143,7 @@ From `tools.rs`. They act as the asker (see `Asker` in `src/core/feature.rs`) an
 | `commands` | `/reminders` and `/timezone`. |
 | `migrations` | `store::MIGRATIONS`. |
 | `mention_prefixes` | `remind me`, `reminder`, `remind` (the dispatcher picks the longest match). |
-| `tools`, `run_tool` | The three chat tools. |
+| `tools`, `run_tool` | The four chat tools. |
 | `tool_status` | "⏰ Setting a reminder…" and similar in chat's status line. |
 | `stats` | Control panel lines: Pending, Next, Sent this week, and Failing to send when any are retrying. |
 | `start` | Spawns the scheduler. |

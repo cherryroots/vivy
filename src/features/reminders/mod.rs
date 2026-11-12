@@ -68,6 +68,7 @@ impl Feature for Reminders {
     fn tool_status(&self, tool: &str, _args: &serde_json::Value) -> Option<&'static str> {
         match tool {
             "create_reminder" => Some("⏰ Setting a reminder…"),
+            "edit_reminder" => Some("⏰ Changing a reminder…"),
             "cancel_reminder" => Some("⏰ Cancelling a reminder…"),
             _ => Some("⏰ Checking reminders…"),
         }

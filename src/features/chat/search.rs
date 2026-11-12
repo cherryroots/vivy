@@ -324,7 +324,12 @@ fn snowflake_at_date(date: &str, zone: Tz) -> std::result::Result<u64, String> {
 }
 
 /// A channel from a mention, ID, name or "here".
-fn find_channel(ctx: &BotCtx, asker: &Asker, guild: GuildId, text: &str) -> Option<ChannelId> {
+pub(super) fn find_channel(
+    ctx: &BotCtx,
+    asker: &Asker,
+    guild: GuildId,
+    text: &str,
+) -> Option<ChannelId> {
     if matches!(text, "here" | "this" | "this channel") {
         return Some(asker.channel);
     }

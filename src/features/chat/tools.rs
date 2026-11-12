@@ -1,32 +1,37 @@
 //! Chat's own tools: what the model can look up about Discord and the time.
-//! `search_messages` lives in `search.rs`.
+//! `search_messages` lives in `search.rs`, `read_recent_messages` in `recent.rs`.
 //!
-//! Each tool runs as the person who asked ([`Asker`]): it only reads channels that person
-//! can read. Results are plain text, which is what the model reads best; `get_message`
+//! Each tool runs for the person who asked ([`Asker`]): it reads the channels
+//! `util::message_links::can_read` allows for them. Results are plain text, which is what the model reads best; `get_message`
 //! also shows the message's pictures.
 
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use futures::future::join_all;
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::warn;
 use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
 
-use super::{channels, search};
+use super::{channels, recent, search};
 use crate::ai::{ToolDef, ToolReply};
+use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
 use crate::util::discord::{
-    Channel, ChannelId, ChannelType, GuildId, Message, MessageId, Permissions, UserId,
-    display_name, get_channel, get_member, get_message, get_user, member_display_name, to_chrono,
+    Channel, ChannelType, Message, Permissions, UserId, display_name, get_channel, get_member,
+    get_user, member_display_name, to_chrono,
 };
-use crate::util::media;
-use crate::util::people::find_member;
+use crate::util::media::{self, ModelImage};
+// Message links and the rule for which messages she may read live in `util`, since
+// drawing opens links too. Re-exported so chat's files keep using them from here.
+pub(super) use crate::util::discord::message_link;
+pub(super) use crate::util::message_links::{
+    can_read, find_message_links, linked_message, parse_link,
+};
+use crate::util::people::{find_member, parse_user_id};
 use crate::util::shorten;
 
-/// Most messages `read_recent_messages` returns.
-const MAX_RECENT: u64 = 50;
 /// Each message is cut to this many characters in tool results.
 const MAX_MESSAGE_CHARS: usize = 600;
 /// A linked message is cut to this many characters: the longest a Discord message can be,
@@ -59,11 +64,15 @@ pub fn defs() -> Vec<ToolDef> {
         },
         ToolDef {
             name: "get_user_info",
-            description: "A server member's names, ID, roles, join date, timezone, online status and what they're doing right now (playing, listening to, custom status). Without `user`, the asker.",
+            description: "Server members' names, ID, roles, join date, timezone, online status and what they're doing right now (playing, listening to, custom status). Without `users`, the asker. Look up several people in one call.",
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "user": {"type": "string", "description": "A mention, user ID or name. Optional."}
+                    "users": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "1 to 5 people: mentions, user IDs or names. Optional."
+                    }
                 },
             }),
         },
@@ -72,23 +81,20 @@ pub fn defs() -> Vec<ToolDef> {
             description: "Who your owner is: whoever owns your Discord application (the bot), with their names and IDs, and whether the asker is one of them. Use it when someone asks who owns or made you, or says they're your owner.",
             parameters: json!({"type": "object", "properties": {}}),
         },
+        recent::def(),
         ToolDef {
-            name: "read_recent_messages",
-            description: "The messages in this channel just before the one you're answering, oldest first. Use it to see what was said before.",
+            name: "get_message",
+            description: "Opens Discord messages from their links (https://discord.com/channels/...): who wrote each, when, its text, attachments, embeds and reactions, and shows you their pictures, GIFs and videos (at most 4 in all). Use it whenever someone links a message or asks you to look at one; open several in one call. Your web tools can't open Discord links; this tool can.",
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "count": {"type": "integer", "description": "How many, 1 to 50. Default 20."}
+                    "links": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "1 to 5 Discord message links."
+                    }
                 },
-            }),
-        },
-        ToolDef {
-            name: "get_message",
-            description: "Opens a Discord message from its link (https://discord.com/channels/...): who wrote it, when, its text, attachments, embeds and reactions, and shows you its pictures, GIFs and videos. Use it whenever someone links a message or asks you to look at one. Your web tools can't open Discord links; this tool can.",
-            parameters: json!({
-                "type": "object",
-                "properties": {"link": {"type": "string"}},
-                "required": ["link"],
+                "required": ["links"],
             }),
         },
         search::def(),
@@ -111,16 +117,11 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Resul
         "get_current_time" => current_time(ctx, asker, text("timezone")).await,
         "get_channel_info" => channel_info(ctx, asker).await,
         "list_channels" => list_channels(ctx, asker).await,
-        "get_user_info" => user_info(ctx, asker, text("user")).await,
+        "get_user_info" => users_info(ctx, asker, args).await,
         "get_bot_owner" => bot_owner(ctx, asker).await,
-        "read_recent_messages" => {
-            let count = args["count"].as_u64().unwrap_or(20).clamp(1, MAX_RECENT);
-            recent_messages(ctx, asker, count).await
-        }
-        "get_message" => {
-            let link = text("link").ok_or_else(|| user_error("`link` is required."))?;
-            message_from_link(ctx, asker, link).await
-        }
+        "read_recent_messages" => recent::run(ctx, asker, args).await,
+        // Chat runs it with its pictures (`run_tool_with_pictures`); this is its text alone.
+        "get_message" => Ok(message_with_pictures(ctx, asker, args).await?.text),
         "search_messages" => search::run(ctx, asker, args).await,
         "get_pinned_messages" => pinned_messages(ctx, asker).await,
         "list_server_events" => server_events(ctx, asker).await,
@@ -281,9 +282,93 @@ fn kind_name(kind: ChannelType) -> &'static str {
     }
 }
 
+/// Most people one `get_user_info` call looks up.
+const MAX_USERS: usize = 5;
+
+/// `get_user_info` for everyone the call names (`users`, or the older `user`), looked up
+/// at once; the asker when it names nobody. Each one that can't be found says why.
+async fn users_info(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
+    let queries = list_arg(args, "users", "user");
+    match queries.as_slice() {
+        [] => return user_info(ctx, asker, None).await,
+        [one] => return user_info(ctx, asker, Some(one)).await,
+        _ => {}
+    }
+    let given = queries.len();
+    let queries = &queries[..given.min(MAX_USERS)];
+    let found = join_all(queries.iter().map(|q| user_info(ctx, asker, Some(q)))).await;
+    let blocks = queries.iter().map(|q| q.to_string()).zip(found).collect();
+    let mut text = several(blocks)?;
+    text.push_str(&left_out_note(given, MAX_USERS, "people were looked up"));
+    Ok(text)
+}
+
+/// The strings a tool call gives under `plural`, a list (or one string), or else the one
+/// string under `singular`: older calls in saved conversations use that. Trimmed, without
+/// blanks or repeats, in order.
+pub(super) fn list_arg<'a>(args: &'a Value, plural: &str, singular: &str) -> Vec<&'a str> {
+    let given: Vec<&Value> = match &args[plural] {
+        Value::Array(items) => items.iter().collect(),
+        Value::Null => vec![&args[singular]],
+        one => vec![one],
+    };
+    let mut found = Vec::new();
+    for text in given.into_iter().filter_map(Value::as_str).map(str::trim) {
+        if !text.is_empty() && !found.contains(&text) {
+            found.push(text);
+        }
+    }
+    found
+}
+
+/// The answer of a tool given several things at once: one block per thing, its label then
+/// its text, or why it failed, so one failure doesn't hide the others. Fails only when
+/// every one failed.
+pub(super) fn several(blocks: Vec<(String, Result<String>)>) -> Result<String> {
+    let all_failed = blocks.iter().all(|(_, result)| result.is_err());
+    let text = blocks
+        .into_iter()
+        .map(|(label, result)| match result {
+            Ok(text) => format!("{label}:\n{text}"),
+            Err(err) => {
+                if !is_user_error(&err) {
+                    warn!("a chat tool failed for {label}: {err:#}");
+                }
+                format!("{label}: Error: {err:#}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    if all_failed {
+        return Err(user_error(text));
+    }
+    Ok(text)
+}
+
+/// A note that only the first `max` of the `given` things were done (`what`: "links were
+/// opened"), or nothing.
+pub(super) fn left_out_note(given: usize, max: usize, what: &str) -> String {
+    if given <= max {
+        return String::new();
+    }
+    format!(
+        "\n\n[Only the first {max} {what}; {} left out. Ask again for the rest.]",
+        given - max
+    )
+}
+
 async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<String> {
     let Some(guild_id) = asker.guild else {
-        let user = get_user(&ctx.http, asker.user).await?;
+        // A DM has no member list to search by name, so only a mention or ID finds someone.
+        let id = match user {
+            None => asker.user,
+            Some(query) => parse_user_id(query).ok_or_else(|| {
+                user_error("In a DM I can only find people by mention or user ID.")
+            })?,
+        };
+        let user = get_user(&ctx.http, id)
+            .await
+            .map_err(|_| user_error(format!("There's nobody with ID {id}.")))?;
         return Ok(format!(
             "{} (@{}, ID {})",
             display_name(&user),
@@ -394,28 +479,6 @@ fn activity_line(activity: &Activity) -> Option<String> {
     Some(line)
 }
 
-async fn recent_messages(ctx: &BotCtx, asker: &Asker, count: u64) -> Result<String> {
-    let mut messages = ctx
-        .http
-        .channel_messages(asker.channel)
-        .before(asker.message)
-        .limit(count as u16)
-        .await?
-        .models()
-        .await?;
-    if messages.is_empty() {
-        return Ok("There are no earlier messages.".to_string());
-    }
-    // Discord returns newest first.
-    messages.reverse();
-    let zone = home_zone(ctx, asker.user).await;
-    let mut lines = Vec::new();
-    for m in &messages {
-        lines.push(format_message(ctx, m, zone).await);
-    }
-    Ok(lines.join("\n"))
-}
-
 /// "[2026-10-09 14:02] Cherry: text (2 attachments: cat.png, notes.pdf)"
 pub(super) async fn format_message(ctx: &BotCtx, msg: &Message, zone: Tz) -> String {
     format_message_up_to(ctx, msg, zone, MAX_MESSAGE_CHARS).await
@@ -490,116 +553,102 @@ fn reaction_text(reactions: &[(String, u64, bool)]) -> String {
     format!(" [reactions: {}]", list.join(", "))
 }
 
-/// The link that opens a message in Discord.
-pub(super) fn message_link(
-    guild: Option<GuildId>,
-    channel: ChannelId,
-    message: MessageId,
-) -> String {
-    let guild = guild.map_or("@me".to_string(), |g| g.to_string());
-    format!("https://discord.com/channels/{guild}/{channel}/{message}")
-}
-
-/// The (server, channel, message) of a message link. The server is `None` for DMs.
-pub(super) fn parse_link(link: &str) -> Option<(Option<u64>, u64, u64)> {
-    let url = reqwest::Url::parse(link.trim_matches(['<', '>'])).ok()?;
-    let host = url.host_str()?;
-    if !(host.ends_with("discord.com") || host.ends_with("discordapp.com")) {
-        return None;
-    }
-    let parts: Vec<&str> = url.path_segments()?.collect();
-    let ["channels", guild, channel, message] = parts.as_slice() else {
-        return None;
-    };
-    let guild = if *guild == "@me" {
-        None
-    } else {
-        Some(guild.parse().ok()?)
-    };
-    // Discord IDs are never 0, and twilight panics on an ID of 0.
-    let channel: u64 = channel.parse().ok().filter(|id| *id != 0)?;
-    let message: u64 = message.parse().ok().filter(|id| *id != 0)?;
-    Some((guild, channel, message))
-}
-
-/// The Discord message links in `text`, in order, each once. Finds them bare, as `<link>`
-/// and as `[text](link)`, and writes each the plain way (`https://discord.com/channels/...`),
-/// so nothing else that was in the link comes along.
-pub(super) fn find_message_links(text: &str) -> Vec<String> {
-    let mut found = Vec::new();
-    let words =
-        text.split(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')' | '[' | ']'));
-    for word in words {
-        // "look at https://discord.com/channels/1/2/3!" ends a sentence with the link.
-        let word = word.trim_end_matches(['.', ',', '!', '?', ':', ';']);
-        let Some((guild, channel, message)) = parse_link(word) else {
-            continue;
-        };
-        let link = message_link(
-            guild.map(GuildId::new),
-            ChannelId::new(channel),
-            MessageId::new(message),
-        );
-        if !found.contains(&link) {
-            found.push(link);
-        }
-    }
-    found
-}
-
-/// The message `link` points to, if she may read the place it's in ([`can_read`]).
-pub(super) async fn linked_message(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<Message> {
-    let (guild, channel, message) =
-        parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
-    let channel = ChannelId::new(channel);
-    if let Some(why) = why_not_readable(ctx, asker, guild, channel).await? {
-        info!(%channel, "not opening a linked message: {why}");
-        return Err(user_error(why));
-    }
-    get_message(&ctx.http, channel, MessageId::new(message))
-        .await
-        .map_err(|err| {
-            // Deleted, or the bot lacks View Channel or Read Message History there.
-            warn!(%channel, %message, "couldn't load a linked message: {err:#}");
-            user_error("I couldn't load that message. It may be deleted, or I may not have access to that channel.")
-        })
-}
-
 /// A linked message as the model reads it: [`format_message`] with its whole text.
 pub(super) async fn format_linked(ctx: &BotCtx, asker: &Asker, msg: &Message) -> String {
     let zone = home_zone(ctx, asker.user).await;
     format_message_up_to(ctx, msg, zone, MAX_LINKED_CHARS).await
 }
 
-async fn message_from_link(ctx: &BotCtx, asker: &Asker, link: &str) -> Result<String> {
-    let msg = linked_message(ctx, asker, link).await?;
-    Ok(format_linked(ctx, asker, &msg).await)
-}
-
-/// At most this many pictures, GIFs or videos of a message are shown by `get_message`.
+/// Most messages one `get_message` call opens.
+const MAX_LINKS: usize = 5;
+/// At most this many pictures, GIFs or videos are shown by one `get_message` call, shared
+/// between its messages ([`share_pictures`]).
 const LINKED_PICTURES: usize = 4;
 /// Each is shrunk to fit in this many pixels: enough to read a screenshot.
 const LINKED_PICTURE_SIDE: u32 = 1024;
 /// A GIF or video shows at most this many frame grids.
 const LINKED_GRIDS: usize = 2;
 
-/// `get_message` with the message's pictures, GIFs and videos for the model to look at.
+/// `get_message`: the messages the call links (`links`, or the older `link`), opened at
+/// once, with their pictures, GIFs and videos for the model to look at. A link that can't
+/// be opened says why without failing the others.
 pub(super) async fn message_with_pictures(
     ctx: &BotCtx,
     asker: &Asker,
     args: &Value,
 ) -> Result<ToolReply> {
-    let link = args["link"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| user_error("`link` is required."))?;
-    let msg = linked_message(ctx, asker, link).await?;
-    let mut text = format_linked(ctx, asker, &msg).await;
-    let found = media::find_media(&msg);
+    let links = list_arg(args, "links", "link");
+    if links.is_empty() {
+        return Err(user_error("`links` is required."));
+    }
+    let given = links.len();
+    let links = &links[..given.min(MAX_LINKS)];
+    let messages = join_all(links.iter().map(|link| linked_message(ctx, asker, link))).await;
+    let counts: Vec<usize> = messages
+        .iter()
+        .map(|msg| msg.as_ref().map_or(0, |msg| media::find_media(msg).len()))
+        .collect();
+    let shares = share_pictures(&counts, LINKED_PICTURES);
+    let shown =
+        messages
+            .into_iter()
+            .zip(shares)
+            .zip(links)
+            .map(|((msg, share), link)| async move {
+                let msg = msg?;
+                Ok(show_message(ctx, asker, link, &msg, share).await)
+            });
+    let shown: Vec<Result<(String, Vec<ModelImage>)>> = join_all(shown).await;
+
+    // One link answers as it always did: the message, or the error.
+    if links.len() == 1 {
+        let (text, images) = shown.into_iter().next().expect("one link")?;
+        return Ok(ToolReply {
+            text,
+            images,
+            files: Vec::new(),
+        });
+    }
+    let mut images = Vec::new();
+    let mut with_pictures = 0;
+    let mut blocks = Vec::new();
+    for (i, (result, link)) in shown.into_iter().zip(links).enumerate() {
+        let label = format!("Message {} ({link})", i + 1);
+        blocks.push((
+            label,
+            result.map(|(text, loaded)| {
+                with_pictures += usize::from(!loaded.is_empty());
+                images.extend(loaded);
+                text
+            }),
+        ));
+    }
+    let mut text = several(blocks)?;
+    text.push_str(&left_out_note(given, MAX_LINKS, "links were opened"));
+    if with_pictures > 1 {
+        text.push_str("\n\n[The pictures below are in the order of the messages.]");
+    }
+    Ok(ToolReply {
+        text,
+        images,
+        files: Vec::new(),
+    })
+}
+
+/// One opened message for `get_message`: its whole text with a note on its pictures, and
+/// the first `share` of them loaded.
+async fn show_message(
+    ctx: &BotCtx,
+    asker: &Asker,
+    link: &str,
+    msg: &Message,
+    share: usize,
+) -> (String, Vec<ModelImage>) {
+    let mut text = format_linked(ctx, asker, msg).await;
+    let found = media::find_media(msg);
     let loads = found
         .iter()
-        .take(LINKED_PICTURES)
+        .take(share)
         .map(|m| media::load_small(m, LINKED_PICTURE_SIDE, LINKED_GRIDS));
     let mut images = Vec::new();
     let mut failed = 0;
@@ -612,12 +661,29 @@ pub(super) async fn message_with_pictures(
             }
         }
     }
-    text.push_str(&picture_note(found.len(), LINKED_PICTURES, failed));
-    Ok(ToolReply {
-        text,
-        images,
-        files: Vec::new(),
-    })
+    text.push_str(&picture_note(found.len(), share, failed));
+    (text, images)
+}
+
+/// How many pictures each message may show when they have `counts` pictures and the call
+/// may show `budget` in all: one each in turn, so every message with pictures gets one
+/// before any gets a second.
+fn share_pictures(counts: &[usize], budget: usize) -> Vec<usize> {
+    let mut shares = vec![0; counts.len()];
+    let mut left = budget;
+    loop {
+        let mut gave = false;
+        for (share, &count) in shares.iter_mut().zip(counts) {
+            if left > 0 && *share < count {
+                *share += 1;
+                left -= 1;
+                gave = true;
+            }
+        }
+        if !gave {
+            return shares;
+        }
+    }
 }
 
 /// What the model is told about a message's `found` pictures when at most `shown` are
@@ -627,7 +693,12 @@ fn picture_note(found: usize, shown: usize, failed: usize) -> String {
     if found == 0 {
         return String::new();
     }
+    let word = if found == 1 { "picture" } else { "pictures" };
     let shown = found.min(shown);
+    if shown == 0 {
+        // The other messages of the same call used up the pictures.
+        return format!("\n[{found} {word}: none shown, the call's limit was used up]");
+    }
     let mut parts = vec![if shown == failed {
         "none could be shown".to_string()
     } else {
@@ -639,69 +710,7 @@ fn picture_note(found: usize, shown: usize, failed: usize) -> String {
     if found > shown {
         parts.push(format!("{} more left out", found - shown));
     }
-    let word = if found == 1 { "picture" } else { "pictures" };
     format!("\n[{found} {word}: {}]", parts.join(", "))
-}
-
-/// Whether she may read messages in `channel` for the asker (Cherry's rule): in a DM only
-/// the DM itself; in a server, any channel of the same server that chat isn't turned off in
-/// by the config (`[features.chat]` gating, a thread by its parent channel too). Whether
-/// the asker can see the channel doesn't matter. `guild` is the server a link names.
-pub(super) async fn can_read(
-    ctx: &BotCtx,
-    asker: &Asker,
-    guild: Option<u64>,
-    channel: ChannelId,
-) -> Result<bool> {
-    Ok(why_not_readable(ctx, asker, guild, channel)
-        .await?
-        .is_none())
-}
-
-/// Why she may not read `channel` for the asker ([`can_read`]), or `None` when she may.
-/// Each reason is its own sentence, so her answer (and the log) says which check said no.
-async fn why_not_readable(
-    ctx: &BotCtx,
-    asker: &Asker,
-    guild: Option<u64>,
-    channel: ChannelId,
-) -> Result<Option<String>> {
-    if channel == asker.channel {
-        return Ok(None);
-    }
-    let Some(guild_id) = asker.guild else {
-        return Ok(Some("In a DM I can only read this DM.".to_string()));
-    };
-    let Some(link_guild) = guild else {
-        return Ok(Some("That message is in someone's DM with me.".to_string()));
-    };
-    if guild_id.get() != link_guild {
-        return Ok(Some(format!(
-            "That message is in another server ({link_guild}, this one is {guild_id})."
-        )));
-    }
-    let target = get_channel(&ctx.http, channel).await?;
-    // The link's server part is just text, so check the channel really is in the
-    // asker's server. Otherwise a link could reach into another server.
-    if target.guild_id != Some(guild_id) {
-        return Ok(Some(format!(
-            "The channel {channel} is in another server ({:?}).",
-            target.guild_id.map(|g| g.get())
-        )));
-    }
-    // A thread also counts as its parent channel; the parent comes from Discord, since
-    // archived threads aren't in the cache. Any other channel's parent is its category,
-    // which the config's channel lists don't mean.
-    let parent = target.parent_id.filter(|_| target.kind.is_thread());
-    if !ctx.gate("chat").allows(asker.guild, channel, parent) {
-        let parent = parent
-            .map(|p| format!(" (thread of {p})"))
-            .unwrap_or_default();
-        return Ok(Some(format!(
-            "Chat is turned off in channel {channel}{parent} by the bot's config."
-        )));
-    }
-    Ok(None)
 }
 
 async fn pinned_messages(ctx: &BotCtx, asker: &Asker) -> Result<String> {
@@ -875,48 +884,6 @@ Category Voice:
     }
 
     #[test]
-    fn message_links() {
-        assert_eq!(
-            parse_link("https://discord.com/channels/1/2/3"),
-            Some((Some(1), 2, 3))
-        );
-        assert_eq!(
-            parse_link("<https://ptb.discord.com/channels/@me/2/3>"),
-            Some((None, 2, 3))
-        );
-        assert_eq!(
-            parse_link("https://discordapp.com/channels/1/2/3"),
-            Some((Some(1), 2, 3))
-        );
-        assert_eq!(parse_link("https://example.com/channels/1/2/3"), None);
-        assert_eq!(parse_link("https://discord.com/channels/1/2"), None);
-        assert_eq!(parse_link("https://discord.com/channels/1/0/0"), None);
-    }
-
-    #[test]
-    fn finds_message_links() {
-        let text = "look https://discord.com/channels/1/2/3 and <https://discord.com/channels/1/2/4>, \
-                    [this](https://ptb.discord.com/channels/@me/5/6?x=\"y) https://discord.com/channels/1/2/3. \
-                    but not https://discord.com/channels/1/2 or https://example.com/channels/1/2/3";
-        assert_eq!(
-            find_message_links(text),
-            [
-                "https://discord.com/channels/1/2/3",
-                "https://discord.com/channels/1/2/4",
-                "https://discord.com/channels/@me/5/6",
-            ]
-        );
-        assert!(find_message_links("no links here").is_empty());
-    }
-
-    #[test]
-    fn links_to_messages() {
-        let link = message_link(Some(GuildId::new(1)), ChannelId::new(2), MessageId::new(3));
-        assert_eq!(link, "https://discord.com/channels/1/2/3");
-        assert_eq!(parse_link(&link), Some((Some(1), 2, 3)));
-    }
-
-    #[test]
     fn time_format() {
         let now = DateTime::from_timestamp(1_791_500_000, 0).unwrap();
         assert_eq!(
@@ -934,5 +901,54 @@ Category Voice:
             "\n[6 pictures: 3 shown below, 1 couldn't be loaded, 2 more left out]"
         );
         assert_eq!(picture_note(2, 4, 2), "\n[2 pictures: none could be shown]");
+        // Other messages of the same call used up the pictures.
+        assert_eq!(
+            picture_note(2, 0, 0),
+            "\n[2 pictures: none shown, the call's limit was used up]"
+        );
+    }
+
+    #[test]
+    fn list_arg_takes_a_list_one_string_or_the_old_field() {
+        let args = json!({"links": [" a ", "b", "", "a", 3]});
+        assert_eq!(list_arg(&args, "links", "link"), ["a", "b"]);
+        let args = json!({"links": "a"});
+        assert_eq!(list_arg(&args, "links", "link"), ["a"]);
+        // Saved conversations replay calls made with the old single field.
+        let args = json!({"link": " a "});
+        assert_eq!(list_arg(&args, "links", "link"), ["a"]);
+        assert!(list_arg(&json!({}), "links", "link").is_empty());
+        assert!(list_arg(&json!({"links": []}), "links", "link").is_empty());
+    }
+
+    #[test]
+    fn pictures_are_shared_one_each_in_turn() {
+        assert_eq!(share_pictures(&[6], 4), [4]);
+        assert_eq!(share_pictures(&[1, 1], 4), [1, 1]);
+        assert_eq!(share_pictures(&[5, 0, 1], 4), [3, 0, 1]);
+        assert_eq!(share_pictures(&[3, 3, 3, 3, 3], 4), [1, 1, 1, 1, 0]);
+        assert_eq!(share_pictures(&[0, 0], 4), [0, 0]);
+        assert_eq!(share_pictures(&[], 4), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn several_answers_keep_going_past_a_failure() {
+        let text = several(vec![
+            ("a".to_string(), Ok("found a".to_string())),
+            ("b".to_string(), Err(user_error("no b"))),
+        ])
+        .unwrap();
+        assert_eq!(text, "a:\nfound a\n\nb: Error: no b");
+        let err = several(vec![("b".to_string(), Err(user_error("no b")))]).unwrap_err();
+        assert_eq!(err.to_string(), "b: Error: no b");
+    }
+
+    #[test]
+    fn left_out_note_only_past_the_cap() {
+        assert_eq!(left_out_note(5, 5, "links were opened"), "");
+        assert_eq!(
+            left_out_note(7, 5, "links were opened"),
+            "\n\n[Only the first 5 links were opened; 2 left out. Ask again for the rest.]"
+        );
     }
 }

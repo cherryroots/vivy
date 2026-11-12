@@ -41,9 +41,10 @@ const MAX_ROUNDS: usize = 6;
 /// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
 /// someone decides it's safe here. Left out: anything that acts for a person (reminders),
 /// and `list_channels`, which lists what one person can see, not everyone here.
-/// `get_message` and `search_messages` reach the channels chat may read (`tools::can_read`). `memory`
-/// is in: what she saves is her own decision. `tinyfish_search` and `tinyfish_fetch` only
-/// read the web, like the providers' own web tools, which chime-ins have too.
+/// `get_message`, `search_messages` and `read_recent_messages` reach the channels chat may
+/// read (`tools::can_read`). `memory` is in: what she saves is her own decision.
+/// `tinyfish_search` and `tinyfish_fetch` only read the web, like the providers' own web
+/// tools, which chime-ins have too.
 const UNPROMPTED_TOOLS: &[&str] = &[
     "get_current_time",
     "get_channel_info",
@@ -469,7 +470,12 @@ mod tests {
 
     #[test]
     fn no_tools_that_act_for_someone() {
-        for name in ["create_reminder", "cancel_reminder", "list_reminders"] {
+        for name in [
+            "create_reminder",
+            "edit_reminder",
+            "cancel_reminder",
+            "list_reminders",
+        ] {
             assert!(!UNPROMPTED_TOOLS.contains(&name), "{name}");
         }
     }

@@ -564,6 +564,35 @@ pub async fn load_small(
     Ok(small)
 }
 
+/// A still picture from a link someone gave (not one found in a message): downloaded like
+/// the rest (local and private addresses refused, at most 20 MB), its type read from its
+/// bytes, since a link may not say. JPEG, PNG and WebP come as they are; a GIF gives its
+/// first frame and other picture types are converted to PNG.
+pub async fn load_still(url: &str) -> anyhow::Result<ModelImage> {
+    let data = download(url, MAX_IMAGE_BYTES).await?;
+    let mime = match image::guess_format(&data) {
+        Ok(image::ImageFormat::Png) => "image/png",
+        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
+        Ok(image::ImageFormat::WebP) => "image/webp",
+        Ok(image::ImageFormat::Gif) => {
+            let png = first_frame_png(data).await?;
+            return Ok(ModelImage {
+                mime: "image/png",
+                data: png,
+            });
+        }
+        Ok(_) => {
+            let png = frames::to_png(&data).await?;
+            return Ok(ModelImage {
+                mime: "image/png",
+                data: png,
+            });
+        }
+        Err(_) => bail!("it isn't a picture (a web page? Use the picture's own link)"),
+    };
+    Ok(ModelImage { mime, data })
+}
+
 /// `image` shrunk to fit in `max_side` × `max_side` pixels, as a PNG. One that already fits
 /// is left as it is.
 async fn shrink(image: ModelImage, max_side: u32) -> anyhow::Result<ModelImage> {

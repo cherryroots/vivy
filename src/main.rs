@@ -300,11 +300,11 @@ async fn run_shard(bot: BotCtx, mut shard: Shard, number: usize, started: Arc<At
         bot.cache.update(&event);
         bot.gateway
             .record_latency(number, shard.latency().average());
-        if let Event::Ready(ready) = &event {
-            if !started.swap(true, Ordering::SeqCst) {
-                let guilds = ready.guilds.iter().map(|guild| guild.id).collect();
-                on_first_ready(&bot, guilds).await;
-            }
+        if let Event::Ready(ready) = &event
+            && !started.swap(true, Ordering::SeqCst)
+        {
+            let guilds = ready.guilds.iter().map(|guild| guild.id).collect();
+            on_first_ready(&bot, guilds).await;
         }
         dispatcher::handle_event(&bot, event).await;
     }

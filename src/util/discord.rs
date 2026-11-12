@@ -530,6 +530,21 @@ pub async fn react(
     Ok(())
 }
 
+/// Takes the bot's own reaction `emoji` off a message again (written as for [`react`]).
+/// Only ever the bot's own: other people's reactions stay.
+pub async fn unreact(
+    http: &Http,
+    channel: ChannelId,
+    message: MessageId,
+    emoji: &str,
+) -> anyhow::Result<()> {
+    let reaction = parse_reaction(emoji).with_context(|| format!("{emoji:?} isn't an emoji"))?;
+    http.delete_current_user_reaction(channel, message, &reaction)
+        .await
+        .context("removing the bot's reaction")?;
+    Ok(())
+}
+
 /// Takes a reaction someone added away again.
 pub async fn remove_reaction(http: &Http, reaction: &GatewayReaction) -> anyhow::Result<()> {
     let emoji = match &reaction.emoji {

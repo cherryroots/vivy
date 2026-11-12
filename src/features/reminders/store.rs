@@ -234,6 +234,43 @@ pub fn delete_pending(conn: &Connection, id: i64, user_id: u64) -> rusqlite::Res
     Ok(deleted > 0)
 }
 
+/// A new time for a pending reminder: when it's due, and how it repeats from then on
+/// (`None` makes it a one-off).
+#[derive(Debug, Clone)]
+pub struct Reschedule {
+    pub fire_at: i64,
+    pub repeat: Option<String>,
+}
+
+/// Changes a pending reminder of `user_id`: its text, its time, or both. `None` keeps
+/// that part as it is; the channel, images and link stay. A new time also starts its
+/// sending over (`next_try_at`, `attempts`), so a reminder that was failing to send is
+/// tried fresh at the new time. One UPDATE that only matches the owner's pending
+/// reminder, like [`delete_pending`]. Returns whether it was changed.
+pub fn edit_pending(
+    conn: &Connection,
+    id: i64,
+    user_id: u64,
+    message: Option<&str>,
+    when: Option<&Reschedule>,
+) -> rusqlite::Result<bool> {
+    let changed = match when {
+        Some(when) => conn.execute(
+            "UPDATE reminders
+             SET message = coalesce(?3, message), fire_at = ?4, next_try_at = ?4,
+                 attempts = 0, repeat = ?5
+             WHERE id = ?1 AND user_id = ?2 AND sent_at IS NULL",
+            params![id, user_id, message, when.fire_at, when.repeat],
+        )?,
+        None => conn.execute(
+            "UPDATE reminders SET message = coalesce(?3, message)
+             WHERE id = ?1 AND user_id = ?2 AND sent_at IS NULL",
+            params![id, user_id, message],
+        )?,
+    };
+    Ok(changed > 0)
+}
+
 /// Deletes a reminder outright (after giving up on sending it).
 pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM reminders WHERE id = ?1", [id])?;
@@ -402,6 +439,56 @@ mod tests {
         let sent = add(&mut conn, &new(1, 100)).unwrap();
         mark_sent(&conn, sent, 100).unwrap();
         assert!(!delete_pending(&conn, sent, 1).unwrap());
+    }
+
+    #[test]
+    fn edit_only_own_pending() {
+        let mut conn = conn();
+        let mut weekly = new(1, 100);
+        weekly.repeat = Some("every monday at 9:00 UTC".into());
+        weekly.images = vec![Image {
+            filename: "a.png".into(),
+            data: vec![1],
+        }];
+        let id = add(&mut conn, &weekly).unwrap();
+
+        // Someone else's, or one that doesn't exist: nothing changes.
+        assert!(!edit_pending(&conn, id, 2, Some("mine now"), None).unwrap());
+        assert!(!edit_pending(&conn, 999, 1, Some("hello"), None).unwrap());
+
+        // Only the text: the time, the repeat and the images stay.
+        assert!(edit_pending(&conn, id, 1, Some("take out the trash"), None).unwrap());
+        let got = get(&conn, id).unwrap().unwrap();
+        assert_eq!(got.message, "take out the trash");
+        assert_eq!(got.fire_at, 100);
+        assert_eq!(got.repeat, weekly.repeat);
+        assert_eq!(got.images, weekly.images);
+
+        // A failing reminder with a new time: tried fresh at that time, with the new repeat.
+        mark_failed(&conn, id, 160).unwrap();
+        let daily = Reschedule {
+            fire_at: 500,
+            repeat: Some("every day at 9:00 UTC".into()),
+        };
+        assert!(edit_pending(&conn, id, 1, None, Some(&daily)).unwrap());
+        let got = get(&conn, id).unwrap().unwrap();
+        assert_eq!(got.message, "take out the trash");
+        assert_eq!((got.fire_at, got.attempts), (500, 0));
+        assert_eq!(got.repeat, daily.repeat);
+        assert_eq!(next_try_at(&conn).unwrap(), Some(500));
+
+        // A one-off time ends the repeat.
+        let once = Reschedule {
+            fire_at: 400,
+            repeat: None,
+        };
+        assert!(edit_pending(&conn, id, 1, None, Some(&once)).unwrap());
+        assert_eq!(get(&conn, id).unwrap().unwrap().repeat, None);
+        assert_eq!(next_try_at(&conn).unwrap(), Some(400));
+
+        // A delivered reminder can't be edited (snooze it instead).
+        mark_sent(&conn, id, 400).unwrap();
+        assert!(!edit_pending(&conn, id, 1, Some("too late"), None).unwrap());
     }
 
     #[test]

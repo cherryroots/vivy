@@ -5,10 +5,12 @@
 //! of the answer ([`ToolReply::files`]), so it goes out on her reply, with her words.
 //!
 //! With `pictures` she picks what to draw from, in order (the first is the base):
-//! `"message"` for the pictures in the asker's message and the message it replies to, and
-//! anyone's profile picture by mention, ID or name (`"me"` for her own). So she can change
-//! a picture ("put a hat on this", or replying to a picture she drew: "make it night"),
-//! draw from one, or mix several ("put Cherry's cat in Volt's picture").
+//! `"message"` for the pictures in the asker's message and the message it replies to, a
+//! Discord message link for the pictures of that message (one she found with search, say),
+//! a custom emoji, a picture's own link, and anyone's profile picture by mention, ID or name
+//! (`"me"` for her own). So she can change a picture ("put a hat on this", or replying to a
+//! picture she drew: "make it night"), draw from one, or mix several ("put Cherry's cat in
+//! Volt's picture").
 //!
 //! New pictures use `model` (Flare: fast, good for everyday pictures); pictures made from
 //! others use `edit_model` (Sunburst: the most precise at edits). Each one's cost counts
@@ -39,6 +41,7 @@ use crate::ai::{PictureRequest, ReplyFile, ToolDef, ToolReply};
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
 use crate::util::discord::{Message, Page, get_message, get_messages};
 use crate::util::media::{self, MediaKind, ModelImage};
+use crate::util::message_links::{linked_message, parse_link};
 use crate::util::people::{Lookup, profile_picture};
 use crate::util::search::snowflake_at;
 use crate::util::{env_key, month_start};
@@ -52,6 +55,8 @@ const PROFILE_SIZE: u32 = 1024;
 const FROM_MESSAGE: &str = "message";
 /// How many messages before and after one of Vivy's answers are checked for its pictures.
 const NEIGHBOURS: u16 = 4;
+/// Custom emoji to draw from are fetched this many pixels wide.
+const EMOJI_SIZE: u32 = 512;
 
 /// `[features.drawing]` settings.
 #[derive(Debug, Deserialize)]
@@ -183,19 +188,38 @@ fn own_run(ctx: &BotCtx, messages: Vec<Message>) -> impl Iterator<Item = Message
 enum Source {
     /// The pictures in the asker's message and the one it replies to.
     Message,
+    /// The still pictures of the message a Discord message link points to.
+    Link(String),
+    /// A custom emoji, by its ID (from its code, `<:name:id>`).
+    Emoji(u64),
+    /// A custom emoji of the asker's server, by its name (`:name:`).
+    EmojiName(String),
+    /// A picture's own link, like `https://example.com/cat.png`.
+    Web(String),
     /// Someone's profile picture: a mention, user ID, name or "me".
     Profile(String),
 }
 
-/// The sources in `pictures`, in order, each once.
+/// The sources in `pictures`, in order, each once. Which kind each is comes from how it's
+/// written: a message link, an emoji code, a web link; anything else is a person.
 fn sources(args: &Value) -> Vec<Source> {
     let mut sources = Vec::new();
     let names = args["pictures"].as_array().into_iter().flatten();
     for name in names.filter_map(Value::as_str).map(str::trim) {
-        let source = match name {
-            "" => continue,
-            _ if name.eq_ignore_ascii_case(FROM_MESSAGE) => Source::Message,
-            _ => Source::Profile(name.to_string()),
+        let source = if name.is_empty() {
+            continue;
+        } else if name.eq_ignore_ascii_case(FROM_MESSAGE) {
+            Source::Message
+        } else if parse_link(name).is_some() {
+            Source::Link(name.to_string())
+        } else if let Some(id) = emoji_id(name) {
+            Source::Emoji(id)
+        } else if let Some(emoji) = emoji_name(name) {
+            Source::EmojiName(emoji.to_string())
+        } else if let Some(link) = web_link(name) {
+            Source::Web(link.to_string())
+        } else {
+            Source::Profile(name.to_string())
         };
         if !sources.contains(&source) {
             sources.push(source);
@@ -204,8 +228,85 @@ fn sources(args: &Value) -> Vec<Source> {
     sources
 }
 
+/// The ID in a custom emoji's code: `<:name:id>`, or `<a:name:id>` for an animated one.
+fn emoji_id(text: &str) -> Option<u64> {
+    let inner = text.strip_prefix('<')?.strip_suffix('>')?;
+    let inner = inner
+        .strip_prefix("a:")
+        .or_else(|| inner.strip_prefix(':'))?;
+    let (name, id) = inner.split_once(':')?;
+    if name.is_empty() {
+        return None;
+    }
+    // Discord IDs are never 0, and twilight panics on an ID of 0.
+    id.parse().ok().filter(|id| *id != 0)
+}
+
+/// The name in `:name:`, how people write a server's emoji without its code. Emoji names
+/// are 2 to 32 letters, digits and underscores.
+fn emoji_name(text: &str) -> Option<&str> {
+    let name = text.strip_prefix(':')?.strip_suffix(':')?;
+    let valid = (2..=32).contains(&name.len())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    valid.then_some(name)
+}
+
+/// A web link (http or https), without the `<>` Discord lets people put around one.
+fn web_link(text: &str) -> Option<&str> {
+    let link = text.trim_start_matches('<').trim_end_matches('>');
+    let lower = link.to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://")).then_some(link)
+}
+
+/// Where a custom emoji's picture is. A PNG is a still, even of an animated emoji (its
+/// first frame).
+fn emoji_url(id: u64) -> String {
+    format!("https://cdn.discordapp.com/emojis/{id}.png?size={EMOJI_SIZE}")
+}
+
+/// The ID of the asker's server's emoji called `name` (any case), from the cache.
+fn server_emoji(ctx: &BotCtx, asker: &Asker, name: &str) -> Option<u64> {
+    let ids = ctx.cache.guild_emojis(asker.guild?)?;
+    let found = ids
+        .iter()
+        .filter_map(|&id| ctx.cache.emoji(id))
+        .find(|emoji| emoji.name().eq_ignore_ascii_case(name))?;
+    Some(found.id().get())
+}
+
+/// The still pictures in `msg` itself (not GIFs or videos), downloaded. Ones that fail are
+/// left out and logged.
+async fn still_pictures(msg: &Message) -> Vec<ModelImage> {
+    let found = media::find_media(msg)
+        .into_iter()
+        .filter(|media| media.kind == MediaKind::Image)
+        .take(MAX_PICTURES);
+    let mut pictures = Vec::new();
+    for found in found {
+        match media::load_for_model(&found).await {
+            Ok(loaded) => pictures.extend(loaded),
+            Err(err) => warn!("couldn't download a picture to draw from: {err:#}"),
+        }
+    }
+    pictures
+}
+
+/// The picture at `url` (a web link or an emoji's), downloaded safely. A failure is told to
+/// the model with why: not a picture, too big, a private address, not found...
+async fn picture_at(url: &str) -> Result<Vec<ModelImage>> {
+    match media::load_still(url).await {
+        Ok(picture) => Ok(vec![picture]),
+        Err(err) => {
+            warn!(url, "couldn't load a picture to draw from: {err:#}");
+            Err(user_error(format!(
+                "I couldn't use the picture at {url}: {err:#}. Leave it out of `pictures`, or try another link."
+            )))
+        }
+    }
+}
+
 /// Downloads the pictures `source` names. Errors are for the model: a person it can't find,
-/// or a message without pictures.
+/// a message without pictures, a link she may not open or can't download.
 async fn load_pictures(ctx: &BotCtx, asker: &Asker, source: &Source) -> Result<Vec<ModelImage>> {
     match source {
         Source::Profile(who) => {
@@ -235,6 +336,27 @@ async fn load_pictures(ctx: &BotCtx, asker: &Asker, source: &Source) -> Result<V
             }
             Ok(pictures)
         }
+        Source::Link(link) => {
+            // The same rule as chat's `get_message`: this server or this DM only.
+            let msg = linked_message(ctx, asker, link).await?;
+            let pictures = still_pictures(&msg).await;
+            if pictures.is_empty() {
+                return Err(user_error(format!(
+                    "the message at {link} has no still pictures I could load (GIFs and videos aren't used). Leave it out of `pictures`."
+                )));
+            }
+            Ok(pictures)
+        }
+        Source::Emoji(id) => picture_at(&emoji_url(*id)).await,
+        Source::EmojiName(name) => {
+            let id = server_emoji(ctx, asker, name).ok_or_else(|| {
+                user_error(format!(
+                    "this server has no emoji called :{name}:. Use the emoji's code (<:name:id>) instead."
+                ))
+            })?;
+            picture_at(&emoji_url(id)).await
+        }
+        Source::Web(url) => picture_at(url).await,
     }
 }
 
@@ -258,7 +380,7 @@ impl Feature for Drawing {
             name: TOOL,
             description: "Draw a picture; it goes out attached to your answer. Use it when someone asks you for a picture (to draw, paint or make one) or to change one; not on your own. It makes real pictures: don't draw with code instead. \
 Write the prompt in English as a clear description of the whole picture: the subject, what's happening, the style (photo, anime, watercolor, pixel art...), colors, light and framing. Put any words that should appear in the picture in quotes. \
-To change a picture or draw from some, list them in `pictures`, and say in the prompt what to do with each (\"keep the first picture, put the character from the second next to him\"). \"message\" is the pictures in the asker's message and the message it replies to (\"put a hat on this\", a reply to a picture you drew: \"make it night\"); a mention, user ID or name is that person's profile picture, and \"me\" is yours. Use them as you see fit: one profile picture as the base and another's character in it, someone's picture redrawn in a new style, or a new picture with people in it. \
+To change a picture or draw from some, list them in `pictures`, and say in the prompt what to do with each (\"keep the first picture, put the character from the second next to him\"). \"message\" is the pictures in the asker's message and the message it replies to (\"put a hat on this\", a reply to a picture you drew: \"make it night\"); a mention, user ID or name is that person's profile picture, and \"me\" is yours; a Discord message link is the pictures in that message (one you found with search_messages, or from earlier); a custom emoji (<:name:id>) is its picture; a picture's own https link is that picture. Use them as you see fit: one profile picture as the base and another's character in it, someone's picture redrawn in a new style, or a new picture with people in it. \
 To draw someone without changing their picture, you can also look at it first (look_at_profile_picture) and describe their looks in the prompt. \
 Drawing takes up to a minute. The picture is your answer, so write at most a short line with it.",
             parameters: json!({
@@ -269,7 +391,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                     "pictures": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Pictures to draw from, in order, the first being the base. Each is \"message\" (the pictures in the asker's message and the one it replies to), or someone's profile picture: a mention, user ID or name, or \"me\" for yours. Leave out for a new picture."
+                        "description": "Pictures to draw from, in order, the first being the base. Each is \"message\" (the pictures in the asker's message and the one it replies to), someone's profile picture (a mention, user ID or name, or \"me\" for yours), a Discord message link (its pictures), a custom emoji code, or a picture's https link. At most 4 pictures in all. Leave out for a new picture."
                     }
                 },
                 "required": ["prompt"]
@@ -318,6 +440,10 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
 
         let mut pictures: Vec<ModelImage> = Vec::new();
         for source in sources(args) {
+            // Enough already: the rest wouldn't be sent.
+            if pictures.len() >= MAX_PICTURES {
+                break;
+            }
             pictures.extend(load_pictures(ctx, asker, &source).await?);
         }
         pictures.truncate(MAX_PICTURES);
@@ -505,6 +631,53 @@ mod tests {
         );
         assert!(sources(&json!({})).is_empty());
         assert!(sources(&json!({"pictures": "message"})).is_empty());
+    }
+
+    #[test]
+    fn tells_links_and_emoji_from_people() {
+        let args = json!({"pictures": [
+            "https://discord.com/channels/1/2/3",
+            "<a:dance:456>",
+            "<:pog:123>",
+            ":pog:",
+            "<https://example.com/cat.png>",
+            "https://cdn.discordapp.com/attachments/1/2/x.png",
+            "Cherry",
+            ":)",
+            "<@123>",
+        ]});
+        assert_eq!(
+            sources(&args),
+            [
+                Source::Link("https://discord.com/channels/1/2/3".into()),
+                Source::Emoji(456),
+                Source::Emoji(123),
+                Source::EmojiName("pog".into()),
+                Source::Web("https://example.com/cat.png".into()),
+                Source::Web("https://cdn.discordapp.com/attachments/1/2/x.png".into()),
+                Source::Profile("Cherry".into()),
+                Source::Profile(":)".into()),
+                Source::Profile("<@123>".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn reads_emoji_codes() {
+        assert_eq!(emoji_id("<:pog:123>"), Some(123));
+        assert_eq!(emoji_id("<a:dance:456>"), Some(456));
+        assert_eq!(emoji_id("<:a:7>"), Some(7));
+        assert_eq!(emoji_id("<:pog:0>"), None);
+        assert_eq!(emoji_id("<::123>"), None);
+        assert_eq!(emoji_id("pog:123"), None);
+        assert_eq!(emoji_id("<@123>"), None);
+        assert_eq!(emoji_name(":big_cat2:"), Some("big_cat2"));
+        assert_eq!(emoji_name(":a:"), None);
+        assert_eq!(emoji_name(":two words:"), None);
+        assert_eq!(
+            emoji_url(456),
+            "https://cdn.discordapp.com/emojis/456.png?size=512"
+        );
     }
 
     #[test]
