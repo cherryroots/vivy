@@ -274,6 +274,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #163 | | Chat: private helpers in a message's Apps menu, answered by Claude Haiku (jobs `catch_up`, `explain`, `translate`): Catch me up summarizes the channel from that message on (up to 500 messages), Explain this says what a message means, Translate this translates it into the clicker's Discord language. `/catchup` summarizes since your last message here, or the last `hours`. Only the person who asked sees the answer; nothing is saved (`chat/apps.rs`). |
 | #164 | | Chat: `create_poll` posts a real Discord poll when someone asks for one (2 to 10 answers with optional emoji, 1 to 768 hours, single or multiple choice), sent as JSON since twilight's `Poll` has no `duration` (`chat/poll.rs`). Not offered in chime-ins. The bot needs the Create Polls permission. |
 | #165 | | Chat: the Apps menu helpers wrap the messages in `<messages>` tags and give who asks, their language and what to do in the system prompt. Explain this took the trailing "X asks what the marked message means" line for part of the message and explained it too. |
+| #166 | | Chat: she no longer narrates her reactions ("I put a reaction on this one. My reply: …"). The `react_to_message` description says the reaction speaks for itself, and the system prompt says to write the answer itself after the last tool, not announce it or describe what she did. Instructions only, no code change. |
 
 ## Not built yet
 
