@@ -22,7 +22,7 @@ const MAX_EMOJI: usize = 3;
 pub fn def() -> ToolDef {
     ToolDef {
         name: TOOL,
-        description: "Adds emoji reactions to a message, like people do on Discord: to the message you're answering, or to another message in this channel by its link. Use it now and then when a reaction fits, as well as your answer in words, not instead of it. Each emoji can be a plain one (😂) or one of this server's own, written as its code from list_server_emoji (<:name:123>). Usually one is enough; up to 3 are added in order. Set remove to take your own reactions back off.",
+        description: "Adds emoji reactions to a message, like people do on Discord: to the message you're answering, or to another message in this channel by its link. Use it now and then when a reaction fits, as well as your answer in words, not instead of it. The reaction speaks for itself: never mention it in your words or progress notes (no \"I put a reaction on this\"). Each emoji can be a plain one (😂) or one of this server's own, written as its code from list_server_emoji (<:name:123>). Usually one is enough; up to 3 are added in order. Set remove to take your own reactions back off.",
         parameters: json!({
             "type": "object",
             "properties": {
