@@ -180,6 +180,7 @@ Tools from other features:
 |---|---|---|
 | `create_reminder` | [reminders](reminders.md) | Creates a reminder; `when` is text like "in 2h30m" or "next friday" |
 | `list_reminders` | [reminders](reminders.md) | The asker's pending reminders, with IDs |
+| `edit_reminder` | [reminders](reminders.md) | Changes the time, the text or both of one of the asker's reminders, keeping its ID |
 | `cancel_reminder` | [reminders](reminders.md) | Deletes one of the asker's reminders |
 | `get_wheel_status` | [wheel](wheel.md) | The movie wheel's round, options, players, bets and payouts (read only) |
 | `memory` | [memory](memory.md) | View, create, str_replace, insert, delete and rename notes under `/memories` |
