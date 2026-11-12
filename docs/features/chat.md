@@ -165,7 +165,7 @@ In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji`, a 
 | Explain this | The 15 messages before it, the message it replies to, the message (marked →) and up to 3 of its pictures, GIFs or videos, made small (1024 px, one frame grid each) | A few sentences on what it means, in your Discord language |
 | Translate this | The 5 messages before it, the message and its pictures | The translation into your Discord language (the interaction's `locale`, named by `language_name`), with an optional line on a phrase that doesn't carry over |
 
-Each message is one line from `format_message` (time in your timezone, name, text cut to 600 characters, attachments, stickers, embeds), with its link for a catch-up. On Haiku 5.5 ($0.10 per million input tokens) 500 messages cost about a fifth of a cent. Answers longer than Discord's 2000 characters are split with `split_message`. Spend counts under the jobs' names on the status picture.
+The messages go inside `<messages>` tags, and everything about the request (who asks, their language, how many messages) goes in the system prompt, never after the messages: Haiku once read such a line as part of the last message and explained it too (#165). Each message is one line from `format_message` (time in your timezone, name, text cut to 600 characters, attachments, stickers, embeds), with its link for a catch-up. On Haiku 5.5 ($0.10 per million input tokens) 500 messages cost about a fifth of a cent. Answers longer than Discord's 2000 characters are split with `split_message`. Spend counts under the jobs' names on the status picture.
 
 Discord allows 5 message commands per app: Check Snail and these three make 4.
 
