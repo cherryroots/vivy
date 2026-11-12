@@ -32,6 +32,7 @@ All under `src/features/chat/`, in a good reading order:
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`; and, re-exported from `util::message_links` since drawing opens links too, `parse_link`, `find_message_links`, `linked_message`, `can_read`: which channels she may read for the asker) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels chat may read (`can_read`) |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
+| `poll.rs` | The `create_poll` tool: a Discord poll when someone asks for one |
 | `react.rs` | The `react_to_message` tool: her own emoji reactions while she answers |
 | `chime.rs` | Reading along without being mentioned, and maybe reacting to the last message |
 | `avatar.rs` | The `look_at_profile_picture` tool, which shows the model a profile picture |
@@ -189,6 +190,7 @@ Chat's own tools:
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
+| `create_poll` | `poll.rs` | Posts a real Discord poll in the channel, as its own message, when someone asks for one: a question (300 characters), 2 to 10 answers (55 characters each, each with an optional plain or server emoji), `hours` (1 to 768, default 24) and `multiple` (pick more than one). Twilight's `Poll` has an `expiry` but creating one takes a `duration`, so it's sent as JSON with `send_raw`; `payload` builds it and checks the limits (tested). Returns the poll's link. Not in chime-ins. Needs the Create Polls permission |
 | `react_to_message` | `react.rs` | Adds up to 3 emoji reactions (plain or the server's own) to the message she's answering, or to another message in the channel by its link; `remove` takes her own back off |
 
 Tools from other features:
@@ -240,8 +242,8 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | `migrations` | `store::MIGRATIONS` (four migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) for the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def` and `react::def`) |
-| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers` and `react_to_message` directly, the rest through `tools::run` |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def`, `react::def` and `poll::def`) |
+| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers`, `react_to_message` and `create_poll` directly, the rest through `tools::run` |
 | `run_tool_with_pictures` | `look_at_profile_picture` and `get_message`, which answer with pictures; every other tool goes to `run_tool`. Chat always calls this one, answers and chime-ins alike |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the emoji task |
