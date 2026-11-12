@@ -7,6 +7,7 @@
 //! - `store.rs`: the `chat_turns` and `chat_messages` tables
 //! - `tools.rs`: chat's own tools (time, channel, users, messages, pins, events)
 //! - `search.rs`: the `search_messages` tool
+//! - `recent.rs`: the `read_recent_messages` tool, a stretch of a channel's messages
 //! - `look_back.rs`: the `look_back_at_answers` tool, her own earlier answers step by step
 //! - `chime.rs`: reading along now and then without being mentioned, and maybe reacting
 //! - `emoji.rs`: the server's custom emoji, described once from their pictures
@@ -24,6 +25,7 @@ mod emoji;
 mod history;
 mod look_back;
 mod react;
+mod recent;
 mod search;
 mod store;
 mod tools;
