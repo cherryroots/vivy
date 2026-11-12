@@ -13,6 +13,7 @@
 //! - `look_back.rs`: the `look_back_at_answers` tool, her own earlier answers step by step
 //! - `chime.rs`: reading along now and then without being mentioned, and maybe reacting
 //! - `emoji.rs`: the server's custom emoji, described once from their pictures
+//! - `poll.rs`: the `create_poll` tool, a Discord poll when someone asks for one
 //! - `react.rs`: the `react_to_message` tool, her own reactions while she answers
 //! - `prompt.md`: the system prompt
 //!
@@ -27,6 +28,7 @@ mod chime;
 mod emoji;
 mod history;
 mod look_back;
+mod poll;
 mod react;
 mod recent;
 mod search;
@@ -106,6 +108,7 @@ impl Feature for Chat {
         defs.push(emoji::def());
         defs.push(look_back::def());
         defs.push(react::def());
+        defs.push(poll::def());
         defs
     }
 
@@ -124,6 +127,7 @@ impl Feature for Chat {
             "list_server_emoji" => "😀 Looking at the emoji…",
             look_back::TOOL => "🪞 Looking back at what I did…",
             react::TOOL => "✨ Reacting…",
+            poll::TOOL => "📊 Making a poll…",
             _ => return None,
         })
     }
@@ -139,6 +143,7 @@ impl Feature for Chat {
             "list_server_emoji" => emoji::list(ctx, asker).await,
             look_back::TOOL => look_back::run(ctx, asker, args).await,
             react::TOOL => react::run(ctx, asker, args).await,
+            poll::TOOL => poll::run(ctx, asker, args).await,
             _ => tools::run(ctx, asker, name, args).await,
         }
     }
