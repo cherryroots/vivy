@@ -149,7 +149,7 @@ Discord only shows a custom emoji written as its code, `<:name:123>` (`<a:name:1
 
 When a chime-in may react (a reaction roll), `emoji::for_chime_in` adds the server's emoji list, codes and descriptions as `list_server_emoji` gives them, after the instructions, so she can react with one of the server's own emoji without looking them up first. Read-only rolls don't get it. It costs about 20 input tokens per emoji on those rolls.
 
-In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji` (a plain one, a server emoji's code, or its bare name, through `emoji::reaction_code`) and an optional `link`, which must be a message in the same channel; without it the reaction goes on the message she's answering. The tool description says to use it as well as her words, not instead of them. Chime-ins don't get the tool (it isn't in `UNPROMPTED_TOOLS`); they keep `REACT`. Her own reactions don't trigger ❌ or 🔁, since the dispatcher skips the bot's own reactions.
+In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji`, a list of 1 to 3 (`MAX_EMOJI`), each a plain one, a server emoji's code, or its bare name, through `emoji::reaction_code`; an optional `link`, which must be a message in the same channel (without it the reactions go on the message she's answering); and an optional `remove`, which takes her own reactions back off instead (`util::discord::unreact`, Discord's delete-own-reaction call, so other people's reactions are never touched). The emoji go on in order, one call each; blanks and repeats are dropped, and more than 3 is refused rather than cut. Each emoji gets its own line in the result, so one that fails says why without stopping the rest; the call only fails when none worked. A single `emoji` string still works, so tool calls saved before the list replay. The tool description says to use it as well as her words, not instead of them, and that one is usually enough. Chime-ins don't get the tool (it isn't in `UNPROMPTED_TOOLS`); they keep `REACT`. Her own reactions don't trigger ❌ or 🔁, since the dispatcher skips the bot's own reactions, and taking one off triggers nothing, since no feature listens for removed reactions.
 
 ## Chat tools
 
@@ -172,7 +172,7 @@ Chat's own tools:
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
-| `react_to_message` | `react.rs` | Adds an emoji reaction (plain or the server's own) to the message she's answering, or to another message in the channel by its link |
+| `react_to_message` | `react.rs` | Adds up to 3 emoji reactions (plain or the server's own) to the message she's answering, or to another message in the channel by its link; `remove` takes her own back off |
 
 Tools from other features:
 
