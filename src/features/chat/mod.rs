@@ -2,6 +2,8 @@
 //! reply. Replying to an answer continues the conversation.
 //!
 //! - `answer.rs`: one answer: streaming, the status line, tool calls, files
+//! - `apps.rs`: private helpers in the Apps menu: Catch me up (and `/catchup`), Explain this,
+//!   Translate this
 //! - `channels.rs`: names for channel mentions and links in messages, threads included
 //! - `history.rs`: Discord messages to chat turns, and stored turns to model input
 //! - `store.rs`: the `chat_turns` and `chat_messages` tables
@@ -18,6 +20,7 @@
 //! and deletes it once it's done, 🔁 writes it again.
 
 mod answer;
+mod apps;
 mod avatar;
 mod channels;
 mod chime;
@@ -47,7 +50,7 @@ use tracing::{error, info, warn};
 use self::answer::{End, Job};
 use self::store::{NewTurn, StoredPart};
 use crate::ai::{ChatProvider, Input, Part, Role, ToolDef, ToolReply};
-use crate::core::{Asker, BotCtx, Feature, Mention, Result, Stat, user_error};
+use crate::core::{Asker, BotCtx, Command, Feature, Mention, Result, Stat, user_error};
 use crate::util::media;
 use crate::util::reply::LiveReply;
 
@@ -72,6 +75,15 @@ struct Running {
 impl Feature for Chat {
     fn name(&self) -> &'static str {
         "chat"
+    }
+
+    fn commands(&self) -> Vec<Command> {
+        vec![
+            apps::catch_me_up(),
+            apps::explain_this(),
+            apps::translate_this(),
+            apps::catchup(),
+        ]
     }
 
     fn migrations(&self) -> &'static [&'static str] {

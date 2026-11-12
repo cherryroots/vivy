@@ -61,7 +61,7 @@ pub struct ChatRequest {
     pub input: Input,
     pub tools: Vec<ToolDef>,  // the bot's own tools, always in the same order
     pub cache_key: String,    // requests with the same key share a cache ("discord:<channel>")
-    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games", "game_play"; picks the job's settings
+    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games", "catch_up", "explain", "translate"; picks the job's settings
 }
 ```
 
@@ -147,6 +147,7 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 |---|---|---|---|---|---|
 | `chat`, `chime` | main | main | yes | yes | Her answers and chime-in reactions. Chime-ins send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so they read the system prompt and tools from the same cache. Neither can change model: their history is saved and continued with the main one. |
 | `emoji` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | Describing a picture in one line. |
+| `catch_up`, `explain`, `translate` | Claude Haiku (OpenAI, Gemini: main) | low | no | no | The Apps menu helpers (`chat/apps.rs`): summing up, explaining or translating messages, privately. Plain reading, so the cheap model. |
 | `mood` | main | low | no | no | A short rewrite of her mood file. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
