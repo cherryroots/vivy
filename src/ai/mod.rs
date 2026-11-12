@@ -275,6 +275,8 @@ impl Job {
     /// Background jobs nobody waits on get only what they use:
     /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
     ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
+    /// - "catch_up", "explain", "translate": private answers from the Apps menu (chat's
+    ///   `apps.rs`), simple reading, so the cheap model at low effort too;
     /// - "mood": a short rewrite of her mood file, at low effort, in her own model;
     /// - "reflection", "diary": her own model and effort (they're her judgement and her
     ///   voice), with the web for looking things up, but no code;
@@ -284,6 +286,12 @@ impl Job {
         let off = Some(false);
         match job {
             "emoji" => Job {
+                model: cheap_model.map(str::to_string),
+                effort: Some("low".to_string()),
+                web: off,
+                code: off,
+            },
+            "catch_up" | "explain" | "translate" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
                 web: off,

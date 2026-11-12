@@ -330,7 +330,8 @@ async fn describe(ctx: &BotCtx, emoji: &Emoji) -> Result<String> {
     Ok(shorten(line, 150))
 }
 
-struct NoTools;
+/// For one-round requests: there are no tools to call.
+pub(super) struct NoTools;
 
 #[async_trait]
 impl ToolRunner for NoTools {

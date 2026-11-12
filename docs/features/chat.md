@@ -1,6 +1,6 @@
 # Chat
 
-Chat is how people talk to Vivy. Mention her with a question (with pictures, GIFs, videos or files if you like) and she answers in a reply that streams in as it's written. She can look things up with tools: the time, the channel, older messages, the server's emoji, reminders, her memory. Replying to one of her answers continues the conversation. Now and then she also reads along on her own and may react to a message with an emoji. She never posts a message nobody asked for: text chime-ins and check-ins were removed in #158 because people in the server didn't like them.
+Chat is how people talk to Vivy. Mention her with a question (with pictures, GIFs, videos or files if you like) and she answers in a reply that streams in as it's written. She can look things up with tools: the time, the channel, older messages, the server's emoji, reminders, her memory. Replying to one of her answers continues the conversation. Now and then she also reads along on her own and may react to a message with an emoji. She never posts a message nobody asked for: text chime-ins and check-ins were removed in #158 because people in the server didn't like them. In a message's Apps menu she can also catch you up, explain a message or translate it, privately.
 
 The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` module, described in [ai](../ai.md). This doc is about the Discord side.
 
@@ -12,6 +12,7 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - **🔁** on an answer: writes it again in the same messages.
 - The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
+- **Apps menu helpers** (right-click a message → Apps), private answers only you see: **Catch me up** summarizes the channel from that message on, **Explain this** says what a message means (an in-joke, a reference, a meme in a picture, a long post), **Translate this** translates it into your Discord language. `/catchup` summarizes what was said since your last message in the channel, or in the last `hours` (1 to 72). See [The Apps menu helpers](#the-apps-menu-helpers).
 - **Her owner** (whoever owns the bot's Discord application) can tell her what to do, even what nobody else can direct (her mood, her notes about herself, how she acts), while owner mode is on: the 👑 button on the status message (see [control panel](control-panel.md#owner-mode)). With it off, their messages are ordinary conversation. Anyone can ask her who her owner is. See [Her owner](#her-owner).
 
 Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `max_tool_rounds` (8 rounds of tool calls per answer), `history_turns` (40 messages up a reply chain), `chime_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
@@ -23,6 +24,7 @@ All under `src/features/chat/`, in a good reading order:
 | File | What it holds |
 |---|---|
 | `mod.rs` | The `Chat` struct and its `Feature` impl: `on_mention`, reactions (❌ / 🔁), the list of running answers, saving the question and answer turns |
+| `apps.rs` | The Apps menu helpers: Catch me up and `/catchup`, Explain this, Translate this |
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
 | `history.rs` | Turning a Discord message into stored parts (`read_message`, and `linked_messages` for the messages it links to), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
@@ -151,6 +153,21 @@ When a chime-in may react (a reaction roll), `emoji::for_chime_in` adds the serv
 
 In answers she reacts with the `react_to_message` tool (`react.rs`): `emoji`, a list of 1 to 3 (`MAX_EMOJI`), each a plain one, a server emoji's code, or its bare name, through `emoji::reaction_code`; an optional `link`, which must be a message in the same channel (without it the reactions go on the message she's answering); and an optional `remove`, which takes her own reactions back off instead (`util::discord::unreact`, Discord's delete-own-reaction call, so other people's reactions are never touched). The emoji go on in order, one call each; blanks and repeats are dropped, and more than 3 is refused rather than cut. Each emoji gets its own line in the result, so one that fails says why without stopping the rest; the call only fails when none worked. A single `emoji` string still works, so tool calls saved before the list replay. The tool description says to use it as well as her words, not instead of them, and that one is usually enough. Chime-ins don't get the tool (it isn't in `UNPROMPTED_TOOLS`); they keep `REACT`. Her own reactions don't trigger ❌ or 🔁, since the dispatcher skips the bot's own reactions, and taking one off triggers nothing, since no feature listens for removed reactions.
 
+## The Apps menu helpers
+
+`apps.rs`. Four commands that answer only the person who used them (ephemeral), so nothing appears in the channel. Each is one request without tools to `ctx.ai.chat()`, with its own job (`catch_up`, `explain`, `translate`), which defaults to Claude Haiku at low effort with no web or code (`Job::builtin`; `[ai.claude.jobs.catch_up]` and so on change it). Nothing is saved: these aren't conversations with Vivy and don't go in `chat_turns`. They run where chat is allowed, like every chat command.
+
+| Command | Reads | Asks for |
+|---|---|---|
+| Catch me up (on a message) | That message and up to 500 after it, 100 a page | A short summary in bullet points, grouped by topic, linking the one or two messages most worth reading. With more than 500, it says where it stopped, so Catch me up on that message gives the rest |
+| `/catchup` | Back from the newest message until your own last message here, or until `hours` ago, at most 500 | The same. If you haven't written in the last 500 messages, it summarizes those and says so |
+| Explain this | The 15 messages before it, the message it replies to, the message (marked →) and up to 3 of its pictures, GIFs or videos, made small (1024 px, one frame grid each) | A few sentences on what it means, in your Discord language |
+| Translate this | The 5 messages before it, the message and its pictures | The translation into your Discord language (the interaction's `locale`, named by `language_name`), with an optional line on a phrase that doesn't carry over |
+
+Each message is one line from `format_message` (time in your timezone, name, text cut to 600 characters, attachments, stickers, embeds), with its link for a catch-up. On Haiku 5.5 ($0.10 per million input tokens) 500 messages cost about a fifth of a cent. Answers longer than Discord's 2000 characters are split with `split_message`. Spend counts under the jobs' names on the status picture.
+
+Discord allows 5 message commands per app: Check Snail and these three make 4.
+
 ## Chat tools
 
 Besides the provider's built-in tools (web search and code, see [ai](../ai.md)), the model gets the bot's own function tools. Each feature contributes tools through `Feature::tools`, and chat offers the tools of every feature enabled where the conversation happens. A tool runs as the person who asked (`Asker`, in `src/core/feature.rs`): it only reads channels they can read and only changes their own things.
@@ -219,6 +236,7 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | Hook | What chat does with it |
 |---|---|
 | `name` | `"chat"` |
+| `commands` | The Apps menu helpers: Catch me up, Explain this, Translate this, `/catchup` (`apps.rs`) |
 | `migrations` | `store::MIGRATIONS` (four migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) for the status message |

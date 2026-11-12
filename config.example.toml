@@ -67,11 +67,18 @@ keep_cache_warm_hours = 36
 # search and fetch) and `code` (code execution and the skills); what's left out keeps the
 # built-in default below. Chat answers ("chat") and chime-ins ("chime") always use the main
 # model and every tool, so they share the prompt cache. Jobs: "chime", "emoji", "mood",
-# "reflection", "diary". Web search and code need Opus or Sonnet, not Haiku.
+# "reflection", "diary", "catch_up", "explain", "translate". Web search and code need Opus
+# or Sonnet, not Haiku.
 #
 # The built-in defaults:
 # [ai.claude.jobs.emoji]       # describing server emoji: simple, done once per emoji
 # model = "claude-haiku-5-5"
+# effort = "low"
+# web = false
+# code = false
+#
+# [ai.claude.jobs.catch_up]    # Catch me up and /catchup; "explain" and "translate"
+# model = "claude-haiku-5-5"    # (Explain this, Translate this) are the same
 # effort = "low"
 # web = false
 # code = false
