@@ -29,7 +29,7 @@ pub(super) use crate::util::discord::message_link;
 pub(super) use crate::util::message_links::{
     can_read, find_message_links, linked_message, parse_link,
 };
-use crate::util::people::find_member;
+use crate::util::people::{find_member, parse_user_id};
 use crate::util::shorten;
 
 /// Each message is cut to this many characters in tool results.
@@ -359,7 +359,16 @@ pub(super) fn left_out_note(given: usize, max: usize, what: &str) -> String {
 
 async fn user_info(ctx: &BotCtx, asker: &Asker, user: Option<&str>) -> Result<String> {
     let Some(guild_id) = asker.guild else {
-        let user = get_user(&ctx.http, asker.user).await?;
+        // A DM has no member list to search by name, so only a mention or ID finds someone.
+        let id = match user {
+            None => asker.user,
+            Some(query) => parse_user_id(query).ok_or_else(|| {
+                user_error("In a DM I can only find people by mention or user ID.")
+            })?,
+        };
+        let user = get_user(&ctx.http, id)
+            .await
+            .map_err(|_| user_error(format!("There's nobody with ID {id}.")))?;
         return Ok(format!(
             "{} (@{}, ID {})",
             display_name(&user),
