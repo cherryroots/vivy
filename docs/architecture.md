@@ -164,7 +164,7 @@ async fn set_timezone(ctx: CommandCtx) -> Result<()> {
 }
 ```
 
-An enum deriving the same traits is a command with subcommands (`/memory show`, `/memory forget`), and an enum inside it is a group (`/games gameboy play`). `Command::message` makes a right-click "Apps" command on a message (Check Snail), and `.guild_only()` hides a command in DMs. `CommandCtx` has `say`, `send(Draft)`, `defer` and `parse`. A test in `features/mod.rs` checks every command against Discord's rules (`twilight-validate`), so a description that's too long fails `cargo test`, not the start.
+An enum deriving the same traits is a command with subcommands (`/memory show`, `/memory forget`), and an enum inside it is a group of subcommands. `Command::message` makes a right-click "Apps" command on a message (Check Snail), and `.guild_only()` hides a command in DMs. `CommandCtx` has `say`, `send(Draft)`, `defer` and `parse`. A test in `features/mod.rs` checks every command against Discord's rules (`twilight-validate`), so a description that's too long fails `cargo test`, not the start.
 
 Buttons and menus come to `on_component` as a `ComponentInteraction`, modals to `on_modal` as a `ModalInteraction`. Both answer through the `Respond` trait: `create_response(ctx, Response::...)` with a new message, an update of the message the button is on, a modal, or an acknowledgement; or `defer` / `defer_ephemeral` first and `edit_response` after.
 
@@ -252,7 +252,7 @@ Since features never import each other, the core gives them four ways to work to
 
 `tracing` everywhere: `info!`, `warn!`, `error!`. Because the dispatcher opens a span per handler, every line inside one already says which feature, server, channel and message it came from.
 
-- **stdout** gets short readable lines (or JSON with `LOG_FORMAT=json`). `RUST_LOG` picks the level, for example `RUST_LOG=info,vivy::features::chat=debug`. They're written to a copy of stdout taken at start, so `logging::drop_prints` can silence crates that `println!` instead of logging (the Game Boy emulator) without losing log lines.
+- **stdout** gets short readable lines (or JSON with `LOG_FORMAT=json`). `RUST_LOG` picks the level, for example `RUST_LOG=info,vivy::features::chat=debug`.
 - **The systemd journal** gets the same short lines when the bot runs as a service (systemd sets `JOURNAL_STREAM` to the stream it gave stdout, and the bot checks it matches), but each starts with its level as a syslog prefix (`<3>` error, `<4>` warning, `<6>` info, `<7>` debug) instead of the time and level word. systemd takes the prefix off and keeps the level, so `journalctl -u vivy -f` colours errors red, warnings yellow and debug grey, adds its own time, and shows the rest as it is: `vivy[123]: chat::answer message{channel=2 message_id=3}: ran a chat tool tool="x"`. `journalctl -u vivy -p warning` keeps warnings and errors. A line with a newline in its message keeps the level on its first line only.
 - **The log channel** (`[logging]` in config.toml) gets warnings and errors (or the level in `log_level`), with a link to the message that triggered them, posted every 5 seconds. The same line repeated is grouped as "×12". Lines with the target `"lifecycle"` (🟢 Started, 🔴 Shutting down) are always posted. Routine drops and reconnects stay on stdout; only many drops in an hour, a long time away, or a close for good reach the channel (see `Reconnects` in `core/gateway.rs`). This is part of the core, so it works with the control panel turned off.
 - **Errors keep their cause.** Add `.context("what we were doing")` where an error happens, and the log reads "sending reminder 12: Missing Access" instead of only "Missing Access".
@@ -358,7 +358,5 @@ A path through the code for learning it, from small to large:
 | `dotenvy` | Loading `.env` |
 | `fastrand` | Dice rolls, like whether Vivy chimes in |
 | `tempfile` | Temporary files for ffmpeg |
-| `boytacean` | The Game Boy emulator (pinned to one version, since save states may not survive an upgrade) |
-| `gif` | Writing GIFs of the Game Boy's screen with an exact palette |
 
 Twilight has more crates we don't use yet. `twilight-standby` waits for a specific event ("the next message from this user in this channel", "the next press of this button") as a future, which would suit games that wait for players' answers.

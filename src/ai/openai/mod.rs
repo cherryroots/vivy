@@ -21,7 +21,6 @@ pub mod images;
 mod price;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
@@ -119,18 +118,6 @@ impl Default for OpenAiConfig {
     }
 }
 
-/// The answer of [`OpenAi::structured`].
-#[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug, Clone)]
-pub struct Structured {
-    /// The JSON answer, which fits the schema.
-    pub value: Value,
-    /// Input and output tokens, for counting free daily tokens.
-    pub tokens: u64,
-    /// What it would cost at list prices.
-    pub used: super::spend::Used,
-}
-
 pub struct OpenAi {
     http: reqwest::Client,
     token: String,
@@ -139,9 +126,6 @@ pub struct OpenAi {
     config: OpenAiConfig,
     /// Where what each response cost is added up; `None` in tests.
     spend: Option<Spend>,
-    /// Input and output tokens of every `structured` answer since the bot started, read
-    /// or not (see [`OpenAi::structured_tokens`]).
-    structured_tokens: AtomicU64,
 }
 
 impl OpenAi {
@@ -167,15 +151,7 @@ impl OpenAi {
             base_url,
             config,
             spend,
-            structured_tokens: AtomicU64::new(0),
         }
-    }
-
-    /// Input and output tokens of every `structured` answer so far. OpenAI uses them even
-    /// when the answer can't be read, so the Game Boy counts its free tokens as the change
-    /// in this around a call, not from what the call returns.
-    pub fn structured_tokens(&self) -> u64 {
-        self.structured_tokens.load(Ordering::Relaxed)
     }
 
     /// The JSON body of a request. `uploads` has the file ID of each attached file and
@@ -281,66 +257,6 @@ impl OpenAi {
             message: error_message(&text),
         }
         .into())
-    }
-
-    /// One answer that must fit a JSON schema (OpenAI's structured outputs), with no tools
-    /// and nothing stored: for planning jobs whose answer code reads, like the Game Boy
-    /// strategist's. The job picks the model and effort (`[ai.openai.jobs.<job>]`). A
-    /// picture, if given, goes after the text.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub async fn structured(
-        &self,
-        job: &'static str,
-        system: &str,
-        input: &str,
-        picture: Option<&ModelImage>,
-        schema_name: &str,
-        schema: &Value,
-    ) -> anyhow::Result<Structured> {
-        let settings = job_settings(&self.config.jobs, job, None);
-        let mut content = vec![json!({"type": "input_text", "text": input})];
-        if let Some(picture) = picture {
-            content.push(json!({"type": "input_image", "image_url": picture.data_url()}));
-        }
-        let body = json!({
-            "model": settings.model.as_deref().unwrap_or(&self.config.model),
-            "instructions": system,
-            "input": [{"role": "user", "content": content}],
-            "reasoning": {"effort": settings.effort.as_deref().unwrap_or(&self.config.reasoning_effort)},
-            "text": {"format": {
-                "type": "json_schema",
-                "name": schema_name,
-                "schema": schema,
-                "strict": true,
-            }},
-            "store": false,
-            "prompt_cache_key": format!("vivy:{job}"),
-        });
-        let response: Value = self.responses(&body).await?.json().await?;
-        let used = price::chat_cost(&response, None);
-        if let Some(spend) = &self.spend {
-            spend.add(job, used).await;
-        }
-        let usage = &response["usage"];
-        let tokens = usage["input_tokens"].as_u64().unwrap_or(0)
-            + usage["output_tokens"].as_u64().unwrap_or(0);
-        // Counted before the answer is read: a cut-off answer still used its tokens.
-        self.structured_tokens.fetch_add(tokens, Ordering::Relaxed);
-        let text: String = response["output"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|item| item["type"] == "message")
-            .flat_map(|item| item["content"].as_array().into_iter().flatten())
-            .filter_map(|part| part["text"].as_str())
-            .collect();
-        let value = serde_json::from_str(&text)
-            .with_context(|| format!("OpenAI's answer isn't the JSON asked for: {text:.200}"))?;
-        Ok(Structured {
-            value,
-            tokens,
-            used,
-        })
     }
 
     /// Uploads a file with the Files API and returns its ID.

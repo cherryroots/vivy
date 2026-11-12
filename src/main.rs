@@ -427,16 +427,6 @@ fn ai_from_env(
     }
     let chats_with =
         |provider| config.ai.provider == provider || config.ai.fallback == Some(provider);
-    // For one-off structured answers (the Game Boy strategist), on OpenAI's own endpoint.
-    let openai = openai_key.clone().map(|key| {
-        Arc::new(ai::OpenAi::new(
-            web.clone(),
-            key,
-            None,
-            config.ai.openai.clone(),
-            Some(openai_spend.clone()),
-        ))
-    });
     let images =
         openai_key.map(|key| ai::Images::new(web.clone(), key, Some(openai_spend.clone())));
     let mut spends = Vec::new();
@@ -450,8 +440,7 @@ fn ai_from_env(
     if chats_with(ai::Provider::Gemini) {
         spends.push(gemini_spend);
     }
-    let mut ai = ai::Ai::new(main, backup, spends, images);
-    ai.openai = openai;
+    let ai = ai::Ai::new(main, backup, spends, images);
     (ai, keep_warm)
 }
 
