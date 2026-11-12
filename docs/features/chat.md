@@ -27,7 +27,7 @@ All under `src/features/chat/`, in a good reading order:
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
 | `history.rs` | Turning a Discord message into stored parts (`read_message`, and `linked_messages` for the messages it links to), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
 | `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_emoji` |
-| `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`, `parse_link`, `find_message_links`, `linked_message`, `can_read`: which channels she may read for the asker) |
+| `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`; and, re-exported from `util::message_links` since drawing opens links too, `parse_link`, `find_message_links`, `linked_message`, `can_read`: which channels she may read for the asker) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels chat may read (`can_read`) |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
 | `react.rs` | The `react_to_message` tool: her own emoji reactions while she answers |
