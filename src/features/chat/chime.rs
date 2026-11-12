@@ -470,7 +470,12 @@ mod tests {
 
     #[test]
     fn no_tools_that_act_for_someone() {
-        for name in ["create_reminder", "cancel_reminder", "list_reminders"] {
+        for name in [
+            "create_reminder",
+            "edit_reminder",
+            "cancel_reminder",
+            "list_reminders",
+        ] {
             assert!(!UNPROMPTED_TOOLS.contains(&name), "{name}");
         }
     }
