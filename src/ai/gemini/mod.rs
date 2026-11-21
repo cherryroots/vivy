@@ -443,6 +443,11 @@ const DEFER_FROM: usize = 8;
 /// with all deferred 2,822, and the model found the right tool in the same round.
 const ALWAYS_LOADED: [&str; 1] = ["memory"];
 
+/// How much of a YouTube video that starts partway (`t=`) she watches from there, in
+/// seconds. Watched in full ("static"), about 100 tokens a second on Gemini 4 (measured
+/// 2026-11-21), so 2 minutes is about 12k tokens.
+const YOUTUBE_CLIP: u64 = 120;
+
 /// The cheap model, for chime-ins, describing emoji and the Apps menu helpers.
 const CHEAP_MODEL: &str = "gemini-4-hydrogen";
 
@@ -513,11 +518,34 @@ fn input_steps(
                         "text": format!("[the video {}, which couldn't be loaded]", video.name),
                     })),
                 },
-                Part::YouTube(link) => content.push(json!({
-                    "type": "video",
-                    "uri": link,
-                    "processing": config.youtube_processing,
-                })),
+                // A link that starts partway: the clip from there, with a note on where.
+                Part::YouTube(link) => match crate::util::media::youtube_start(link) {
+                    Some((plain, start)) => {
+                        content.push(json!({
+                            "type": "video",
+                            "uri": plain,
+                            "processing": {
+                                "type": "static",
+                                "start_offset": format!("{start}s"),
+                                "end_offset": format!("{}s", start + YOUTUBE_CLIP),
+                            },
+                        }));
+                        content.push(json!({
+                            "type": "text",
+                            "text": format!(
+                                "[{link} starts at {}:{:02}; you see {} minutes from there]",
+                                start / 60,
+                                start % 60,
+                                YOUTUBE_CLIP / 60
+                            ),
+                        }));
+                    }
+                    None => content.push(json!({
+                        "type": "video",
+                        "uri": link,
+                        "processing": config.youtube_processing,
+                    })),
+                },
                 Part::File(file) if document_mime(file).is_some() => match uploads
                     .next()
                     .and_then(Option::as_ref)
