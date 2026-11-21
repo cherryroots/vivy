@@ -65,8 +65,9 @@ keep_cache_warm_hours = 36
 
 # Settings per job, for work nobody waits on. Each can set `model`, `effort`, `web` (web
 # search and fetch) and `code` (code execution and the skills); what's left out keeps the
-# built-in default below. Chat answers ("chat") and chime-ins ("chime") always use the main
-# model and every tool, so they share the prompt cache. Jobs: "chime", "emoji", "mood",
+# built-in default below. Chat answers ("chat") always use the main model. Chime-ins
+# ("chime") use it too on Claude and OpenAI, to share the prompt cache, and Gemini 4
+# Hydrogen on Gemini. Jobs: "chime", "emoji", "mood",
 # "reflection", "diary", "catch_up", "explain", "translate". Web search and code need Opus
 # or Sonnet, not Haiku.
 #
@@ -142,7 +143,8 @@ show_cache_hits = true
 # Show on the status message what each job (chat, diary, ...) cost this month, estimated.
 show_job_costs = true
 # Settings per job work like Claude's ([ai.gemini.jobs.mood] and so on, with `effort` as
-# the thinking level), with the same built-in defaults, except that emoji use the main model.
+# the thinking level), with the same built-in defaults, except that chime-ins, emoji and
+# the Apps menu helpers use Gemini 4 Hydrogen, the cheap model.
 
 # Every feature has a section. These keys work in all of them:
 #   enabled = false                   turn the feature off

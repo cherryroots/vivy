@@ -32,6 +32,8 @@ const fn prices(input: f64, cache_read: f64, output: f64) -> Prices {
 
 /// Gemini 4 Neon.
 const NEON: Prices = prices(3.0, 0.15, 15.0);
+/// Gemini 4 Hydrogen, the cheap model.
+const HYDROGEN: Prices = prices(1.5, 0.075, 7.5);
 /// Gemini 4 Argon until 2026-11-30, and from [`ARGON_PRICE_RISE`].
 const ARGON_LAUNCH: Prices = prices(2.0, 0.10, 10.0);
 const ARGON: Prices = prices(4.0, 0.20, 20.0);
@@ -48,6 +50,8 @@ fn per_token(count: u64, price: f64) -> f64 {
 fn prices_for(model: &str, now: DateTime<Utc>) -> Prices {
     if model.starts_with("gemini-4-neon") {
         NEON
+    } else if model.starts_with("gemini-4-hydrogen") {
+        HYDROGEN
     } else if now.date_naive() < ARGON_PRICE_RISE {
         ARGON_LAUNCH
     } else {
@@ -112,5 +116,9 @@ mod tests {
         // Neon has one price: 600k × $3 + 400k × $0.15 + 100k × $15.
         let used = cost("gemini-4-neon", &usage, &[], december);
         assert!((used.usd - (1.8 + 0.06 + 1.5)).abs() < 1e-9);
+
+        // Hydrogen is half of Neon.
+        let used = cost("gemini-4-hydrogen", &usage, &[], december);
+        assert!((used.usd - (0.9 + 0.03 + 0.75)).abs() < 1e-9);
     }
 }

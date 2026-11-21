@@ -210,7 +210,12 @@ impl Gemini {
         let names = self.call_names.lock().unwrap().clone();
         let input = input_steps(turns, uploads, &self.config, &names);
 
-        let job = job_settings(&self.config.jobs, request.job, None);
+        let mut job = job_settings(&self.config.jobs, request.job, Some(CHEAP_MODEL));
+        // Chime-ins only read and react, so the cheap model, unless config.toml names one.
+        // On Gemini they'd share little cache with answers anyway.
+        if request.job == "chime" && job.model.is_none() {
+            job.model = Some(CHEAP_MODEL.to_string());
+        }
         let mut tools = Vec::new();
         if job.web.unwrap_or(true) {
             tools.push(json!({"type": "google_search"}));
@@ -374,6 +379,9 @@ fn refuses_code(err: &anyhow::Error) -> bool {
 
 /// The most of a text file that goes into the request, in bytes (about 25k tokens).
 const MAX_TEXT_FILE: usize = 100_000;
+
+/// The cheap model, for chime-ins, describing emoji and the Apps menu helpers.
+const CHEAP_MODEL: &str = "gemini-4-hydrogen";
 
 /// What the model reads of a file that isn't a picture, video or PDF. Gemini's Files API
 /// refuses most other kinds and its code execution only takes text, so a text file (one
@@ -990,6 +998,20 @@ mod tests {
         assert_eq!(body["generation_config"]["thinking_level"], "low");
         assert_eq!(body["generation_config"]["thinking_summaries"], "none");
         assert_eq!(body["tools"], json!([]));
+        assert_eq!(body["model"], gemini.config.model);
+
+        // Chime-ins and the cheap jobs take Hydrogen.
+        for job in ["chime", "emoji", "translate"] {
+            let cheap = ChatRequest {
+                job,
+                system: String::new(),
+                input: Input::Full(Vec::new()),
+                tools: Vec::new(),
+                cache_key: String::new(),
+                answer_now: false,
+            };
+            assert_eq!(gemini.request_body(&cheap, &[], true)["model"], CHEAP_MODEL);
+        }
     }
 
     #[test]

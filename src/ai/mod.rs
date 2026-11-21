@@ -271,7 +271,8 @@ pub struct Job {
 
 impl Job {
     /// The built-in settings of a job, before config.toml. Chat answers and chime-ins use
-    /// the provider's own settings and every tool, so they share the prompt cache.
+    /// the provider's own settings and every tool, so they share the prompt cache (on
+    /// Gemini, which caches little, chime-ins take the cheap model instead).
     /// Background jobs nobody waits on get only what they use:
     /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
     ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
@@ -331,8 +332,9 @@ impl Job {
 }
 
 /// The settings `job` runs with: what config.toml says in `jobs`, then the built-in
-/// default (see [`Job::builtin`]). Chat answers and chime-ins always use the provider's
-/// own model: their history is saved and continued with it.
+/// default (see [`Job::builtin`]). Chat answers always use the provider's own model: their
+/// history is saved and continued with it. Chime-ins can have their own: nobody replies
+/// to a reaction, so nothing continues them.
 pub fn job_settings(
     jobs: &std::collections::HashMap<String, Job>,
     job: &str,
@@ -343,7 +345,7 @@ pub fn job_settings(
         .cloned()
         .unwrap_or_default()
         .or(Job::builtin(job, cheap_model));
-    if matches!(job, "chat" | "chime") {
+    if job == "chat" {
         settings.model = None;
     }
     settings
