@@ -1,11 +1,9 @@
 //! What a Gemini interaction costs, from its token counts, at Google's list prices.
 //!
-//! Prices: <https://ai.google.dev/gemini-api/docs/pricing>. Argon's were checked there on
-//! 2026-10-14: it has a launch price until the end of November 2026 and costs twice as much
-//! from December. Neon's ($3 in, $0.15 cached, $15 out) come from news sites on 2026-11-21,
-//! because Google's page can't be reached from the sandbox. Thinking tokens cost as much as
-//! output. Google Search costs $14 per 1000
-//! searches, but the first 5000 a month are free; the estimate counts every search, so it
+//! Prices: <https://ai.google.dev/gemini-api/docs/pricing>, Standard tier, checked there on
+//! 2026-11-21 (Cherry's screenshots; the sandbox can't reach the page). Argon has a launch
+//! price until the end of November 2026 and costs twice as much from December. Thinking
+//! tokens cost as much as output. Google Search costs $14 per 1000 searches, but the first 5000 a month are free; the estimate counts every search, so it
 //! runs a little high when there are few. Google keeps no Admin API for the bill, so the
 //! estimate is all there is.
 
