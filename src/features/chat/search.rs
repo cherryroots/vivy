@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use super::tools::{can_read, format_message, home_zone, message_link, parse_link};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
-use crate::util::discord::{ChannelId, GuildId, get_channel};
+use crate::util::discord::{ChannelId, GuildId};
 use crate::util::people::{find_member, parse_user_id};
-use crate::util::search::{self, AUTHOR_TYPES, EMBED_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
+use crate::util::search::{self, AUTHOR_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
 
 /// How many results when the model doesn't say.
 const DEFAULT_LIMIT: u32 = 10;
@@ -65,19 +65,13 @@ pub fn def() -> ToolDef {
                     "items": {"type": "string", "enum": negatable(HAS_TYPES)},
                     "description": "Has all of these (snapshot: forwarded); -link means without links."
                 },
-                "embed_type": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": EMBED_TYPES},
-                    "description": "Embed kinds (gif misses messages before 2026-02-24)."
-                },
+                "attachment_extension": texts("Attachment extensions, like \"pdf\" or \"csv\"."),
                 "link_hostname": texts("Linking to these sites, like \"youtube.com\"."),
-                "attachment_extension": texts("Attachment extensions, like \"pdf\"."),
                 "after": {"type": "string", "description": "On or after YYYY-MM-DD (asker's timezone)."},
                 "before": {"type": "string", "description": "Before YYYY-MM-DD (asker's timezone)."},
                 "sort": {"type": "string", "enum": ["newest", "oldest", "relevance"], "description": "Default newest."},
                 "limit": {"type": "integer", "description": "1 to 25, default 10."},
-                "offset": {"type": "integer", "description": "Matches to skip, at most 9975."},
-                "include_nsfw": {"type": "boolean", "description": "Also age-restricted channels; only when asked in one."}
+                "offset": {"type": "integer", "description": "Matches to skip, at most 9975."}
             },
         }),
     }
@@ -115,34 +109,23 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
             .ok_or_else(|| user_error(format!("No role matches \"{role}\".")))?;
         mentions_role_ids.push(id);
     }
-    let include_nsfw = args["include_nsfw"].as_bool().unwrap_or(false);
-    if include_nsfw && !here_is_nsfw(ctx, asker).await {
-        return Err(user_error(
-            "Age-restricted channels can only be searched from an age-restricted channel.",
-        ));
-    }
-
     let mut search = Search {
         content: text("query").map(str::to_string),
-        slop: args["slop"].as_u64().map(|s| s.min(u32::MAX as u64) as u32),
         channel_ids,
         author_types: list(args, "author_type"),
         author_ids: people(ctx, guild, args, "from").await?,
         mentions: people(ctx, guild, args, "mentions").await?,
         mentions_role_ids,
-        mention_everyone: args["mention_everyone"].as_bool(),
         replied_to_user_ids: people(ctx, guild, args, "replied_to").await?,
         replied_to_message_ids,
         pinned: args["pinned"].as_bool(),
         has: list(args, "has"),
-        embed_types: list(args, "embed_type"),
-        embed_providers: list(args, "embed_provider"),
         link_hostnames: list(args, "link_hostname"),
-        attachment_filenames: list(args, "attachment_filename"),
         attachment_extensions: list(args, "attachment_extension"),
         min_id: date(text("after"), zone)?,
         max_id: date(text("before"), zone)?,
-        include_nsfw,
+        // Cherry's rule: age-restricted channels are searched too, from anywhere.
+        include_nsfw: true,
         ..Default::default()
     };
     if !has_filter(&search) {
@@ -289,14 +272,6 @@ fn find_role(ctx: &BotCtx, guild: GuildId, text: &str) -> Option<u64> {
         .into_iter()
         .find(|role| role.name.to_lowercase() == name)
         .map(|role| role.id.get())
-}
-
-/// Whether the current channel is age-restricted.
-async fn here_is_nsfw(ctx: &BotCtx, asker: &Asker) -> bool {
-    match get_channel(&ctx.http, asker.channel).await {
-        Ok(channel) => channel.nsfw == Some(true),
-        Err(_) => false,
-    }
 }
 
 /// A YYYY-MM-DD date as the first message ID of that day in `zone`.
