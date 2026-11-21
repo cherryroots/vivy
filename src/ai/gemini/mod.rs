@@ -25,6 +25,7 @@
 
 mod files;
 mod price;
+mod starter;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -48,6 +49,7 @@ use super::{
 };
 use crate::util::media::ModelImage;
 use files::Files;
+use starter::Starters;
 
 /// Where the Gemini API lives.
 const BASE_URL: &str = "https://generativelanguage.googleapis.com";
@@ -107,6 +109,8 @@ pub struct Gemini {
     call_names: Arc<Mutex<HashMap<String, String>>>,
     /// Where what each interaction cost is added up; `None` in tests.
     spend: Option<Spend>,
+    /// The stored interactions new conversations continue from (see `starter.rs`).
+    starters: Starters,
 }
 
 impl Gemini {
@@ -123,6 +127,75 @@ impl Gemini {
             config,
             call_names: Arc::default(),
             spend,
+            starters: Starters::default(),
+        }
+    }
+
+    /// Sends a request built from `request`, with code execution when `code` is true.
+    /// The first request of a conversation with the bot's tools continues the starter of
+    /// its system prompt and tools, so Gemini can read those from its cache (see
+    /// `starter.rs`). Returns the body that was sent, for the model and the cost.
+    async fn send(
+        &self,
+        request: &ChatRequest,
+        uploads: &[Option<String>],
+        code: bool,
+    ) -> anyhow::Result<(Value, reqwest::Response)> {
+        let mut body = self.request_body(request, uploads, code);
+        let new_conversation = body.get("previous_interaction_id").is_none();
+        let starter = if new_conversation && !request.tools.is_empty() {
+            self.starter(&body).await
+        } else {
+            None
+        };
+        if let Some(id) = &starter {
+            body["previous_interaction_id"] = json!(id);
+        }
+        match self.interactions(&body).await {
+            Ok(response) => Ok((body, response)),
+            // Gemini no longer has the starter (it keeps them 55 days): ask without it,
+            // and make a new one next time.
+            Err(err) if starter.is_some() && is_not_found(&err) => {
+                self.starters.forget(starter::key(&body));
+                body.as_object_mut()
+                    .unwrap()
+                    .remove("previous_interaction_id");
+                let response = self.interactions(&body).await?;
+                Ok((body, response))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// The ID of the starter for `body`'s model, system prompt and tools, made now if
+    /// there's none yet. `None` when making one failed: the request then goes without.
+    async fn starter(&self, body: &Value) -> Option<String> {
+        let key = starter::key(body);
+        if let Some(id) = self.starters.get(key) {
+            return Some(id);
+        }
+        let made = async {
+            let response = self.interactions(&starter::body(body)).await?;
+            let interaction: Value = response.json().await.context("reading the starter")?;
+            if let Some(spend) = &self.spend {
+                let model = body["model"].as_str().unwrap_or_default();
+                add_spend(spend, "starter", model, &interaction, &[]).await;
+            }
+            interaction["id"]
+                .as_str()
+                .map(str::to_string)
+                .context("the starter has no ID")
+        };
+        match made.await {
+            Ok(id) => {
+                debug!("made a Gemini starter for new conversations: {id}");
+                self.starters.insert(key, id.clone());
+                Some(id)
+            }
+            Err(err) => {
+                warn!("couldn't make a Gemini starter: {err:#}");
+                None
+            }
         }
     }
 
@@ -281,6 +354,12 @@ fn has_video_or_pdf(request: &ChatRequest) -> bool {
         Part::File(file) => is_pdf(file),
         _ => false,
     })
+}
+
+/// Whether Gemini answered 404: an interaction it no longer has.
+fn is_not_found(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ApiError>()
+        .is_some_and(|api| api.status == reqwest::StatusCode::NOT_FOUND)
 }
 
 /// Whether Gemini refused the request because of code execution next to a video or PDF.
@@ -723,14 +802,15 @@ impl ChatProvider for Gemini {
         request: ChatRequest,
     ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
         let uploads = self.upload_files(&request).await;
-        let mut body = self.request_body(&request, &uploads, !has_video_or_pdf(&request));
-        let mut response = match self.interactions(&body).await {
+        let (body, mut response) = match self
+            .send(&request, &uploads, !has_video_or_pdf(&request))
+            .await
+        {
             // An earlier turn's video or PDF is still in the conversation: ask again
             // without code execution.
             Err(err) if refuses_code(&err) => {
                 debug!("Gemini refused code execution next to a video or PDF; asking without it");
-                body = self.request_body(&request, &uploads, false);
-                self.interactions(&body).await?
+                self.send(&request, &uploads, false).await?
             }
             result => result?,
         };
@@ -1084,6 +1164,38 @@ mod tests {
         let chart = done.files.first().expect("a chart");
         let png = gemini.download_file(chart).await.unwrap();
         assert!(png.starts_with(b"\x89PNG"));
+    }
+
+    /// Talks to the real API: two new conversations with the same prompt and tools share
+    /// one starter, and both still get their own answer. `cargo test live_starter --
+    /// --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_starter() {
+        let key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY");
+        let gemini = Gemini::new(reqwest::Client::new(), key, GeminiConfig::default(), None);
+        let question = |text: &str| ChatRequest {
+            system: "You are Vivy, a Discord bot. Answer in one word.".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Text(text.into())],
+            }]),
+            tools: vec![ToolDef {
+                name: "get_time",
+                description: "The time now.",
+                parameters: json!({"type": "object", "properties": {}}),
+            }],
+            cache_key: "test".into(),
+            job: "chat",
+            answer_now: false,
+        };
+        let (first, _) = live_answer(&gemini, question("Name a fruit.")).await;
+        let starters = gemini.starters.ids.lock().unwrap().clone();
+        assert_eq!(starters.len(), 1);
+        let (second, _) = live_answer(&gemini, question("Name a planet.")).await;
+        assert_eq!(*gemini.starters.ids.lock().unwrap(), starters);
+        println!("{first} / {second}");
+        assert!(!first.to_lowercase().contains("ok") && !second.is_empty());
     }
 
     async fn live_answer(gemini: &Gemini, request: ChatRequest) -> (String, Done) {

@@ -41,7 +41,7 @@ Vivy's memory is instead a folder of text files that the model manages itself th
 
 ### Compatible with Claude's memory tool
 
-The commands, their arguments and the texts they answer with follow Anthropic's memory tool (`memory_20250818`), which models know well. So the folder could later be handed to a Claude model as its built-in memory. Both providers get it as a normal function tool, though. Claude's built-in memory tool was tried first, but Anthropic sends it with an instruction to record task progress in memory, so people's files filled up with one-off tasks (shared spreadsheets, reports Vivy made). Now the tool's own description says what is worth saving (lasting facts, not a log of what happened), and the daily reflection deletes task logs that slip through.
+The commands, their arguments and the texts they answer with follow Anthropic's memory tool (`memory_20250818`), which models know well. So the folder could later be handed to a Claude model as its built-in memory. Both providers get it as a normal function tool, though. Claude's built-in memory tool was tried first, but Anthropic sends it with an instruction to record task progress in memory, so people's files filled up with one-off tasks (shared spreadsheets, reports Vivy made). Now the tool's own description says what is worth saving (lasting facts, not a log of what happened), and the daily reflection deletes task logs that slip through. The description was shortened on 2026-11-21 (the same rules, 1,275 to 976 tokens), because Gemini sends it uncached on most requests.
 
 ### Folders and scopes
 

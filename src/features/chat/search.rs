@@ -32,56 +32,52 @@ pub fn def() -> ToolDef {
         json!({
             "type": "array",
             "items": {"type": "string"},
-            "description": format!("{what}: mentions, user IDs or names.")
+            "description": format!("{what}: mentions, IDs or names.")
         })
     };
     let texts =
         |what: &str| json!({"type": "array", "items": {"type": "string"}, "description": what});
     ToolDef {
         name: "search_messages",
-        description: "Searches the messages of the whole server, like Discord's search bar, with all of its filters. Only returns messages from channels you may read. Give at least one filter. The answer starts with how many messages match; use `offset` for the next page. Include the message links it returns when you point people at messages.",
+        description: "Searches the whole server's messages, like Discord's search bar (only channels you may read). Give at least one filter. The answer starts with the match count; `offset` pages. Include its message links when pointing people at messages.",
         parameters: json!({
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Words to find in the message text."},
-                "slop": {"type": "integer", "description": "How many other words may sit between the words of `query`, 0 to 100. Discord's default is 2."},
-                "from": people("Only messages by these people"),
+                "from": people("By these people"),
                 "author_type": {
                     "type": "array",
                     "items": {"type": "string", "enum": negatable(AUTHOR_TYPES)},
-                    "description": "Only messages by these kinds of authors. A leading - leaves that kind out (\"-bot\")."
+                    "description": "Author kinds; -bot leaves bots out."
                 },
                 "channel": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Only these channels or threads: mentions, IDs or names. \"here\" for the current one."
+                    "description": "Channels or threads: mentions, IDs, names, or \"here\"."
                 },
-                "mentions": people("Only messages that mention these people"),
-                "mentions_role": texts("Only messages that mention these roles: mentions, IDs or names."),
-                "mention_everyone": {"type": "boolean", "description": "true: only messages that mention @everyone or @here; false: only ones that don't."},
-                "replied_to": people("Only replies to these people"),
-                "replied_to_message": texts("Only replies to these messages: message links or IDs."),
-                "pinned": {"type": "boolean", "description": "true: only pinned messages; false: only unpinned ones."},
+                "mentions": people("Mentioning these people"),
+                "mentions_role": texts("Mentioning these roles: mentions, IDs or names."),
+                "replied_to": people("Replies to these people"),
+                "replied_to_message": texts("Replies to these messages: links or IDs."),
+                "pinned": {"type": "boolean", "description": "Only pinned (true) or unpinned (false)."},
                 "has": {
                     "type": "array",
                     "items": {"type": "string", "enum": negatable(HAS_TYPES)},
-                    "description": "Only messages with all of these (snapshot is a forwarded message). A leading - means without it (\"-link\")."
+                    "description": "Has all of these (snapshot: forwarded); -link means without links."
                 },
                 "embed_type": {
                     "type": "array",
                     "items": {"type": "string", "enum": EMBED_TYPES},
-                    "description": "Only messages with these kinds of embeds. gif may miss messages from before February 24, 2026."
+                    "description": "Embed kinds (gif misses messages before 2026-02-24)."
                 },
-                "embed_provider": texts("Only embeds from these providers, like \"Tenor\" or \"YouTube\" (case matters)."),
-                "link_hostname": texts("Only messages linking to these sites, like \"youtube.com\"."),
-                "attachment_filename": texts("Only messages with attachments of these file names."),
-                "attachment_extension": texts("Only messages with attachments of these extensions, like \"png\" or \"pdf\"."),
-                "after": {"type": "string", "description": "Only messages on or after this date, YYYY-MM-DD, in the asker's timezone."},
-                "before": {"type": "string", "description": "Only messages before this date, YYYY-MM-DD, in the asker's timezone."},
+                "link_hostname": texts("Linking to these sites, like \"youtube.com\"."),
+                "attachment_extension": texts("Attachment extensions, like \"pdf\"."),
+                "after": {"type": "string", "description": "On or after YYYY-MM-DD (asker's timezone)."},
+                "before": {"type": "string", "description": "Before YYYY-MM-DD (asker's timezone)."},
                 "sort": {"type": "string", "enum": ["newest", "oldest", "relevance"], "description": "Default newest."},
-                "limit": {"type": "integer", "description": "How many, 1 to 25. Default 10."},
-                "offset": {"type": "integer", "description": "How many matches to skip, for the next page. At most 9975."},
-                "include_nsfw": {"type": "boolean", "description": "Also search age-restricted channels. Only works when asked in an age-restricted channel."}
+                "limit": {"type": "integer", "description": "1 to 25, default 10."},
+                "offset": {"type": "integer", "description": "Matches to skip, at most 9975."},
+                "include_nsfw": {"type": "boolean", "description": "Also age-restricted channels; only when asked in one."}
             },
         }),
     }
