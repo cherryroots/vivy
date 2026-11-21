@@ -126,7 +126,7 @@ show_job_costs = true
 model = "gemini-4-neon"
 # How much it thinks: "low", "medium", "high" or "xhigh" (Neon and Hydrogen only; the
 # others think at "high" instead).
-thinking_level = "medium"
+thinking_level = "high"
 # Show short summaries of its thinking in the reply's status line while it works.
 thought_summaries = true
 # How a posted video is watched: "static" (every second at once, with the sound; best for

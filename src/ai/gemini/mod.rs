@@ -87,7 +87,7 @@ impl Default for GeminiConfig {
     fn default() -> Self {
         GeminiConfig {
             model: "gemini-4-neon".to_string(),
-            thinking_level: "medium".to_string(),
+            thinking_level: "high".to_string(),
             thought_summaries: true,
             video_processing: "static".to_string(),
             youtube_processing: "agentic".to_string(),
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(body["store"], true);
         assert_eq!(
             body["generation_config"],
-            json!({"thinking_level": "medium", "thinking_summaries": "auto"})
+            json!({"thinking_level": "high", "thinking_summaries": "auto"})
         );
         assert_eq!(
             body["input"],
