@@ -56,7 +56,7 @@ cargo clippy && cargo fmt
 
 - The cloud environment holds test keys as env vars: `VIVY_ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` (valid to about 2026-11-18). `ANTHROPIC_API_KEY` never reaches the sandbox, so tests that call Claude read `VIVY_ANTHROPIC_API_KEY`.
 - A session reads env vars only when it starts: after a key changes, start a new session.
-- `api.openai.com` has to be in the environment's allowed domains. `ai.google.dev` (Gemini's docs and prices) is blocked by the proxy, but the API itself (`generativelanguage.googleapis.com`) works: `cargo test live_tool_round -- --ignored` checks Gemini live (see `docs/ai.md`).
+- `api.openai.com` has to be in the environment's allowed domains. `ai.google.dev` (Gemini's docs and prices) is blocked by the proxy, but the API itself (`generativelanguage.googleapis.com`) works: `cargo test live_ -- --ignored` checks Gemini live (see `docs/ai.md`).
 - Check key names only, never print values. Never write keys into the repo, docs or chat.
 
 ## Intended behaviour (don't "fix" these)

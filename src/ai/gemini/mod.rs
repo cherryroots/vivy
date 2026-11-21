@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use async_trait::async_trait;
 use base64::Engine as _;
 use serde::Deserialize;
@@ -293,6 +293,36 @@ fn refuses_code(err: &anyhow::Error) -> bool {
     })
 }
 
+/// The most of a text file that goes into the request, in bytes (about 25k tokens).
+const MAX_TEXT_FILE: usize = 100_000;
+
+/// What the model reads of a file that isn't a picture, video or PDF. Gemini's Files API
+/// refuses most other kinds and its code execution only takes text, so a text file (one
+/// that is valid UTF-8, like a CSV, code or notes) goes in as text, which her code can use
+/// too. Anything else gets a note.
+fn file_text(file: &ModelFile) -> String {
+    let Ok(text) = std::str::from_utf8(&file.data) else {
+        return format!(
+            "[{} is attached, but you can't open this kind of file here]",
+            file.name
+        );
+    };
+    let mut end = text.len().min(MAX_TEXT_FILE);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let cut = if end < text.len() {
+        format!("\n[cut here: the file is longer than {MAX_TEXT_FILE} bytes]")
+    } else {
+        String::new()
+    };
+    format!(
+        "<file name=\"{}\">\n{}{cut}\n</file>",
+        file.name.replace('"', "'"),
+        &text[..end]
+    )
+}
+
 fn base64(data: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(data)
 }
@@ -349,13 +379,7 @@ fn input_steps(
                         "text": format!("[{} is attached, but it couldn't be uploaded]", file.name),
                     })),
                 },
-                Part::File(file) => content.push(json!({
-                    "type": "text",
-                    "text": format!(
-                        "[{} is attached, but you can't open this kind of file here]",
-                        file.name
-                    ),
-                })),
+                Part::File(file) => content.push(json!({"type": "text", "text": file_text(file)})),
                 Part::ToolResult {
                     call_id,
                     output,
@@ -449,9 +473,11 @@ impl Collector {
                 }
                 self.steps.retain(|step| !step.is_null());
                 let id = interaction["id"].as_str().map(str::to_string);
+                let files = take_pictures(&mut self.steps);
                 events.push(ChatEvent::Done(Done {
                     continuation: id.or(self.id.take()),
                     tool_calls: tool_calls(&self.steps),
+                    files,
                     native: Value::Array(self.steps.clone()),
                     ..Done::default()
                 }));
@@ -490,6 +516,23 @@ impl Collector {
                 step["signature"] = delta["signature"].clone();
                 Vec::new()
             }
+            // A picture in the answer, like a chart its code drew. The same one can come
+            // twice in a row.
+            "image" => {
+                if !step["content"].is_array() {
+                    step["content"] = json!([]);
+                }
+                let content = step["content"].as_array_mut().unwrap();
+                let picture = json!({
+                    "type": "image",
+                    "mime_type": delta["mime_type"],
+                    "data": delta["data"],
+                });
+                if !content.contains(&picture) {
+                    content.push(picture);
+                }
+                Vec::new()
+            }
             "arguments_delta" => {
                 let piece = delta["arguments"].as_str().unwrap_or_default();
                 self.arguments.entry(index).or_default().push_str(piece);
@@ -518,6 +561,41 @@ fn append_text(step: &mut Value, text: &str) {
         }
         _ => content.push(json!({"type": "text", "text": text})),
     }
+}
+
+/// Takes the pictures out of the answer's steps (charts its code drew) as files for the
+/// reply. Gemini sends them inline, so a file's `location` is the picture itself in base64,
+/// and [`Gemini::download_file`] only decodes it. The steps keep a note instead, so the
+/// saved history stays small.
+fn take_pictures(steps: &mut [Value]) -> Vec<GeneratedFile> {
+    let mut files = Vec::new();
+    for step in steps
+        .iter_mut()
+        .filter(|step| step["type"] == "model_output")
+    {
+        let Some(content) = step["content"].as_array_mut() else {
+            continue;
+        };
+        for item in content.iter_mut() {
+            let Some(data) = item["data"].as_str().filter(|_| item["type"] == "image") else {
+                continue;
+            };
+            let extension = match item["mime_type"].as_str().unwrap_or_default() {
+                "image/jpeg" => "jpg",
+                "image/webp" => "webp",
+                "image/gif" => "gif",
+                _ => "png",
+            };
+            let filename = format!("chart-{}.{extension}", files.len() + 1);
+            files.push(GeneratedFile {
+                location: data.to_string(),
+                filename: filename.clone(),
+            });
+            *item =
+                json!({"type": "text", "text": format!("[{filename}, attached to the answer]")});
+        }
+    }
+    files
 }
 
 /// What the model is busy with when a step starts.
@@ -718,8 +796,11 @@ impl ChatProvider for Gemini {
     }
 
     async fn download_file(&self, file: &GeneratedFile) -> anyhow::Result<Vec<u8>> {
-        // Gemini's code execution doesn't make files to download.
-        bail!("Gemini has no file {} to download", file.filename)
+        // The only files Gemini makes are pictures in the answer, and the location is the
+        // picture itself (see `take_pictures`).
+        base64::engine::general_purpose::STANDARD
+            .decode(&file.location)
+            .with_context(|| format!("{} isn't a picture Gemini sent", file.filename))
     }
 }
 
@@ -965,6 +1046,46 @@ mod tests {
         assert!(text.contains("14:30") && text.contains("red") && text.contains("pineapple"));
     }
 
+    /// Talks to the real API: a CSV in the message, and a chart of it drawn with code,
+    /// which comes back as a file for the reply. `cargo test live_chart -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn live_chart() {
+        let key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY");
+        let mut config = GeminiConfig::default();
+        if let Ok(model) = std::env::var("GEMINI_MODEL") {
+            config.model = model;
+        }
+        let gemini = Gemini::new(reqwest::Client::new(), key, config, None);
+        let csv = ModelFile {
+            name: "scores.csv".into(),
+            mime: "text/csv".into(),
+            data: b"name,score\nana,3\nbo,7\ncy,11\n".to_vec(),
+        };
+        let request = ChatRequest {
+            system: "You are Vivy, a Discord bot. Answer in one short line.".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![
+                    Part::Text("Draw a bar chart of these scores with matplotlib.".into()),
+                    Part::File(csv),
+                ],
+            }]),
+            tools: Vec::new(),
+            cache_key: "test".into(),
+            job: "chat",
+            answer_now: false,
+        };
+        let (text, done) = live_answer(&gemini, request).await;
+        println!(
+            "{text} {:?}",
+            done.files.iter().map(|f| &f.filename).collect::<Vec<_>>()
+        );
+        let chart = done.files.first().expect("a chart");
+        let png = gemini.download_file(chart).await.unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+    }
+
     async fn live_answer(gemini: &Gemini, request: ChatRequest) -> (String, Done) {
         let mut events = gemini.stream(request).await.expect("the request");
         let mut text = String::new();
@@ -1024,7 +1145,11 @@ mod tests {
                     Part::Video(file("clip.mp4", "video/mp4")),
                     Part::YouTube("https://www.youtube.com/watch?v=abc".into()),
                     Part::File(file("report.pdf", "application/pdf")),
-                    Part::File(file("song.mp3", "audio/mpeg")),
+                    Part::File(ModelFile {
+                        data: vec![0xff, 0xfe],
+                        ..file("song.mp3", "audio/mpeg")
+                    }),
+                    Part::File(file("scores.csv", "text/csv")),
                     Part::Video(file("broken.webm", "video/webm")),
                 ],
             },
@@ -1048,6 +1173,7 @@ mod tests {
                     {"type": "video", "uri": "https://www.youtube.com/watch?v=abc", "processing": "agentic"},
                     {"type": "document", "uri": "https://files/report", "mime_type": "application/pdf"},
                     {"type": "text", "text": "[song.mp3 is attached, but you can't open this kind of file here]"},
+                    {"type": "text", "text": "<file name=\"scores.csv\">\ndata\n</file>"},
                     {"type": "text", "text": "[the video broken.webm, which couldn't be loaded]"},
                 ]},
                 {"type": "model_output", "content": [{"type": "text", "text": "A cat jumps."}]},
@@ -1129,6 +1255,53 @@ mod tests {
             steps[4]["content"],
             json!([{"type": "text", "text": "One moment."}])
         );
+    }
+
+    #[tokio::test]
+    async fn pictures_from_code_go_on_the_reply() {
+        let mut collector = Collector::default();
+        // The shapes of a live answer that plotted a chart (2026-11-21): the same picture
+        // twice, then the text.
+        let chart = json!({"type": "image", "mime_type": "image/png", "data": "AQI="});
+        collect(
+            &mut collector,
+            &[
+                json!({"event_type": "step.start", "index": 0, "step": {"type": "code_execution_call", "id": "c1"}}),
+                json!({"event_type": "step.start", "index": 1, "step": {"type": "model_output"}}),
+                json!({"event_type": "step.delta", "index": 1, "delta": chart}),
+                json!({"event_type": "step.delta", "index": 1, "delta": chart}),
+                json!({"event_type": "step.start", "index": 2, "step": {"type": "model_output"}}),
+                json!({"event_type": "step.delta", "index": 2, "delta": {"type": "text", "text": "Here it is."}}),
+            ],
+        );
+        let (events, _) = collector
+            .event(&json!({"event_type": "interaction.completed", "interaction": {"id": "v1_2", "status": "completed"}}))
+            .unwrap();
+        let [ChatEvent::Done(done)] = events.as_slice() else {
+            panic!("expected Done, got {events:?}");
+        };
+        assert_eq!(done.files.len(), 1);
+        assert_eq!(done.files[0].filename, "chart-1.png");
+        assert_eq!(
+            client().download_file(&done.files[0]).await.unwrap(),
+            [1, 2]
+        );
+        // The saved steps keep a note, not the picture.
+        assert_eq!(
+            done.native[1]["content"],
+            json!([{"type": "text", "text": "[chart-1.png, attached to the answer]"}])
+        );
+    }
+
+    #[test]
+    fn long_text_files_are_cut() {
+        let long = ModelFile {
+            data: "é".repeat(MAX_TEXT_FILE).into_bytes(),
+            ..file("notes.txt", "text/plain")
+        };
+        let text = file_text(&long);
+        assert!(text.contains("[cut here: the file is longer than 100000 bytes]"));
+        assert!(text.len() < MAX_TEXT_FILE + 200);
     }
 
     #[test]
