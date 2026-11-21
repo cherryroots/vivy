@@ -59,7 +59,8 @@ const RETRY_WAITS: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(
 #[serde(default)]
 pub struct GeminiConfig {
     pub model: String,
-    /// How much it thinks: "low", "medium" or "high" ("minimal" too on Gemini 3 models).
+    /// How much it thinks: "low", "medium", "high" or "xhigh" ("xhigh" only on Neon and
+    /// Hydrogen; other models get "high" instead).
     pub thinking_level: String,
     /// Show short summaries of its thinking in the reply's status line while it works
     /// (only for requests with the bot's tools: chat, chime-ins, reflection, diary).
@@ -83,7 +84,7 @@ pub struct GeminiConfig {
 impl Default for GeminiConfig {
     fn default() -> Self {
         GeminiConfig {
-            model: "gemini-4-argon".to_string(),
+            model: "gemini-4-neon".to_string(),
             thinking_level: "medium".to_string(),
             thought_summaries: true,
             video_processing: "static".to_string(),
@@ -126,8 +127,9 @@ impl Gemini {
     }
 
     /// The JSON body of a request. `uploads` has the link of each video and PDF in the
-    /// order they appear (see [`Gemini::upload_files`]).
-    fn request_body(&self, request: &ChatRequest, uploads: &[Option<String>]) -> Value {
+    /// order they appear (see [`Gemini::upload_files`]). `code` is false to leave out code
+    /// execution, which Gemini refuses next to videos and PDFs (see [`Gemini::stream`]).
+    fn request_body(&self, request: &ChatRequest, uploads: &[Option<String>], code: bool) -> Value {
         let (turns, previous) = match &request.input {
             Input::Full(turns) => (turns, None),
             Input::After { continuation, new } => (new, Some(continuation)),
@@ -141,7 +143,7 @@ impl Gemini {
             tools.push(json!({"type": "google_search"}));
             tools.push(json!({"type": "url_context"}));
         }
-        if job.code.unwrap_or(true) {
+        if code && job.code.unwrap_or(true) {
             tools.push(json!({"type": "code_execution"}));
         }
         tools.extend(request.tools.iter().map(|tool| {
@@ -158,13 +160,15 @@ impl Gemini {
         } else {
             "none"
         };
+        let model = job.model.as_deref().unwrap_or(&self.config.model);
+        let level = job.effort.as_deref().unwrap_or(&self.config.thinking_level);
         let mut body = json!({
-            "model": job.model.as_deref().unwrap_or(&self.config.model),
+            "model": model,
             "system_instruction": request.system,
             "input": input,
             "tools": tools,
             "generation_config": {
-                "thinking_level": job.effort.as_deref().unwrap_or(&self.config.thinking_level),
+                "thinking_level": thinking_level(model, level),
                 "thinking_summaries": summaries,
             },
             "store": true,
@@ -248,8 +252,45 @@ impl Gemini {
     }
 }
 
+/// The thinking level `model` takes for `wanted`. Only Neon and Hydrogen think at "xhigh";
+/// the other Gemini 4 models refuse it, so a job that sets it on one of them thinks at
+/// "high" instead. Anything else goes as it is (`config_warnings` checks the words).
+fn thinking_level<'a>(model: &str, wanted: &'a str) -> &'a str {
+    let takes_xhigh = model.starts_with("gemini-4-neon") || model.starts_with("gemini-4-hydrogen");
+    if wanted == "xhigh" && !takes_xhigh {
+        "high"
+    } else {
+        wanted
+    }
+}
+
 fn is_pdf(file: &ModelFile) -> bool {
     file.mime == "application/pdf"
+}
+
+/// Whether the request's new turns hold a video, a YouTube link or a PDF. Gemini's code
+/// execution refuses those ("The mime type: application/pdf is not supported for code
+/// execution"), so such a request goes without it.
+fn has_video_or_pdf(request: &ChatRequest) -> bool {
+    let turns = match &request.input {
+        Input::Full(turns) => turns,
+        Input::After { new, .. } => new,
+    };
+    turns.iter().flat_map(|t| &t.parts).any(|part| match part {
+        Part::Video(_) | Part::YouTube(_) => true,
+        Part::File(file) => is_pdf(file),
+        _ => false,
+    })
+}
+
+/// Whether Gemini refused the request because of code execution next to a video or PDF.
+/// That also happens on a follow-up whose new turns have none, when an earlier interaction
+/// it continues had one: Gemini still holds that video or PDF.
+fn refuses_code(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<ApiError>().is_some_and(|api| {
+        api.status == reqwest::StatusCode::BAD_REQUEST
+            && api.message.contains("not supported for code execution")
+    })
 }
 
 fn base64(data: &[u8]) -> String {
@@ -537,6 +578,9 @@ fn stream_error(error: &Value) -> ApiError {
             "unavailable" | "overloaded" => 503,
             "gateway_timeout" | "deadline_exceeded" => 504,
             "internal" | "server_error" => 500,
+            "not_found" => 404,
+            "permission_denied" => 403,
+            "unauthenticated" => 401,
             _ => 400,
         },
         _ => 500,
@@ -601,8 +645,17 @@ impl ChatProvider for Gemini {
         request: ChatRequest,
     ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
         let uploads = self.upload_files(&request).await;
-        let body = self.request_body(&request, &uploads);
-        let mut response = self.interactions(&body).await?;
+        let mut body = self.request_body(&request, &uploads, !has_video_or_pdf(&request));
+        let mut response = match self.interactions(&body).await {
+            // An earlier turn's video or PDF is still in the conversation: ask again
+            // without code execution.
+            Err(err) if refuses_code(&err) => {
+                debug!("Gemini refused code execution next to a video or PDF; asking without it");
+                body = self.request_body(&request, &uploads, false);
+                self.interactions(&body).await?
+            }
+            result => result?,
+        };
 
         let (sender, receiver) = mpsc::channel(64);
         let spend = self.spend.clone().map(|spend| (spend, request.job));
@@ -735,8 +788,8 @@ mod tests {
             job: "chat",
             answer_now: false,
         };
-        let body = gemini.request_body(&request, &[]);
-        assert_eq!(body["model"], "gemini-4-argon");
+        let body = gemini.request_body(&request, &[], true);
+        assert_eq!(body["model"], "gemini-4-neon");
         assert_eq!(body["previous_interaction_id"], "v1_abc");
         assert_eq!(body["system_instruction"], "Be nice.");
         assert_eq!(body["store"], true);
@@ -771,11 +824,194 @@ mod tests {
             input: Input::Full(Vec::new()),
             ..request
         };
-        let body = gemini.request_body(&mood, &[]);
+        let body = gemini.request_body(&mood, &[], true);
         assert!(body.get("previous_interaction_id").is_none());
         assert_eq!(body["generation_config"]["thinking_level"], "low");
         assert_eq!(body["generation_config"]["thinking_summaries"], "none");
         assert_eq!(body["tools"], json!([]));
+    }
+
+    #[test]
+    fn no_code_execution_next_to_videos_and_pdfs() {
+        let request = |parts| ChatRequest {
+            system: String::new(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts,
+            }]),
+            tools: Vec::new(),
+            cache_key: String::new(),
+            job: "chat",
+            answer_now: false,
+        };
+        assert!(!has_video_or_pdf(&request(vec![Part::Image(picture())])));
+        assert!(!has_video_or_pdf(&request(vec![Part::File(file(
+            "a.mp3",
+            "audio/mpeg"
+        ))])));
+        assert!(has_video_or_pdf(&request(vec![Part::File(file(
+            "a.pdf",
+            "application/pdf"
+        ))])));
+        assert!(has_video_or_pdf(&request(vec![Part::YouTube(
+            "https://youtu.be/a".into()
+        )])));
+
+        // Gemini's own words for it, from a live request on 2026-11-21.
+        let refusal = |status: u16| -> anyhow::Error {
+            ApiError {
+                provider: "gemini",
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                message: "The mime type: application/pdf is not supported for code execution."
+                    .into(),
+            }
+            .into()
+        };
+        assert!(refuses_code(&refusal(400)));
+        assert!(!refuses_code(&refusal(500)));
+        assert!(!refuses_code(&anyhow::anyhow!("no connection")));
+    }
+
+    #[test]
+    fn thinking_levels_fit_the_model() {
+        assert_eq!(thinking_level("gemini-4-neon", "xhigh"), "xhigh");
+        assert_eq!(thinking_level("gemini-4-hydrogen", "xhigh"), "xhigh");
+        assert_eq!(thinking_level("gemini-4-argon", "xhigh"), "high");
+        assert_eq!(thinking_level("gemini-4-argon", "low"), "low");
+    }
+
+    /// Talks to the real API: a tool round with a PDF (so without code execution), then the
+    /// tool's answer (with a picture) continued from the stored interaction, which Gemini
+    /// first refuses with code execution because the PDF is still in it. Needs `GEMINI_API_KEY`; run
+    /// with `cargo test live_tool_round -- --ignored --nocapture`, and `GEMINI_MODEL` to try
+    /// another model than the default.
+    #[tokio::test]
+    #[ignore]
+    async fn live_tool_round() {
+        let key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY");
+        let mut config = GeminiConfig::default();
+        if let Ok(model) = std::env::var("GEMINI_MODEL") {
+            config.model = model;
+        }
+        let gemini = Gemini::new(reqwest::Client::new(), key, config, None);
+        let tools = vec![ToolDef {
+            name: "get_time",
+            description: "The time now in a time zone.",
+            parameters: json!({"type": "object", "properties": {"zone": {"type": "string"}},
+                "required": ["zone"]}),
+        }];
+        let pdf = ModelFile {
+            name: "note.pdf".into(),
+            mime: "application/pdf".into(),
+            data: tiny_pdf("The secret word is pineapple."),
+        };
+        let first = ChatRequest {
+            system: "You are Vivy, a Discord bot. Answer in one short line.".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![
+                    Part::Text("Look up the time in UTC with get_time first.".into()),
+                    Part::File(pdf),
+                ],
+            }]),
+            tools: tools.clone(),
+            cache_key: "test".into(),
+            job: "chat",
+            answer_now: false,
+        };
+        let done = live_answer(&gemini, first).await.1;
+        let call = done.tool_calls.first().expect("a get_time call");
+        assert_eq!(call.name, "get_time");
+
+        let mut png = Vec::new();
+        image::RgbImage::from_pixel(16, 16, image::Rgb([255, 0, 0]))
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        let red = ModelImage {
+            mime: "image/png",
+            data: png,
+        };
+        let second = ChatRequest {
+            system: "You are Vivy, a Discord bot. Answer in one short line.".into(),
+            input: Input::After {
+                continuation: done.continuation.expect("an interaction ID"),
+                new: vec![
+                    Turn {
+                        role: Role::User,
+                        parts: vec![Part::ToolResult {
+                            call_id: call.id.clone(),
+                            output: "14:30 UTC, and a picture of the sky now".into(),
+                            images: vec![red],
+                        }],
+                    },
+                    Turn {
+                        role: Role::User,
+                        parts: vec![Part::Text(
+                            "Now tell me the time, the sky's colour and the PDF's secret word."
+                                .into(),
+                        )],
+                    },
+                ],
+            },
+            tools,
+            cache_key: "test".into(),
+            job: "chat",
+            answer_now: true,
+        };
+        let (text, done) = live_answer(&gemini, second).await;
+        println!("{text}");
+        assert!(done.tool_calls.is_empty());
+        let text = text.to_lowercase();
+        assert!(text.contains("14:30") && text.contains("red") && text.contains("pineapple"));
+    }
+
+    async fn live_answer(gemini: &Gemini, request: ChatRequest) -> (String, Done) {
+        let mut events = gemini.stream(request).await.expect("the request");
+        let mut text = String::new();
+        while let Some(event) = events.recv().await {
+            match event.expect("the stream") {
+                ChatEvent::TextDelta(delta) => text.push_str(&delta),
+                ChatEvent::Done(done) => return (text, done),
+                _ => {}
+            }
+        }
+        panic!("the stream ended without an answer")
+    }
+
+    /// A one-page PDF with one line of text.
+    fn tiny_pdf(line: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 18 Tf 40 100 Td ({line}) Tj ET");
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 200] /Contents 4 0 R \
+             /Resources << /Font << /F1 5 0 R >> >> >>"
+                .to_string(),
+            format!(
+                "<< /Length {} >>\nstream\n{stream}\nendstream",
+                stream.len()
+            ),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        ];
+        let mut pdf = String::from("%PDF-1.4\n");
+        let mut offsets = Vec::new();
+        for (i, object) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{object}\nendobj\n", i + 1));
+        }
+        let xref = pdf.len();
+        pdf.push_str(&format!(
+            "xref\n0 {}\n0000000000 65535 f \n",
+            objects.len() + 1
+        ));
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objects.len() + 1
+        ));
+        pdf.into_bytes()
     }
 
     #[test]

@@ -120,8 +120,11 @@ show_job_costs = true
 # `fallback` above is "gemini". Gemini watches videos people post (uploaded with its Files
 # API) and YouTube links itself, with their sound, instead of a few frames.
 [ai.gemini]
-model = "gemini-4-argon"
-# How much it thinks: "low", "medium" or "high".
+# "gemini-4-neon" ($3 in, $15 out per million) or "gemini-4-argon" ($2/$10 until
+# 2026-11-30, then $4/$20); "gemini-4-carbon" and "gemini-4-hydrogen" work too.
+model = "gemini-4-neon"
+# How much it thinks: "low", "medium", "high" or "xhigh" (Neon and Hydrogen only; the
+# others think at "high" instead).
 thinking_level = "medium"
 # Show short summaries of its thinking in the reply's status line while it works.
 thought_summaries = true

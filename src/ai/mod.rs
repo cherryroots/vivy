@@ -437,7 +437,7 @@ pub struct AiConfig {
 
 const CLAUDE_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 const OPENAI_EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
-const GEMINI_LEVELS: [&str; 4] = ["minimal", "low", "medium", "high"];
+const GEMINI_LEVELS: [&str; 4] = ["low", "medium", "high", "xhigh"];
 const VERBOSITIES: [&str; 3] = ["low", "medium", "high"];
 const VIDEO_PROCESSING: [&str; 2] = ["static", "agentic"];
 
