@@ -129,6 +129,10 @@ model = "gemini-4-neon"
 thinking_level = "high"
 # Show short summaries of its thinking in the reply's status line while it works.
 thought_summaries = true
+# Send most of her tools as names only, and let Gemini's tool search load the one she
+# needs in the same round: about 4k fewer tokens on every chat request. Her memory tool is
+# always loaded.
+defer_tools = true
 # How a posted video is watched: "static" (every second at once, with the sound; best for
 # short clips) or "agentic" (the model looks through it for what it needs; cheaper on long
 # videos, slower on short ones). The same for YouTube links, which are often long.

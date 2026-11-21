@@ -65,6 +65,7 @@ pub fn def() -> ToolDef {
                     "items": {"type": "string", "enum": negatable(HAS_TYPES)},
                     "description": "Has all of these (snapshot: forwarded); -link means without links."
                 },
+                "attachment_filename": texts("Attachment file names, like \"budget.xlsx\"."),
                 "attachment_extension": texts("Attachment extensions, like \"pdf\" or \"csv\"."),
                 "link_hostname": texts("Linking to these sites, like \"youtube.com\"."),
                 "after": {"type": "string", "description": "On or after YYYY-MM-DD (asker's timezone)."},
@@ -121,6 +122,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
         pinned: args["pinned"].as_bool(),
         has: list(args, "has"),
         link_hostnames: list(args, "link_hostname"),
+        attachment_filenames: list(args, "attachment_filename"),
         attachment_extensions: list(args, "attachment_extension"),
         min_id: date(text("after"), zone)?,
         max_id: date(text("before"), zone)?,

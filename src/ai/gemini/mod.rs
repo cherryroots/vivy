@@ -67,6 +67,10 @@ pub struct GeminiConfig {
     /// Show short summaries of its thinking in the reply's status line while it works
     /// (only for requests with the bot's tools: chat, chime-ins, reflection, diary).
     pub thought_summaries: bool,
+    /// Send most of the bot's tools as "deferred": the model sees only their names until it
+    /// looks one up with Gemini's tool search, in the same round. About 4k fewer tokens on
+    /// every request (see [`ALWAYS_LOADED`]).
+    pub defer_tools: bool,
     /// How a posted video is watched: "static" (frames once a second with the sound, in one
     /// go; best for short clips) or "agentic" (the model looks through the video for what
     /// it needs; cheaper on long ones, slower on short ones).
@@ -89,6 +93,7 @@ impl Default for GeminiConfig {
             model: "gemini-4-neon".to_string(),
             thinking_level: "high".to_string(),
             thought_summaries: true,
+            defer_tools: true,
             video_processing: "static".to_string(),
             youtube_processing: "agentic".to_string(),
             monthly_budget: 25.0,
@@ -224,13 +229,23 @@ impl Gemini {
         if code && job.code.unwrap_or(true) {
             tools.push(json!({"type": "code_execution"}));
         }
+        // With many tools, most are deferred and Gemini's tool search loads them when the
+        // model needs one. The list stays the same every time, so the cache still works.
+        let defer = self.config.defer_tools && request.tools.len() >= DEFER_FROM;
+        if defer {
+            tools.push(json!({"type": "tool_search"}));
+        }
         tools.extend(request.tools.iter().map(|tool| {
-            json!({
+            let mut function = json!({
                 "type": "function",
                 "name": tool.name,
                 "description": tool.description,
                 "parameters": tool.parameters,
-            })
+            });
+            if defer && !ALWAYS_LOADED.contains(&tool.name) {
+                function["defer_loading"] = json!(true);
+            }
+            function
         }));
 
         let summaries = if self.shows_progress(request) {
@@ -299,12 +314,13 @@ impl Gemini {
             Input::Full(turns) => turns,
             Input::After { new, .. } => new,
         };
-        let to_upload: Vec<&ModelFile> = turns
+        // Each file with the type it's uploaded as.
+        let to_upload: Vec<(&ModelFile, &str)> = turns
             .iter()
             .flat_map(|t| &t.parts)
             .filter_map(|part| match part {
-                Part::Video(video) => Some(video),
-                Part::File(file) if is_pdf(file) => Some(file),
+                Part::Video(video) => Some((video, video.mime.as_str())),
+                Part::File(file) => document_mime(file).map(|mime| (file, mime)),
                 _ => None,
             })
             .collect();
@@ -313,10 +329,10 @@ impl Gemini {
             let results = futures::future::join_all(
                 group
                     .iter()
-                    .map(|file| self.files.upload(&file.name, &file.mime, &file.data)),
+                    .map(|(file, mime)| self.files.upload(&file.name, mime, &file.data)),
             )
             .await;
-            for (file, result) in group.iter().zip(results) {
+            for ((file, _), result) in group.iter().zip(results) {
                 match result {
                     Ok(uri) => uploads.push(Some(uri)),
                     Err(err) => {
@@ -342,21 +358,59 @@ fn thinking_level<'a>(model: &str, wanted: &'a str) -> &'a str {
     }
 }
 
-fn is_pdf(file: &ModelFile) -> bool {
-    file.mime == "application/pdf"
+/// The documents Gemini reads itself, by extension and type: PDFs, and Word, PowerPoint
+/// and Excel files (Microsoft Office and OpenDocument). It sees their pages as pictures
+/// and a spreadsheet's values and formulas.
+const DOCUMENTS: [(&str, &str); 11] = [
+    ("pdf", "application/pdf"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    ("doc", "application/msword"),
+    (
+        "dotx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    ),
+    ("odt", "application/vnd.oasis.opendocument.text"),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
+    ("ppt", "application/vnd.ms-powerpoint"),
+    ("odp", "application/vnd.oasis.opendocument.presentation"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+    ("xls", "application/vnd.ms-excel"),
+    ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
+];
+
+/// The type Gemini needs for `file` when it's one of the [`DOCUMENTS`], from its type or
+/// else its extension (Discord sometimes sends Office files as plain bytes).
+fn document_mime(file: &ModelFile) -> Option<&'static str> {
+    let extension = file
+        .name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_lowercase());
+    DOCUMENTS
+        .iter()
+        .find(|(ext, mime)| file.mime == *mime || extension.as_deref() == Some(*ext))
+        .map(|(_, mime)| *mime)
 }
 
-/// Whether the request's new turns hold a video, a YouTube link or a PDF. Gemini's code
-/// execution refuses those ("The mime type: application/pdf is not supported for code
-/// execution"), so such a request goes without it.
-fn has_video_or_pdf(request: &ChatRequest) -> bool {
+/// Whether the request's new turns hold a video, a YouTube link or a document. Gemini's
+/// code execution refuses those ("The mime type: application/pdf is not supported for
+/// code execution"), so such a request goes without it.
+fn has_video_or_document(request: &ChatRequest) -> bool {
     let turns = match &request.input {
         Input::Full(turns) => turns,
         Input::After { new, .. } => new,
     };
     turns.iter().flat_map(|t| &t.parts).any(|part| match part {
         Part::Video(_) | Part::YouTube(_) => true,
-        Part::File(file) => is_pdf(file),
+        Part::File(file) => document_mime(file).is_some(),
         _ => false,
     })
 }
@@ -380,10 +434,19 @@ fn refuses_code(err: &anyhow::Error) -> bool {
 /// The most of a text file that goes into the request, in bytes (about 25k tokens).
 const MAX_TEXT_FILE: usize = 100_000;
 
+/// A request with at least this many of the bot's tools defers them (`defer_tools`):
+/// chat and chime-ins, not the memory jobs with a few.
+const DEFER_FROM: usize = 8;
+
+/// The tools that are never deferred: she views her memory on nearly every question.
+/// Measured live on Neon (2026-11-21): a request with every tool loaded was 6,694 tokens,
+/// with all deferred 2,822, and the model found the right tool in the same round.
+const ALWAYS_LOADED: [&str; 1] = ["memory"];
+
 /// The cheap model, for chime-ins, describing emoji and the Apps menu helpers.
 const CHEAP_MODEL: &str = "gemini-4-hydrogen";
 
-/// What the model reads of a file that isn't a picture, video or PDF. Gemini's Files API
+/// What the model reads of a file that isn't a picture, video or document. Gemini's Files API
 /// refuses most other kinds and its code execution only takes text, so a text file (one
 /// that is valid UTF-8, like a CSV, code or notes) goes in as text, which her code can use
 /// too. Anything else gets a note.
@@ -455,11 +518,14 @@ fn input_steps(
                     "uri": link,
                     "processing": config.youtube_processing,
                 })),
-                Part::File(file) if is_pdf(file) => match uploads.next().and_then(Option::as_ref) {
+                Part::File(file) if document_mime(file).is_some() => match uploads
+                    .next()
+                    .and_then(Option::as_ref)
+                {
                     Some(uri) => content.push(json!({
                         "type": "document",
                         "uri": uri,
-                        "mime_type": file.mime,
+                        "mime_type": document_mime(file),
                     })),
                     None => content.push(json!({
                         "type": "text",
@@ -811,7 +877,7 @@ impl ChatProvider for Gemini {
     ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
         let uploads = self.upload_files(&request).await;
         let (body, mut response) = match self
-            .send(&request, &uploads, !has_video_or_pdf(&request))
+            .send(&request, &uploads, !has_video_or_document(&request))
             .await
         {
             // An earlier turn's video or PDF is still in the conversation: ask again
@@ -1015,7 +1081,50 @@ mod tests {
     }
 
     #[test]
-    fn no_code_execution_next_to_videos_and_pdfs() {
+    fn many_tools_are_deferred() {
+        let tool = |name| ToolDef {
+            name,
+            description: "A tool.",
+            parameters: json!({"type": "object", "properties": {}}),
+        };
+        let names = ["memory", "a", "b", "c", "d", "e", "f", "g"];
+        let request = ChatRequest {
+            system: String::new(),
+            input: Input::Full(Vec::new()),
+            tools: names.iter().map(|name| tool(*name)).collect(),
+            cache_key: String::new(),
+            job: "chat",
+            answer_now: false,
+        };
+        let mut gemini = client();
+        let body = gemini.request_body(&request, &[], false);
+        let tools = body["tools"].as_array().unwrap();
+        assert!(tools.contains(&json!({"type": "tool_search"})));
+        let deferred = |name: &str| {
+            let tool = tools.iter().find(|t| t["name"] == name).unwrap();
+            tool["defer_loading"] == true
+        };
+        assert!(!deferred("memory"));
+        assert!(deferred("a"));
+
+        // Fewer tools, or turned off: all loaded, and no tool search.
+        let few = ChatRequest {
+            tools: vec![tool("memory"), tool("a")],
+            system: String::new(),
+            input: Input::Full(Vec::new()),
+            cache_key: String::new(),
+            job: "chat",
+            answer_now: false,
+        };
+        let body = gemini.request_body(&few, &[], false);
+        assert!(!body["tools"].to_string().contains("defer_loading"));
+        gemini.config.defer_tools = false;
+        let body = gemini.request_body(&request, &[], false);
+        assert!(!body["tools"].to_string().contains("tool_search"));
+    }
+
+    #[test]
+    fn no_code_execution_next_to_videos_and_documents() {
         let request = |parts| ChatRequest {
             system: String::new(),
             input: Input::Full(vec![Turn {
@@ -1027,16 +1136,26 @@ mod tests {
             job: "chat",
             answer_now: false,
         };
-        assert!(!has_video_or_pdf(&request(vec![Part::Image(picture())])));
-        assert!(!has_video_or_pdf(&request(vec![Part::File(file(
+        assert!(!has_video_or_document(&request(vec![Part::Image(
+            picture()
+        )])));
+        assert!(!has_video_or_document(&request(vec![Part::File(file(
             "a.mp3",
             "audio/mpeg"
         ))])));
-        assert!(has_video_or_pdf(&request(vec![Part::File(file(
+        assert!(has_video_or_document(&request(vec![Part::File(file(
             "a.pdf",
             "application/pdf"
         ))])));
-        assert!(has_video_or_pdf(&request(vec![Part::YouTube(
+        // Office files count by type, or by name when Discord sends them as plain bytes.
+        let deck = file("plan.PPTX", "application/octet-stream");
+        assert_eq!(
+            document_mime(&deck),
+            Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+        );
+        assert!(has_video_or_document(&request(vec![Part::File(deck)])));
+        assert_eq!(document_mime(&file("notes.txt", "text/plain")), None);
+        assert!(has_video_or_document(&request(vec![Part::YouTube(
             "https://youtu.be/a".into()
         )])));
 
