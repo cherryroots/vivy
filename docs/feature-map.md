@@ -71,7 +71,7 @@ One SQLite file. Each feature owns its tables and migrations; the names start wi
 | chat | `chat_turns`, `chat_messages`, `chat_emoji` |
 | reminders | `reminders`, `reminder_images` |
 | wheel | `wheel_seasons`, `wheel_options`, `wheel_rounds`, `wheel_claims`, `wheel_bets`, `wheel_names`, `wheel_round_ids`, `wheel_status_messages` |
-| memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks` |
+| memory | `memory_files`, `memory_changes`, `memory_reflections`, `memory_diaries`, `memory_pictures`, `memory_mood_checks`, `memory_sweeps` |
 | voice | `voice_messages` |
 | drawing | `drawings` |
 | snails | `snail_messages`, `snail_links`, `snail_pictures`, `snail_crawl`, `snail_backfills`, `snail_caught`, `snail_failures`, `snail_dropped`, `snail_link_cleanup` |
@@ -275,6 +275,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #164 | | Chat: `create_poll` posts a real Discord poll when someone asks for one (2 to 10 answers with optional emoji, 1 to 768 hours, single or multiple choice), sent as JSON since twilight's `Poll` has no `duration` (`chat/poll.rs`). Not offered in chime-ins. The bot needs the Create Polls permission. |
 | #165 | | Chat: the Apps menu helpers wrap the messages in `<messages>` tags and give who asks, their language and what to do in the system prompt. Explain this took the trailing "X asks what the marked message means" line for part of the message and explained it too. |
 | #166 | | Chat: she no longer narrates her reactions ("I put a reaction on this one. My reply: …"). The `react_to_message` description says the reaction speaks for itself, and the system prompt says to write the answer itself after the last tool, not announce it or describe what she did. Instructions only, no code change. |
+| #168 | | Memory: the reflection rereads older notes too. Each day it gets a slice of files nobody changed lately (`sweep_chars`, 12000 characters), going through the folder in path order from where the last one stopped (migration 5, `memory_sweeps`), each with when it last changed and who wrote it. A new read-only tool, `check_messages`, lets her search what people really wrote (chat's channel gating, no age-restricted channels, 8 searches per reflection) when a note seems doubtful. Tidying never makes notes longer. Like the "dreaming" in Anthropic's memory research, with the server's messages as the ground truth (`memory/sweep.rs`, `memory/check.rs`). |
 
 ## Not built yet
 

@@ -7,6 +7,7 @@
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::folder::Folder;
+use super::sweep;
 
 pub const MIGRATIONS: &[&str] = &[
     // 1
@@ -52,6 +53,11 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE TABLE memory_mood_checks (
         scope TEXT PRIMARY KEY,
         at INTEGER NOT NULL               -- unix seconds
+    );",
+    // 5: where each folder's sweep (older notes reread by the reflection) stopped.
+    "CREATE TABLE memory_sweeps (
+        scope TEXT PRIMARY KEY,
+        after TEXT NOT NULL               -- the last path swept; the next sweep starts after it
     );",
 ];
 
@@ -152,6 +158,45 @@ pub fn due_reflections(
     )?;
     let rows = stmt.query_map(params![now - every, bot], |row| row.get(0))?;
     rows.collect()
+}
+
+/// Every file of a folder with when it last changed and who asked, in path order, for the
+/// sweep.
+pub fn sweep_files(conn: &Connection, scope: &str) -> rusqlite::Result<Vec<sweep::File>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, content, updated_at, updated_by FROM memory_files
+         WHERE scope = ?1 ORDER BY path",
+    )?;
+    let rows = stmt.query_map([scope], |row| {
+        Ok(sweep::File {
+            path: row.get(0)?,
+            content: row.get(1)?,
+            updated_at: row.get(2)?,
+            updated_by: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// The last path a folder's sweep reread, or "" before its first sweep.
+pub fn sweep_spot(conn: &Connection, scope: &str) -> rusqlite::Result<String> {
+    Ok(conn
+        .query_row(
+            "SELECT after FROM memory_sweeps WHERE scope = ?1",
+            [scope],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_default())
+}
+
+pub fn set_sweep_spot(conn: &Connection, scope: &str, after: &str) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO memory_sweeps (scope, after) VALUES (?1, ?2)
+         ON CONFLICT (scope) DO UPDATE SET after = excluded.after",
+        params![scope, after],
+    )?;
+    Ok(())
 }
 
 /// For the control panel: changes to any folder since `since`, and the last reflection.
@@ -346,6 +391,25 @@ mod tests {
         let mut conn = Connection::open_in_memory().unwrap();
         crate::core::db::migrate(&mut conn, "memory", MIGRATIONS).unwrap();
         conn
+    }
+
+    #[test]
+    fn keeps_the_sweep_spot_and_file_sources() {
+        let conn = db();
+        assert_eq!(sweep_spot(&conn, "server:1").unwrap(), "");
+        set_sweep_spot(&conn, "server:1", "/memories/b.md").unwrap();
+        set_sweep_spot(&conn, "server:1", "/memories/c.md").unwrap();
+        assert_eq!(sweep_spot(&conn, "server:1").unwrap(), "/memories/c.md");
+        assert_eq!(sweep_spot(&conn, "server:2").unwrap(), "");
+
+        let mut folder = Folder::new();
+        folder.insert("/memories/b.md".into(), "two".into());
+        folder.insert("/memories/a.md".into(), "one".into());
+        save(&conn, "server:1", &Folder::new(), &folder, 7, 100).unwrap();
+        let files = sweep_files(&conn, "server:1").unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "/memories/a.md");
+        assert_eq!((files[0].updated_at, files[0].updated_by), (100, 7));
     }
 
     #[test]

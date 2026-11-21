@@ -1,6 +1,6 @@
 # Memory
 
-Vivy remembers people and places between conversations. She keeps a folder of short text notes per server (and a private one per person in DMs): who people are, what they like, what the server's channels are for, its in-jokes. She also keeps notes about herself, so each server grows its own Vivy, with her own personality, interests and mood. Her mood shows in how she talks, in her Discord status, and (when set up) in her avatar, banner and nickname in that server. Once a day she tidies the folder, a few times a day she checks in with her mood, and once a week she can post a diary entry.
+Vivy remembers people and places between conversations. She keeps a folder of short text notes per server (and a private one per person in DMs): who people are, what they like, what the server's channels are for, its in-jokes. She also keeps notes about herself, so each server grows its own Vivy, with her own personality, interests and mood. Her mood shows in how she talks, in her Discord status, and (when set up) in her avatar, banner and nickname in that server. Once a day she tidies the folder (the changed notes and a few older ones), a few times a day she checks in with her mood, and once a week she can post a diary entry.
 
 ## Using it
 
@@ -9,7 +9,7 @@ Vivy remembers people and places between conversations. She keeps a folder of sh
 - **`/memory forget [file]`** deletes one of your own files (autocompleted). With no file it asks first ("This deletes all 4 files I saved about you here. Sure?") with **Forget everything** and **Cancel** buttons (`memory:forget:<user>` / `memory:keep:<user>`, only for the person who asked), then deletes your whole folder (in DMs, everything). The answer says that other people's files and the server's notes may still mention you.
 - **`/memory delete <path>`** (admins, from `admins` in config.toml) deletes any file or folder.
 
-Settings live under `[features.memory]`: `diary_channels`, `mood_checks_per_day`, `timezone`, `faces_dir`, `face_zoom`, `face_center`, `banners_dir` and `nickname`, plus the usual gate keys like `guilds`. `config.example.toml` explains each one. Setup is in the README.
+Settings live under `[features.memory]`: `diary_channels`, `mood_checks_per_day`, `timezone`, `faces_dir`, `face_zoom`, `face_center`, `banners_dir`, `nickname` and `sweep_chars`, plus the usual gate keys like `guilds`. `config.example.toml` explains each one. Setup is in the README.
 
 ## Files
 
@@ -30,6 +30,8 @@ All under `src/features/memory/`.
 | `name.rs` | Her nickname: a name plus the emoji of her mood. |
 | `banner.rs` | Her banner: one picture per time of day. |
 | `diary.rs` | The weekly diary. |
+| `sweep.rs` | The slice of older notes each reflection rereads, and the line saying where each came from. Pure. |
+| `check.rs` | `check_messages`, the reflection's read-only search of what people wrote, and `ReflectRunner`, its two tools. |
 
 ## How it works
 
@@ -114,9 +116,30 @@ The control panel shows the newest mood file in a "<bot name>'s mind" box: Mood,
 
 `reflect.rs`. Each hour the loop asks `store::due_reflections` for server folders that changed since their last reflection, at most once a day each (`memory_reflections`). Changes by Vivy herself don't count (or every reflection would make the next one due), and neither do changes to `mood.md` (mood checks rewrite it several times a day, and a quiet server shouldn't reflect for that alone). DMs never reflect.
 
-Vivy gets her self notes, a `view` of `/memories`, the list of files changed since the last reflection (by whom, how often), and the text of those files (`diary::render_changes`, the same limits as the diary), so she only views a file when she needs more of it. She has only the `memory` tool (run by `FolderRunner` as herself, up to 25 rounds) and her own small system prompt: merge duplicates, fix contradictions (a person's own word wins), delete stale or trivial notes and task logs, keep files short, then update `/memories/vivy/` (under 2K, skills not counted), write or improve skills, and last rewrite `mood.md`. When faces or the nickname are on, the prompt also asks for the `face:` and `emoji:` lines.
+Vivy gets her self notes, a `view` of `/memories`, the list of files changed since the last reflection (by whom, how often), and the text of those files (`diary::render_changes`, the same limits as the diary), so she only views a file when she needs more of it. She also gets a slice of older notes (see [The sweep](#the-sweep)). She has the `memory` tool (run by `FolderRunner` as herself) and `check_messages` (below), up to 25 rounds in all, and her own small system prompt: merge duplicates, fix contradictions (a person's own word wins), delete stale or trivial notes and task logs, keep files short, then update `/memories/vivy/` (under 2K, skills not counted), write or improve skills, and last rewrite `mood.md`. When faces or the nickname are on, the prompt also asks for the `face:` and `emoji:` lines.
+
+Tidying never makes notes longer: the prompt says to merge, fix and cut, and not to add to other people's notes while reflecting. (Anthropic's memory research found notes that grow without getting better: one wiki ended up 1.8 times the size of what it summarized.)
 
 On success the reflection time saved is when it started, not when it ended, so edits people made while she reflected are still new next time. It also counts as a mood check. A failed reflection isn't saved as done: it tries again 3 hours later (`retry.rs`) instead of the next day. That wait is kept in memory only, so a restart just tries sooner.
+
+### The sweep
+
+`sweep.rs`. A reflection reads the files that changed, so a note nobody touches would never be read again: old duplicates and stale facts in quiet files would stay. So each reflection also gets "Older notes to look over": files nobody changed lately, up to `sweep_chars` characters (default 12000, about 3k tokens; 0 turns it off).
+
+- The slice goes through the folder in path order and starts after the path the last one stopped at, saved in `memory_sweeps`. At the end it starts again from the top. So every file comes up once every week or two, and each day's reflection stays about the same size however big the folder grows.
+- Files already shown as changed, `mood.md` and her self notes (shown up front) are left out. Her skills are swept.
+- The first file is always taken, even when it's longer than the budget, so a big file can't stop the sweep.
+- Each file comes with where it came from, from `memory_files`: "last changed 40 days ago by user 123, about themselves" (a note in that person's own folder that they wrote), "by user 456", or "by you". That's how she can tell a person's own word from someone else's, and an old note about something that changes (plans, jobs, what someone plays) from a lasting fact.
+- Only a reflection that worked moves the spot on, so a failed one rereads the same slice when it tries again.
+
+This is the idea Anthropic's memory research calls dreaming: going over memory offline to merge, prune and correct it. There the transcript is the ground truth; here it's what people wrote in the server, which she can look up with `check_messages`.
+
+### `check_messages` in reflections
+
+`check.rs`. A read-only tool only the reflection has. With `from` (a user id), `query` (words) or both, it runs Discord's message search (`util::search`) in that server and answers with up to 10 messages, newest first: date, name, user id, channel and the text (cut to 300 characters). The prompt tells her to use it when a note that matters seems doubtful (two notes disagree, an old note, someone else's word about a person), and that what people wrote wins over her notes.
+
+- Results keep to the channels chat may read (`[features.chat]` gating, a thread counting as its parent, looked up from Discord since archived threads aren't cached), and never age-restricted channels. Same rule as chat's `search_messages` (#149).
+- At most 8 searches per reflection; after that it says to decide from the notes she has. Each search adds a round, so this caps what it can cost.
 
 ### Mood checks
 
@@ -192,6 +215,7 @@ From `store.rs`, in migration order:
 3. **`memory_diaries`**: channel ID and when the diary was last posted there.
 4. **`memory_pictures`**: guild ID, slot ("avatar", "banner" or "nickname"), the name shown (a face name, a time of day, or the nickname itself), a fingerprint of the picture sent (empty for the nickname), and when it was set. Key is guild and slot.
    **`memory_mood_checks`**: scope and when its mood was last checked (or rewritten by a reflection).
+5. **`memory_sweeps`**: scope and the last path the sweep reread; the next sweep starts after it.
 
 ## Background loops
 

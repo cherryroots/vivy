@@ -205,6 +205,10 @@ face_center = 0.5
 # Her name in each server, followed by an emoji she picks with her mood ("Vivy ☕"). Leave
 # out to keep her name as it is.
 # nickname = "Vivy"
+# How many characters of older notes (ones nobody changed lately) each daily reflection
+# rereads, a different slice each day, so the whole folder gets looked over every week or
+# two. 0 turns it off.
+sweep_chars = 12000
 
 [features.voice]
 # Voice messages: Vivy can answer with a Discord voice message in her own voice, made with

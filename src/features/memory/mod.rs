@@ -17,9 +17,12 @@
 //! - `banner.rs`: her banner, a picture per time of day
 //! - `name.rs`: her nickname, her name plus an emoji for her mood
 //! - `diary.rs`: the weekly diary she posts in `diary_channels`
+//! - `sweep.rs`: the slice of older notes each reflection rereads, with where they came from
+//! - `check.rs`: `check_messages`, the reflection's read-only search of what people wrote
 //! - `retry.rs`: waiting a few hours before a failed reflection or diary tries again
 
 mod banner;
+mod check;
 mod commands;
 mod diary;
 mod face;
@@ -30,6 +33,7 @@ mod reflect;
 mod retry;
 mod set_mood;
 mod store;
+mod sweep;
 mod tool;
 
 use async_trait::async_trait;
@@ -129,6 +133,7 @@ impl Feature for Memory {
                 config.ignored_by::<face::Settings>(self.name()),
                 config.ignored_by::<mood::Settings>(self.name()),
                 config.ignored_by::<name::Settings>(self.name()),
+                config.ignored_by::<sweep::Settings>(self.name()),
             ],
         );
         // A folder that isn't there (a typo, or a path relative to the wrong place) would
