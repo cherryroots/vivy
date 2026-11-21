@@ -55,6 +55,8 @@ pub enum Part {
         output: String,
         /// Pictures that go with the answer (see [`ToolOutput::images`]).
         images: Vec<ModelImage>,
+        /// Files that go with the answer (see [`ToolOutput::files`]).
+        files: Vec<ToolFile>,
     },
     /// An answer as the provider wrote it, round by round. A provider that has no memory of
     /// its own (Claude) sends this instead of the turn's text when it wrote the answer with
@@ -110,6 +112,78 @@ pub struct ToolOutput {
     /// and miss the prompt cache.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "saved_images")]
     pub images: Vec<ModelImage>,
+    /// Files the model opens with the text, like a PDF on a message `get_message` opened
+    /// (only a provider that [`ChatProvider::opens_files`]). They're not saved: Gemini
+    /// keeps them itself, and a file can be large.
+    #[serde(skip)]
+    pub files: Vec<ToolFile>,
+}
+
+/// A file a tool hands the model: a document, video or audio, and which part of it to read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolFile {
+    pub file: ModelFile,
+    pub part: FilePart,
+}
+
+/// Which part of a file the model reads. Empty is all of it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct FilePart {
+    /// First and last page (or slide), from 1.
+    pub pages: Option<(u32, u32)>,
+    /// Only the pages' text, not pictures of them: cheaper, without charts or layout.
+    pub text_only: bool,
+    /// A spreadsheet's sheet, from 1.
+    pub sheet: Option<u32>,
+    /// A spreadsheet's cells, like "A1:H50".
+    pub cells: Option<String>,
+    /// A video's or audio's start and end, in seconds.
+    pub from: Option<u64>,
+    pub to: Option<u64>,
+}
+
+/// The documents a provider that [`ChatProvider::opens_files`] reads itself, by extension
+/// and type: PDFs, and Word, PowerPoint and Excel files (Microsoft Office and OpenDocument).
+pub const DOCUMENTS: [(&str, &str); 11] = [
+    ("pdf", "application/pdf"),
+    (
+        "docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ),
+    ("doc", "application/msword"),
+    (
+        "dotx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    ),
+    ("odt", "application/vnd.oasis.opendocument.text"),
+    (
+        "pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ),
+    ("ppt", "application/vnd.ms-powerpoint"),
+    ("odp", "application/vnd.oasis.opendocument.presentation"),
+    (
+        "xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+    ("xls", "application/vnd.ms-excel"),
+    ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
+];
+
+/// The type of a file named `name` with type `mime` when it's one of the [`DOCUMENTS`],
+/// from its type or else its extension (Discord sometimes sends Office files as plain
+/// bytes).
+pub fn document_mime(name: &str, mime: &str) -> Option<&'static str> {
+    let extension = name.rsplit_once('.').map(|(_, ext)| ext.to_lowercase());
+    DOCUMENTS
+        .iter()
+        .find(|(ext, known)| mime == *known || extension.as_deref() == Some(*ext))
+        .map(|(_, known)| *known)
+}
+
+/// Whether a file of type `mime` is a spreadsheet (its part is a sheet and cells).
+pub fn is_spreadsheet(mime: &str) -> bool {
+    mime.contains("spreadsheet") || mime == "application/vnd.ms-excel"
 }
 
 /// How [`ToolOutput::images`] are saved: `[{"mime": "image/png", "data": "<base64>"}]`.
@@ -171,6 +245,8 @@ pub struct ToolReply {
     /// Files that go out with the answer, like a picture she drew: chat attaches them to
     /// the reply's last message, so the answer is one message with its picture.
     pub files: Vec<ReplyFile>,
+    /// Files for the model to open itself (see [`ToolOutput::files`]).
+    pub opened: Vec<ToolFile>,
 }
 
 /// A file a tool made for the answer (see [`ToolReply::files`]).
@@ -412,6 +488,12 @@ pub trait ChatProvider: Send + Sync {
         false
     }
 
+    /// Whether the model opens the files tools hand it (documents, videos, audio) itself:
+    /// Gemini. `get_message` then offers to open a message's files.
+    fn opens_files(&self) -> bool {
+        false
+    }
+
     /// Starts an answer. Events arrive on the returned channel until [`ChatEvent::Done`] or
     /// an error. Dropping the receiver stops the request.
     async fn stream(
@@ -619,6 +701,7 @@ pub fn next_input(
                 call_id: r.call_id.clone(),
                 output: r.output.clone(),
                 images: r.images.clone(),
+                files: r.files.clone(),
             })
             .collect(),
     };
@@ -689,6 +772,7 @@ mod tests {
             call_id: "c1".into(),
             output: "12:00".into(),
             images: Vec::new(),
+            files: Vec::new(),
         }]
     }
 
@@ -703,6 +787,7 @@ mod tests {
                     mime: "image/webp",
                     data: vec![1, 2, 3, 255],
                 }],
+                files: Vec::new(),
             }],
             setup: None,
         };
@@ -732,6 +817,7 @@ mod tests {
                         call_id: "c1".into(),
                         output: "12:00".into(),
                         images: Vec::new(),
+                        files: Vec::new(),
                     }],
                 }],
             }

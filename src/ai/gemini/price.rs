@@ -1,7 +1,7 @@
 //! What a Gemini interaction costs, from its token counts, at Google's list prices.
 //!
 //! Prices: <https://ai.google.dev/gemini-api/docs/pricing>, Standard tier, checked there on
-//! 2026-11-21 (Cherry's screenshots; the sandbox can't reach the page). Argon has a launch
+//! 2026-11-21 (Cherry's screenshots; the sandbox can't reach the page). Carbon has a launch
 //! price until the end of November 2026 and costs twice as much from December. Thinking
 //! tokens cost as much as output. Google Search costs $14 per 1000 searches, but the first 5000 a month are free; the estimate counts every search, so it
 //! runs a little high when there are few. Google keeps no Admin API for the bill, so the
@@ -32,10 +32,11 @@ const fn prices(input: f64, cache_read: f64, output: f64) -> Prices {
 const NEON: Prices = prices(3.0, 0.15, 15.0);
 /// Gemini 4 Hydrogen, the cheap model.
 const HYDROGEN: Prices = prices(1.5, 0.075, 7.5);
-/// Gemini 4 Argon until 2026-11-30, and from [`ARGON_PRICE_RISE`].
-const ARGON_LAUNCH: Prices = prices(2.0, 0.10, 10.0);
-const ARGON: Prices = prices(4.0, 0.20, 20.0);
-const ARGON_PRICE_RISE: NaiveDate = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+/// Gemini 4 Carbon until 2026-11-30, and from [`CARBON_PRICE_RISE`]. Argon's own price
+/// wasn't checked; it's priced like Carbon.
+const CARBON_LAUNCH: Prices = prices(2.0, 0.10, 10.0);
+const CARBON: Prices = prices(4.0, 0.20, 20.0);
+const CARBON_PRICE_RISE: NaiveDate = NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
 
 /// Each Google Search costs this, on top of the tokens its results add.
 const GOOGLE_SEARCH: f64 = 14.0 / 1000.0;
@@ -44,16 +45,16 @@ fn per_token(count: u64, price: f64) -> f64 {
     count as f64 * price / 1_000_000.0
 }
 
-/// The prices of `model` on `now`'s date. A model this doesn't know is priced like Argon.
+/// The prices of `model` on `now`'s date. A model this doesn't know (Argon too) is priced like Carbon.
 fn prices_for(model: &str, now: DateTime<Utc>) -> Prices {
     if model.starts_with("gemini-4-neon") {
         NEON
     } else if model.starts_with("gemini-4-hydrogen") {
         HYDROGEN
-    } else if now.date_naive() < ARGON_PRICE_RISE {
-        ARGON_LAUNCH
+    } else if now.date_naive() < CARBON_PRICE_RISE {
+        CARBON_LAUNCH
     } else {
-        ARGON
+        CARBON
     }
 }
 
@@ -101,14 +102,14 @@ mod tests {
             json!({"type": "thought"}),
         ];
         let october = "2026-10-14T12:00:00Z".parse().unwrap();
-        let used = cost("gemini-4-argon", &usage, &steps, october);
+        let used = cost("gemini-4-carbon", &usage, &steps, october);
         // 600k × $2 + 400k × $0.10 + 100k × $10, plus one search.
         assert!((used.usd - (1.2 + 0.04 + 1.0 + 0.014)).abs() < 1e-9);
         assert_eq!((used.input, used.cache_read), (600_000, 400_000));
 
         // Twice as much from December.
         let december = "2026-12-01T00:00:00Z".parse().unwrap();
-        let used = cost("gemini-4-argon", &usage, &[], december);
+        let used = cost("gemini-4-carbon", &usage, &[], december);
         assert!((used.usd - (2.4 + 0.08 + 2.0)).abs() < 1e-9);
 
         // Neon has one price: 600k × $3 + 400k × $0.15 + 100k × $15.

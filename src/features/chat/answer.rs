@@ -424,6 +424,7 @@ async fn stream_answer(
                 call_id: call.id.clone(),
                 output: reply.text,
                 images: reply.images,
+                files: reply.opened,
             });
         }
         if round + 1 == max_rounds {
@@ -457,6 +458,12 @@ pub(super) fn tools_for(
             owners.insert(tool.name, feature.clone());
             tools.push(tool);
         }
+    }
+    // A model that opens files itself (Gemini) gets `get_message` with `open_files`.
+    if ctx.ai.chat().is_some_and(|provider| provider.opens_files())
+        && let Some(tool) = tools.iter_mut().find(|t| t.name == "get_message")
+    {
+        *tool = super::tools::get_message_def(true);
     }
     (tools, owners)
 }

@@ -45,7 +45,7 @@ use super::spend::Spend;
 use super::sse::SseParser;
 use super::{
     Activity, ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, ModelFile,
-    Part, Role, ToolCall, Turn, job_settings,
+    Part, Role, ToolCall, ToolFile, Turn, job_settings,
 };
 use crate::util::media::ModelImage;
 use files::Files;
@@ -315,13 +315,25 @@ impl Gemini {
             Input::After { new, .. } => new,
         };
         // Each file with the type it's uploaded as.
+        // In the order `input_steps` reads them back.
         let to_upload: Vec<(&ModelFile, &str)> = turns
             .iter()
             .flat_map(|t| &t.parts)
-            .filter_map(|part| match part {
-                Part::Video(video) => Some((video, video.mime.as_str())),
-                Part::File(file) => document_mime(file).map(|mime| (file, mime)),
-                _ => None,
+            .flat_map(|part| match part {
+                Part::Video(video) => vec![(video, video.mime.as_str())],
+                Part::File(file) => document_mime(file)
+                    .map(|mime| (file, mime))
+                    .into_iter()
+                    .collect(),
+                Part::ToolResult { files, .. } => files
+                    .iter()
+                    .filter(|opened| opened_kind(&opened.file).is_some())
+                    .map(|opened| {
+                        let mime = document_mime(&opened.file).unwrap_or(&opened.file.mime);
+                        (&opened.file, mime)
+                    })
+                    .collect(),
+                _ => Vec::new(),
             })
             .collect();
         let mut uploads = Vec::new();
@@ -358,46 +370,73 @@ fn thinking_level<'a>(model: &str, wanted: &'a str) -> &'a str {
     }
 }
 
-/// The documents Gemini reads itself, by extension and type: PDFs, and Word, PowerPoint
-/// and Excel files (Microsoft Office and OpenDocument). It sees their pages as pictures
-/// and a spreadsheet's values and formulas.
-const DOCUMENTS: [(&str, &str); 11] = [
-    ("pdf", "application/pdf"),
-    (
-        "docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ),
-    ("doc", "application/msword"),
-    (
-        "dotx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-    ),
-    ("odt", "application/vnd.oasis.opendocument.text"),
-    (
-        "pptx",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    ),
-    ("ppt", "application/vnd.ms-powerpoint"),
-    ("odp", "application/vnd.oasis.opendocument.presentation"),
-    (
-        "xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    ),
-    ("xls", "application/vnd.ms-excel"),
-    ("ods", "application/vnd.oasis.opendocument.spreadsheet"),
-];
-
-/// The type Gemini needs for `file` when it's one of the [`DOCUMENTS`], from its type or
-/// else its extension (Discord sometimes sends Office files as plain bytes).
+/// The type Gemini needs for `file` when it's a document it reads ([`crate::ai::DOCUMENTS`]).
 fn document_mime(file: &ModelFile) -> Option<&'static str> {
-    let extension = file
-        .name
-        .rsplit_once('.')
-        .map(|(_, ext)| ext.to_lowercase());
-    DOCUMENTS
-        .iter()
-        .find(|(ext, mime)| file.mime == *mime || extension.as_deref() == Some(*ext))
-        .map(|(_, mime)| *mime)
+    crate::ai::document_mime(&file.name, &file.mime)
+}
+
+/// The kind of content block a file a tool hands over goes in, and its type: "document",
+/// "video" or "audio". `None` for anything else.
+fn opened_kind(file: &ModelFile) -> Option<(&'static str, String)> {
+    if let Some(mime) = document_mime(file) {
+        Some(("document", mime.to_string()))
+    } else if file.mime.starts_with("video/") {
+        Some(("video", file.mime.clone()))
+    } else if file.mime.starts_with("audio/") {
+        Some(("audio", file.mime.clone()))
+    } else {
+        None
+    }
+}
+
+/// The content block for a file a tool handed over, uploaded to `uri`, with the part of it
+/// the tool asked for as `processing` (Gemini bills only that part).
+fn opened_block(opened: &ToolFile, uri: &str, config: &GeminiConfig) -> Option<Value> {
+    let (kind, mime) = opened_kind(&opened.file)?;
+    let part = &opened.part;
+    let mut block = json!({"type": kind, "uri": uri, "mime_type": mime});
+    let processing = match kind {
+        "document" if crate::ai::is_spreadsheet(&mime) => {
+            let mut options = serde_json::Map::new();
+            if let Some(sheet) = part.sheet {
+                options.insert("sheet_index".into(), json!(sheet));
+            }
+            if let Some(cells) = &part.cells {
+                options.insert("visible_cells".into(), json!(cells));
+            }
+            (!options.is_empty()).then(|| json!({"type": "static", "spreadsheet_options": options}))
+        }
+        "document" => {
+            let mut options = serde_json::Map::new();
+            if let Some((first, last)) = part.pages {
+                options.insert("start_page".into(), json!(first));
+                options.insert("end_page".into(), json!(last.max(first)));
+            }
+            if part.text_only {
+                options.insert("content_layers".into(), json!(["page_text"]));
+            }
+            (!options.is_empty()).then(|| json!({"type": "static", "page_options": options}))
+        }
+        // A video or audio: the stretch asked for, or a video watched as set in config.
+        _ => match (part.from, part.to) {
+            (None, None) if kind == "video" => Some(json!(config.video_processing)),
+            (None, None) => None,
+            (from, to) => {
+                let mut processing = json!({"type": "static"});
+                if let Some(from) = from {
+                    processing["start_offset"] = json!(format!("{from}s"));
+                }
+                if let Some(to) = to {
+                    processing["end_offset"] = json!(format!("{to}s"));
+                }
+                Some(processing)
+            }
+        },
+    };
+    if let Some(processing) = processing {
+        block["processing"] = processing;
+    }
+    Some(block)
 }
 
 /// Whether the request's new turns hold a video, a YouTube link or a document. Gemini's
@@ -411,6 +450,7 @@ fn has_video_or_document(request: &ChatRequest) -> bool {
     turns.iter().flat_map(|t| &t.parts).any(|part| match part {
         Part::Video(_) | Part::YouTube(_) => true,
         Part::File(file) => document_mime(file).is_some(),
+        Part::ToolResult { files, .. } => !files.is_empty(),
         _ => false,
     })
 }
@@ -565,9 +605,22 @@ fn input_steps(
                     call_id,
                     output,
                     images,
+                    files,
                 } => {
                     let mut result = vec![json!({"type": "text", "text": output})];
                     result.extend(images.iter().map(image));
+                    for opened in files.iter().filter(|f| opened_kind(&f.file).is_some()) {
+                        let block = uploads
+                            .next()
+                            .and_then(Option::as_ref)
+                            .and_then(|uri| opened_block(opened, uri, config));
+                        result.push(block.unwrap_or_else(|| {
+                            json!({
+                                "type": "text",
+                                "text": format!("[{} couldn't be uploaded]", opened.file.name),
+                            })
+                        }));
+                    }
                     let mut step = json!({
                         "type": "function_result",
                         "call_id": call_id,
@@ -895,6 +948,10 @@ impl ChatProvider for Gemini {
         &self.config.model
     }
 
+    fn opens_files(&self) -> bool {
+        true
+    }
+
     fn watches_video(&self) -> bool {
         true
     }
@@ -989,7 +1046,7 @@ impl ChatProvider for Gemini {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::ToolDef;
+    use crate::ai::{FilePart, ToolDef};
 
     fn client() -> Gemini {
         Gemini::new(
@@ -1038,6 +1095,7 @@ mod tests {
                             call_id: "call_1".into(),
                             output: "12:00".into(),
                             images: Vec::new(),
+                            files: Vec::new(),
                         }],
                     },
                 ],
@@ -1106,6 +1164,81 @@ mod tests {
             };
             assert_eq!(gemini.request_body(&cheap, &[], true)["model"], CHEAP_MODEL);
         }
+    }
+
+    #[test]
+    fn tool_results_carry_files() {
+        let config = GeminiConfig::default();
+        let opened = |name: &str, mime: &str, part: FilePart| ToolFile {
+            file: file(name, mime),
+            part,
+        };
+        let pages = FilePart {
+            pages: Some((3, 5)),
+            text_only: true,
+            ..FilePart::default()
+        };
+        assert_eq!(
+            opened_block(&opened("r.pdf", "application/pdf", pages), "u", &config),
+            Some(
+                json!({"type": "document", "uri": "u", "mime_type": "application/pdf",
+                "processing": {"type": "static", "page_options":
+                    {"start_page": 3, "end_page": 5, "content_layers": ["page_text"]}}})
+            )
+        );
+        let cells = FilePart {
+            sheet: Some(2),
+            cells: Some("A1:B9".into()),
+            ..FilePart::default()
+        };
+        let block = opened_block(&opened("b.xlsx", "", cells), "u", &config).unwrap();
+        assert_eq!(
+            block["processing"]["spreadsheet_options"],
+            json!({"sheet_index": 2, "visible_cells": "A1:B9"})
+        );
+        let clip = FilePart {
+            from: Some(90),
+            ..FilePart::default()
+        };
+        let block = opened_block(&opened("c.mp3", "audio/mpeg", clip), "u", &config).unwrap();
+        assert_eq!(block["type"], "audio");
+        assert_eq!(
+            block["processing"],
+            json!({"type": "static", "start_offset": "90s"})
+        );
+        // A whole video is watched as config says; a zip isn't opened.
+        let whole = opened_block(
+            &opened("v.mp4", "video/mp4", FilePart::default()),
+            "u",
+            &config,
+        );
+        assert_eq!(whole.unwrap()["processing"], "static");
+        assert_eq!(
+            opened_block(
+                &opened("x.zip", "application/zip", FilePart::default()),
+                "u",
+                &config
+            ),
+            None
+        );
+
+        // The upload links are read back in order, after the turn's own files.
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::File(file("a.pdf", "application/pdf")),
+                Part::ToolResult {
+                    call_id: "c1".into(),
+                    output: "opened".into(),
+                    images: Vec::new(),
+                    files: vec![opened("b.docx", "", FilePart::default())],
+                },
+            ],
+        }];
+        let uploads = [Some("first".to_string()), Some("second".to_string())];
+        let steps = input_steps(&turns, &uploads, &config, &HashMap::new());
+        assert_eq!(steps[0]["result"][1]["uri"], "second");
+        assert_eq!(steps[1]["content"][0]["uri"], "first");
     }
 
     #[test]
@@ -1272,6 +1405,7 @@ mod tests {
                             call_id: call.id.clone(),
                             output: "14:30 UTC, and a picture of the sky now".into(),
                             images: vec![red],
+                            files: Vec::new(),
                         }],
                     },
                     Turn {

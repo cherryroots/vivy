@@ -28,6 +28,7 @@ mod chime;
 mod emoji;
 mod history;
 mod look_back;
+mod open_files;
 mod poll;
 mod react;
 mod recent;

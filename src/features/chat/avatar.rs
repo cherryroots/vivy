@@ -63,6 +63,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<ToolReply>
             text: describe(whose(ctx, &picture), picture.for_server),
             images: vec![picture.image],
             files: Vec::new(),
+            opened: Vec::new(),
         });
     }
     let mut lines = Vec::new();
@@ -101,6 +102,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<ToolReply>
         text,
         images,
         files: Vec::new(),
+        opened: Vec::new(),
     })
 }
 
