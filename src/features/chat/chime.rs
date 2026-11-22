@@ -26,6 +26,7 @@ use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
 use super::emoji;
+use super::history;
 use super::look_back::one_line;
 use super::store::{self, NewTurn, StoredPart, Written};
 use super::tools::format_message;
@@ -254,15 +255,18 @@ async fn read_and_react(
     let provider = ctx.ai.chat().context("chat has no model")?;
     let transcript = read_along(ctx, asker.guild, asker.channel, last).await?;
     let context = answer::context_for(ctx, asker, true).await;
-    // The transcript, then what she's asked. No pictures: they cost more tokens than they
-    // were worth here. Message lines name attachments, and `get_message` shows them if she
-    // wants to look.
-    let mut parts = vec![Part::Text(transcript.clone())];
+    // The features' context, the transcript, then what she's asked. No pictures: they cost
+    // more tokens than they were worth here. Message lines name attachments, and
+    // `get_message` shows them if she wants to look.
+    let mut parts: Vec<Part> = history::context_block(&context)
+        .into_iter()
+        .map(Part::Text)
+        .collect();
+    parts.push(Part::Text(transcript.clone()));
     let mut stored = vec![StoredPart::Text { text: transcript }];
     let instructions = instructions.to_string();
     parts.push(Part::Text(instructions.clone()));
     stored.push(StoredPart::Text { text: instructions });
-    parts.extend(context.iter().cloned().map(Part::Text));
     // Every tool goes in the request, as for an answer, so the request starts the same as
     // an answer's and reads the system prompt and tools from the prompt cache. The runner
     // turns down the ones she can't use here.

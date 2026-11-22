@@ -216,6 +216,18 @@ pub async fn linked_messages(ctx: &BotCtx, asker: &Asker, text: &str) -> Vec<Sto
     parts
 }
 
+/// What the features added to a question (see
+/// [`Feature::chat_context`](crate::core::Feature::chat_context)), as one `<context>` block
+/// that goes before the question. Guides for Claude and Gemini both say to put reference
+/// material first and the question last, and the tag tells her the bot wrote it, not a
+/// person. `None` when there's nothing to add.
+pub fn context_block(texts: &[String]) -> Option<String> {
+    if texts.is_empty() {
+        return None;
+    }
+    Some(format!("<context>\n{}\n</context>", texts.join("\n")))
+}
+
 /// Picks what to send: only the new turns when the newest answer in the chain was written
 /// by this provider and model and can be continued, otherwise the whole chain.
 pub async fn build_input(ctx: &BotCtx, provider: &dyn ChatProvider, chain: &[Turn]) -> Input {
@@ -299,11 +311,21 @@ async fn to_model_turns(
     let mut result = Vec::new();
     for turn in turns {
         let mut parts = Vec::new();
+        let context: Vec<String> = turn
+            .parts
+            .iter()
+            .filter_map(|part| match part {
+                StoredPart::Context { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        if let Some(block) = context_block(&context) {
+            parts.push(Part::Text(block));
+        }
         for part in &turn.parts {
             match part {
-                StoredPart::Text { text } | StoredPart::Context { text } => {
-                    parts.push(Part::Text(text.clone()));
-                }
+                StoredPart::Text { text } => parts.push(Part::Text(text.clone())),
+                StoredPart::Context { .. } => {}
                 _ if loads(turn, part, loaded_turns) => {
                     parts.extend(loaded.next().unwrap_or_default());
                 }
@@ -558,6 +580,19 @@ pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_goes_in_one_block() {
+        assert_eq!(context_block(&[]), None);
+        let texts = [
+            "<vivy_mood>sleepy</vivy_mood>".to_string(),
+            "<memory_files>empty</memory_files>".to_string(),
+        ];
+        assert_eq!(
+            context_block(&texts).unwrap(),
+            "<context>\n<vivy_mood>sleepy</vivy_mood>\n<memory_files>empty</memory_files>\n</context>"
+        );
+    }
 
     #[test]
     fn people_cannot_fake_a_user_tag() {
