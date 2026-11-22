@@ -106,6 +106,9 @@ impl Feature for Memory {
         fresh: bool,
     ) -> Result<Option<String>> {
         let mut text = tool::file_list(ctx, asker).await?;
+        if let Some(about) = tool::asker_about(ctx, asker).await? {
+            text = format!("{text}\n{about}");
+        }
         if let Some(mood) = tool::mood_note(ctx, asker).await? {
             text = format!("{mood}\n{text}");
         }
