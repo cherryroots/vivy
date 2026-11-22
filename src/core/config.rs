@@ -543,7 +543,7 @@ mod tests {
         assert_eq!(claude.ai.provider, Provider::Claude);
         let gemini = Config::parse("[ai]\nprovider = \"gemini\"").unwrap();
         assert_eq!(gemini.ai.provider, Provider::Gemini);
-        assert_eq!(gemini.ai.gemini.model, "gemini-4-argon");
+        assert_eq!(gemini.ai.gemini.model, "gemini-4-neon");
         assert!(Config::parse("[ai]\nprovider = \"mistral\"").is_err());
     }
 

@@ -403,10 +403,12 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                     content.extend(file_content(file, upload, &mut readable_bytes));
                 }
                 (
+                    // Files only go to a provider that opens them (Gemini).
                     Part::ToolResult {
                         call_id,
                         output,
                         images,
+                        ..
                     },
                     _,
                 ) => items.push(json!({
@@ -717,6 +719,7 @@ mod tests {
                             call_id: "call_1".into(),
                             output: "12:00".into(),
                             images: Vec::new(),
+                            files: Vec::new(),
                         }],
                     },
                 ],

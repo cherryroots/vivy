@@ -14,7 +14,7 @@ use twilight_model::channel::message::EmojiReactionType;
 use twilight_model::gateway::presence::{Activity, ActivityType, Status};
 use twilight_model::guild::scheduled_event::Status as EventStatus;
 
-use super::{channels, recent, search};
+use super::{channels, open_files, recent, search};
 use crate::ai::{ToolDef, ToolReply};
 use crate::core::errors::is_user_error;
 use crate::core::{Asker, BotCtx, Result, settings, user_error};
@@ -82,21 +82,7 @@ pub fn defs() -> Vec<ToolDef> {
             parameters: json!({"type": "object", "properties": {}}),
         },
         recent::def(),
-        ToolDef {
-            name: "get_message",
-            description: "Opens Discord messages from their links (https://discord.com/channels/...): who wrote each, when, its text, attachments, embeds and reactions, and shows you their pictures, GIFs and videos (at most 4 in all). Use it whenever someone links a message or asks you to look at one; open several in one call. Your web tools can't open Discord links; this tool can.",
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "links": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "1 to 5 Discord message links."
-                    }
-                },
-                "required": ["links"],
-            }),
-        },
+        get_message_def(false),
         search::def(),
         ToolDef {
             name: "get_pinned_messages",
@@ -109,6 +95,40 @@ pub fn defs() -> Vec<ToolDef> {
             parameters: json!({"type": "object", "properties": {}}),
         },
     ]
+}
+
+/// `get_message`. `opens_files` adds the parameters for opening the messages' files, for a
+/// model that can (see [`open_files`]); chat swaps this one in (`answer::tools_for`).
+pub fn get_message_def(opens_files: bool) -> ToolDef {
+    let mut parameters = json!({
+        "type": "object",
+        "properties": {
+            "links": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "1 to 5 Discord message links."
+            }
+        },
+        "required": ["links"],
+    });
+    if !opens_files {
+        return ToolDef {
+            name: "get_message",
+            description: "Opens Discord messages from their links (https://discord.com/channels/...): who wrote each, when, its text, attachments, embeds and reactions, and shows you their pictures, GIFs and videos (at most 4 in all). Use it whenever someone links a message or asks you to look at one; open several in one call. Your web tools can't open Discord links; this tool can.",
+            parameters,
+        };
+    }
+    if let (Some(properties), Value::Object(more)) = (
+        parameters["properties"].as_object_mut(),
+        open_files::parameters(),
+    ) {
+        properties.extend(more);
+    }
+    ToolDef {
+        name: "get_message",
+        description: "Opens Discord messages from their links (https://discord.com/channels/...): who wrote each, when, its text, attachments, embeds and reactions, and shows you their pictures, GIFs and videos (at most 4 in all). With open_files, you also open their files (PDF, Word, Excel, PowerPoint, video, audio), whole or only some pages, a sheet and cells, or a stretch of time: only that part costs tokens. Use it whenever someone links a message or asks you to look at one, or at a file on an older message; open several in one call. Your web tools can't open Discord links; this tool can.",
+        parameters,
+    }
 }
 
 pub async fn run(ctx: &BotCtx, asker: &Asker, name: &str, args: &Value) -> Result<String> {
@@ -584,6 +604,11 @@ pub(super) async fn message_with_pictures(
     let given = links.len();
     let links = &links[..given.min(MAX_LINKS)];
     let messages = join_all(links.iter().map(|link| linked_message(ctx, asker, link))).await;
+    let found: Vec<&Message> = messages
+        .iter()
+        .filter_map(|msg| msg.as_ref().ok())
+        .collect();
+    let (opened, opened_note) = open_files::open(&found, args).await;
     let counts: Vec<usize> = messages
         .iter()
         .map(|msg| msg.as_ref().map_or(0, |msg| media::find_media(msg).len()))
@@ -604,9 +629,10 @@ pub(super) async fn message_with_pictures(
     if links.len() == 1 {
         let (text, images) = shown.into_iter().next().expect("one link")?;
         return Ok(ToolReply {
-            text,
+            text: text + &opened_note,
             images,
             files: Vec::new(),
+            opened,
         });
     }
     let mut images = Vec::new();
@@ -628,10 +654,12 @@ pub(super) async fn message_with_pictures(
     if with_pictures > 1 {
         text.push_str("\n\n[The pictures below are in the order of the messages.]");
     }
+    text.push_str(&opened_note);
     Ok(ToolReply {
         text,
         images,
         files: Vec::new(),
+        opened,
     })
 }
 

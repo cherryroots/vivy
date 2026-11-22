@@ -435,7 +435,9 @@ pub async fn download_video(url: &str) -> anyhow::Result<Vec<u8>> {
 
 /// The YouTube video `link` points at, as a plain watch link
 /// (`https://www.youtube.com/watch?v=<id>`): from `youtube.com/watch?v=`, `youtu.be/`,
-/// `/shorts/`, `/live/` and `/embed/` links. `None` for anything else.
+/// `/shorts/`, `/live/` and `/embed/` links. A link that starts partway (`t=1m30s`, or
+/// `start=` on embeds) keeps that as `&t=<seconds>` (see [`youtube_start`]). `None` for
+/// anything else.
 pub fn youtube_link(link: &str) -> Option<String> {
     let url = Url::parse(link).ok()?;
     let host = url.host_str()?.trim_start_matches("www.");
@@ -457,7 +459,51 @@ pub fn youtube_link(link: &str) -> Option<String> {
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    valid.then(|| format!("https://www.youtube.com/watch?v={id}"))
+    if !valid {
+        return None;
+    }
+    // The start time, from the query (`t=`, `start=`) or a `#t=` at the end.
+    let start = url
+        .query_pairs()
+        .find(|(key, _)| key == "t" || key == "start")
+        .map(|(_, value)| value.to_string())
+        .or_else(|| url.fragment()?.strip_prefix("t=").map(str::to_string))
+        .and_then(|value| seconds(&value))
+        .filter(|&start| start > 0);
+    Some(match start {
+        Some(start) => format!("https://www.youtube.com/watch?v={id}&t={start}"),
+        None => format!("https://www.youtube.com/watch?v={id}"),
+    })
+}
+
+/// Where a watch link from [`youtube_link`] starts, in seconds, and the link without it.
+pub fn youtube_start(link: &str) -> Option<(&str, u64)> {
+    let (plain, start) = link.split_once("&t=")?;
+    Some((plain, start.parse().ok()?))
+}
+
+/// A YouTube time in seconds: `90`, `90s`, `1m30s` or `1h2m3s`.
+fn seconds(value: &str) -> Option<u64> {
+    if let Ok(plain) = value.parse() {
+        return Some(plain);
+    }
+    let mut total = 0;
+    let mut number = String::new();
+    for c in value.chars() {
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        let unit = match c {
+            'h' => 3600,
+            'm' => 60,
+            's' => 1,
+            _ => return None,
+        };
+        total += number.parse::<u64>().ok()? * unit;
+        number.clear();
+    }
+    number.is_empty().then_some(total)
 }
 
 /// An image ready to send to a model.
@@ -678,7 +724,7 @@ mod tests {
     fn finds_youtube_videos() {
         let watch = Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string());
         for link in [
-            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42s",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=0s",
             "https://youtube.com/watch?feature=share&v=dQw4w9WgXcQ",
             "https://m.youtube.com/watch?v=dQw4w9WgXcQ",
             "https://youtu.be/dQw4w9WgXcQ?si=abc",
@@ -697,6 +743,25 @@ mod tests {
         ] {
             assert_eq!(youtube_link(link), None, "{link}");
         }
+
+        // Links that start partway keep where.
+        let at_90 = Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90".to_string());
+        for link in [
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90s",
+            "https://youtu.be/dQw4w9WgXcQ?t=90",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=1m30s",
+            "https://www.youtube.com/embed/dQw4w9WgXcQ?start=90",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ#t=1m30s",
+        ] {
+            assert_eq!(youtube_link(link), at_90, "{link}");
+        }
+        assert_eq!(seconds("1h2m3s"), Some(3723));
+        assert_eq!(seconds("1x"), None);
+        assert_eq!(
+            youtube_start("https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90"),
+            Some(("https://www.youtube.com/watch?v=dQw4w9WgXcQ", 90))
+        );
+        assert_eq!(youtube_start(watch.as_deref().unwrap()), None);
     }
 
     #[test]

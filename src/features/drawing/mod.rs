@@ -481,6 +481,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                     data: picture.data,
                 }],
                 files: Vec::new(),
+                opened: Vec::new(),
             }
         } else {
             ToolReply {
@@ -491,6 +492,7 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                     data: picture.data,
                     note: format!("[Picture you drew] {prompt}"),
                 }],
+                opened: Vec::new(),
             }
         };
 

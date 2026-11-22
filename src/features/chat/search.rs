@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use super::tools::{can_read, format_message, home_zone, message_link, parse_link};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
-use crate::util::discord::{ChannelId, GuildId, get_channel};
+use crate::util::discord::{ChannelId, GuildId};
 use crate::util::people::{find_member, parse_user_id};
-use crate::util::search::{self, AUTHOR_TYPES, EMBED_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
+use crate::util::search::{self, AUTHOR_TYPES, HAS_TYPES, MAX_OFFSET, Search, Sort};
 
 /// How many results when the model doesn't say.
 const DEFAULT_LIMIT: u32 = 10;
@@ -32,56 +32,47 @@ pub fn def() -> ToolDef {
         json!({
             "type": "array",
             "items": {"type": "string"},
-            "description": format!("{what}: mentions, user IDs or names.")
+            "description": format!("{what}: mentions, IDs or names.")
         })
     };
     let texts =
         |what: &str| json!({"type": "array", "items": {"type": "string"}, "description": what});
     ToolDef {
         name: "search_messages",
-        description: "Searches the messages of the whole server, like Discord's search bar, with all of its filters. Only returns messages from channels you may read. Give at least one filter. The answer starts with how many messages match; use `offset` for the next page. Include the message links it returns when you point people at messages.",
+        description: "Searches the whole server's messages, like Discord's search bar (only channels you may read). Give at least one filter. The answer starts with the match count; `offset` pages. Include its message links when pointing people at messages.",
         parameters: json!({
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Words to find in the message text."},
-                "slop": {"type": "integer", "description": "How many other words may sit between the words of `query`, 0 to 100. Discord's default is 2."},
-                "from": people("Only messages by these people"),
+                "from": people("By these people"),
                 "author_type": {
                     "type": "array",
                     "items": {"type": "string", "enum": negatable(AUTHOR_TYPES)},
-                    "description": "Only messages by these kinds of authors. A leading - leaves that kind out (\"-bot\")."
+                    "description": "Author kinds; -bot leaves bots out."
                 },
                 "channel": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Only these channels or threads: mentions, IDs or names. \"here\" for the current one."
+                    "description": "Channels or threads: mentions, IDs, names, or \"here\"."
                 },
-                "mentions": people("Only messages that mention these people"),
-                "mentions_role": texts("Only messages that mention these roles: mentions, IDs or names."),
-                "mention_everyone": {"type": "boolean", "description": "true: only messages that mention @everyone or @here; false: only ones that don't."},
-                "replied_to": people("Only replies to these people"),
-                "replied_to_message": texts("Only replies to these messages: message links or IDs."),
-                "pinned": {"type": "boolean", "description": "true: only pinned messages; false: only unpinned ones."},
+                "mentions": people("Mentioning these people"),
+                "mentions_role": texts("Mentioning these roles: mentions, IDs or names."),
+                "replied_to": people("Replies to these people"),
+                "replied_to_message": texts("Replies to these messages: links or IDs."),
+                "pinned": {"type": "boolean", "description": "Only pinned (true) or unpinned (false)."},
                 "has": {
                     "type": "array",
                     "items": {"type": "string", "enum": negatable(HAS_TYPES)},
-                    "description": "Only messages with all of these (snapshot is a forwarded message). A leading - means without it (\"-link\")."
+                    "description": "Has all of these (snapshot: forwarded); -link means without links."
                 },
-                "embed_type": {
-                    "type": "array",
-                    "items": {"type": "string", "enum": EMBED_TYPES},
-                    "description": "Only messages with these kinds of embeds. gif may miss messages from before February 24, 2026."
-                },
-                "embed_provider": texts("Only embeds from these providers, like \"Tenor\" or \"YouTube\" (case matters)."),
-                "link_hostname": texts("Only messages linking to these sites, like \"youtube.com\"."),
-                "attachment_filename": texts("Only messages with attachments of these file names."),
-                "attachment_extension": texts("Only messages with attachments of these extensions, like \"png\" or \"pdf\"."),
-                "after": {"type": "string", "description": "Only messages on or after this date, YYYY-MM-DD, in the asker's timezone."},
-                "before": {"type": "string", "description": "Only messages before this date, YYYY-MM-DD, in the asker's timezone."},
+                "attachment_filename": texts("Attachment file names, like \"budget.xlsx\"."),
+                "attachment_extension": texts("Attachment extensions, like \"pdf\" or \"csv\"."),
+                "link_hostname": texts("Linking to these sites, like \"youtube.com\"."),
+                "after": {"type": "string", "description": "On or after YYYY-MM-DD (asker's timezone)."},
+                "before": {"type": "string", "description": "Before YYYY-MM-DD (asker's timezone)."},
                 "sort": {"type": "string", "enum": ["newest", "oldest", "relevance"], "description": "Default newest."},
-                "limit": {"type": "integer", "description": "How many, 1 to 25. Default 10."},
-                "offset": {"type": "integer", "description": "How many matches to skip, for the next page. At most 9975."},
-                "include_nsfw": {"type": "boolean", "description": "Also search age-restricted channels. Only works when asked in an age-restricted channel."}
+                "limit": {"type": "integer", "description": "1 to 25, default 10."},
+                "offset": {"type": "integer", "description": "Matches to skip, at most 9975."}
             },
         }),
     }
@@ -119,34 +110,24 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
             .ok_or_else(|| user_error(format!("No role matches \"{role}\".")))?;
         mentions_role_ids.push(id);
     }
-    let include_nsfw = args["include_nsfw"].as_bool().unwrap_or(false);
-    if include_nsfw && !here_is_nsfw(ctx, asker).await {
-        return Err(user_error(
-            "Age-restricted channels can only be searched from an age-restricted channel.",
-        ));
-    }
-
     let mut search = Search {
         content: text("query").map(str::to_string),
-        slop: args["slop"].as_u64().map(|s| s.min(u32::MAX as u64) as u32),
         channel_ids,
         author_types: list(args, "author_type"),
         author_ids: people(ctx, guild, args, "from").await?,
         mentions: people(ctx, guild, args, "mentions").await?,
         mentions_role_ids,
-        mention_everyone: args["mention_everyone"].as_bool(),
         replied_to_user_ids: people(ctx, guild, args, "replied_to").await?,
         replied_to_message_ids,
         pinned: args["pinned"].as_bool(),
         has: list(args, "has"),
-        embed_types: list(args, "embed_type"),
-        embed_providers: list(args, "embed_provider"),
         link_hostnames: list(args, "link_hostname"),
         attachment_filenames: list(args, "attachment_filename"),
         attachment_extensions: list(args, "attachment_extension"),
         min_id: date(text("after"), zone)?,
         max_id: date(text("before"), zone)?,
-        include_nsfw,
+        // Cherry's rule: age-restricted channels are searched too, from anywhere.
+        include_nsfw: true,
         ..Default::default()
     };
     if !has_filter(&search) {
@@ -293,14 +274,6 @@ fn find_role(ctx: &BotCtx, guild: GuildId, text: &str) -> Option<u64> {
         .into_iter()
         .find(|role| role.name.to_lowercase() == name)
         .map(|role| role.id.get())
-}
-
-/// Whether the current channel is age-restricted.
-async fn here_is_nsfw(ctx: &BotCtx, asker: &Asker) -> bool {
-    match get_channel(&ctx.http, asker.channel).await {
-        Ok(channel) => channel.nsfw == Some(true),
-        Err(_) => false,
-    }
 }
 
 /// A YYYY-MM-DD date as the first message ID of that day in `zone`.

@@ -405,8 +405,13 @@ fn ai_from_env(
                 config.ai.openai.clone(),
                 Some(openai_spend.clone()),
             )),
+            // Gemini can think for several minutes without sending anything on hard
+            // questions; Google asks for a 15-minute timeout.
             ai::Provider::Gemini => Arc::new(ai::Gemini::new(
-                web.clone(),
+                util::http::client_builder()
+                    .read_timeout(Duration::from_secs(15 * 60))
+                    .build()
+                    .unwrap_or_else(|_| web.clone()),
                 key,
                 config.ai.gemini.clone(),
                 Some(gemini_spend.clone()),

@@ -65,8 +65,9 @@ keep_cache_warm_hours = 36
 
 # Settings per job, for work nobody waits on. Each can set `model`, `effort`, `web` (web
 # search and fetch) and `code` (code execution and the skills); what's left out keeps the
-# built-in default below. Chat answers ("chat") and chime-ins ("chime") always use the main
-# model and every tool, so they share the prompt cache. Jobs: "chime", "emoji", "mood",
+# built-in default below. Chat answers ("chat") always use the main model. Chime-ins
+# ("chime") use it too on Claude and OpenAI, to share the prompt cache, and Gemini 4
+# Hydrogen on Gemini. Jobs: "chime", "emoji", "mood",
 # "reflection", "diary", "catch_up", "explain", "translate". Web search and code need Opus
 # or Sonnet, not Haiku.
 #
@@ -120,11 +121,18 @@ show_job_costs = true
 # `fallback` above is "gemini". Gemini watches videos people post (uploaded with its Files
 # API) and YouTube links itself, with their sound, instead of a few frames.
 [ai.gemini]
-model = "gemini-4-argon"
-# How much it thinks: "low", "medium" or "high".
-thinking_level = "medium"
+# "gemini-4-neon" ($3 in, $15 out per million), "gemini-4-hydrogen" ($1.50/$7.50) or
+# "gemini-4-carbon" ($2/$10 until 2026-11-30, then $4/$20); "gemini-4-argon" works too.
+model = "gemini-4-neon"
+# How much it thinks: "low", "medium", "high" or "xhigh" (Neon and Hydrogen only; the
+# others think at "high" instead).
+thinking_level = "high"
 # Show short summaries of its thinking in the reply's status line while it works.
 thought_summaries = true
+# Send most of her tools as names only, and let Gemini's tool search load the one she
+# needs in the same round: about 4k fewer tokens on every chat request. Her memory tool is
+# always loaded.
+defer_tools = true
 # How a posted video is watched: "static" (every second at once, with the sound; best for
 # short clips) or "agentic" (the model looks through it for what it needs; cheaper on long
 # videos, slower on short ones). The same for YouTube links, which are often long.
@@ -132,14 +140,15 @@ video_processing = "static"
 youtube_processing = "agentic"
 # Gemini's monthly cost in USD, for the status message and the warnings in the log channel
 # at 80% and 100% (estimated from list prices; Google has no bill API). 0 turns the warnings
-# off. Gemini 4 Argon's launch price ends on 2026-12-01 and it costs twice as much after.
+# off. Gemini 4 Carbon's launch price ends on 2026-12-01 and it costs twice as much after.
 monthly_budget = 25.0
 # Show on the status message how much input came from the cache this month.
 show_cache_hits = true
 # Show on the status message what each job (chat, diary, ...) cost this month, estimated.
 show_job_costs = true
 # Settings per job work like Claude's ([ai.gemini.jobs.mood] and so on, with `effort` as
-# the thinking level), with the same built-in defaults, except that emoji use the main model.
+# the thinking level), with the same built-in defaults, except that chime-ins, emoji and
+# the Apps menu helpers use Gemini 4 Hydrogen, the cheap model.
 
 # Every feature has a section. These keys work in all of them:
 #   enabled = false                   turn the feature off

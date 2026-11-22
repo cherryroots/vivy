@@ -228,6 +228,10 @@ impl ChatProvider for Watched {
         self.inner.watches_video()
     }
 
+    fn opens_files(&self) -> bool {
+        self.inner.opens_files()
+    }
+
     async fn stream(
         &self,
         request: ChatRequest,
