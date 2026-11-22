@@ -85,7 +85,8 @@ pub struct OpenAiConfig {
     /// How long answers are: "low", "medium" or "high".
     pub verbosity: String,
     /// The service tier of chat answers ("fast" costs twice as much). Leave out for the
-    /// account's default. Background jobs nobody waits on always use the default.
+    /// account's default. Other jobs use the default, or "flex" (half price, slower) when
+    /// their settings have `batch`.
     pub service_tier: Option<String>,
     /// USD a month for everything on the OpenAI key (chat and pictures); the log channel
     /// gets a warning at 80% and 100%. 0 turns that off.
@@ -226,12 +227,14 @@ impl OpenAi {
         body
     }
 
-    /// The service tier `job` asks for: the configured one for chat answers, the
-    /// account's default for everything else.
+    /// The service tier `job` asks for: the configured one for chat answers, "flex" for a
+    /// job with `batch` (half price, slower), the account's default for everything else.
     fn tier(&self, job: &str) -> Option<String> {
-        (job == "chat")
-            .then(|| self.config.service_tier.clone())
-            .flatten()
+        if job == "chat" {
+            return self.config.service_tier.clone();
+        }
+        let batch = job_settings(&self.config.jobs, job, None).batch == Some(true);
+        batch.then(|| "flex".to_string())
     }
 
     fn post(&self, path: &str) -> reqwest::RequestBuilder {
@@ -582,7 +585,16 @@ impl ChatProvider for OpenAi {
     ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
         let uploads = self.upload_files(&request).await;
         let body = self.request_body(&request, &uploads);
-        let mut response = self.responses(&body).await?;
+        let mut response = match self.responses(&body).await {
+            // Flex has no room right now (or doesn't take this model): the normal tier.
+            Err(err) if body["service_tier"] == "flex" => {
+                warn!("OpenAI's flex tier failed, asking on the default tier: {err:#}");
+                let mut default = body.clone();
+                default.as_object_mut().unwrap().remove("service_tier");
+                self.responses(&default).await?
+            }
+            result => result?,
+        };
 
         let (sender, receiver) = mpsc::channel(64);
         let spend = self.spend.clone().map(|spend| (spend, request.job));
@@ -752,14 +764,14 @@ mod tests {
         assert_eq!(tools.len(), 3);
         assert_eq!(tools[2]["name"], "get_time");
 
-        // Background jobs use the default tier, and only the tools they need.
+        // A mood check waits for the flex tier, and gets only the tools it needs.
         let mood = ChatRequest {
             job: "mood",
             answer_now: false,
             ..request
         };
         let body = client().request_body(&mood, &[]);
-        assert!(body.get("service_tier").is_none());
+        assert_eq!(body["service_tier"], "flex");
         assert_eq!(body["prompt_cache_key"], "discord:1");
         assert_eq!(body["reasoning"]["effort"], "low");
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);

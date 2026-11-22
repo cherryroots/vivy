@@ -4,7 +4,8 @@
 //! 2026-11-21 (Cherry's screenshots; the sandbox can't reach the page). Carbon has a launch
 //! price until the end of November 2026 and costs twice as much from December. Thinking
 //! tokens cost as much as output. Google Search costs $14 per 1000 searches, but the first 5000 a month are free; the estimate counts every search, so it
-//! runs a little high when there are few. Google keeps no Admin API for the bill, so the
+//! runs a little high when there are few. The flex tier (`service_tier: "flex"`, for jobs
+//! that can wait) costs half on every token. Google keeps no Admin API for the bill, so the
 //! estimate is all there is.
 
 use chrono::{DateTime, NaiveDate, Utc};
@@ -59,8 +60,8 @@ fn prices_for(model: &str, now: DateTime<Utc>) -> Prices {
 }
 
 /// What one finished interaction cost, from its `usage` and the steps it took (for the
-/// searches).
-pub fn cost(model: &str, usage: &Value, steps: &[Value], now: DateTime<Utc>) -> Used {
+/// searches). `flex` when the flex tier answered it: its tokens cost half.
+pub fn cost(model: &str, usage: &Value, steps: &[Value], flex: bool, now: DateTime<Utc>) -> Used {
     let get = |key: &str| usage[key].as_u64().unwrap_or(0);
     // Pages read with URL context and the like count as input too.
     let input = get("total_input_tokens") + get("total_tool_use_tokens");
@@ -71,10 +72,10 @@ pub fn cost(model: &str, usage: &Value, steps: &[Value], now: DateTime<Utc>) -> 
         .filter(|step| step["type"] == "google_search_call")
         .count();
     let p = prices_for(model, now);
-    let usd = per_token(input - cached, p.input)
+    let tokens = per_token(input - cached, p.input)
         + per_token(cached, p.cache_read)
-        + per_token(output, p.output)
-        + searches as f64 * GOOGLE_SEARCH;
+        + per_token(output, p.output);
+    let usd = if flex { tokens / 2.0 } else { tokens } + searches as f64 * GOOGLE_SEARCH;
     Used {
         usd,
         input: input - cached,
@@ -102,22 +103,26 @@ mod tests {
             json!({"type": "thought"}),
         ];
         let october = "2026-10-14T12:00:00Z".parse().unwrap();
-        let used = cost("gemini-4-carbon", &usage, &steps, october);
+        let used = cost("gemini-4-carbon", &usage, &steps, false, october);
         // 600k × $2 + 400k × $0.10 + 100k × $10, plus one search.
         assert!((used.usd - (1.2 + 0.04 + 1.0 + 0.014)).abs() < 1e-9);
         assert_eq!((used.input, used.cache_read), (600_000, 400_000));
 
         // Twice as much from December.
         let december = "2026-12-01T00:00:00Z".parse().unwrap();
-        let used = cost("gemini-4-carbon", &usage, &[], december);
+        let used = cost("gemini-4-carbon", &usage, &[], false, december);
         assert!((used.usd - (2.4 + 0.08 + 2.0)).abs() < 1e-9);
 
         // Neon has one price: 600k × $3 + 400k × $0.15 + 100k × $15.
-        let used = cost("gemini-4-neon", &usage, &[], december);
+        let used = cost("gemini-4-neon", &usage, &[], false, december);
         assert!((used.usd - (1.8 + 0.06 + 1.5)).abs() < 1e-9);
 
         // Hydrogen is half of Neon.
-        let used = cost("gemini-4-hydrogen", &usage, &[], december);
+        let used = cost("gemini-4-hydrogen", &usage, &[], false, december);
         assert!((used.usd - (0.9 + 0.03 + 0.75)).abs() < 1e-9);
+
+        // The flex tier halves the tokens, not the searches.
+        let used = cost("gemini-4-neon", &usage, &steps, true, december);
+        assert!((used.usd - ((1.8 + 0.06 + 1.5) / 2.0 + 0.014)).abs() < 1e-9);
     }
 }

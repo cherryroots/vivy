@@ -4,7 +4,8 @@
 //! Left out, so the estimate is a little low and the bill (`billing.rs`) is the real
 //! number: long prompts on models that charge more for them, writing to the prompt cache
 //! where a model charges for it, and code interpreter containers ($0.03 per session).
-//! `service_tier = "fast"` costs twice the standard price on every model here.
+//! `service_tier = "fast"` costs twice the standard price on every model here, and
+//! "flex" (for jobs with `batch`) half.
 
 use serde_json::Value;
 
@@ -79,10 +80,10 @@ pub fn chat_cost(response: &Value, tier: Option<&str>) -> Used {
         .find(|(prefix, _)| model.starts_with(prefix))
         .map_or(UNKNOWN, |(_, prices)| *prices);
     let tier = response["service_tier"].as_str().or(tier);
-    let times = if matches!(tier, Some("fast" | "priority")) {
-        2.0
-    } else {
-        1.0
+    let times = match tier {
+        Some("fast" | "priority") => 2.0,
+        Some("flex") => 0.5,
+        _ => 1.0,
     };
     let tokens = per_token(input - cached, p.input)
         + per_token(cached, p.cache_read)
@@ -152,6 +153,11 @@ mod tests {
         fast.as_object_mut().unwrap().remove("service_tier");
         assert!(close(chat_cost(&fast, Some("fast")).usd, 0.074));
         assert!(close(chat_cost(&fast, None).usd, 0.042));
+
+        // Flex halves the tokens.
+        let mut flex = response.clone();
+        flex["service_tier"] = json!("flex");
+        assert!(close(chat_cost(&flex, Some("flex")).usd, 0.026));
 
         assert_eq!(chat_cost(&json!({}), None), Used::default());
     }
