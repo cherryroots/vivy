@@ -20,7 +20,7 @@ All under `src/features/memory/`.
 | `folder.rs` | The folder as a map of paths to text, and the six commands on it (`view`, `create`, `str_replace`, `insert`, `delete`, `rename`), path checks and size limits. Pure: no Discord, no database. Start here. |
 | `retry.rs` | `RetryLater`: when a failed reflection or diary may try again. Small and pure. |
 | `store.rs` | The table migrations and every SQL query (load, save with change log, lists, reflection and diary bookkeeping, pictures). |
-| `tool.rs` | The `memory` chat tool (its description and how it runs), `FolderRunner` for jobs where Vivy acts alone, and the texts chat adds to each question: `<memory_files>`, `<vivy_self>`, `<vivy_mood>`. |
+| `tool.rs` | The `memory` chat tool (its description and how it runs), `FolderRunner` for jobs where Vivy acts alone, and the texts chat adds to each question: `<memory_files>`, `<asker_about>`, `<vivy_self>`, `<vivy_mood>`. |
 | `commands.rs` | The `/memory show`, `forget` and `delete` slash commands, with autocomplete. |
 | `mod.rs` | The `Memory` feature: wires the parts above into the `Feature` trait. |
 | `reflect.rs` | The hourly loop, the daily reflection, reading lines of the mood file, and `apply_mood` (status, face, nickname after any mood change). |
@@ -89,7 +89,7 @@ Rules from `folder.rs`:
 
 - Paths must start with `/memories`, at most 200 characters, with no empty, `.` or `..` parts, backslashes or control characters.
 - A file holds at most 8 KB, a folder at most 256 KB. A file already over the limit may stay as it is, and a command that only shrinks a full folder is allowed.
-- `view` of a directory lists two levels deep with sizes (like `du -h`), hiding names that start with a dot. `view` of a file shows numbered lines, optionally a `view_range`.
+- `view` of a directory lists two levels deep with sizes (like `du -h`), hiding names that start with a dot. `view` of a file shows numbered lines, optionally a `view_range`. `view` with `paths` (instead of `path`) opens up to 10 files in one call and answers with each in turn (`tool::run_in`), so she doesn't spend a round per file.
 - `create` writes a whole file and overwrites one that exists. `str_replace` needs the old text to appear exactly once; without `new_str` it deletes it. `insert` adds lines after `insert_line` (0 is the top). `delete` and `rename` work on files and whole directories, never on `/memories` itself.
 
 ### What chat adds to a question
@@ -99,6 +99,7 @@ Rules from `folder.rs`:
 - `Your faces (...)`: the face names she can pick, at the start of a conversation in a server, when there are faces.
 - `<vivy_self>`: her notes about herself (the files under `/memories/vivy/`, skills left out), at most 3000 characters, cut with a note to view the rest. Only when the conversation starts fresh: a continued one still has them from its first answer.
 - `<vivy_mood>`: the `mood:` line of her mood file, with every question in a server, so a change reaches a conversation already going. The prompt tells her to let it show in how she talks (shorter and yawny when sleepy, bubbly when excited) while still helping properly.
+- `<asker_about>`: the asker's own `/memories/users/<id>/about.md` (their name and basics), with every question, at most 1500 characters. Before this the tool description told her to view the asker's files before answering, and Gemini did so almost every time: a whole extra round per answer for a note of a few hundred characters. Their other files she views only when the question needs them.
 - `<memory_files>`: the asker's own files and every file outside `/memories/users/` one by one with sizes, and one line per other person's folder ("2 files, 1.0K"). At most 50 lines, then "...and N more; view /memories for the rest". `empty` when there are no files.
 
 ### The mood file
@@ -188,7 +189,7 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 
 ## Chat tools
 
-- **`memory`** (`tool.rs`): `command` is one of `view`, `create`, `str_replace`, `insert`, `delete`, `rename`, with `path`, `view_range`, `file_text`, `old_str`, `new_str`, `insert_line`, `insert_text`, `old_path` and `new_path` as each command needs. The long description is the main instruction on what to save, the folder layout, who decides what, and skills. Also offered in chime-ins.
+- **`memory`** (`tool.rs`): `command` is one of `view`, `create`, `str_replace`, `insert`, `delete`, `rename`, with `path` (or `paths` for several views), `view_range`, `file_text`, `old_str`, `new_str`, `insert_line`, `insert_text`, `old_path` and `new_path` as each command needs. The long description is the main instruction on what to save, the folder layout, who decides what, and skills. Also offered in chime-ins.
 - **`set_mood`** (`set_mood.rs`): `mood` and `status` (required), `face` and `emoji` (optional). Servers only.
 
 ## Feature hooks it uses
@@ -200,7 +201,7 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 - `migrations`: `store::MIGRATIONS`.
 - `tools` and `run_tool`: `memory` and `set_mood`; `run_tool` sends `set_mood` to `set_mood::run` and everything else to `tool::run`.
 - `tool_status`: "📝 Remembering…" for `memory` ("📖 Checking my notes…" when it only views a file), "💭 Thinking…" for `set_mood` in chat's status line.
-- `chat_context`: faces, `<vivy_self>`, `<vivy_mood>` and `<memory_files>`, as described above.
+- `chat_context`: faces, `<vivy_self>`, `<vivy_mood>`, `<memory_files>` and `<asker_about>`, as described above.
 - `start`: warns about unknown `[features.memory]` keys and starts the hourly loop (`reflect::spawn`). The section is read in parts (`config.feature_part`) by several `Settings` structs (in `banner.rs`, `diary.rs`, `face.rs`, `mood.rs`, `name.rs`), so a key counts as a typo only when none of them reads it (`config.ignored_by`).
 - `stats`: Files, Folders, Changes today (last 24 hours), and Last reflection.
 - `panels`: the "<bot name>'s mind" box from the newest mood file, with her face.
