@@ -23,12 +23,16 @@ pub const SELF_DIR: &str = "/memories/vivy";
 pub const SKILLS_DIR: &str = "/memories/vivy/skills";
 /// The most characters of those notes shown; she can view the rest.
 const MAX_SELF: usize = 3000;
+/// The most characters of the asker's `about.md` shown with each question.
+const MAX_ASKER: usize = 1500;
+/// The most files one `view` with `paths` opens.
+const MAX_PATHS: usize = 10;
 
 pub fn def() -> ToolDef {
     ToolDef {
         name: "memory",
         description: "Your long-term memory: text files under /memories that last between conversations, shared by everyone in a server and private in DMs. \
-The newest message ends with <memory_files>: view the ones that matter before answering, especially the asker's own. \
+The newest message ends with <memory_files>, and <asker_about> when the asker has an about.md: that note is already there, so view other files only when the question needs them, several at once with paths. \
 Save what will still be true in a month: who people are, what they like and do (work, school, hobbies, projects in one line), how they like to be treated, what they ask you to remember about themselves, and what you learn about the server. Keep notes short and factual, update them when they change, and say in a few words when you save something a person told you. \
 Not a log: no tasks, shared files, things you made, one-off events (chat history keeps those), secrets, passwords or things said in passing. \"Remember to post the schedule tomorrow\" is a reminder: use the reminder tool or say you won't keep it. From a task keep only what's lasting: \"runs a youth company selling fish\", not \"helped with a fish-sales spreadsheet\". \
 People: /memories/users/<user id>/about.md (name first, then basics) plus one file per topic, like games.md. \
@@ -45,6 +49,7 @@ Commands: view (a file with line numbers, or a directory), create (a whole file)
                     "enum": ["view", "create", "str_replace", "insert", "delete", "rename"]
                 },
                 "path": {"type": "string", "description": "A path under /memories. Every command but rename."},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "view: several files at once, instead of path."},
                 "view_range": {
                     "type": "array",
                     "items": {"type": "integer"},
@@ -71,12 +76,43 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
 }
 
 /// Runs one memory command in the folder `scope`, for `user` (who the change log names).
+/// A `view` with `paths` views each file in turn and answers with all of them.
 pub async fn run_in(ctx: &BotCtx, scope: String, user: u64, args: &Value) -> Result<String> {
     // Models sometimes fill unused arguments with null or []; leave those out.
     let mut args = args.clone();
     if let Some(fields) = args.as_object_mut() {
         fields.retain(|_, v| !v.is_null() && v.as_array().is_none_or(|a| !a.is_empty()));
     }
+    if let Some(paths) = several_paths(&args) {
+        let mut texts = Vec::new();
+        for path in paths {
+            let one = json!({"command": "view", "path": path});
+            texts.push(run_one(ctx, scope.clone(), user, one).await?);
+        }
+        return Ok(texts.join("\n\n"));
+    }
+    run_one(ctx, scope, user, args).await
+}
+
+/// The files a `view` with `paths` asks for, at most [`MAX_PATHS`]. `None` for any other
+/// command, which then runs as usual.
+fn several_paths(args: &Value) -> Option<Vec<String>> {
+    if args["command"] != "view" {
+        return None;
+    }
+    let paths = args["paths"].as_array()?;
+    let paths = args["path"]
+        .as_str()
+        .into_iter()
+        .chain(paths.iter().filter_map(Value::as_str))
+        .take(MAX_PATHS)
+        .map(str::to_string)
+        .collect();
+    Some(paths)
+}
+
+/// Runs one memory command, after [`run_in`] has tidied its arguments.
+async fn run_one(ctx: &BotCtx, scope: String, user: u64, args: Value) -> Result<String> {
     let command: Command = serde_json::from_value(args)
         .map_err(|err| user_error(format!("not a valid memory command: {err}")))?;
     let writes = command.writes();
@@ -169,6 +205,36 @@ fn render_self(files: &[(String, String)]) -> Option<String> {
         all
     };
     Some(format!("<vivy_self>\n{shown}\n</vivy_self>"))
+}
+
+/// The asker's own `about.md` (their name and basics), shown with each question so Vivy
+/// knows who she's talking to without viewing it first. `None` when there isn't one.
+pub async fn asker_about(ctx: &BotCtx, asker: &Asker) -> Result<Option<String>> {
+    let scope = store::scope(asker.guild.map(|g| g.get()), asker.user.get());
+    let dir = format!("{ROOT}/users/{}", asker.user);
+    let files = ctx
+        .db
+        .call(move |conn| Ok(store::files_under(conn, &scope, &dir)?))
+        .await?;
+    Ok(render_about(&files, asker.user.get()))
+}
+
+fn render_about(files: &[(String, String)], asker: u64) -> Option<String> {
+    let path = format!("{ROOT}/users/{asker}/about.md");
+    let (_, content) = files.iter().find(|(p, _)| *p == path)?;
+    let content = content.trim_end();
+    if content.is_empty() {
+        return None;
+    }
+    let shown = if content.chars().count() > MAX_ASKER {
+        let cut: String = content.chars().take(MAX_ASKER).collect();
+        format!("{cut}\n[cut off; view {path} for the rest]")
+    } else {
+        content.to_string()
+    };
+    Some(format!(
+        "<asker_about path=\"{path}\">\n{shown}\n</asker_about>"
+    ))
 }
 
 /// Her mood line in the asker's server, for every question, so it can shape how she talks.
@@ -306,6 +372,50 @@ mod tests {
         let text = render_self(&long).unwrap();
         assert!(text.contains("[cut off; view /memories/vivy"));
         assert!(text.chars().count() < 3200);
+    }
+
+    #[test]
+    fn shows_the_askers_about_note() {
+        let files = vec![
+            (
+                "/memories/users/1/about.md".to_string(),
+                "Cherry\n".to_string(),
+            ),
+            ("/memories/users/1/games.md".to_string(), "WoW".to_string()),
+        ];
+        assert_eq!(
+            render_about(&files, 1).unwrap(),
+            "<asker_about path=\"/memories/users/1/about.md\">\nCherry\n</asker_about>"
+        );
+        assert_eq!(render_about(&files[1..], 1), None);
+        let long = vec![("/memories/users/1/about.md".to_string(), "é".repeat(2000))];
+        let text = render_about(&long, 1).unwrap();
+        assert!(text.contains("[cut off; view /memories/users/1/about.md"));
+        assert!(text.chars().count() < 1700);
+    }
+
+    #[test]
+    fn views_several_paths() {
+        assert_eq!(
+            several_paths(&json!({"command": "view", "path": "/memories"})),
+            None
+        );
+        assert_eq!(
+            several_paths(&json!({"command": "delete", "paths": ["/memories/a"]})),
+            None
+        );
+        assert_eq!(
+            several_paths(&json!({"command": "view", "path": "/memories/a",
+                "paths": ["/memories/b", 3, "/memories/c"]})),
+            Some(vec![
+                "/memories/a".into(),
+                "/memories/b".into(),
+                "/memories/c".into()
+            ])
+        );
+        let many: Vec<String> = (0..20).map(|n| format!("/memories/{n}")).collect();
+        let paths = several_paths(&json!({"command": "view", "paths": many})).unwrap();
+        assert_eq!(paths.len(), MAX_PATHS);
     }
 
     #[test]
