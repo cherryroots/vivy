@@ -32,7 +32,7 @@ pub fn def() -> ToolDef {
     ToolDef {
         name: "memory",
         description: "Your long-term memory: text files under /memories that last between conversations, shared by everyone in a server and private in DMs. \
-The newest message ends with <memory_files>, and <asker_about> when the asker has an about.md: that note is already there, so view other files only when the question needs them, several at once with paths. \
+The newest message comes with <memory_files>, and <asker_about> when the asker has an about.md: that note is already there, so view other files only when the question needs them, several at once with paths. \
 Save what will still be true in a month: who people are, what they like and do (work, school, hobbies, projects in one line), how they like to be treated, what they ask you to remember about themselves, and what you learn about the server. Keep notes short and factual, update them when they change, and say in a few words when you save something a person told you. \
 Not a log: no tasks, shared files, things you made, one-off events (chat history keeps those), secrets, passwords or things said in passing. \"Remember to post the schedule tomorrow\" is a reminder: use the reminder tool or say you won't keep it. From a task keep only what's lasting: \"runs a youth company selling fish\", not \"helped with a fish-sales spreadsheet\". \
 People: /memories/users/<user id>/about.md (name first, then basics) plus one file per topic, like games.md. \
