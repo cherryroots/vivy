@@ -94,6 +94,7 @@ pub async fn complete(
                 call_id: call.id.clone(),
                 output: reply.text,
                 images: reply.images,
+                files: reply.opened,
             });
         }
         if round + 1 == max_rounds {

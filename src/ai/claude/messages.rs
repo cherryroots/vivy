@@ -72,10 +72,12 @@ pub fn to_messages(
                         uploaded.get(&ContentKey::of(&file.data)),
                     );
                 }
+                // Files only go to a provider that opens them (Gemini).
                 Part::ToolResult {
                     call_id,
                     output,
                     images,
+                    ..
                 } => content.push(tool_result(call_id, output, images)),
                 // Another provider's answer: its text parts stand in for it.
                 Part::Native { .. } => {}
@@ -366,6 +368,7 @@ mod tests {
                                 call_id: "t1".into(),
                                 output: "12:00".into(),
                                 images: Vec::new(),
+                                files: Vec::new(),
                             }],
                             ..NativeRound::default()
                         },
@@ -545,6 +548,7 @@ mod tests {
                     call_id: "call_1".into(),
                     output: "done".into(),
                     images: Vec::new(),
+                    files: Vec::new(),
                 }],
             },
             Turn {
