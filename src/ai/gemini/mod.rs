@@ -156,7 +156,18 @@ impl Gemini {
         if let Some(id) = &starter {
             body["previous_interaction_id"] = json!(id);
         }
-        match self.interactions(&body).await {
+        let mut result = self.interactions(&body).await;
+        // A flex request that failed (flex is full: 503 "high demand") goes again on the
+        // standard tier; Gemini never moves one there by itself.
+        if let Err(err) = &result
+            && body["service_tier"] == "flex"
+            && !is_not_found(err)
+        {
+            warn!("Gemini's flex tier failed, asking on the standard tier: {err:#}");
+            body.as_object_mut().unwrap().remove("service_tier");
+            result = self.interactions(&body).await;
+        }
+        match result {
             Ok(response) => Ok((body, response)),
             // Gemini no longer has the starter (it keeps them 55 days): ask without it,
             // and make a new one next time.
@@ -184,7 +195,7 @@ impl Gemini {
             let interaction: Value = response.json().await.context("reading the starter")?;
             if let Some(spend) = &self.spend {
                 let model = body["model"].as_str().unwrap_or_default();
-                add_spend(spend, "starter", model, &interaction, &[]).await;
+                add_spend(spend, "starter", model, &interaction, &[], false).await;
             }
             interaction["id"]
                 .as_str()
@@ -272,6 +283,10 @@ impl Gemini {
         }
         if request.answer_now {
             body["generation_config"]["tool_choice"] = json!("none");
+        }
+        // A job nobody waits on takes the flex tier: half price, and it may take minutes.
+        if job.batch == Some(true) {
+            body["service_tier"] = json!("flex");
         }
         body
     }
@@ -920,15 +935,27 @@ fn remember_names(names: &Mutex<HashMap<String, String>>, steps: &[Value]) {
     }
 }
 
-/// Adds what the finished `interaction` cost to [`Spend`].
+/// Adds what the finished `interaction` cost to [`Spend`]. `flex` when it was sent on the
+/// flex tier, for when the interaction doesn't say which tier answered it.
 async fn add_spend(
     spend: &Spend,
     job: &'static str,
     model: &str,
     interaction: &Value,
     steps: &[Value],
+    flex: bool,
 ) {
-    let used = price::cost(model, &interaction["usage"], steps, chrono::Utc::now());
+    let flex = match interaction["service_tier"].as_str() {
+        Some(tier) => tier == "flex",
+        None => flex,
+    };
+    let used = price::cost(
+        model,
+        &interaction["usage"],
+        steps,
+        flex,
+        chrono::Utc::now(),
+    );
     debug!(
         "Gemini used {} input tokens ({} read from cache) and cost ${:.4}",
         used.input + used.cache_read,
@@ -977,6 +1004,7 @@ impl ChatProvider for Gemini {
         let (sender, receiver) = mpsc::channel(64);
         let spend = self.spend.clone().map(|spend| (spend, request.job));
         let model = body["model"].as_str().unwrap_or_default().to_string();
+        let flex = body["service_tier"] == "flex";
         let call_names = self.call_names.clone();
         let mut collector = Collector {
             progress: self.shows_progress(&request),
@@ -1011,7 +1039,8 @@ impl ChatProvider for Gemini {
                     if let Some(interaction) = &finished {
                         remember_names(&call_names, &collector.steps);
                         if let Some((spend, job)) = &spend {
-                            add_spend(spend, job, &model, interaction, &collector.steps).await;
+                            add_spend(spend, job, &model, interaction, &collector.steps, flex)
+                                .await;
                         }
                     }
                     for event in events {
@@ -1136,6 +1165,7 @@ mod tests {
             ["google_search", "url_context", "code_execution", "function"]
         );
         assert_eq!(tools[3]["name"], "get_time");
+        assert!(body.get("service_tier").is_none());
 
         // Background jobs get only the tools they need, and no summaries without bot tools.
         let mood = ChatRequest {
@@ -1151,6 +1181,8 @@ mod tests {
         assert_eq!(body["generation_config"]["thinking_summaries"], "none");
         assert_eq!(body["tools"], json!([]));
         assert_eq!(body["model"], gemini.config.model);
+        // A mood check can wait: the flex tier, at half price. Chat answers can't.
+        assert_eq!(body["service_tier"], "flex");
 
         // Chime-ins and the cheap jobs take Hydrogen.
         for job in ["chime", "emoji", "translate"] {
@@ -1499,6 +1531,43 @@ mod tests {
         assert_eq!(*gemini.starters.ids.lock().unwrap(), starters);
         println!("{first} / {second}");
         assert!(!first.to_lowercase().contains("ok") && !second.is_empty());
+    }
+
+    /// Talks to the real API: a mood check on Hydrogen, which asks for the flex tier.
+    /// Needs `GEMINI_API_KEY`; run with `cargo test live_flex -- --ignored --nocapture`.
+    /// Takes a few minutes.
+    #[tokio::test]
+    #[ignore]
+    async fn live_flex() {
+        let key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY");
+        let mut config = GeminiConfig::default();
+        config.jobs.insert(
+            "mood".into(),
+            Job {
+                model: Some(CHEAP_MODEL.into()),
+                ..Job::default()
+            },
+        );
+        let gemini = Gemini::new(reqwest::Client::new(), key, config, None);
+        let request = ChatRequest {
+            system: "Answer in one word.".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Text("Say hi.".into())],
+            }]),
+            tools: Vec::new(),
+            cache_key: "test".into(),
+            job: "mood",
+            answer_now: false,
+        };
+        assert_eq!(
+            gemini.request_body(&request, &[], false)["service_tier"],
+            "flex"
+        );
+        let started = std::time::Instant::now();
+        let (text, _) = live_answer(&gemini, request).await;
+        println!("{text} ({} s)", started.elapsed().as_secs());
+        assert!(!text.is_empty());
     }
 
     async fn live_answer(gemini: &Gemini, request: ChatRequest) -> (String, Done) {

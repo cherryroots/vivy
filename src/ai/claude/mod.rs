@@ -16,8 +16,12 @@
 //!
 //! What each response cost is added to [`Spend`] (see `price.rs`).
 //!
+//! Jobs nobody waits on (`batch` in their [`Job`] settings) go through the Message Batches
+//! API instead, at half price (see `batch.rs`).
+//!
 //! API reference: <https://platform.claude.com/docs/en/api/messages>
 
+mod batch;
 pub mod billing;
 mod collect;
 pub mod keep_warm;
@@ -117,6 +121,9 @@ pub struct ClaudeConfig {
     /// Stop pinging this many hours after the last chat: longer, the pings cost more than
     /// writing the cache once.
     pub keep_cache_warm_hours: u32,
+    /// How long a job with `batch` waits for its batch, at most. Past it, the batch is
+    /// canceled and the request is sent the normal way, at full price.
+    pub batch_wait_minutes: u32,
     /// Settings per job, like `[ai.claude.jobs.mood]` (see [`Job`]).
     pub jobs: HashMap<String, Job>,
 }
@@ -138,6 +145,7 @@ impl Default for ClaudeConfig {
             cache_prompt_for_an_hour: true,
             keep_cache_warm_minutes: 58,
             keep_cache_warm_hours: 36,
+            batch_wait_minutes: 60,
             jobs: HashMap::new(),
         }
     }
@@ -237,6 +245,33 @@ impl Sender {
         .into())
     }
 
+    /// Sends a request with a JSON body (or none) and reads the JSON answer.
+    async fn json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&Value>,
+    ) -> anyhow::Result<Value> {
+        let mut request = self
+            .request(method, path)
+            .header("anthropic-beta", &self.betas);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.context("couldn't reach Claude")?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(ApiError {
+                provider: "claude",
+                status,
+                message: error_message(&text),
+            }
+            .into());
+        }
+        serde_json::from_str(&text).context("Claude sent invalid JSON")
+    }
+
     /// The name of a file Claude's code saved.
     async fn file_name(&self, id: &str) -> anyhow::Result<String> {
         let response = self
@@ -310,6 +345,11 @@ impl Claude {
             },
             cache_conversation: !request.tools.is_empty(),
         }
+    }
+
+    /// Whether `job` waits for a batch (see `batch.rs`) instead of streaming.
+    fn batched(&self, job: &str) -> bool {
+        job_settings(&self.config.jobs, job, Some(CHEAP_MODEL)).batch == Some(true)
     }
 
     /// The JSON body of a request.
@@ -475,6 +515,44 @@ impl Claude {
     }
 }
 
+impl Claude {
+    /// Reads `answer` in a task of its own, and returns where its events arrive.
+    fn answer(
+        &self,
+        sender: Sender,
+        request: &ChatRequest,
+        body: Value,
+        answer: Answer,
+    ) -> mpsc::Receiver<anyhow::Result<ChatEvent>> {
+        let (events, receiver) = mpsc::channel(64);
+        let containers = self.containers.clone();
+        let cache_key = request.cache_key.clone();
+        let spend = self.spend.clone().map(|spend| (spend, request.job));
+        tokio::spawn(async move {
+            let result = read_answer(&sender, spend.as_ref(), body, answer, &events).await;
+            let done = match result {
+                Ok(Some((done, container))) => {
+                    if let Some(container) = container {
+                        containers.lock().unwrap().insert(cache_key, container);
+                    }
+                    Ok(ChatEvent::Done(done))
+                }
+                // The receiver is gone (the answer was stopped).
+                Ok(None) => return,
+                Err(err) => Err(err),
+            };
+            let _ = events.send(done).await;
+        });
+        receiver
+    }
+}
+
+/// Where an answer comes from: a stream, or the whole message from a batch.
+enum Answer {
+    Stream(reqwest::Response),
+    Batched(Value),
+}
+
 /// How one request runs, from its job's settings (see [`Job`]) and `[ai.claude]`.
 struct Run {
     model: String,
@@ -638,6 +716,18 @@ impl ChatProvider for Claude {
         let sender = self.sender();
         // Before sending: the cache's hour counts from the start of the request.
         self.warm.used(&body, request.job).await;
+        if self.batched(request.job) {
+            let wait = Duration::from_secs(u64::from(self.config.batch_wait_minutes) * 60);
+            match batch::send(&sender, &body, wait).await {
+                Ok(message) => {
+                    return Ok(self.answer(sender, &request, body, Answer::Batched(message)));
+                }
+                Err(err) => warn!(
+                    "Claude's batch for {} failed, sending it the normal way: {err:#}",
+                    request.job
+                ),
+            }
+        }
         let mut result = sender.messages(&body).await;
         // Uploads expire, and can be deleted; upload those files again.
         if let Err(err) = &result
@@ -659,27 +749,7 @@ impl ChatProvider for Claude {
             result = sender.messages(&body).await;
         }
         let response = result?;
-
-        let (events, receiver) = mpsc::channel(64);
-        let containers = self.containers.clone();
-        let cache_key = request.cache_key;
-        let spend = self.spend.clone().map(|spend| (spend, request.job));
-        tokio::spawn(async move {
-            let result = read_answer(&sender, spend.as_ref(), body, response, &events).await;
-            let done = match result {
-                Ok(Some((done, container))) => {
-                    if let Some(container) = container {
-                        containers.lock().unwrap().insert(cache_key, container);
-                    }
-                    Ok(ChatEvent::Done(done))
-                }
-                // The receiver is gone (the answer was stopped).
-                Ok(None) => return,
-                Err(err) => Err(err),
-            };
-            let _ = events.send(done).await;
-        });
-        Ok(receiver)
+        Ok(self.answer(sender, &request, body, Answer::Stream(response)))
     }
 
     async fn download_file(&self, file: &GeneratedFile) -> anyhow::Result<Vec<u8>> {
@@ -723,16 +793,22 @@ async fn read_answer(
     sender: &Sender,
     spend: Option<&(Spend, &'static str)>,
     mut body: Value,
-    mut response: reqwest::Response,
+    mut answer: Answer,
     events: &mpsc::Sender<anyhow::Result<ChatEvent>>,
 ) -> anyhow::Result<Option<(Done, Option<String>)>> {
     let mut collector = Collector::default();
     let mut pauses = 0;
     loop {
-        log_thinking_note(&response);
-        let read = read_response(&mut collector, &mut response, events).await;
+        let batched = matches!(answer, Answer::Batched(_));
+        let read = match &mut answer {
+            Answer::Stream(response) => {
+                log_thinking_note(response);
+                read_response(&mut collector, response, events).await
+            }
+            Answer::Batched(message) => replay(&mut collector, message, events).await,
+        };
         // What the response used so far costs even when it was stopped or failed partway.
-        add_spend(spend, &collector, &body).await;
+        add_spend(spend, &collector, &body, batched).await;
         if !read? {
             return Ok(None);
         }
@@ -754,7 +830,9 @@ async fn read_answer(
                     set_container(&mut body, Some(id));
                 }
                 collector.continue_after_pause();
-                response = sender.messages(&body).await?;
+                // The rest of a paused batch comes the normal way: it's rare, and it
+                // would wait in line again.
+                answer = Answer::Stream(sender.messages(&body).await?);
             }
             Some("pause_turn") => bail!("Claude kept pausing ({MAX_PAUSES} times)"),
             Some("refusal") => {
@@ -831,8 +909,31 @@ async fn read_response(
     }
 }
 
-/// Logs what one response used and adds what it cost to [`Spend`].
-async fn add_spend(spend: Option<&(Spend, &'static str)>, collector: &Collector, body: &Value) {
+/// Reads a batch's whole message into `collector` as if it had streamed (see
+/// [`batch::events`]). Returns `false` when nobody is listening anymore.
+async fn replay(
+    collector: &mut Collector,
+    message: &Value,
+    events: &mpsc::Sender<anyhow::Result<ChatEvent>>,
+) -> anyhow::Result<bool> {
+    for data in batch::events(message) {
+        for chat_event in collector.push(&data)? {
+            if events.send(Ok(chat_event)).await.is_err() {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
+}
+
+/// Logs what one response used and adds what it cost to [`Spend`]. A batch's response
+/// (`batched`) costs half.
+async fn add_spend(
+    spend: Option<&(Spend, &'static str)>,
+    collector: &Collector,
+    body: &Value,
+    batched: bool,
+) {
     let usage = collector.usage;
     // Nothing arrived (it failed before it started), so there's nothing to add.
     if usage == collect::Usage::default() {
@@ -845,8 +946,9 @@ async fn add_spend(spend: Option<&(Spend, &'static str)>, collector: &Collector,
     if let Some((spend, job)) = spend {
         let model = collector.model.as_deref();
         let model = model.or(body["model"].as_str()).unwrap_or_default();
+        let usd = price::cost(&usage, model);
         let used = Used {
-            usd: price::cost(&usage, model),
+            usd: if batched { usd / 2.0 } else { usd },
             input: usage.input,
             cache_read: usage.cache_read,
             cache_write: usage.cache_write,

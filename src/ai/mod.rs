@@ -343,6 +343,11 @@ pub struct Job {
     pub web: Option<bool>,
     /// Whether it gets code execution (and, on Claude, the document skills).
     pub code: Option<bool>,
+    /// Whether it may wait for a cheaper answer: half price, but it can take minutes (an
+    /// hour at most on Claude) instead of seconds. Claude sends it through the Message
+    /// Batches API, OpenAI and Gemini ask for their flex tier. When that fails, the
+    /// request goes again the normal way.
+    pub batch: Option<bool>,
 }
 
 impl Job {
@@ -357,6 +362,8 @@ impl Job {
     /// - "mood": a short rewrite of her mood file, at low effort, in her own model;
     /// - "reflection", "diary": her own model and effort (they're her judgement and her
     ///   voice), with the web for looking things up, but no code;
+    /// - "mood", "reflection" and "diary" also wait for the half-price answer (`batch`):
+    ///   nobody is waiting on them, and a few minutes late changes nothing;
     /// - "hunger_games": a Hunger Games round, in her own model at low effort so the next
     ///   round is ready while people read this one, with no web or code;
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
@@ -367,30 +374,35 @@ impl Job {
                 effort: Some("low".to_string()),
                 web: off,
                 code: off,
+                batch: None,
             },
             "catch_up" | "explain" | "translate" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
                 web: off,
                 code: off,
+                batch: None,
             },
             "mood" => Job {
                 model: None,
                 effort: Some("low".to_string()),
                 web: off,
                 code: off,
+                batch: Some(true),
             },
             "hunger_games" => Job {
                 model: None,
                 effort: Some("low".to_string()),
                 web: off,
                 code: off,
+                batch: None,
             },
             "reflection" | "diary" => Job {
                 model: None,
                 effort: None,
                 web: Some(true),
                 code: off,
+                batch: Some(true),
             },
             _ => Job::default(),
         }
@@ -403,6 +415,7 @@ impl Job {
             effort: self.effort.or(defaults.effort),
             web: self.web.or(defaults.web),
             code: self.code.or(defaults.code),
+            batch: self.batch.or(defaults.batch),
         }
     }
 }
