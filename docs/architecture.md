@@ -34,7 +34,7 @@ All of this is in `src/main.rs`, top to bottom:
 2. **Logging.** `logging::init` sets up `tracing`. Lines meant for the Discord log channel wait in a queue until the bot is connected, so even startup errors reach Discord.
 3. **Features.** `features::all()` builds the list of every feature.
 4. **Database.** `Db::open` opens the SQLite file. Migrations run for the core, for Claude's upload table, then for every feature.
-5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`. With `ANTHROPIC_ADMIN_KEY`, a task starts that reads Anthropic's bill hourly.
+5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`. With `ANTHROPIC_ADMIN_KEY`, `OPENAI_ADMIN_KEY` or `GEMINI_BILLING_KEY_FILE`, a task starts that reads that company's bill hourly.
 6. **Commands.** Every feature's slash commands are collected, each tagged with its feature's name (`FeatureCommand`), so the gate check knows whose command it is.
 7. **Connect.** Twilight's `Http` client asks Discord who the bot is and who owns it. The gateway connections ("shards", one per 2500 servers, so one for Vivy) are made with the intents the bot needs; Message Content and Presences are privileged and must be turned on in the Developer Portal (without them Discord closes the connection with code 4014). The `BotCtx` is built and the log channel poster starts. Then one task per shard reads its events (`run_shard`): the cache sees each event first, then the dispatcher. On the first Ready, `on_first_ready` registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
 8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels the `shutdown` token. Background tasks see it and stop, and the bot waits up to 10 seconds for them and for event handlers still running (the control panel uses that time to show OFFLINE).
@@ -238,6 +238,7 @@ Every loop reports to the status picture's Timers box through `ctx.timers` (`src
 | Status graphs | control_panel | every 15 minutes |
 | Anthropic bill | core (`ai/spend.rs`) | hourly, only with `ANTHROPIC_ADMIN_KEY` |
 | OpenAI bill | core (`ai/spend.rs`) | hourly, only with `OPENAI_ADMIN_KEY` |
+| Google Cloud bill | core (`ai/spend.rs`) | hourly, only with `GEMINI_BILLING_KEY_FILE` and `billing_table` |
 
 ## How features talk to each other
 

@@ -401,12 +401,17 @@ async fn spend_view(ctx: &BotCtx, spend: &Spend) -> std::result::Result<SpendVie
     let admin_key = spend.admin_key();
     let billed = admin_key == AdminKey::Working;
     let admin_key_failing = matches!(admin_key, AdminKey::Failing(_));
+    // Google has no Admin key; Gemini's bill comes from the Cloud Billing export.
+    let key = match spend.provider() {
+        "gemini" => "Billing export",
+        _ => "Admin key",
+    };
     let admin_key = match admin_key {
-        AdminKey::Off => "Admin key: off".to_string(),
-        AdminKey::Unused => "Admin key: set, but billed_spend is off".to_string(),
-        AdminKey::Starting => "Admin key: on, reading the bill".to_string(),
-        AdminKey::Working => "Admin key: on".to_string(),
-        AdminKey::Failing(why) => format!("Admin key: failing ({})", shorten(&why, 120)),
+        AdminKey::Off => format!("{key}: off"),
+        AdminKey::Unused => format!("{key}: set, but billed_spend is off"),
+        AdminKey::Starting => format!("{key}: on, reading the bill"),
+        AdminKey::Working => format!("{key}: on"),
+        AdminKey::Failing(why) => format!("{key}: failing ({})", shorten(&why, 120)),
     };
     Ok(SpendView {
         usd: month.usd,

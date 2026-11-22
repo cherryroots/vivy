@@ -139,9 +139,16 @@ defer_tools = true
 video_processing = "static"
 youtube_processing = "agentic"
 # Gemini's monthly cost in USD, for the status message and the warnings in the log channel
-# at 80% and 100% (estimated from list prices; Google has no bill API). 0 turns the warnings
-# off. Gemini 4 Carbon's launch price ends on 2026-12-01 and it costs twice as much after.
+# at 80% and 100%. Set it to your monthly Google Cloud credit to see how much of it is used.
+# 0 turns the warnings off. Gemini 4 Carbon's launch price ends on 2026-12-01 and it costs
+# twice as much after.
 monthly_budget = 25.0
+# Google has no Admin key, but it can write the bill into BigQuery (the Cloud Billing
+# export). With GEMINI_BILLING_KEY_FILE in .env and the export's table here, the real bill
+# (read hourly, a few hours behind) replaces the estimate. It's the whole billing account,
+# list price before credits. Without them, or when it can't be read, the estimate is used.
+billed_spend = true
+# billing_table = "my-project.billing_export.gcp_billing_export_v1_0123AB_CDEF01_234567"
 # Show on the status message how much input came from the cache this month.
 show_cache_hits = true
 # Show on the status message what each job (chat, diary, ...) cost this month, estimated.

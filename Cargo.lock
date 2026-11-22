@@ -2869,6 +2869,7 @@ dependencies = [
  "image_hasher",
  "reqwest",
  "resvg",
+ "ring",
  "rusqlite",
  "serde",
  "serde_ignored",

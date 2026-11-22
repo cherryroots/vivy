@@ -17,12 +17,14 @@
 //! sent as it is, so the model sees the whole video with its sound, not a few frames.
 //! PDFs are uploaded the same way, so the model reads them. Pictures go inline.
 //!
-//! What each interaction cost is added to [`Spend`] (see `price.rs`).
+//! What each interaction cost is added to [`Spend`] (see `price.rs`). With a service
+//! account key, `billing.rs` reads the real bill from the Cloud Billing export instead.
 //!
 //! API reference: <https://ai.google.dev/gemini-api/docs/interactions>,
 //! streaming: <https://ai.google.dev/gemini-api/docs/streaming>,
 //! videos: <https://ai.google.dev/gemini-api/docs/video-understanding>
 
+pub mod billing;
 mod files;
 mod price;
 mod starter;
@@ -79,6 +81,11 @@ pub struct GeminiConfig {
     pub youtube_processing: String,
     /// USD a month; the log channel gets a warning at 80% and 100%. 0 turns that off.
     pub monthly_budget: f64,
+    /// With `GEMINI_BILLING_KEY_FILE` in `.env` and `billing_table` set, read Google
+    /// Cloud's bill hourly from the Cloud Billing export and use it in place of the estimate.
+    pub billed_spend: bool,
+    /// The export's BigQuery table, `project.dataset.gcp_billing_export_v1_...`.
+    pub billing_table: String,
     /// Show on the status message how much input came from the cache this month.
     pub show_cache_hits: bool,
     /// Show on the status message what each job (chat, diary, ...) cost this month.
@@ -97,6 +104,8 @@ impl Default for GeminiConfig {
             video_processing: "static".to_string(),
             youtube_processing: "agentic".to_string(),
             monthly_budget: 25.0,
+            billed_spend: true,
+            billing_table: String::new(),
             show_cache_hits: true,
             show_job_costs: true,
             jobs: HashMap::new(),
