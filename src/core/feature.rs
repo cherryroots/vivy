@@ -80,8 +80,9 @@ pub trait Feature: Send + Sync + 'static {
     }
 
     /// Text chat adds to the asker's question, for this answer only: what the model should
-    /// know right now without calling a tool, like the names of the memory files. It goes
-    /// after the question, so the system prompt and earlier turns stay the same and cached.
+    /// know right now without calling a tool, like the names of the memory files. It is saved
+    /// with the question and sent in a `<context>` block just before it, so the system
+    /// prompt and earlier turns stay the same and cached, and the question comes last.
     /// `fresh` is true when the model reads the conversation from the start; otherwise it
     /// continues an earlier answer and still has the context it got then.
     async fn chat_context(

@@ -94,7 +94,7 @@ Rules from `folder.rs`:
 
 ### What chat adds to a question
 
-`chat_context` (in `mod.rs`) builds one text that chat appends after the newest question, for that request only:
+`chat_context` (in `mod.rs`) builds one text that chat saves with the newest question and sends in its `<context>` block, just before the question (see [chat](chat.md)):
 
 - `Your faces (...)`: the face names she can pick, at the start of a conversation in a server, when there are faces.
 - `<vivy_self>`: her notes about herself (the files under `/memories/vivy/`, skills left out), at most 3000 characters, cut with a note to view the rest. Only when the conversation starts fresh: a continued one still has them from its first answer.

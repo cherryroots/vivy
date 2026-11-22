@@ -324,7 +324,7 @@ impl Chat {
                 .call(move |conn| store::add_parts(conn, question_id, &parts))
                 .await
                 .context("saving the question's context")?;
-            add_context(&mut input, texts);
+            add_context(&mut input, &texts);
         }
 
         let started_at = Utc::now().timestamp();
@@ -470,14 +470,15 @@ impl Drop for Registered<'_> {
     }
 }
 
-/// Adds the features' context to the question, the last turn of the input.
-fn add_context(input: &mut Input, texts: Vec<String>) {
+/// Puts the features' context in front of the question, the last turn of the input, the
+/// same way [`history`] sends it again later.
+fn add_context(input: &mut Input, texts: &[String]) {
     let turns = match input {
         Input::Full(turns) => turns,
         Input::After { new, .. } => new,
     };
-    if let Some(question) = turns.last_mut() {
-        question.parts.extend(texts.into_iter().map(Part::Text));
+    if let (Some(question), Some(block)) = (turns.last_mut(), history::context_block(texts)) {
+        question.parts.insert(0, Part::Text(block));
     }
 }
 
