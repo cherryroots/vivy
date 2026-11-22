@@ -144,7 +144,7 @@ A tool can also hand chat files for the answer itself (`ToolReply::files`, each 
 
 ## Jobs
 
-Every request names its job, and each job runs with its own settings (`Job` in `mod.rs`): a model, an effort, and whether it gets the web (web search and fetch) and code (code execution, and on Claude the skills). `job_settings` takes them from `[ai.<provider>.jobs.<job>]` in config.toml, then from `Job::builtin`, then from the provider's own settings:
+Every request names its job, and each job runs with its own settings (`Job` in `mod.rs`): a model, an effort, whether it gets the web (web search and fetch) and code (code execution, and on Claude the skills), and whether it waits for a half-price answer (`batch`, see [Half price for jobs that can wait](#half-price-for-jobs-that-can-wait)). `job_settings` takes them from `[ai.<provider>.jobs.<job>]` in config.toml, then from `Job::builtin`, then from the provider's own settings:
 
 | Job | Model | Effort | Web | Code | Why |
 |---|---|---|---|---|---|
@@ -152,9 +152,20 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `chime` | main (Gemini: Hydrogen) | main | yes | yes | Chime-in reactions. They send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so on Claude and OpenAI they read the system prompt and tools from the same cache. Gemini caches little anyway, so there they take the cheap model (Cherry's pick, 2026-11-21). Nobody replies to a reaction, so a chime-in can have its own model in config.toml. |
 | `emoji` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | Describing a picture in one line. |
 | `catch_up`, `explain`, `translate` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | The Apps menu helpers (`chat/apps.rs`): summing up, explaining or translating messages, privately. Plain reading, so the cheap model. |
-| `mood` | main | low | no | no | A short rewrite of her mood file. |
-| `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. |
+| `mood` | main | low | no | no | A short rewrite of her mood file. Batched. |
+| `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. Batched. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
+
+Only `mood`, `reflection` and `diary` have `batch` built in. Everything else has someone waiting: chat, chime-ins (a reaction an hour late makes no sense), emoji (chat waits for the description), the Apps menu helpers and Hunger Games rounds.
+
+### Half price for jobs that can wait
+
+A job with `batch = true` costs half, and its answer takes minutes instead of seconds. Each provider does it its own way:
+
+- **Claude** (`claude/batch.rs`): the request goes to the Message Batches API as a batch of one, with the same body minus `"stream"` (and the same betas). Vivy asks every 30 seconds whether it ended, downloads the one result line, and `batch::events` turns the whole message into the events a stream sends (`message_start`, each block whole in `content_block_start` and `content_block_stop`, `message_delta`), so `Collector` reads it like any answer and the tool loop doesn't know the difference. A failed check just waits for the next one. After `batch_wait_minutes` (60) the batch is canceled, and like any other failure (refused, errored, expired) the request is sent the normal way. A batch answer that pauses (`pause_turn`) continues the normal way. Its cost goes to the spend at half. `live_batch` (ignored) runs a two-round tool loop through batches on Haiku with `VIVY_ANTHROPIC_API_KEY`; not run yet, since the sandbox's key was refused (401) on 2026-11-22.
+- **Gemini** and **OpenAI**: `"service_tier": "flex"` on the normal request. Same half price, but no polling: the request just takes longer. Gemini's stream sends keep-alives every 15 seconds while it waits, so the read timeout doesn't cut it off; measured on Hydrogen on 2026-11-22, "Say hi" took 2 to 3.5 minutes on flex against 2.5 seconds on standard (`live_flex`, ignored, sends a mood check on Hydrogen) (Google aims for 1 to 15 minutes). Flex is never moved to the standard tier by itself, so when the request fails (flex full, which Gemini answered right away in a test with 503 "currently experiencing high demand", or a model flex doesn't take) it's sent once more without `service_tier`, after the usual two retries. A flex answer that breaks partway fails like any other; the reflection and diary try again 3 hours later, the mood at its next check. The response says which tier answered (`service_tier`), and the price halves the tokens (not Google's searches or OpenAI's web searches).
+
+Each round of a tool loop is its own request, so a reflection with 10 rounds of memory commands waits 10 times. On Claude a small batch usually ends in a few minutes, so a reflection can take an hour or more; nothing waits on it, and the hourly loop starts the next one after it. Note for OpenAI: the free daily tokens of the data-sharing program may already cover these jobs, and then flex only makes them slower; turn it off with `batch = false` in `[ai.openai.jobs.<job>]`.
 
 On Claude, a request whose job has no bot tools (emoji, mood, hunger_games) is one round, so only its system prompt is cached, not the conversation. Chat and chime-ins cache the system prompt and tools for an hour (`cache_prompt_for_an_hour`); everything else for 5 minutes.
 

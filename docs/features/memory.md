@@ -234,6 +234,8 @@ Then every hour, in order (an error in one step is logged and the next still run
 4. `diary::post_due`: diaries that are due.
 5. `prune_changes`: change log rows older than 90 days.
 
+Reflections, mood checks and diaries wait for half-price answers (`batch` in their job settings: Claude's Message Batches API, the flex tier on OpenAI and Gemini; see [Half price for jobs that can wait](../ai.md#half-price-for-jobs-that-can-wait)). Each request then takes minutes instead of seconds, and a reflection is one request per round, so with Claude one can take an hour or more, and the steps after it in this loop run that much later. `batch = false` in `[ai.<provider>.jobs.<job>]` turns it off.
+
 Reflections, mood checks and diaries need a chat model (`ctx.ai.chat()`) and skip quietly without one. Every step checks that memory is enabled in that server (`ctx.gate("memory")`). Besides the loop, `face::retry_later` may start short one-off tasks that wait out the 10 minute gap.
 
 ## Folder layout

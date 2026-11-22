@@ -62,9 +62,15 @@ keep_cache_warm_minutes = 58
 # Stop pinging this many hours after the last chat; longer, the pings cost more than one
 # write.
 keep_cache_warm_hours = 36
+# How long a job with `batch = true` (below) waits for its batch, at most. Batches usually
+# end within minutes; past this the batch is canceled and the request sent the normal way,
+# at full price.
+batch_wait_minutes = 60
 
 # Settings per job, for work nobody waits on. Each can set `model`, `effort`, `web` (web
-# search and fetch) and `code` (code execution and the skills); what's left out keeps the
+# search and fetch), `code` (code execution and the skills) and `batch` (wait for a
+# half-price answer: Claude's Message Batches API, the flex tier on OpenAI and Gemini;
+# minutes instead of seconds, and the normal way if that fails); what's left out keeps the
 # built-in default below. Chat answers ("chat") always use the main model. Chime-ins
 # ("chime") use it too on Claude and OpenAI, to share the prompt cache, and Gemini 4
 # Hydrogen on Gemini. Jobs: "chime", "emoji", "mood",
@@ -88,10 +94,12 @@ keep_cache_warm_hours = 36
 # effort = "low"
 # web = false
 # code = false
+# batch = true
 #
 # [ai.claude.jobs.reflection]  # her daily tidy-up of memory; the diary is the same
 # web = true
 # code = false
+# batch = true
 
 # OpenAI settings. The key goes in .env (OPENAI_TOKEN).
 [ai.openai]
@@ -101,7 +109,7 @@ reasoning_effort = "medium"
 # How long answers are: "low", "medium" or "high".
 verbosity = "low"
 # The service tier of chat answers ("fast" costs twice as much). Leave out for the
-# account's default. Background jobs always use the default.
+# account's default. Other jobs use the default, or "flex" (half price) with `batch`.
 # service_tier = "fast"
 # OpenAI's monthly cost in USD, chat and pictures together, for the status message and the
 # warnings in the log channel at 80% and 100% (estimated from list prices). 0 turns the
