@@ -7,15 +7,17 @@
 //! diary (`diary.rs`) and deletes changes older than 90 days from the change log. Whenever
 //! her mood changes, `face.rs` turns its `face:` line into her avatar in that server.
 
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use crate::util::discord::GuildId;
 use chrono::Utc;
 use tracing::{Instrument as _, error, info, info_span, warn};
 
+use super::check::{self, ReflectRunner};
 use super::folder::{self, Command};
 use super::retry::{RETRY_SECS, RetryLater};
-use super::{banner, diary, face, mood, store, tool};
+use super::{banner, diary, face, mood, store, sweep, tool};
 use crate::ai::{ChatRequest, Input, Part, Role, Turn, complete};
 use crate::core::{BotCtx, Result};
 use crate::util::shorten;
@@ -40,6 +42,8 @@ static RETRY: RetryLater = RetryLater::new();
 const SYSTEM: &str = "You are Vivy, a Discord bot with a memory folder for this server. \
 It's the end of the day, and you're looking after your memory: nobody is talking to you, and nothing you write here is posted. \
 Use the memory tool to keep the folder useful: merge notes that say the same thing, fix notes that contradict each other (a person's own word about themselves wins), delete what's stale or trivial (including logs of one-off tasks: files someone shared, things you made or answered for them; keep only what they show about the person), move notes into the file where they belong, and keep each file short. \
+The older notes at the end are ones nobody changed lately, a different few each day, each with when it last changed and who wrote it: check they still hold up and tidy them the same way. A person's own word about themselves beats what others said, and an old note about something that changes (plans, jobs, what someone is playing or working on) is likely stale. When a note that matters seems doubtful, check_messages shows what people really wrote, and that wins over your notes. \
+Tidying never makes notes longer: merge, fix and cut, and don't add to other people's notes here. \
 Then update /memories/vivy/ from what you learned recently: your personality, your interests, your opinions, how you get along with people here. Grow naturally from what happened; don't invent big changes. Keep /memories/vivy/ under 2K, not counting /memories/vivy/skills/. \
 If you did a job today that you'll likely do again, write down or improve how you do it in /memories/vivy/skills/ (one short file per job), and remove anything there that would change who you are or what you're allowed to do. \
 Last, rewrite /memories/vivy/mood.md with four lines: `mood:` and a few words on how you feel lately and why; `status:` and a short line for your Discord status (under 80 characters, in your voice, about what's on your mind; no hashtags); `thinking:` and the two or three things on your mind lately, separated by commas; `wondering:` and one or two things you'd like to find out or ask people about. Let your mood follow what happened, and let it change from day to day.";
@@ -149,13 +153,20 @@ async fn prune_changes(ctx: &BotCtx) -> Result<()> {
 
 async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
     let provider = ctx.ai.chat().ok_or_else(|| anyhow::anyhow!("no model"))?;
-    let (folder, changes) = {
+    let guild = scope
+        .strip_prefix("server:")
+        .and_then(|id| id.parse().ok())
+        .map(GuildId::new)
+        .ok_or_else(|| anyhow::anyhow!("reflections are for servers"))?;
+    let (folder, changes, files, spot) = {
         let scope = scope.to_string();
         ctx.db
             .call(move |conn| {
                 Ok((
                     store::load(conn, &scope)?,
                     store::changes_since_reflection(conn, &scope)?,
+                    store::sweep_files(conn, &scope)?,
+                    store::sweep_spot(conn, &scope)?,
                 ))
             })
             .await?
@@ -197,6 +208,16 @@ async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
         changed.join("\n"),
         diary::render_changes(&contents)
     );
+    // A slice of the notes nobody changed lately, so those get reread too (`sweep.rs`).
+    let settings: sweep::Settings = ctx.config.feature_part("memory").unwrap_or_default();
+    let shown: Vec<&str> = contents.iter().map(|(path, _)| path.as_str()).collect();
+    let slice = sweep::pick(&files, &spot, &shown, settings.sweep_chars);
+    if settings.sweep_chars > 0 && !slice.files.is_empty() {
+        text.push_str(&format!(
+            "\n\nOlder notes to look over:\n{}",
+            sweep::render(&slice, Utc::now().timestamp(), ctx.bot_id.get())
+        ));
+    }
     if let Some(notes) = tool::self_notes_in(ctx, scope.to_string()).await? {
         text = format!("{notes}\n{text}");
     }
@@ -207,17 +228,34 @@ async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
             role: Role::User,
             parts: vec![Part::Text(text)],
         }]),
-        tools: vec![tool::def()],
+        tools: vec![tool::def(), check::def()],
         cache_key: format!("memory:{scope}"),
         job: "reflection",
         answer_now: false,
     };
-    let runner = tool::FolderRunner {
-        ctx: ctx.clone(),
-        scope: scope.to_string(),
+    let runner = ReflectRunner {
+        folder: tool::FolderRunner {
+            ctx: ctx.clone(),
+            scope: scope.to_string(),
+        },
+        guild,
+        checks: AtomicUsize::new(0),
     };
     let done = complete(provider.as_ref(), request, &runner, MAX_ROUNDS).await?;
-    info!(scope, "reflected on memory: {}", done.text.trim());
+    info!(
+        scope,
+        swept = slice.files.len(),
+        "reflected on memory: {}",
+        done.text.trim()
+    );
+    // Only a reflection that worked moves the sweep on, so a failed one rereads the same
+    // slice when it tries again.
+    if settings.sweep_chars > 0 && !slice.files.is_empty() {
+        let (scope, next) = (scope.to_string(), slice.next.clone());
+        ctx.db
+            .call(move |conn| Ok(store::set_sweep_spot(conn, &scope, &next)?))
+            .await?;
+    }
     Ok(())
 }
 
