@@ -624,6 +624,17 @@ pub enum Provider {
     Gemini,
 }
 
+impl Provider {
+    /// The name its [`ChatProvider`] goes by: "openai", "claude" or "gemini".
+    pub fn name(self) -> &'static str {
+        match self {
+            Provider::Openai => "openai",
+            Provider::Claude => "claude",
+            Provider::Gemini => "gemini",
+        }
+    }
+}
+
 /// "Claude" for "claude", "OpenAI" for "openai", "Gemini" for "gemini".
 pub fn display_name(name: &str) -> &str {
     match name {
@@ -642,6 +653,9 @@ pub struct Ai {
     /// Takes over while the main provider is out (see [`fallback`]).
     backup: Option<Arc<dyn ChatProvider>>,
     fallback: Option<Arc<fallback::State>>,
+    /// The providers that don't chat but have their key in `.env`, for a feature that
+    /// picks its own (like the Hunger Games' `provider`).
+    others: Vec<Arc<dyn ChatProvider>>,
     /// What each provider that's set up cost this month: Claude, OpenAI, then Gemini.
     pub spends: Vec<Spend>,
     /// Drawing pictures with OpenAI's Image API, when `OPENAI_TOKEN` is set.
@@ -652,12 +666,14 @@ impl Ai {
     pub fn new(
         main: Option<Arc<dyn ChatProvider>>,
         backup: Option<Arc<dyn ChatProvider>>,
+        others: Vec<Arc<dyn ChatProvider>>,
         spends: Vec<Spend>,
         images: Option<Images>,
     ) -> Ai {
         let (Some(inner), Some(backup)) = (main.clone(), backup) else {
             return Ai {
                 main,
+                others,
                 spends,
                 images,
                 ..Ai::default()
@@ -673,9 +689,22 @@ impl Ai {
             main: Some(main),
             backup: Some(backup),
             fallback: Some(state),
+            others,
             spends,
             images,
         }
+    }
+
+    /// `provider`, if its key is in `.env`: the main one, the fallback or one of the
+    /// others. Unlike [`Ai::chat`] it never switches to the backup, so a feature that asked
+    /// for OpenAI gets OpenAI.
+    pub fn provider(&self, provider: Provider) -> Option<Arc<dyn ChatProvider>> {
+        self.main
+            .iter()
+            .chain(&self.backup)
+            .chain(&self.others)
+            .find(|p| p.name() == provider.name())
+            .cloned()
     }
 
     /// The provider for a new answer: the main one, or the backup while the main one is

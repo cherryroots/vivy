@@ -161,7 +161,8 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
         hunger_games: settings,
         ..
     } = bot.config.feature("games")?;
-    let provider = bot.ai.chat().ok_or_else(|| {
+    let provider = bot.ai.provider(settings.provider).or_else(|| bot.ai.chat());
+    let provider = provider.ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
     })?;
     let (sources, arena) = arena(&bot, guild, channel)?;
