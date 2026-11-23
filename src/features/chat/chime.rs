@@ -10,7 +10,7 @@
 //! Nobody asked, so she can only use [`UNPROMPTED_TOOLS`]: tools that read the server (any
 //! channel chat isn't turned off in, see `tools::can_read`) and her own memory.
 //!
-//! People on her blocklist (`blocklist.rs`) never start one, and since she only ever reacts
+//! People who lost `chime` on her blocklist (`blocklist.rs`) never start one, and since she only ever reacts
 //! to the message that started it, they never get a reaction either.
 
 use std::collections::HashMap;
@@ -151,7 +151,7 @@ impl Chime {
                 .is_some_and(|r| r.author.id == ctx.bot_id);
         // People on her blocklist are left alone.
         if to_her
-            || blocklist::is_blocked(ctx, msg.author.id).await
+            || blocklist::blocks(ctx, msg.author.id, "chime").await
             || !self.roll(ctx, msg.channel_id)
         {
             return Ok(());

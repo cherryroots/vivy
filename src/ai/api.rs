@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use reqwest::header::HeaderMap;
 use serde_json::Value;
-use tracing::warn;
+use tracing::info;
 
 use super::fallback;
 
@@ -42,7 +42,10 @@ pub async fn send_retrying(
             Some(asked) => planned.max(asked.min(MAX_RETRY_AFTER)),
             None => planned,
         };
-        warn!(
+        // Info, not a warning: a retry that works needs nobody, and one that doesn't ends
+        // in an error the caller logs (or the fallback's warning), so the log channel hears
+        // about a failure once instead of after every try.
+        info!(
             "{name} answered {status}, trying again in {} seconds",
             wait.as_secs()
         );
