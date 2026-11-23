@@ -10,8 +10,8 @@
 //! Nobody asked, so she can only use [`UNPROMPTED_TOOLS`]: tools that read the server (any
 //! channel chat isn't turned off in, see `tools::can_read`) and her own memory.
 //!
-//! People on `ai_blocklist` never start one, and since she only ever reacts to the message
-//! that started it, they never get a reaction either.
+//! People on her blocklist (`blocklist.rs`) never start one, and since she only ever reacts
+//! to the message that started it, they never get a reaction either.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -26,6 +26,7 @@ use serde::Deserialize;
 use tracing::{info, warn};
 
 use super::answer::{self, SYSTEM_PROMPT};
+use super::blocklist;
 use super::emoji;
 use super::history;
 use super::look_back::one_line;
@@ -148,8 +149,11 @@ impl Chime {
                 .referenced_message
                 .as_ref()
                 .is_some_and(|r| r.author.id == ctx.bot_id);
-        // People on the AI blocklist are left alone.
-        if to_her || ctx.is_ai_blocked(msg.author.id) || !self.roll(ctx, msg.channel_id) {
+        // People on her blocklist are left alone.
+        if to_her
+            || blocklist::is_blocked(ctx, msg.author.id).await
+            || !self.roll(ctx, msg.channel_id)
+        {
             return Ok(());
         }
 

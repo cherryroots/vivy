@@ -62,7 +62,7 @@ pub struct ChatRequest {
     pub input: Input,
     pub tools: Vec<ToolDef>,  // the bot's own tools, always in the same order
     pub cache_key: String,    // requests with the same key share a cache ("discord:<channel>")
-    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games", "catch_up", "explain", "translate"; picks the job's settings
+    pub job: &'static str,    // "chat", "chime", "emoji", "reflection", "mood", "diary", "hunger_games", "catch_up", "explain", "translate", "refusal"; picks the job's settings
 }
 ```
 
@@ -152,6 +152,7 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `chime` | main (Gemini: Hydrogen) | main | yes | yes | Chime-in reactions. They send exactly what answers send (every tool; `chat/chime.rs` refuses the ones she can't use), so on Claude and OpenAI they read the system prompt and tools from the same cache. Gemini caches little anyway, so there they take the cheap model (Cherry's pick, 2026-11-21). Nobody replies to a reaction, so a chime-in can have its own model in config.toml. |
 | `emoji` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | Describing a picture in one line. |
 | `catch_up`, `explain`, `translate` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | The Apps menu helpers (`chat/apps.rs`): summing up, explaining or translating messages, privately. Plain reading, so the cheap model. |
+| `refusal` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | The one-line no someone on her blocklist gets when they mention her (`chat/blocklist.rs`). |
 | `mood` | main | low | no | no | A short rewrite of her mood file. Batched. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. Batched. |
 | `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |

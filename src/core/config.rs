@@ -22,8 +22,8 @@ use tracing::warn;
 pub struct Config {
     /// User IDs allowed to run admin commands.
     pub admins: Vec<u64>,
-    /// User IDs Vivy's AI ignores: she doesn't answer or chime in on them, and Explain
-    /// this and Translate this turn them down. Games still work for them.
+    /// User IDs Vivy leaves alone, set by admins. She keeps her own list too, see chat's
+    /// `blocklist.rs`, which says what being on it means.
     pub ai_blocklist: Vec<u64>,
     /// The SQLite file.
     pub database: String,

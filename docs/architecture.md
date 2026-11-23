@@ -191,7 +191,7 @@ Messages are built with `Draft` (`util/discord.rs`): `Draft::new().content(..).e
 | `features` | Every feature, in the order of `features::all()` |
 | `bot_id`, `bot_name`, `app_owners`, `started_at` | The bot's own user ID and name, who owns its Discord application, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.guild_ids()`, `ctx.guild_channels(guild)` and `ctx.guild_roles(guild)` (from the cache), `ctx.permissions_in(guild, user, roles, channel)` (what someone may do in a channel, worked out from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_ai_blocked(user)` (listed in `ai_blocklist`, so chat leaves them alone), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.guild_ids()`, `ctx.guild_channels(guild)` and `ctx.guild_roles(guild)` (from the cache), `ctx.permissions_in(guild, user, roles, channel)` (what someone may do in a channel, worked out from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 
