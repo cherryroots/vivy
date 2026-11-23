@@ -13,9 +13,10 @@ The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` m
 - The bot takes your ❌ (after a stop) and 🔁 off again so you can use them again. That needs the Manage Messages permission; without it the reaction stays and you take it off yourself.
 - Only the person who asked can use ❌ and 🔁.
 - **Apps menu helpers** (right-click a message → Apps), private answers only you see: **Catch me up** summarizes the channel from that message on, **Explain this** says what a message means (an in-joke, a reference, a meme in a picture, a long post), **Translate this** translates it into your Discord language. `/catchup` summarizes what was said since your last message in the channel, or in the last `hours` (1 to 72). See [The Apps menu helpers](#the-apps-menu-helpers).
+- **Her blocklist:** Vivy decides herself who she leaves alone, with the `ai_blocklist` tool (add, remove, list, with a reason), mostly people who ask her never to interact with them. Admins can also list people in `ai_blocklist` at the top of `config.toml`, which she can't undo. For someone on either: their messages never start a chime-in (saving the tokens), and since she only reacts to the message that started one, they never get a reaction from someone else's either; a mention or reply gets one short no written by the cheap model (job `refusal`, Hydrogen on Gemini) instead of an answer, and nothing is saved; their 🔁 does nothing; Explain this and Translate this tell them "You can't use this." Games, Catch me up and reminders still work. See `blocklist.rs`.
 - **Her owner** (whoever owns the bot's Discord application) can tell her what to do, even what nobody else can direct (her mood, her notes about herself, how she acts), while owner mode is on: the 👑 button on the status message (see [control panel](control-panel.md#owner-mode)). With it off, their messages are ordinary conversation. Anyone can ask her who her owner is. See [Her owner](#her-owner).
 
-Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `max_tool_rounds` (8 rounds of tool calls per answer), `history_turns` (40 messages up a reply chain), `chime_chance`, `chime_react_chance`, `chime_cooldown_minutes` and `chime_chance_per_user`. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
+Settings live under `[features.chat]` in `config.toml`: the common `enabled` and server/channel gating keys, plus `max_tool_rounds` (8 rounds of tool calls per answer), `history_turns` (40 messages up a reply chain), `chime_chance`, `chime_react_chance`, and `chime_cooldown_minutes`. `chime_chance_per_user` was removed for her blocklist; an old entry in `config.toml` only warns. `config.example.toml` explains each one. The AI keys and provider settings are under `[ai]` (see [ai](../ai.md)). Setup is in the README.
 
 ## Files
 
@@ -24,6 +25,7 @@ All under `src/features/chat/`, in a good reading order:
 | File | What it holds |
 |---|---|
 | `mod.rs` | The `Chat` struct and its `Feature` impl: `on_mention`, reactions (❌ / 🔁), the list of running answers, saving the question and answer turns |
+| `blocklist.rs` | Her blocklist: the `ai_blocklist` tool, its table (migration 5), `is_blocked` and the one-line refusal |
 | `apps.rs` | The Apps menu helpers: Catch me up and `/catchup`, Explain this, Translate this |
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
@@ -130,7 +132,7 @@ A provider that watches videos itself (Gemini, `ChatProvider::watches_video`) ge
 
 ### Chiming in
 
-`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.05), or the author's own chance from `chime_chance_per_user` when they have one: `[user, chance]` entries apply anywhere, `[user, chance, channel]` entries in one channel and win over the others. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. A second roll (`Settings::allowed`) decides whether she also reacts: `chime_react_chance` (default 0.40) of the reads she reacts to the last message (`Allowed::React`), and the rest she only reads (`Allowed::ReadOnly`), saving what's worth keeping to memory. She never posts a line: that (`chime_say_chance`) was removed in #158, since her friends didn't like Vivy talking unprompted. Messages that mention her or reply to her are skipped, since they get a real answer.
+`chime.rs`. After every message in a server (`on_message`), `Chime::roll` rolls `chime_chance` (default 0.05), unless the author is on her blocklist (`blocklist::is_blocked`), whose messages never start one. A hit starts the channel's cooldown (`chime_cooldown_minutes`, default 30) right away, so two quick messages can't both start one. A second roll (`Settings::allowed`) decides whether she also reacts: `chime_react_chance` (default 0.40) of the reads she reacts to the last message (`Allowed::React`), and the rest she only reads (`Allowed::ReadOnly`), saving what's worth keeping to memory. She never posts a line: that (`chime_say_chance`) was removed in #158, since her friends didn't like Vivy talking unprompted. Messages that mention her or reply to her are skipped, since they get a real answer.
 
 On a hit, `read_and_react`:
 

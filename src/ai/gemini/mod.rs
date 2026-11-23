@@ -1194,7 +1194,7 @@ mod tests {
         assert_eq!(body["service_tier"], "flex");
 
         // Chime-ins and the cheap jobs take Hydrogen.
-        for job in ["chime", "emoji", "translate"] {
+        for job in ["chime", "emoji", "translate", "refusal"] {
             let cheap = ChatRequest {
                 job,
                 system: String::new(),
