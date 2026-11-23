@@ -358,8 +358,8 @@ impl Job {
     /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
     ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
     /// - "catch_up", "explain", "translate": private answers from the Apps menu (chat's
-    ///   `apps.rs`), simple reading, so the cheap model at low effort too, and "refusal",
-    ///   the one line someone on her blocklist gets when they mention her;
+    ///   `apps.rs`), simple reading, so the cheap model at low effort too, and "curt",
+    ///   her short answer to someone on her blocklist who lost chat;
     /// - "mood": a short rewrite of her mood file, at low effort, in her own model;
     /// - "reflection", "diary": her own model and effort (they're her judgement and her
     ///   voice), with the web for looking things up, but no code;
@@ -377,7 +377,7 @@ impl Job {
                 code: off,
                 batch: None,
             },
-            "catch_up" | "explain" | "translate" | "refusal" => Job {
+            "catch_up" | "explain" | "translate" | "curt" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
                 web: off,

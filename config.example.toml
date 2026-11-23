@@ -4,10 +4,11 @@
 # Users who may run admin commands.
 admins = []
 
-# Users Vivy leaves alone, on top of her own blocklist (she adds people herself, mostly
-# those who ask her never to interact with them). She never chimes in or reacts on their
-# messages, answers their mentions with one short no from the cheap model, and Explain this
-# and Translate this don't work for them. Games still do. She can't take people off this one.
+# Users Vivy is cold to, on top of her own blocklist (she adds people herself, mostly those
+# who ask her never to interact with them, and picks what each one loses). People listed
+# here lose everything: she never chimes in or reacts on their messages, answers their
+# mentions curtly with the cheap model, and Explain this, Translate this and Catch me up
+# don't work for them. Games still do. She can't take people off this one.
 ai_blocklist = []
 
 # The SQLite database file.
@@ -80,7 +81,7 @@ batch_wait_minutes = 60
 # built-in default below. Chat answers ("chat") always use the main model. Chime-ins
 # ("chime") use it too on Claude and OpenAI, to share the prompt cache, and Gemini 4
 # Hydrogen on Gemini. Jobs: "chime", "emoji", "mood",
-# "reflection", "diary", "catch_up", "explain", "translate", "refusal". Web search and code need Opus
+# "reflection", "diary", "catch_up", "explain", "translate", "curt". Web search and code need Opus
 # or Sonnet, not Haiku.
 #
 # The built-in defaults:

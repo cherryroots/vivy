@@ -7,7 +7,7 @@
 //!   with the messages before it as context.
 //! - "Translate this": the message in your Discord language.
 //!
-//! People on her blocklist (`blocklist.rs`) can't use Explain this or Translate this.
+//! People who lost them on her blocklist (`blocklist.rs`) can't use these.
 //!
 //! Each is one request without tools (jobs `catch_up`, `explain` and `translate`, Claude
 //! Haiku by default, see `ai::Job::builtin`). The answer is ephemeral and nothing is saved,
@@ -105,6 +105,7 @@ pub fn catchup() -> Command {
 
 async fn catch_up_from_message(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx, "catch_up").await?;
     let start = target(&ctx)?;
     ctx.defer().await?;
     let channel = ctx.channel_id();
@@ -147,6 +148,7 @@ async fn catch_up_from_message(ctx: CommandCtx) -> Result<()> {
 
 async fn catch_up_command(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx, "catch_up").await?;
     let CatchUpCommand { hours } = ctx.parse()?;
     ctx.defer().await?;
     let channel = ctx.channel_id();
@@ -251,7 +253,7 @@ async fn linked_line(
 
 async fn explain(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
-    not_blocked(&ctx).await?;
+    not_blocked(&ctx, "explain").await?;
     let msg = target(&ctx)?;
     ctx.defer().await?;
     let language = language_name(ctx.interaction.locale.as_deref());
@@ -266,7 +268,7 @@ async fn explain(ctx: CommandCtx) -> Result<()> {
 
 async fn translate(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
-    not_blocked(&ctx).await?;
+    not_blocked(&ctx, "translate").await?;
     let msg = target(&ctx)?;
     if msg.content.trim().is_empty() && media::find_media(&msg).is_empty() {
         return Err(user_error("That message has nothing to translate."));
@@ -337,8 +339,8 @@ fn as_messages(lines: &str) -> String {
 }
 
 /// Turns down someone on the AI blocklist.
-async fn not_blocked(ctx: &CommandCtx) -> Result<()> {
-    if blocklist::is_blocked(&ctx.bot, ctx.author_id()).await {
+async fn not_blocked(ctx: &CommandCtx, feature: &'static str) -> Result<()> {
+    if blocklist::blocks(&ctx.bot, ctx.author_id(), feature).await {
         return Err(user_error("You can't use this."));
     }
     Ok(())

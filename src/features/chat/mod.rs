@@ -175,9 +175,9 @@ impl Feature for Chat {
     }
 
     async fn on_mention(&self, ctx: &BotCtx, msg: &Message, rest: &str) -> Result<Mention> {
-        // People on her blocklist get a one-line no from the cheap model, not an answer.
-        if blocklist::is_blocked(ctx, msg.author.id).await {
-            blocklist::refuse(ctx, msg).await?;
+        // People who lost chat on her blocklist get a curt answer from the cheap model.
+        if blocklist::blocks(ctx, msg.author.id, "chat").await {
+            blocklist::answer_curtly(ctx, msg).await?;
             return Ok(Mention::Handled);
         }
         let provider = provider(ctx)?;
@@ -408,7 +408,7 @@ impl Chat {
         reaction: &GatewayReaction,
         user: UserId,
     ) -> Result<()> {
-        if self.is_running(reaction.message_id) || blocklist::is_blocked(ctx, user).await {
+        if self.is_running(reaction.message_id) || blocklist::blocks(ctx, user, "chat").await {
             return Ok(());
         }
         let Some(found) = find_answer(ctx, reaction.message_id, user).await? else {
