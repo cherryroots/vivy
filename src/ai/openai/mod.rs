@@ -28,7 +28,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::api::{self, error_message};
 use super::fallback::ApiError;
@@ -587,8 +587,9 @@ impl ChatProvider for OpenAi {
         let body = self.request_body(&request, &uploads);
         let mut response = match self.responses(&body).await {
             // Flex has no room right now (or doesn't take this model): the normal tier.
+            // Info, not a warning: if that fails too, the job's own warning says so.
             Err(err) if body["service_tier"] == "flex" => {
-                warn!("OpenAI's flex tier failed, asking on the default tier: {err:#}");
+                info!("OpenAI's flex tier failed, asking on the default tier: {err:#}");
                 let mut default = body.clone();
                 default.as_object_mut().unwrap().remove("service_tier");
                 self.responses(&default).await?
