@@ -7,6 +7,8 @@
 //!   with the messages before it as context.
 //! - "Translate this": the message in your Discord language.
 //!
+//! People on `ai_blocklist` can't use Explain this or Translate this.
+//!
 //! Each is one request without tools (jobs `catch_up`, `explain` and `translate`, Claude
 //! Haiku by default, see `ai::Job::builtin`). The answer is ephemeral and nothing is saved,
 //! so nobody else's chat fills up and it isn't part of her conversations.
@@ -248,6 +250,7 @@ async fn linked_line(
 
 async fn explain(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx)?;
     let msg = target(&ctx)?;
     ctx.defer().await?;
     let language = language_name(ctx.interaction.locale.as_deref());
@@ -262,6 +265,7 @@ async fn explain(ctx: CommandCtx) -> Result<()> {
 
 async fn translate(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx)?;
     let msg = target(&ctx)?;
     if msg.content.trim().is_empty() && media::find_media(&msg).is_empty() {
         return Err(user_error("That message has nothing to translate."));
@@ -329,6 +333,14 @@ async fn pictures(msg: &Message) -> Vec<media::ModelImage> {
 /// messages was once read as part of the last one (#165).
 fn as_messages(lines: &str) -> String {
     format!("<messages>\n{lines}\n</messages>")
+}
+
+/// Turns down someone on the AI blocklist.
+fn not_blocked(ctx: &CommandCtx) -> Result<()> {
+    if ctx.bot.is_ai_blocked(ctx.author_id()) {
+        return Err(user_error("You can't use this."));
+    }
+    Ok(())
 }
 
 /// The message an Apps command was used on.

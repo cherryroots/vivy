@@ -179,6 +179,11 @@ impl BotCtx {
         self.config.admins.contains(&user.get())
     }
 
+    /// Whether the user is on `ai_blocklist` in config.toml: her AI leaves them alone.
+    pub fn is_ai_blocked(&self, user: UserId) -> bool {
+        self.config.ai_blocklist.contains(&user.get())
+    }
+
     /// Whether the user is Vivy's owner: they own the bot's Discord application, or are on
     /// the team that does. `admins` don't count. While owner mode is on, she follows her
     /// owner's messages where other people can't direct her (see chat's prompt).

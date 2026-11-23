@@ -9,14 +9,15 @@
 //!
 //! Nobody asked, so she can only use [`UNPROMPTED_TOOLS`]: tools that read the server (any
 //! channel chat isn't turned off in, see `tools::can_read`) and her own memory.
+//!
+//! People on `ai_blocklist` never start one, and since she only ever reacts to the message
+//! that started it, they never get a reaction either.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::util::discord::{
-    ChannelId, GuildId, Message, UserId, display_name, mentions_user, react,
-};
+use crate::util::discord::{ChannelId, GuildId, Message, display_name, mentions_user, react};
 use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -77,44 +78,9 @@ pub struct Settings {
     pub chime_react_chance: f64,
     /// How long a channel waits after she read along.
     pub chime_cooldown_minutes: u64,
-    /// Other chances for some people's messages: `[user, chance]` anywhere, or
-    /// `[user, chance, channel]` in one channel only. Used instead of `chime_chance`.
-    pub chime_chance_per_user: Vec<PersonChance>,
-}
-
-/// One `chime_chance_per_user` entry: a user ID, a chance from 0 to 1, and maybe a channel ID.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum PersonChance {
-    InChannel(u64, f64, u64),
-    Anywhere(u64, f64),
 }
 
 impl Settings {
-    /// The chance, from 0 to 1, for a message from `user` in `channel`. An entry for that
-    /// channel comes first, then one for anywhere, then `chime_chance`.
-    fn chance_for(&self, user: UserId, channel: ChannelId) -> f64 {
-        let (user, channel) = (user.get(), channel.get());
-        let in_channel = self
-            .chime_chance_per_user
-            .iter()
-            .find_map(|entry| match entry {
-                PersonChance::InChannel(u, chance, c) if *u == user && *c == channel => {
-                    Some(*chance)
-                }
-                _ => None,
-            });
-        let anywhere = || {
-            self.chime_chance_per_user
-                .iter()
-                .find_map(|entry| match entry {
-                    PersonChance::Anywhere(u, chance) if *u == user => Some(*chance),
-                    _ => None,
-                })
-        };
-        in_channel.or_else(anywhere).unwrap_or(self.chime_chance)
-    }
-
     /// What she may do on a read, from a second roll `dice` between 0 and 1.
     fn allowed(&self, dice: f64) -> Allowed {
         if dice < self.chime_react_chance {
@@ -133,7 +99,6 @@ impl Default for Settings {
             chime_chance: 0.05,
             chime_react_chance: 0.40,
             chime_cooldown_minutes: 30,
-            chime_chance_per_user: Vec::new(),
         }
     }
 }
@@ -183,7 +148,8 @@ impl Chime {
                 .referenced_message
                 .as_ref()
                 .is_some_and(|r| r.author.id == ctx.bot_id);
-        if to_her || !self.roll(ctx, msg.author.id, msg.channel_id) {
+        // People on the AI blocklist are left alone.
+        if to_her || ctx.is_ai_blocked(msg.author.id) || !self.roll(ctx, msg.channel_id) {
             return Ok(());
         }
 
@@ -203,12 +169,11 @@ impl Chime {
         read_and_react(ctx, &asker, msg, &instructions, allowed).await
     }
 
-    /// Whether to read along now: the dice hit (with the author's own chance, if they have
-    /// one) and the channel isn't cooling down. A hit starts the cooldown right away, so two
-    /// quick messages can't both start one.
-    fn roll(&self, ctx: &BotCtx, author: UserId, channel: ChannelId) -> bool {
+    /// Whether to read along now: the dice hit and the channel isn't cooling down. A hit
+    /// starts the cooldown right away, so two quick messages can't both start one.
+    fn roll(&self, ctx: &BotCtx, channel: ChannelId) -> bool {
         let settings = self.settings(ctx);
-        if fastrand::f64() >= settings.chance_for(author, channel) {
+        if fastrand::f64() >= settings.chime_chance {
             return false;
         }
         let cooldown = Duration::from_secs(settings.chime_cooldown_minutes * 60);
@@ -501,22 +466,5 @@ mod tests {
         assert_eq!(settings.allowed(0.39), Allowed::React);
         assert_eq!(settings.allowed(0.40), Allowed::ReadOnly);
         assert_eq!(settings.allowed(0.99), Allowed::ReadOnly);
-    }
-
-    #[test]
-    fn some_people_get_their_own_chance() {
-        let settings: Settings = toml::from_str(
-            "chime_chance = 0.05\n\
-             chime_chance_per_user = [[123, 0.5], [123, 0.0, 999], [456, 1]]",
-        )
-        .unwrap();
-        let (user, other) = (UserId::new(123), UserId::new(1));
-        assert_eq!(settings.chance_for(user, ChannelId::new(7)), 0.5);
-        assert_eq!(settings.chance_for(user, ChannelId::new(999)), 0.0);
-        assert_eq!(
-            settings.chance_for(UserId::new(456), ChannelId::new(7)),
-            1.0
-        );
-        assert_eq!(settings.chance_for(other, ChannelId::new(999)), 0.05);
     }
 }

@@ -4,6 +4,10 @@
 # Users who may run admin commands.
 admins = []
 
+# Users Vivy's AI leaves alone: she doesn't answer their mentions or replies, never chimes in
+# on their messages, and Explain this and Translate this don't work for them. Games still do.
+ai_blocklist = []
+
 # The SQLite database file.
 database = "vivy.db"
 
@@ -179,13 +183,6 @@ chime_cooldown_minutes = 30
 # Of those reads, the share where she reacts to the last message with an emoji. The rest she
 # only reads. She never posts a line on her own.
 chime_react_chance = 0.40
-# Other chances for some people's messages (0 to 1, like chime_chance): [user ID, chance]
-# for anywhere, or [user ID, chance, channel ID] for one channel, which wins over anywhere.
-# 0 means she never reads along on their messages there. The channel's cooldown still applies.
-# chime_chance_per_user = [
-#     [123456789012345678, 0.5],
-#     [123456789012345678, 0.0, 234567890123456789],
-# ]
 
 [features.reminders]
 enabled = true

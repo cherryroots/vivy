@@ -22,6 +22,9 @@ use tracing::warn;
 pub struct Config {
     /// User IDs allowed to run admin commands.
     pub admins: Vec<u64>,
+    /// User IDs Vivy's AI ignores: she doesn't answer or chime in on them, and Explain
+    /// this and Translate this turn them down. Games still work for them.
+    pub ai_blocklist: Vec<u64>,
     /// The SQLite file.
     pub database: String,
     pub logging: LoggingConfig,
@@ -46,6 +49,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             admins: Vec::new(),
+            ai_blocklist: Vec::new(),
             database: "vivy.db".to_string(),
             logging: LoggingConfig::default(),
             ai: crate::ai::AiConfig::default(),
@@ -374,6 +378,18 @@ mod tests {
         assert!(!chat.allows(None, ChannelId::new(11), other));
         // Denied when either is denied, even if the other is listed.
         assert!(!chat.allows(None, ChannelId::new(21), here));
+    }
+
+    #[test]
+    fn reads_the_ai_blocklist() {
+        let config = Config::parse("admins = [1]\nai_blocklist = [5, 6]").unwrap();
+        assert_eq!(config.ai_blocklist, vec![5, 6]);
+        assert!(
+            Config::parse("admins = [1]")
+                .unwrap()
+                .ai_blocklist
+                .is_empty()
+        );
     }
 
     #[test]

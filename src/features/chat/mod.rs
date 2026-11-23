@@ -171,6 +171,11 @@ impl Feature for Chat {
     }
 
     async fn on_mention(&self, ctx: &BotCtx, msg: &Message, rest: &str) -> Result<Mention> {
+        // People on the AI blocklist get no answer at all. Handled, so nothing else tries.
+        if ctx.is_ai_blocked(msg.author.id) {
+            info!("not answering someone on the AI blocklist");
+            return Ok(Mention::Handled);
+        }
         let provider = provider(ctx)?;
         // The reply starts now, as "💭 Thinking…", before the slow part: waiting for link
         // previews, downloading pictures, reading video frames. Otherwise a question with a
@@ -399,7 +404,7 @@ impl Chat {
         reaction: &GatewayReaction,
         user: UserId,
     ) -> Result<()> {
-        if self.is_running(reaction.message_id) {
+        if self.is_running(reaction.message_id) || ctx.is_ai_blocked(user) {
             return Ok(());
         }
         let Some(found) = find_answer(ctx, reaction.message_id, user).await? else {
