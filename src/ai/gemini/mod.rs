@@ -37,7 +37,7 @@ use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use super::api::{self, error_message};
 use super::fallback::ApiError;
@@ -158,12 +158,13 @@ impl Gemini {
         }
         let mut result = self.interactions(&body).await;
         // A flex request that failed (flex is full: 503 "high demand") goes again on the
-        // standard tier; Gemini never moves one there by itself.
+        // standard tier; Gemini never moves one there by itself. Info, not a warning: if
+        // the standard tier fails too, the job's own warning says so.
         if let Err(err) = &result
             && body["service_tier"] == "flex"
             && !is_not_found(err)
         {
-            warn!("Gemini's flex tier failed, asking on the standard tier: {err:#}");
+            info!("Gemini's flex tier failed, asking on the standard tier: {err:#}");
             body.as_object_mut().unwrap().remove("service_tier");
             result = self.interactions(&body).await;
         }

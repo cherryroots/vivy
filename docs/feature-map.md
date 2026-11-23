@@ -283,6 +283,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #173 | | Chat: her blocklist, for people who are lame about the bot. She adds and removes people herself with the `ai_blocklist` tool (migration 5), and admins can list people in `ai_blocklist` in `config.toml`. Their messages never start a chime-in, a mention gets one short no from the cheap model (job `refusal`) instead of an answer, 🔁 does nothing, and Explain this and Translate this turn them down. Games still work. Replaces `chime_chance_per_user`, which is removed (`chat/blocklist.rs`). |
 | | | Chat: the blocklist per feature. `ai_blocklist` takes `features` (`chime`, `chat`, `explain`, `translate`, `catch_up`; all when left out), stored in migration 6. Losing `chat` now gets a curt, guarded answer from the cheap model (job `curt`, was `refusal`) instead of a one-line no. Catch me up joins the helpers she can turn off. |
 | | | Hunger Games: written by OpenAI by default (`provider` in `[features.games.hunger_games]`, for its free daily tokens), whatever provider chats; chat's provider when that key isn't set. Every provider with a key in `.env` is set up for this (`Ai::provider`), not only the chat and fallback ones. Who said it? uses no model, so it needed nothing. |
+| | | AI: retries of a busy API ("Gemini answered 503 Service Unavailable, trying again in 30 seconds") and the move from the flex to the standard tier are logged at info level, so they no longer fill the log channel; a job that still fails warns once, as before. |
 
 ## Not built yet
 
