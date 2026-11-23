@@ -68,6 +68,8 @@ pub const MIGRATIONS: &[&str] = &[
         added_by INTEGER NOT NULL,        -- who asked when she decided it
         added_at INTEGER NOT NULL
     );",
+    // 6: what each person on the blocklist loses, comma-separated; NULL for everything.
+    "ALTER TABLE ai_blocklist ADD COLUMN features TEXT;",
 ];
 
 /// One piece of a stored turn. Media is kept as a link and downloaded again when an old
