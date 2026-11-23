@@ -348,6 +348,10 @@ close_ups = 3
 # "xhigh" or "max". Higher looks better and costs more (medium about 13 cents, high 44).
 picture_quality = "medium"
 victor_picture_quality = "high"
+# Who writes the Games: "openai" (its free daily tokens), "claude" or "gemini", whichever
+# provider chats. When that provider's key isn't in .env, chat's provider writes them.
+# Its model and effort come from [ai.<provider>.jobs.hunger_games].
+provider = "openai"
 
 [features.control_panel]
 # Channel with the status message the bot keeps up to date. The bot must be a member of it.

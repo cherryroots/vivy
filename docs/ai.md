@@ -156,7 +156,7 @@ Every request names its job, and each job runs with its own settings (`Job` in `
 | `refusal` | Claude Haiku, Gemini 4 Hydrogen (OpenAI: main) | low | no | no | The one-line no someone on her blocklist gets when they mention her (`chat/blocklist.rs`). |
 | `mood` | main | low | no | no | A short rewrite of her mood file. Batched. |
 | `reflection`, `diary` | main | main | yes | no | Her judgement and her voice, so her own model; the web to look things up. Batched. |
-| `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. |
+| `hunger_games` | main | low | no | no | A Hunger Games round as JSON: her voice, but fast, so the next round is ready while people read. Written by OpenAI by default, whichever provider chats (`provider` in `[features.games.hunger_games]`), so the settings that count are `[ai.openai.jobs.hunger_games]`. |
 
 Only `mood`, `reflection` and `diary` have `batch` built in. Everything else has someone waiting: chat, chime-ins (a reaction an hour late makes no sense), emoji (chat waits for the description), the Apps menu helpers and Hunger Games rounds.
 
@@ -298,6 +298,8 @@ Both providers return an `ApiError` (provider, status, message) for error answer
 - **Out of credit**: Claude's "credit balance", a workspace spending limit ("API usage limits"), OpenAI's "quota" or "billing" wording. A 429 counts only with OpenAI's out-of-quota wording, since rate-limit messages can link to the billing page too. Chat moves to the backup for a day.
 - **Down**: 500, 502, 503, 504 or 529 after the provider's retries, an overloaded error mid-stream, no connection twice in a row (`fallback::send` waits 2 seconds and tries once more), or a stream that sent nothing for 5 minutes (the HTTP client's read timeout, set in `main.rs`). Chat moves to the backup for an hour.
 - Anything else, like a rate limit or a bad request, changes nothing.
+
+A feature that picks its own provider (the Hunger Games' `provider`) takes `ctx.ai.provider(...)` instead: the main one, the backup, or one of the others `main.rs` sets up for every provider whose key is in `.env`. It never moves to the backup, so the Games stay on OpenAI's free tokens even while chat is on its fallback.
 
 Callers take `ctx.ai.chat()` once per answer and keep that provider for the whole answer, since its input is built for it. When the retry time comes, the next answer tries the main provider again; the first one that works moves chat back (`State::worked`), and a failure keeps it on the backup with a new retry time. Both switches are logged as warnings, so they reach the log channel. `Ai::switched` tells the control panel's status message about it, with when the main provider is tried again.
 
