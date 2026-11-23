@@ -23,6 +23,7 @@
 mod answer;
 mod apps;
 mod avatar;
+mod blocklist;
 mod channels;
 mod chime;
 mod emoji;
@@ -110,6 +111,7 @@ impl Feature for Chat {
         defs.push(look_back::def());
         defs.push(react::def());
         defs.push(poll::def());
+        defs.push(blocklist::def());
         defs
     }
 
@@ -129,6 +131,7 @@ impl Feature for Chat {
             look_back::TOOL => "🪞 Looking back at what I did…",
             react::TOOL => "✨ Reacting…",
             poll::TOOL => "📊 Making a poll…",
+            blocklist::TOOL => "🚫 Checking my blocklist…",
             _ => return None,
         })
     }
@@ -145,6 +148,7 @@ impl Feature for Chat {
             look_back::TOOL => look_back::run(ctx, asker, args).await,
             react::TOOL => react::run(ctx, asker, args).await,
             poll::TOOL => poll::run(ctx, asker, args).await,
+            blocklist::TOOL => blocklist::run(ctx, asker, args).await,
             _ => tools::run(ctx, asker, name, args).await,
         }
     }
@@ -171,6 +175,11 @@ impl Feature for Chat {
     }
 
     async fn on_mention(&self, ctx: &BotCtx, msg: &Message, rest: &str) -> Result<Mention> {
+        // People on her blocklist get a one-line no from the cheap model, not an answer.
+        if blocklist::is_blocked(ctx, msg.author.id).await {
+            blocklist::refuse(ctx, msg).await?;
+            return Ok(Mention::Handled);
+        }
         let provider = provider(ctx)?;
         // The reply starts now, as "💭 Thinking…", before the slow part: waiting for link
         // previews, downloading pictures, reading video frames. Otherwise a question with a
@@ -399,7 +408,7 @@ impl Chat {
         reaction: &GatewayReaction,
         user: UserId,
     ) -> Result<()> {
-        if self.is_running(reaction.message_id) {
+        if self.is_running(reaction.message_id) || blocklist::is_blocked(ctx, user).await {
             return Ok(());
         }
         let Some(found) = find_answer(ctx, reaction.message_id, user).await? else {

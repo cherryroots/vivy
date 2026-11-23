@@ -61,6 +61,13 @@ pub const MIGRATIONS: &[&str] = &[
     // 4: check-ins are gone (her friends didn't like unprompted messages), and planned ones
     // with them.
     "DROP TABLE chat_follow_ups;",
+    // 5: people Vivy leaves alone, her own decision (see `blocklist.rs`).
+    "CREATE TABLE ai_blocklist (
+        user_id INTEGER PRIMARY KEY,
+        reason TEXT NOT NULL,             -- why, in her words
+        added_by INTEGER NOT NULL,        -- who asked when she decided it
+        added_at INTEGER NOT NULL
+    );",
 ];
 
 /// One piece of a stored turn. Media is kept as a link and downloaded again when an old

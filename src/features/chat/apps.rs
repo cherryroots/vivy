@@ -7,6 +7,8 @@
 //!   with the messages before it as context.
 //! - "Translate this": the message in your Discord language.
 //!
+//! People on her blocklist (`blocklist.rs`) can't use Explain this or Translate this.
+//!
 //! Each is one request without tools (jobs `catch_up`, `explain` and `translate`, Claude
 //! Haiku by default, see `ai::Job::builtin`). The answer is ephemeral and nothing is saved,
 //! so nobody else's chat fills up and it isn't part of her conversations.
@@ -17,6 +19,7 @@ use futures::future::join_all;
 use tracing::warn;
 use twilight_interactions::command::{CommandModel, CreateCommand};
 
+use super::blocklist;
 use super::emoji::NoTools;
 use super::tools::{format_message, home_zone};
 use crate::ai::{ChatRequest, Input, Part, Role, Turn, complete};
@@ -248,6 +251,7 @@ async fn linked_line(
 
 async fn explain(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx).await?;
     let msg = target(&ctx)?;
     ctx.defer().await?;
     let language = language_name(ctx.interaction.locale.as_deref());
@@ -262,6 +266,7 @@ async fn explain(ctx: CommandCtx) -> Result<()> {
 
 async fn translate(ctx: CommandCtx) -> Result<()> {
     let ctx = ctx.ephemeral();
+    not_blocked(&ctx).await?;
     let msg = target(&ctx)?;
     if msg.content.trim().is_empty() && media::find_media(&msg).is_empty() {
         return Err(user_error("That message has nothing to translate."));
@@ -329,6 +334,14 @@ async fn pictures(msg: &Message) -> Vec<media::ModelImage> {
 /// messages was once read as part of the last one (#165).
 fn as_messages(lines: &str) -> String {
     format!("<messages>\n{lines}\n</messages>")
+}
+
+/// Turns down someone on the AI blocklist.
+async fn not_blocked(ctx: &CommandCtx) -> Result<()> {
+    if blocklist::is_blocked(&ctx.bot, ctx.author_id()).await {
+        return Err(user_error("You can't use this."));
+    }
+    Ok(())
 }
 
 /// The message an Apps command was used on.
