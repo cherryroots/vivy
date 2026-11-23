@@ -30,6 +30,8 @@ mod writer;
 
 use serde::Deserialize;
 
+use crate::ai::Provider;
+
 pub use play::{HungerGames, hunger_games, on_component};
 pub use stats::{Leaderboard, MIGRATIONS, ResetLeaderboard, leaderboard, reset_leaderboard};
 
@@ -58,6 +60,9 @@ pub struct Settings {
     pub most_in_octagon: usize,
     /// The most rounds the last two sides wander before they must meet.
     pub wander_rounds: usize,
+    /// The provider that writes the Games (OpenAI: its free daily tokens). When its key
+    /// isn't in `.env`, chat's provider writes them.
+    pub provider: Provider,
 }
 
 impl Default for Settings {
@@ -74,6 +79,7 @@ impl Default for Settings {
             victor_picture_quality: "high".to_string(),
             most_in_octagon: rules.most_in_octagon,
             wander_rounds: rules.wander_rounds,
+            provider: Provider::Openai,
         }
     }
 }
@@ -103,5 +109,8 @@ mod tests {
         assert_eq!(rules.most_in_octagon, 2);
         assert_eq!(rules.wander_rounds, 0);
         assert_eq!(settings.picture_quality, "medium");
+        assert_eq!(settings.provider, Provider::Openai);
+        let settings: Settings = toml::from_str("provider = \"gemini\"").unwrap();
+        assert_eq!(settings.provider, Provider::Gemini);
     }
 }

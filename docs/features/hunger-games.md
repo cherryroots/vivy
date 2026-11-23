@@ -21,9 +21,9 @@ A channel has one Hunger Games at a time, and a restart ends the game. Only game
 
 ## Settings
 
-Under `[features.games.hunger_games]` in config.toml, each explained in `config.example.toml`: `max_tributes` (24, at most 24), `lobby_minutes` (10), `auto_advance_seconds` (45, at least 5), `max_places` (8), `describe_areas` (true), `most_in_octagon` (4, at least 2), `wander_rounds` (2), `close_ups` (3, at most 9 so a round fits in one Discord message; 0 for maps only), `picture_quality` ("medium") and `victor_picture_quality` ("high"). The game's tunable rules travel with it as `game::Rules` (`Settings::rules` clamps them), so the pure code and its tests keep their defaults.
+Under `[features.games.hunger_games]` in config.toml, each explained in `config.example.toml`: `max_tributes` (24, at most 24), `lobby_minutes` (10), `auto_advance_seconds` (45, at least 5), `max_places` (8), `describe_areas` (true), `most_in_octagon` (4, at least 2), `wander_rounds` (2), `close_ups` (3, at most 9 so a round fits in one Discord message; 0 for maps only), `picture_quality` ("medium"), `victor_picture_quality` ("high") and `provider` ("openai"). The game's tunable rules travel with it as `game::Rules` (`Settings::rules` clamps them), so the pure code and its tests keep their defaults.
 
-Each round is one model call with the job `hunger_games`: the chat provider's model at low effort, with no web or code (see [ai.md](../ai.md#jobs)). `[ai.claude.jobs.hunger_games]` changes that.
+`provider` picks who writes the Games: "openai" (the default, so they run on OpenAI's free daily tokens instead of the chat provider's money), "claude" or "gemini". It doesn't follow chat's fallback. When that provider's key isn't in `.env`, chat's provider writes them. Each round is one model call with the job `hunger_games`: that provider's main model at low effort, with no web or code (see [ai.md](../ai.md#jobs)). `[ai.openai.jobs.hunger_games]` (or that provider's) changes that. The places (`describe_areas`) and how the tributes look come from the same provider.
 
 ## Files
 

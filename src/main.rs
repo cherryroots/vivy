@@ -363,8 +363,9 @@ async fn register_commands(bot: &BotCtx, guilds: &[GuildId]) -> anyhow::Result<(
 
 /// Sets up the AI providers for chat: the one `provider` under `[ai]` names, and the
 /// `fallback` one if it's set. Chat is off when the main provider's key is missing from
-/// `.env`; a missing fallback key only means there's no fallback. With `OPENAI_TOKEN` set,
-/// pictures can be drawn too, whichever provider chats.
+/// `.env`; a missing fallback key only means there's no fallback. Every other provider with
+/// its key set is made too, for features that pick their own (the Hunger Games run on
+/// OpenAI). With `OPENAI_TOKEN` set, pictures can be drawn too, whichever provider chats.
 /// The AI services, and what keeps Claude's chat cache warm when that's on.
 fn ai_from_env(
     config: &Config,
@@ -377,12 +378,15 @@ fn ai_from_env(
     let gemini_spend = ai::Spend::new(db.clone(), "gemini", config.ai.gemini.monthly_budget);
     let openai_key = env_key("OPENAI_TOKEN");
     let mut keep_warm = None;
+    let chats_with =
+        |provider| config.ai.provider == provider || config.ai.fallback == Some(provider);
+    let key_name = |provider| match provider {
+        ai::Provider::Claude => "ANTHROPIC_API_KEY",
+        ai::Provider::Openai => "OPENAI_TOKEN",
+        ai::Provider::Gemini => "GEMINI_API_KEY",
+    };
     let mut make = |provider: ai::Provider| -> Option<Arc<dyn ai::ChatProvider>> {
-        let name = match provider {
-            ai::Provider::Claude => "ANTHROPIC_API_KEY",
-            ai::Provider::Openai => "OPENAI_TOKEN",
-            ai::Provider::Gemini => "GEMINI_API_KEY",
-        };
+        let name = key_name(provider);
         let Some(key) = env_key(name) else {
             warn!("{name} is not set in .env, so {provider:?} can't chat");
             return None;
@@ -395,7 +399,10 @@ fn ai_from_env(
                     config.ai.claude.clone(),
                     Some(claude_spend.clone()),
                 );
-                keep_warm = claude.keep_warm();
+                // Only chat's cache is kept warm.
+                if chats_with(provider) {
+                    keep_warm = claude.keep_warm();
+                }
                 Arc::new(claude)
             }
             ai::Provider::Openai => Arc::new(ai::OpenAi::new(
@@ -423,15 +430,23 @@ fn ai_from_env(
         .ai
         .fallback
         .filter(|&fallback| fallback != config.ai.provider)
-        .and_then(make);
+        .and_then(&mut make);
+    // The providers that don't chat but have a key, for features that pick their own.
+    let others: Vec<_> = [
+        ai::Provider::Claude,
+        ai::Provider::Openai,
+        ai::Provider::Gemini,
+    ]
+    .into_iter()
+    .filter(|&provider| !chats_with(provider) && env_key(key_name(provider)).is_some())
+    .filter_map(&mut make)
+    .collect();
     if let Some(main) = &main {
         info!("chat uses {} ({})", main.name(), main.model());
     }
     if let Some(backup) = &backup {
         info!("chat falls back to {} ({})", backup.name(), backup.model());
     }
-    let chats_with =
-        |provider| config.ai.provider == provider || config.ai.fallback == Some(provider);
     let images =
         openai_key.map(|key| ai::Images::new(web.clone(), key, Some(openai_spend.clone())));
     let mut spends = Vec::new();
@@ -445,7 +460,7 @@ fn ai_from_env(
     if chats_with(ai::Provider::Gemini) {
         spends.push(gemini_spend);
     }
-    let ai = ai::Ai::new(main, backup, spends, images);
+    let ai = ai::Ai::new(main, backup, others, spends, images);
     (ai, keep_warm)
 }
 
