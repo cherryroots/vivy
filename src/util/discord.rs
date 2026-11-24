@@ -468,6 +468,24 @@ pub fn error_code(err: &anyhow::Error) -> Option<u64> {
     }
 }
 
+/// Whether the request failed on the way rather than being refused: no connection, a
+/// reset or timed out connection, or Discord answering with a 5xx. These pass on their own,
+/// unlike a missing channel or permission.
+pub fn is_network_error(err: &anyhow::Error) -> bool {
+    use twilight_http::error::ErrorType;
+    let Some(err) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<twilight_http::Error>())
+    else {
+        return false;
+    };
+    match err.kind() {
+        ErrorType::RequestError | ErrorType::RequestTimedOut | ErrorType::RequestCanceled => true,
+        ErrorType::Response { status, .. } => status.is_server_error(),
+        _ => false,
+    }
+}
+
 /// The HTTP status Discord answered with, like 404 or 403.
 pub fn error_status(err: &anyhow::Error) -> Option<u16> {
     use twilight_http::error::ErrorType;
