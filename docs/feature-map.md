@@ -284,6 +284,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | | | Chat: the blocklist per feature. `ai_blocklist` takes `features` (`chime`, `chat`, `explain`, `translate`, `catch_up`; all when left out), stored in migration 6. Losing `chat` now gets a curt, guarded answer from the cheap model (job `curt`, was `refusal`) instead of a one-line no. Catch me up joins the helpers she can turn off. |
 | | | Hunger Games: written by OpenAI by default (`provider` in `[features.games.hunger_games]`, for its free daily tokens), whatever provider chats; chat's provider when that key isn't set. Every provider with a key in `.env` is set up for this (`Ai::provider`), not only the chat and fallback ones. Who said it? uses no model, so it needed nothing. |
 | | | AI: retries of a busy API ("Gemini answered 503 Service Unavailable, trying again in 30 seconds") and the move from the flex to the standard tier are logged at info level, so they no longer fill the log channel; a job that still fails warns once, as before. |
+| | | AI and control panel: a Claude batch no longer sends `fallbacks` (the Batches API refused it with a 400, so mood, reflection and diary went the normal, full-price way whenever they fell back to Claude). The status message no longer warns on a reset connection or a Discord 5xx; those warn only after 5 failed refreshes in a row, saying Discord couldn't be reached instead of asking whether the bot is in the channel. |
 
 ## Not built yet
 

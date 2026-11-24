@@ -25,12 +25,21 @@ use super::api::error_message;
 /// How often to ask whether the batch has ended. Asking is free.
 const POLL: Duration = Duration::from_secs(30);
 
+/// The batch of one for `body`: the same request, minus what batches don't take.
+fn batch_request(body: &Value) -> Value {
+    let mut params = body.clone();
+    if let Some(fields) = params.as_object_mut() {
+        fields.remove("stream");
+        // Batches refuse `fallbacks` with a 400, so a batched job stays on its own model.
+        fields.remove("fallbacks");
+    }
+    json!({"requests": [{"custom_id": "vivy", "params": params}]})
+}
+
 /// Sends `body` as a batch of one, waits up to `wait` for it, and returns Claude's
 /// message.
 pub async fn send(sender: &Sender, body: &Value, wait: Duration) -> anyhow::Result<Value> {
-    let mut params = body.clone();
-    params.as_object_mut().unwrap().remove("stream");
-    let request = json!({"requests": [{"custom_id": "vivy", "params": params}]});
+    let request = batch_request(body);
     let created = sender
         .json(reqwest::Method::POST, "/messages/batches", Some(&request))
         .await
@@ -194,6 +203,16 @@ mod tests {
                 ("get_time", json!({})),
             ]
         );
+    }
+
+    #[test]
+    fn a_batch_drops_stream_and_fallbacks() {
+        let body = json!({"model": "claude-opus-5-5", "stream": true, "fallbacks": "default",
+            "max_tokens": 10});
+        let params = &batch_request(&body)["requests"][0]["params"];
+        assert!(params.get("stream").is_none());
+        assert!(params.get("fallbacks").is_none());
+        assert_eq!(params["model"], "claude-opus-5-5");
     }
 
     #[test]
