@@ -9,7 +9,7 @@ There are no commands. The status message has one button, **👑 Owner mode**, w
 - the log channel under `[logging]` (`log_channel`, `log_level`; the old names `discord_channel` and `discord_level` still work);
 - the status channel under `[features.control_panel]` (`status_channel`, `status_interval_seconds`; the old `status_interval_secs` still works).
 
-The bot has to be a member of both channels. When it can't post to the log channel, stderr says so with the key name; when it can't update the status message, the first failure is a warning (with the key name and the channel) and the ones after it, every refresh, are logged at info level until one works.
+The bot has to be a member of both channels. When it can't post to the log channel, stderr says so with the key name; when it can't update the status message, the first failure is a warning (with the key name and the channel, and asking whether the bot is in it) and the ones after it, every refresh, are logged at info level until one works. A network error (a reset or timed out connection, or a Discord 5xx) usually passes by the next refresh, so those are logged at info level and only warn after 5 in a row (`NETWORK_TRIES`), saying Discord couldn't be reached instead of asking about the channel (`is_network_error` in `util/discord.rs`).
 
 `config.example.toml` explains each key. Setup is in the README. Without a `status_channel` the feature does nothing; without a `log_channel` nothing is posted to Discord, but logs still go to stdout. A `log_level` that isn't a level falls back to `warn` with a warning, instead of stopping the bot.
 

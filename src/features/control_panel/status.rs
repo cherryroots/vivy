@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use rusqlite::OptionalExtension;
-use tracing::warn;
+use tracing::{info, warn};
 use twilight_model::channel::message::Embed;
 use twilight_model::channel::message::component::{ButtonStyle, Component};
 use twilight_util::builder::embed::EmbedBuilder;
@@ -29,7 +29,7 @@ use crate::ai::{self, AdminKey, Spend, display_name};
 use crate::core::logging::error_stats;
 use crate::core::{BotCtx, GIT_COMMIT, Panel, Result, VERSION, settings};
 use crate::util::discord::{
-    ChannelId, Draft, MessageId, button, buttons, emoji, error_code, field,
+    ChannelId, Draft, MessageId, button, buttons, emoji, error_code, field, is_network_error,
 };
 use crate::util::{shorten, svg};
 
@@ -47,6 +47,10 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (name, at)
     );",
 ];
+
+/// Network failures in a row (one per update, so about a minute apart) before the status
+/// message warns about them.
+const NETWORK_TRIES: u32 = 5;
 
 const GREEN: u32 = 0x2ecc71;
 const RED: u32 = 0xe74c3c;
@@ -78,9 +82,11 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
     // in between.
     let mut history = History::new();
     let samples = ctx.timers.add("Status graphs", "every 15m");
-    // Whether the last update failed. The first failure is a warning (which reaches the
-    // log channel); the ones after it, every minute, only go to the log at info level.
-    let mut failing = false;
+    // Updates that failed in a row, and whether that run has been warned about yet. The
+    // warning reaches the log channel; the failures before and after it only go to the
+    // log at info level.
+    let mut failures: u32 = 0;
+    let mut warned = false;
 
     loop {
         // biased: check shutdown first, so a due tick can't win and skip the OFFLINE picture.
@@ -115,7 +121,8 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
         };
         match show(&ctx, channel, message, status, buttons).await {
             Ok(id) => {
-                failing = false;
+                failures = 0;
+                warned = false;
                 if Some(id) != message {
                     message = Some(id);
                     if let Err(err) = save_message_id(&ctx, channel, id).await {
@@ -123,16 +130,26 @@ pub async fn run(ctx: BotCtx, channel: ChannelId, interval_secs: u64) {
                     }
                 }
             }
-            Err(err) if failing => {
-                tracing::info!("still couldn't update the status message: {err:#}");
-            }
             Err(err) => {
-                failing = true;
-                warn!(
-                    "couldn't update the status message in <#{channel}> \
-(features.control_panel.status_channel in config.toml): {err:#}. Is the bot in that \
-channel? Further tries are logged at info level until one works."
-                );
+                failures += 1;
+                // A reset connection or a Discord 5xx usually works on the next try, so
+                // it only warns once it has lasted a few minutes.
+                let network = is_network_error(&err);
+                if warned || (network && failures < NETWORK_TRIES) {
+                    info!("couldn't update the status message ({failures} in a row): {err:#}");
+                } else {
+                    warned = true;
+                    let hint = if network {
+                        format!("Discord couldn't be reached {failures} times in a row.")
+                    } else {
+                        "Is the bot in that channel?".to_string()
+                    };
+                    warn!(
+                        "couldn't update the status message in <#{channel}> \
+(features.control_panel.status_channel in config.toml): {err:#}. {hint} Further tries are \
+logged at info level until one works."
+                    );
+                }
             }
         }
         if stopping {
