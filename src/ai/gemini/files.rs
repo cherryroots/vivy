@@ -52,10 +52,12 @@ impl Files {
     /// can use it.
     pub async fn upload(&self, name: &str, mime: &str, data: &[u8]) -> anyhow::Result<String> {
         let key = ContentKey::of(data);
-        if let Some((uri, at)) = self.recent.lock().unwrap().get(&key)
-            && at.elapsed() < REUSE_FOR
         {
-            return Ok(uri.clone());
+            let mut recent = self.recent.lock().unwrap();
+            prune_recent(&mut recent, Instant::now());
+            if let Some((uri, _)) = recent.get(&key) {
+                return Ok(uri.clone());
+            }
         }
         let file = self.send(name, mime, data).await?;
         let file = self.wait_until_active(file).await?;
@@ -63,10 +65,10 @@ impl Files {
             .as_str()
             .context("Gemini's upload answer has no uri")?
             .to_string();
-        self.recent
-            .lock()
-            .unwrap()
-            .insert(key, (uri.clone(), Instant::now()));
+        let mut recent = self.recent.lock().unwrap();
+        let now = Instant::now();
+        prune_recent(&mut recent, now);
+        recent.insert(key, (uri.clone(), now));
         Ok(uri)
     }
 
@@ -132,6 +134,11 @@ impl Files {
     }
 }
 
+/// Drops cached uploads that are too old to reuse so `recent` stays bounded.
+fn prune_recent(recent: &mut HashMap<ContentKey, (String, Instant)>, now: Instant) {
+    recent.retain(|_, (_, at)| now.saturating_duration_since(*at) < REUSE_FOR);
+}
+
 /// The response, or an error with Gemini's message when it isn't a success.
 async fn check(response: reqwest::Response) -> anyhow::Result<reqwest::Response> {
     let status = response.status();
@@ -159,5 +166,22 @@ mod tests {
             files.upload("clip.mp4", "video/mp4", data).await.unwrap(),
             "https://files/abc"
         );
+    }
+
+    #[test]
+    fn expired_recent_entries_are_evicted() {
+        let old = Instant::now();
+        let fresh = old + Duration::from_secs(60);
+        let check_at = old + REUSE_FOR;
+        let old_key = ContentKey::of(b"old-video");
+        let fresh_key = ContentKey::of(b"fresh-video");
+        let mut recent = HashMap::from([
+            (old_key, ("https://files/old".into(), old)),
+            (fresh_key, ("https://files/fresh".into(), fresh)),
+        ]);
+
+        prune_recent(&mut recent, check_at);
+        assert!(!recent.contains_key(&old_key));
+        assert!(recent.contains_key(&fresh_key));
     }
 }
