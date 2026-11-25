@@ -6,11 +6,9 @@ use twilight_model::channel::message::component::{ButtonStyle, Component};
 use twilight_util::builder::embed::{EmbedBuilder, EmbedFooterBuilder};
 
 use super::game::{Outcome, Quote, Round};
+use crate::features::games::{COLOR, escape};
 use crate::util::discord::{button, buttons};
 use crate::util::shorten;
-
-/// Vivy's teal, down the side of every message.
-pub(in crate::features::games) const COLOR: u32 = 0x2bc4b4;
 
 /// A button's ID: `games:who_said_it:pick:<game>:<round>:<person>`. `game` tells a running game
 /// from an older one in the same channel.
@@ -156,21 +154,6 @@ fn quote_block(text: &str) -> String {
         .join("\n")
 }
 
-/// A name with Discord's formatting characters escaped, so `_moss_` doesn't turn italic.
-pub(in crate::features::games) fn escape(name: &str) -> String {
-    let mut out = String::new();
-    for c in name.chars() {
-        if matches!(
-            c,
-            '*' | '_' | '~' | '`' | '|' | '>' | '#' | '[' | ']' | '\\'
-        ) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,11 +185,5 @@ mod tests {
     #[test]
     fn every_line_of_a_quote_is_quoted() {
         assert_eq!(quote_block("one\ntwo"), "> one\n> two");
-    }
-
-    #[test]
-    fn names_keep_their_underscores() {
-        assert_eq!(escape("_moss_"), "\\_moss\\_");
-        assert_eq!(escape("Cherry"), "Cherry");
     }
 }

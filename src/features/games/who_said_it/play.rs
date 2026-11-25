@@ -14,11 +14,12 @@ use twilight_interactions::command::{CommandModel, CreateCommand};
 use twilight_model::application::interaction::InteractionChannel;
 
 use super::game::{Game, Pick, make_rounds};
-use super::sources::{self, From};
-use super::{quotes, ui};
+use super::ui;
 use crate::core::{
     BotCtx, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
 };
+use crate::features::games::quotes;
+use crate::features::games::sources::{self, From};
 use crate::util::discord::{ChannelId, Draft, get_channel, member_name};
 
 /// A game being played.
@@ -127,7 +128,8 @@ pub async fn who_said_it(ctx: &CommandCtx, args: WhoSaidIt) -> Result<()> {
     let count = questions
         .map_or(settings.rounds, |questions| questions as usize)
         .clamp(1, 20);
-    let rounds = match quotes::load(&bot, guild, &sources, &settings).await {
+    let rules = settings.quote_rules();
+    let rounds = match quotes::load(&bot, guild, &sources, &rules).await {
         Ok((quotes, people)) => make_rounds(quotes, &people, count, |list| {
             fastrand::shuffle(list);
         }),
@@ -145,7 +147,11 @@ pub async fn who_said_it(ctx: &CommandCtx, args: WhoSaidIt) -> Result<()> {
         return Ok(());
     }
     let mut rounds = rounds;
-    quotes::use_nicknames(&bot, guild, &mut rounds).await;
+    let mut choices: Vec<_> = rounds
+        .iter_mut()
+        .flat_map(|round| &mut round.choices)
+        .collect();
+    quotes::use_nicknames(&bot, guild, &mut choices).await;
 
     let text = format!(
         "🗨️ **Who said it?** {} questions from {what}{}, {} seconds each. \

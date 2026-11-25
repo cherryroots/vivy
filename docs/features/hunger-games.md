@@ -2,7 +2,7 @@
 
 A battle royale between server members, played in plain Discord messages. The host picks the tributes (others can volunteer), and Vivy, as the Gamemaker, writes every round of what happens in the arena until one tribute is left. The arena's areas are the server's own channels.
 
-It's one of the games in the games feature (`src/features/games/`), next to [who said it?](who-said-it.md): Discord needs one `/games` command to hold both games, so they share that feature and its gate, `[features.games]`. It borrows who said it?'s quote reader and channel rules for last words and the arena.
+It's one of the games in the games feature (`src/features/games/`), next to [who said it?](who-said-it.md): Discord needs one `/games` command to hold both games, so they share that feature, its gate (`[features.games]`), and the shared `games/sources.rs`, `games/quotes.rs`, `COLOR`, and `escape` helpers for last words and the arena.
 
 All 5 stages of the plan are built: the text game, last words, her memory notes about the tributes, the Gamemaker's voice, pictures, and the leaderboard.
 

@@ -16,9 +16,8 @@ use futures::future::join_all;
 use tracing::{debug, info, warn};
 
 use crate::core::BotCtx;
-use crate::features::games::who_said_it::game::{Person, Quote};
-use crate::features::games::who_said_it::sources::Source;
-use crate::features::games::who_said_it::{Settings, quotes};
+use crate::features::games::quotes::{self, Person, Quote, QuoteRules};
+use crate::features::games::sources::Source;
 use crate::util::search::{self, MAX_CHANNELS, MAX_LIMIT, MAX_OFFSET, Search};
 
 /// How many random pages are searched per tribute, after the first search. Each is one
@@ -44,14 +43,14 @@ pub async fn load(
     ctx: BotCtx,
     guild: GuildId,
     sources: Vec<Source>,
-    settings: Settings,
+    rules: QuoteRules,
     tributes: Vec<u64>,
 ) -> HashMap<u64, LastWords> {
     let mut picked = HashMap::new();
     for some in tributes.chunks(AT_ONCE) {
         let searches = some
             .iter()
-            .map(|&tribute| search_for(&ctx, guild, &sources, &settings, tribute));
+            .map(|&tribute| search_for(&ctx, guild, &sources, &rules, tribute));
         for (tribute, words) in some.iter().zip(join_all(searches).await) {
             if let Some(words) = words {
                 picked.insert(*tribute, words);
@@ -62,10 +61,10 @@ pub async fn load(
     let missing: Vec<u64> = tributes
         .iter()
         .copied()
-        .filter(|t| !picked.contains_key(t) && !settings.exclude_users.contains(t))
+        .filter(|t| !picked.contains_key(t) && !rules.exclude_users.contains(t))
         .collect();
     if !missing.is_empty() {
-        read_for(&ctx, guild, &sources, &settings, &missing, &mut picked).await;
+        read_for(&ctx, guild, &sources, &rules, &missing, &mut picked).await;
     }
     info!(
         tributes = tributes.len(),
@@ -82,10 +81,10 @@ async fn search_for(
     ctx: &BotCtx,
     guild: GuildId,
     sources: &[Source],
-    settings: &Settings,
+    rules: &QuoteRules,
     tribute: u64,
 ) -> Option<LastWords> {
-    if settings.exclude_users.contains(&tribute) {
+    if rules.exclude_users.contains(&tribute) {
         return None;
     }
     let now = Utc::now();
@@ -100,7 +99,7 @@ async fn search_for(
         // Links are rarely funny without what they link to, and quotes leave them out.
         has: vec!["-link".into()],
         min_id: Some(search::snowflake_at(
-            now - Duration::days(settings.lookback_days.max(1)),
+            now - Duration::days(rules.lookback_days.max(1)),
         )),
         max_id: Some(search::snowflake_at(now - Duration::hours(1))),
         limit: Some(MAX_LIMIT),
@@ -121,26 +120,26 @@ async fn search_for(
             let Some(page) = run(search.clone()).await else {
                 break;
             };
-            if let Some(words) = choose(&page.messages, guild, settings, tribute) {
+            if let Some(words) = choose(&page.messages, guild, rules, tribute) {
                 return Some(words);
             }
         }
     }
-    choose(&newest.messages, guild, settings, tribute)
+    choose(&newest.messages, guild, rules, tribute)
 }
 
 /// A random one of `tribute`'s `messages` that makes good last words.
 fn choose(
     messages: &[Message],
     guild: GuildId,
-    settings: &Settings,
+    rules: &QuoteRules,
     tribute: u64,
 ) -> Option<LastWords> {
     let good: Vec<LastWords> = messages
         .iter()
         .filter(|msg| msg.author.id.get() == tribute)
         .filter_map(|msg| {
-            let text = tidy(&quotes::quote_text(msg, settings)?)?;
+            let text = tidy(&quotes::quote_text(msg, rules)?)?;
             Some(LastWords {
                 text,
                 link: message_link(Some(guild), msg.channel_id, msg.id),
@@ -156,7 +155,7 @@ async fn read_for(
     ctx: &BotCtx,
     guild: GuildId,
     sources: &[Source],
-    settings: &Settings,
+    rules: &QuoteRules,
     missing: &[u64],
     picked: &mut HashMap<u64, LastWords>,
 ) {
@@ -166,7 +165,7 @@ async fn read_for(
         let batch = AT_ONCE.min(most - reads);
         reads += batch;
         let results =
-            join_all((0..batch).map(|_| quotes::read_once(ctx, guild, sources, settings))).await;
+            join_all((0..batch).map(|_| quotes::read_once(ctx, guild, sources, rules))).await;
         let mut worked = false;
         for result in results {
             match result {

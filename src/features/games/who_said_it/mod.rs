@@ -2,21 +2,19 @@
 //! channel's history; for each one, everyone races to press the button of who wrote it.
 //!
 //! - `game.rs`: the rules: rounds, picks, points (pure)
-//! - `sources.rs`: which channels quotes may come from
-//! - `quotes.rs`: reading their history and cleaning messages into quotes
 //! - `ui.rs`: the question, answer and score messages, and the button IDs (pure)
 //! - `play.rs`: `/games whosaidit`, the task that runs a game, and button presses
 //!
-//! The Hunger Games use `game`, `quotes`, `sources` and `ui` too (last words and the arena).
+//! Channel picking (`sources.rs`) and quote reading (`quotes.rs`) live in `games/` because
+//! the Hunger Games share them for last words and the arena.
 
-pub(super) mod game;
+mod game;
 mod play;
-pub(super) mod quotes;
-pub(super) mod sources;
-pub(super) mod ui;
+mod ui;
 
 use serde::Deserialize;
 
+use crate::features::games::quotes::QuoteRules;
 pub use play::{WhoSaidIt, on_component, who_said_it};
 
 /// `[features.games.who_said_it]` settings.
@@ -37,6 +35,18 @@ pub struct Settings {
     /// People whose messages are never used. They aren't offered as choices either, since
     /// the choices come from the people who wrote the quotes.
     pub exclude_users: Vec<u64>,
+}
+
+impl Settings {
+    /// The quote-reading filters shared with `games::quotes`.
+    pub fn quote_rules(&self) -> QuoteRules {
+        QuoteRules {
+            lookback_days: self.lookback_days,
+            min_length: self.min_length,
+            max_length: self.max_length,
+            exclude_users: self.exclude_users.clone(),
+        }
+    }
 }
 
 impl Default for Settings {

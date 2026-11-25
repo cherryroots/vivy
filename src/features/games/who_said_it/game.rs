@@ -7,29 +7,10 @@
 
 use std::collections::HashMap;
 
+pub use crate::features::games::quotes::{Person, Quote};
+
 /// Points for a right answer, plus up to this much again for answering fast.
 const POINTS: u32 = 100;
-
-/// Someone who can be an answer: a quote's author, or one of the wrong choices.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Person {
-    pub id: u64,
-    pub name: String,
-}
-
-/// A message to guess the author of.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Quote {
-    pub author: u64,
-    pub text: String,
-    /// When it was posted, shown under the quote ("March 2025").
-    pub posted: String,
-    /// The channel it was posted in, shown under the quote when it isn't the channel the
-    /// game is played in.
-    pub place: Option<String>,
-    /// A link to the message, shown with the answer.
-    pub link: String,
-}
 
 /// One question: the quote, and the people to choose from (the author among them).
 #[derive(Debug, Clone)]

@@ -438,7 +438,15 @@ pub async fn write(
     anyhow::bail!("Vivy's round didn't pass the rules {TRIES} times")
 }
 
-pub(super) use crate::features::games::herself::NoTools;
+/// For a call with no tools: any call is answered with an error.
+pub(super) struct NoTools;
+
+#[async_trait::async_trait]
+impl crate::ai::ToolRunner for NoTools {
+    async fn run(&self, call: &crate::ai::ToolCall) -> crate::ai::ToolReply {
+        format!("Error: there is no tool named {}.", call.name).into()
+    }
+}
 
 #[cfg(test)]
 mod tests {

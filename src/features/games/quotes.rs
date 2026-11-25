@@ -7,14 +7,53 @@ use chrono::{DateTime, Duration, Utc};
 use tracing::debug;
 use twilight_model::channel::message::MessageType;
 
-use super::Settings;
-use super::game::{Person, Quote, Round};
 use super::sources::Source;
 use crate::core::BotCtx;
 use crate::util::discord::{
     GuildId, Message, MessageId, Page, UserId, created_at, display_name, get_member, get_messages,
     member_display_name, message_link, to_chrono,
 };
+
+/// Someone who wrote a quote (or can be offered as a choice in Who said it?).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Person {
+    pub id: u64,
+    pub name: String,
+}
+
+/// A real message read from channel history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Quote {
+    pub author: u64,
+    pub text: String,
+    /// When it was posted, shown under the quote ("March 2025").
+    pub posted: String,
+    /// The channel it was posted in, shown under the quote when it isn't the channel the
+    /// game is played in.
+    pub place: Option<String>,
+    /// A link to the message, shown with the answer.
+    pub link: String,
+}
+
+/// Filters for which messages count as quotes.
+#[derive(Debug, Clone)]
+pub struct QuoteRules {
+    pub lookback_days: i64,
+    pub min_length: usize,
+    pub max_length: usize,
+    pub exclude_users: Vec<u64>,
+}
+
+impl Default for QuoteRules {
+    fn default() -> Self {
+        QuoteRules {
+            lookback_days: 365,
+            min_length: 20,
+            max_length: 300,
+            exclude_users: Vec::new(),
+        }
+    }
+}
 
 /// How many moments in the channel's history are read, 100 messages each.
 const READS: usize = 6;
@@ -33,7 +72,7 @@ pub async fn load(
     ctx: &BotCtx,
     guild: GuildId,
     sources: &[Source],
-    settings: &Settings,
+    rules: &QuoteRules,
 ) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
     let reads = if sources.len() > 1 {
         SERVER_READS
@@ -45,7 +84,7 @@ pub async fn load(
     let mut people: HashMap<u64, Person> = HashMap::new();
     let mut failed = None;
     for _ in 0..reads {
-        let found = match read_once(ctx, guild, sources, settings).await {
+        let found = match read_once(ctx, guild, sources, rules).await {
             Ok(found) => found,
             Err(err) => {
                 failed = Some(err);
@@ -78,7 +117,7 @@ pub async fn read_once(
     ctx: &BotCtx,
     guild: GuildId,
     sources: &[Source],
-    settings: &Settings,
+    rules: &QuoteRules,
 ) -> anyhow::Result<Vec<(Quote, Person)>> {
     let Some(source) = sources.get(fastrand::usize(..sources.len().max(1))) else {
         return Ok(Vec::new());
@@ -86,7 +125,7 @@ pub async fn read_once(
     let now = Utc::now();
     // Nothing from the last hour, so the conversation going on right now isn't in it.
     let to = now - Duration::hours(1);
-    let oldest = now - Duration::days(settings.lookback_days.max(1));
+    let oldest = now - Duration::days(rules.lookback_days.max(1));
     let from = created_at(source.channel).max(oldest);
     if to <= from {
         return Ok(Vec::new());
@@ -100,7 +139,7 @@ pub async fn read_once(
         messages,
         guild,
         source.name.as_deref(),
-        settings,
+        rules,
     ))
 }
 
@@ -110,14 +149,14 @@ fn extract_quotes(
     messages: Vec<Message>,
     guild: GuildId,
     place: Option<&str>,
-    settings: &Settings,
+    rules: &QuoteRules,
 ) -> Vec<(Quote, Person)> {
     let mut found = Vec::new();
     for msg in messages {
-        if settings.exclude_users.contains(&msg.author.id.get()) {
+        if rules.exclude_users.contains(&msg.author.id.get()) {
             continue;
         }
-        let Some(text) = quote_text(&msg, settings) else {
+        let Some(text) = quote_text(&msg, rules) else {
             continue;
         };
         let person = Person {
@@ -136,21 +175,19 @@ fn extract_quotes(
     found
 }
 
-/// Swaps in server nicknames for everyone the rounds show. Someone who left the
-/// server keeps the name from their message.
-pub async fn use_nicknames(ctx: &BotCtx, guild: GuildId, rounds: &mut [Round]) {
+/// Swaps in server nicknames for `people`. Someone who left the server keeps the name from
+/// their message.
+pub async fn use_nicknames(ctx: &BotCtx, guild: GuildId, people: &mut [&mut Person]) {
     let mut found: HashMap<u64, Person> = HashMap::new();
-    for round in rounds.iter_mut() {
-        for choice in &mut round.choices {
-            if let Some(person) = found.get(&choice.id) {
-                *choice = person.clone();
-                continue;
-            }
-            if let Some(person) = member(ctx, guild, UserId::new(choice.id)).await {
-                *choice = person;
-            }
-            found.insert(choice.id, choice.clone());
+    for person in people.iter_mut() {
+        if let Some(cached) = found.get(&person.id) {
+            **person = cached.clone();
+            continue;
         }
+        if let Some(member) = member(ctx, guild, UserId::new(person.id)).await {
+            **person = member;
+        }
+        found.insert(person.id, (*person).clone());
     }
 }
 
@@ -177,7 +214,7 @@ fn id_at(at: DateTime<Utc>) -> MessageId {
 /// A message's text as a quote, or `None` when it doesn't make one: from a bot, a webhook
 /// or a system message, with a link (they're rarely funny without the picture), too short
 /// or too long.
-pub(in crate::features::games) fn quote_text(msg: &Message, settings: &Settings) -> Option<String> {
+pub fn quote_text(msg: &Message, rules: &QuoteRules) -> Option<String> {
     if msg.author.bot || msg.webhook_id.is_some() {
         return None;
     }
@@ -195,7 +232,7 @@ pub(in crate::features::games) fn quote_text(msg: &Message, settings: &Settings)
     let text = clean(&msg.content, &names);
     let chars = text.chars().count();
     let words = text.split_whitespace().count();
-    let fits = chars >= settings.min_length && chars <= settings.max_length && words >= 3;
+    let fits = chars >= rules.min_length && chars <= rules.max_length && words >= 3;
     (fits && !text.contains("http://") && !text.contains("https://")).then_some(text)
 }
 
@@ -311,7 +348,7 @@ mod tests {
             vec![msg],
             GuildId::new(42),
             Some("archived-thread"),
-            &Settings::default(),
+            &QuoteRules::default(),
         );
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0.link, "https://discord.com/channels/42/7/99");
