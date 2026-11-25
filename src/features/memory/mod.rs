@@ -105,19 +105,10 @@ impl Feature for Memory {
         asker: &Asker,
         fresh: bool,
     ) -> Result<Option<String>> {
-        let mut text = tool::file_list(ctx, asker).await?;
-        if let Some(about) = tool::asker_about(ctx, asker).await? {
-            text = format!("{text}\n{about}");
-        }
-        if let Some(mood) = tool::mood_note(ctx, asker).await? {
-            text = format!("{mood}\n{text}");
-        }
-        if fresh && let Some(notes) = tool::self_notes(ctx, asker).await? {
-            text = format!("{notes}\n{text}");
-        }
+        let mut text = tool::chat_context(ctx, asker, fresh).await?;
         if fresh
             && asker.guild.is_some()
-            && let Some(faces) = set_mood::faces_note(ctx)
+            && let Some(faces) = set_mood::faces_note(ctx).await
         {
             text = format!("{faces}\n{text}");
         }

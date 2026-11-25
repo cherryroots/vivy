@@ -149,7 +149,7 @@ async fn check(ctx: &BotCtx, scope: &str, mood: &str, since: i64, zone: Tz) -> R
     let text = input(Utc::now(), zone, notes.as_deref(), mood, &changed);
 
     let request = ChatRequest {
-        system: system(face::instruction_for(ctx).as_deref()),
+        system: system(face::instruction_for(ctx).await.as_deref()),
         input: Input::Full(vec![Turn {
             role: Role::User,
             parts: vec![Part::Text(text)],
