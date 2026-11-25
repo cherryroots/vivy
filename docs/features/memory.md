@@ -197,6 +197,7 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 
 - `name`: "memory".
 - `commands`: `/memory`.
+- `on_component`: `/memory forget` confirm/cancel buttons (`memory:forget:<user>` / `memory:keep:<user>`).
 - `migrations`: `store::MIGRATIONS`.
 - `tools` and `run_tool`: `memory` and `set_mood`; `run_tool` sends `set_mood` to `set_mood::run` and everything else to `tool::run`.
 - `tool_status`: "📝 Remembering…" for `memory` ("📖 Checking my notes…" when it only views a file), "💭 Thinking…" for `set_mood` in chat's status line.

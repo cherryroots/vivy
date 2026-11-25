@@ -2,7 +2,7 @@
 
 Chat is how people talk to Vivy. Mention her with a question (with pictures, GIFs, videos or files if you like) and she answers in a reply that streams in as it's written. She can look things up with tools: the time, the channel, older messages, the server's emoji, reminders, her memory. Replying to one of her answers continues the conversation. Now and then she also reads along on her own and may react to a message with an emoji. She never posts a message nobody asked for: text chime-ins and check-ins were removed in #158 because people in the server didn't like them. In a message's Apps menu she can also catch you up, explain a message or translate it, privately.
 
-The AI providers themselves (Claude, OpenAI, fallback, spend) live in the `ai` module, described in [ai](../ai.md). This doc is about the Discord side.
+The AI providers themselves (Claude, OpenAI, Gemini, fallback, spend) live in the `ai` module, described in [ai](../ai.md). This doc is about the Discord side.
 
 ## Using it
 
@@ -30,7 +30,7 @@ All under `src/features/chat/`, in a good reading order:
 | `answer.rs` | One answer from start to end: the streaming loop, the status line, running tool calls, attaching generated files. Also `tools_for` and `context_for`, which collect tools and context from every feature |
 | `channels.rs` | Names for channel mentions (`<#id>`) and channel links in message text, threads and forum posts included |
 | `history.rs` | Turning a Discord message into stored parts (`read_message`, and `linked_messages` for the messages it links to), and a stored chain into model input (`build_input`), including refreshing expired Discord links |
-| `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_emoji` |
+| `store.rs` | The migrations and every SQL query: `chat_turns`, `chat_messages`, `chat_emoji`, `ai_blocklist` |
 | `tools.rs` | Chat's own tools (time, channel, users, messages, pins, events) and helpers other files reuse (`format_message`; and, re-exported from `util::message_links` since drawing opens links too, `parse_link`, `find_message_links`, `linked_message`, `can_read`: which channels she may read for the asker) |
 | `search.rs` | The `search_messages` tool: turns names, mentions, links and dates into the IDs `util::search` needs, and keeps the results to channels chat may read (`can_read`) |
 | `look_back.rs` | The `look_back_at_answers` tool: her own earlier answers, listed or step by step, read from `chat_turns` |
@@ -83,7 +83,7 @@ The reply's last line is a small status in Discord's `-#` subtext markdown, redr
 | `-# 📖 Reading ygoprodeck.com…` | A web fetch (Claude), with the site it reads |
 | `-# 🐍 Running code…` | The code interpreter or code execution |
 | `-# ✍️ Writing…` | While text streams |
-| `-# 🎨 Drawing, this can take a minute…` | One of the bot's tools runs. The feature that owns the tool names the label (`Feature::tool_status`), like "🔍 Searching messages…", "📝 Remembering…" or "🎙️ Recording a voice message…". `schedule_follow_up` and `set_mood` show "💭 Thinking…", so a planned check-in stays a surprise |
+| `-# 🎨 Drawing, this can take a minute…` | One of the bot's tools runs. The feature that owns the tool names the label (`Feature::tool_status`), like "🔍 Searching messages…", "📝 Remembering…" or "🎙️ Recording a voice message…". `set_mood` shows "💭 Thinking…" |
 | `-# 🔧 Read recent messages…` | A tool whose feature gives no label: the tool's name as words (`plain_tool_status`) |
 
 Above the status, while she works through tools, goes her latest progress note: `-# 💬 Found the reminder, moving it to Friday now`. These are the short notes Claude Opus 5.5 writes between tool calls (what it just found, what it does next). Claude returns them as `thinking` blocks whose text is empty by default, which is why she used to look silent; chat requests now ask for them with `thinking.display: "updates"` (see [AI providers](../ai.md)), and `collect.rs` sends each one as a `ChatEvent::Progress`. The system prompt asks for these updates in her own voice and mood: a few words before the first tool, then what she found and what's next. On OpenAI, which has no such notes, the same instruction makes her write that text into the reply itself. Each note Claude writes is logged as `Claude progress note: …`, so `grep "progress note"` in the logs shows whether she wrote any. When she writes her updates as ordinary text instead (she has in every live test so far), that text stays in the reply, so people can read what she said. A new note replaces the old one, and the note goes away once she starts writing text, since the text says the rest. Notes nothing was written after stay in the reply when the answer is done (`unanswered`, `with_notes`): Opus 5.5 turns text written right before a tool call into a note even when it's the answer, like "My pick is pensivesnail…" followed by a tool call, with nothing after it. They're left out only when a tool's message (like a voice message) was the whole answer. Because a note can end up as the answer, the system prompt tells her to write the answer itself after her last tool, without announcing it ("My reply:") or describing what she just did, like a reaction (#166). Her other thinking stays hidden, and it costs nothing extra: thinking is billed the same whether its text comes back or not.
@@ -194,6 +194,7 @@ Chat's own tools:
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
 | `create_poll` | `poll.rs` | Posts a real Discord poll in the channel, as its own message, when someone asks for one: a question (300 characters), 2 to 10 answers (55 characters each, each with an optional plain or server emoji), `hours` (1 to 768, default 24) and `multiple` (pick more than one). Twilight's `Poll` has an `expiry` but creating one takes a `duration`, so it's sent as JSON with `send_raw`; `payload` builds it and checks the limits (tested). Returns the poll's link. Not in chime-ins. Needs the Create Polls permission |
 | `react_to_message` | `react.rs` | Adds up to 3 emoji reactions (plain or the server's own) to the message she's answering, or to another message in the channel by its link; `remove` takes her own back off |
+| `ai_blocklist` | `blocklist.rs` | Adds, updates, removes or lists people on Vivy's own blocklist, picking which features each person loses (`chime`, `chat`, `explain`, `translate`, `catch_up`) |
 
 Tools from other features:
 
@@ -207,6 +208,9 @@ Tools from other features:
 | `memory` | [memory](memory.md) | View, create, str_replace, insert, delete and rename notes under `/memories` |
 | `set_mood` | [memory](memory.md) | Changes her mood, status and face in this server when a conversation moves her |
 | `send_voice_message` | [voice](voice.md) | Speaks a short script and posts it as a voice message replying to the asker. Only offered when `ELEVENLABS_API_KEY` is set |
+| `draw_picture` | [drawing](drawing.md) | Draws a new picture or edits posted/referenced pictures with GPT Image 2.6. Only offered when `OPENAI_TOKEN` is set |
+| `tinyfish_search` | [tinyfish](tinyfish.md) | Searches the web with TinyFish (including sites built-in web tools often miss, like Reddit). Only offered when `TINYFISH_API_KEY` is set |
+| `tinyfish_fetch` | [tinyfish](tinyfish.md) | Fetches and reads a web page with TinyFish. Only offered when `TINYFISH_API_KEY` is set |
 
 ### Her owner
 
@@ -241,11 +245,11 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 |---|---|
 | `name` | `"chat"` |
 | `commands` | The Apps menu helpers: Catch me up, Explain this, Translate this, `/catchup` (`apps.rs`) |
-| `migrations` | `store::MIGRATIONS` (four migrations, see below) |
+| `migrations` | `store::MIGRATIONS` (six migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) for the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def`, `react::def` and `poll::def`) |
-| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers`, `react_to_message` and `create_poll` directly, the rest through `tools::run` |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def`, `react::def`, `poll::def` and `blocklist::def`) |
+| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers`, `react_to_message`, `create_poll` and `ai_blocklist` directly, the rest through `tools::run` |
 | `run_tool_with_pictures` | `look_at_profile_picture` and `get_message`, which answer with pictures; every other tool goes to `run_tool`. Chat always calls this one, answers and chime-ins alike |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the emoji task |
@@ -265,6 +269,8 @@ From `store::MIGRATIONS` in `store.rs`:
 | 2 | `chat_emoji` | Emoji ID, server, name, description | One line describing each custom emoji |
 | 3 | `chat_turns` | Adds `error` (why an answer failed or stopped) and `started_at` (when work on an answer began), and an index on channel, role and ID | `look_back_at_answers` |
 | 4 | `chat_follow_ups` | Dropped | Check-ins were removed (#158) |
+| 5 | `ai_blocklist` | `user_id`, `reason`, `added_by`, `added_at` | People Vivy keeps on her own blocklist (#173) |
+| 6 | `ai_blocklist` | Adds `features` (comma-separated, `NULL` for everything) | Per-feature blocklist scopes (#175) |
 
 ## Background loops
 
