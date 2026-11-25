@@ -1,8 +1,8 @@
 //! Discord message links: reading them out of text, the rule for which messages Vivy may
 //! open for someone, and fetching the message a link points to.
 //!
-//! Chat (`get_message`, links in a message, search) and drawing (pictures from a linked
-//! message) both open links, so the rule lives here, in one place:
+//! Chat (`get_message`, `react_to_message`, links in a message, search) and drawing
+//! (pictures from a linked message) all open links, so the rule lives here, in one place:
 //!
 //! - In a DM only that DM.
 //! - In a server any channel of the same server that chat isn't turned off in by the
@@ -12,6 +12,7 @@
 
 use tracing::{info, warn};
 
+use crate::core::config::Gate;
 use crate::core::{Asker, BotCtx, Result, user_error};
 use crate::util::discord::{
     ChannelId, GuildId, Message, MessageId, get_channel, get_message, message_link,
@@ -101,50 +102,84 @@ pub async fn can_read(
         .is_none())
 }
 
-/// Why she may not read `channel` for the asker ([`can_read`]), or `None` when she may.
+/// Why she may not reach `channel` for the asker ([`can_read`]), or `None` when she may.
 /// Each reason is its own sentence, so her answer (and the log) says which check said no.
-async fn why_not_readable(
+pub async fn why_not_readable(
     ctx: &BotCtx,
     asker: &Asker,
     guild: Option<u64>,
     channel: ChannelId,
 ) -> Result<Option<String>> {
-    if channel == asker.channel {
-        return Ok(None);
-    }
-    let Some(guild_id) = asker.guild else {
-        return Ok(Some("In a DM I can only read this DM.".to_string()));
+    let guild_id = match check_link_scope(asker.guild, asker.channel, guild, channel) {
+        Ok(None) => return Ok(None),
+        Ok(Some(guild_id)) => guild_id,
+        Err(why) => return Ok(Some(why)),
     };
-    let Some(link_guild) = guild else {
-        return Ok(Some("That message is in someone's DM with me.".to_string()));
-    };
-    if guild_id.get() != link_guild {
-        return Ok(Some(format!(
-            "That message is in another server ({link_guild}, this one is {guild_id})."
-        )));
-    }
     let target = get_channel(&ctx.http, channel).await?;
-    // The link's server part is just text, so check the channel really is in the
-    // asker's server. Otherwise a link could reach into another server.
-    if target.guild_id != Some(guild_id) {
-        return Ok(Some(format!(
-            "The channel {channel} is in another server ({:?}).",
-            target.guild_id.map(|g| g.get())
-        )));
-    }
     // A thread also counts as its parent channel; the parent comes from Discord, since
     // archived threads aren't in the cache. Any other channel's parent is its category,
     // which the config's channel lists don't mean.
     let parent = target.parent_id.filter(|_| target.kind.is_thread());
-    if !ctx.gate("chat").allows(asker.guild, channel, parent) {
-        let parent = parent
+    Ok(check_channel_access(
+        ctx.gate("chat"),
+        guild_id,
+        channel,
+        target.guild_id,
+        parent,
+    ))
+}
+
+/// Checks a link before asking Discord about the channel:
+/// - `Ok(None)` when the link is in the asker's own channel (no fetch needed).
+/// - `Ok(Some(guild_id))` when it's another channel in the asker's server.
+/// - `Err(why)` when it's already disallowed (DM asker, DM link, or another server).
+fn check_link_scope(
+    asker_guild: Option<GuildId>,
+    asker_channel: ChannelId,
+    link_guild: Option<u64>,
+    channel: ChannelId,
+) -> std::result::Result<Option<GuildId>, String> {
+    if channel == asker_channel {
+        return Ok(None);
+    }
+    let Some(guild_id) = asker_guild else {
+        return Err("In a DM I can only read this DM.".to_string());
+    };
+    let Some(link_guild) = link_guild else {
+        return Err("That message is in someone's DM with me.".to_string());
+    };
+    if guild_id.get() != link_guild {
+        return Err(format!(
+            "That message is in another server ({link_guild}, this one is {guild_id})."
+        ));
+    }
+    Ok(Some(guild_id))
+}
+
+/// Checks the real channel Discord returned against the asker's server and `[features.chat]`
+/// gating. The link's server part is just text, so `target_guild` must match `asker_guild`.
+fn check_channel_access(
+    gate: &Gate,
+    asker_guild: GuildId,
+    channel: ChannelId,
+    target_guild: Option<GuildId>,
+    thread_parent: Option<ChannelId>,
+) -> Option<String> {
+    if target_guild != Some(asker_guild) {
+        return Some(format!(
+            "The channel {channel} is in another server ({:?}).",
+            target_guild.map(|g| g.get())
+        ));
+    }
+    if !gate.allows(Some(asker_guild), channel, thread_parent) {
+        let parent = thread_parent
             .map(|p| format!(" (thread of {p})"))
             .unwrap_or_default();
-        return Ok(Some(format!(
+        return Some(format!(
             "Chat is turned off in channel {channel}{parent} by the bot's config."
-        )));
+        ));
     }
-    Ok(None)
+    None
 }
 
 #[cfg(test)]
@@ -194,5 +229,52 @@ mod tests {
         let link = message_link(Some(GuildId::new(1)), ChannelId::new(2), MessageId::new(3));
         assert_eq!(link, "https://discord.com/channels/1/2/3");
         assert_eq!(parse_link(&link), Some((Some(1), 2, 3)));
+    }
+
+    #[test]
+    fn link_scope_allows_same_channel_or_same_server_only() {
+        let g1 = GuildId::new(1);
+        let c1 = ChannelId::new(10);
+        let c2 = ChannelId::new(20);
+
+        // Same channel in a server or DM skips Discord lookup.
+        assert_eq!(check_link_scope(Some(g1), c1, Some(1), c1), Ok(None));
+        assert_eq!(check_link_scope(None, c1, None, c1), Ok(None));
+
+        // Another channel in the same server needs Discord channel verification.
+        assert_eq!(check_link_scope(Some(g1), c1, Some(1), c2), Ok(Some(g1)));
+
+        // Cross-DM, DM link in a server, and another server are refused.
+        assert!(check_link_scope(None, c1, None, c2).is_err());
+        assert!(check_link_scope(None, c1, Some(1), c2).is_err());
+        assert!(check_link_scope(Some(g1), c1, None, c2).is_err());
+        assert!(check_link_scope(Some(g1), c1, Some(2), c2).is_err());
+    }
+
+    #[test]
+    fn channel_access_checks_real_guild_and_chat_gate() {
+        let g1 = GuildId::new(1);
+        let g2 = GuildId::new(2);
+        let allowed = ChannelId::new(10);
+        let denied = ChannelId::new(20);
+        let thread = ChannelId::new(30);
+        let gate = Gate {
+            enabled: true,
+            guilds: vec![1],
+            deny_guilds: vec![],
+            channels: vec![],
+            deny_channels: vec![20],
+        };
+
+        assert_eq!(
+            check_channel_access(&gate, g1, allowed, Some(g1), None),
+            None
+        );
+        // Spoofed guild ID in link text: Discord says the channel belongs to g2.
+        assert!(check_channel_access(&gate, g1, allowed, Some(g2), None).is_some());
+        // Channel explicitly denied by [features.chat].
+        assert!(check_channel_access(&gate, g1, denied, Some(g1), None).is_some());
+        // Thread under a denied parent channel is also refused.
+        assert!(check_channel_access(&gate, g1, thread, Some(g1), Some(denied)).is_some());
     }
 }
