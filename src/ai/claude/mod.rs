@@ -690,6 +690,24 @@ fn container_gone(err: &anyhow::Error) -> bool {
     })
 }
 
+/// What a failed Claude Messages request needs to drop before retrying: an expired code
+/// execution container, missing uploads, or both when they expired together.
+fn recovery_needed(
+    err: &anyhow::Error,
+    has_container: bool,
+    uploaded: &HashMap<ContentKey, String>,
+    retried_container: bool,
+    retried_files: bool,
+) -> (bool, Option<Vec<String>>) {
+    let drop_container = !retried_container && has_container && container_gone(err);
+    let gone_files = if !retried_files {
+        missing_files(err, uploaded)
+    } else {
+        None
+    };
+    (drop_container, gone_files)
+}
+
 #[async_trait]
 impl ChatProvider for Claude {
     fn name(&self) -> &'static str {
@@ -730,24 +748,34 @@ impl ChatProvider for Claude {
         }
         let mut started = Utc::now();
         let mut result = sender.messages(&body).await;
-        // Uploads expire, and can be deleted; upload those files again.
-        if let Err(err) = &result
-            && let Some(gone) = missing_files(err, &uploaded)
-        {
-            info!("{} Claude uploads are gone, uploading again", gone.len());
-            self.uploads.forget(&gone).await;
-            (body, _) = self.prepare(&request, turns).await;
-            started = Utc::now();
-            result = sender.messages(&body).await;
-        }
-        // Containers expire; start a new one.
-        if let Err(err) = &result
-            && body["container"].get("id").is_some()
-            && container_gone(err)
-        {
-            info!("the code execution container expired, starting a new one");
-            self.containers.lock().unwrap().remove(&request.cache_key);
-            set_container(&mut body, None);
+        // Containers and uploads both expire; check container_gone before/alongside
+        // missing_files so when both expire together, `prepare` doesn't re-attach the
+        // stale container ID.
+        let mut retried_container = false;
+        let mut retried_files = false;
+        while let Err(err) = &result {
+            let (drop_container, gone_files) = recovery_needed(
+                err,
+                body["container"].get("id").is_some(),
+                &uploaded,
+                retried_container,
+                retried_files,
+            );
+            if !drop_container && gone_files.is_none() {
+                break;
+            }
+            if drop_container {
+                info!("the code execution container expired, starting a new one");
+                self.containers.lock().unwrap().remove(&request.cache_key);
+                set_container(&mut body, None);
+                retried_container = true;
+            }
+            if let Some(gone) = gone_files {
+                info!("{} Claude uploads are gone, uploading again", gone.len());
+                self.uploads.forget(&gone).await;
+                (body, _) = self.prepare(&request, turns).await;
+                retried_files = true;
+            }
             started = Utc::now();
             result = sender.messages(&body).await;
         }
@@ -899,7 +927,7 @@ async fn read_response(
         let Some(chunk) = chunk else {
             bail!("Claude's stream ended before the answer did");
         };
-        for event in parser.push(&chunk) {
+        for event in parser.push(&chunk)? {
             let data: Value =
                 serde_json::from_str(&event.data).context("Claude sent invalid JSON")?;
             for chat_event in collector.push(&data)? {
@@ -951,9 +979,9 @@ async fn add_spend(
     if let Some((spend, job)) = spend {
         let model = collector.model.as_deref();
         let model = model.or(body["model"].as_str()).unwrap_or_default();
-        let usd = price::cost(&usage, model);
+        let usd = price::cost(&usage, model, batched);
         let used = Used {
-            usd: if batched { usd / 2.0 } else { usd },
+            usd,
             input: usage.input,
             cache_read: usage.cache_read,
             cache_write: usage.cache_write,
@@ -1309,6 +1337,43 @@ mod tests {
             body_of(&no_code, &request(), Vec::new())
                 .get("container")
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn recovery_drops_container_alongside_missing_files() {
+        let error = |message: &str| {
+            anyhow::Error::new(ApiError {
+                provider: "claude",
+                status: reqwest::StatusCode::BAD_REQUEST,
+                message: message.into(),
+            })
+        };
+        let uploaded = HashMap::from([(ContentKey::of(&[1]), "file_a".to_string())]);
+
+        // Both container and file expired in the same error: both are dropped at once.
+        let both = error("Container container_1 has expired and file file_a not found");
+        assert_eq!(
+            recovery_needed(&both, true, &uploaded, false, false),
+            (true, Some(vec!["file_a".into()]))
+        );
+
+        // Container expires first, then the retry hits missing files: both recover in order.
+        let container_err = error("Container container_1 has expired");
+        assert_eq!(
+            recovery_needed(&container_err, true, &uploaded, false, false),
+            (true, None)
+        );
+        let file_err = error("File file_a not found");
+        assert_eq!(
+            recovery_needed(&file_err, false, &uploaded, true, false),
+            (false, Some(vec!["file_a".into()]))
+        );
+
+        // Neither is retried twice.
+        assert_eq!(
+            recovery_needed(&both, true, &uploaded, true, true),
+            (false, None)
         );
     }
 }
