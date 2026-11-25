@@ -123,7 +123,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 
 Admin checks happen inside each admin command and button with `ctx.is_admin`, not in the dispatcher (whose refusal says the feature is turned off).
 
-It publishes `BotEvent::WheelRoundResolved { guild_id, round, winner }` when a winner is set; `round` is the round number, not its database ID. No feature listens to it yet.
+It publishes `BotEvent::WheelRoundResolved { guild_id, season, round, winner, winner_name, movie }` when a winner is set; `season` and `round` are their human-facing numbers (counting from 1), not database IDs. Memory listens to it to log watched movies into `/memories/server/movies-watched.md`.
 
 ## Custom IDs
 

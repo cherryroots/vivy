@@ -50,7 +50,7 @@ Not features, but parts of the core everyone uses: the **log channel** (`src/cor
 | Chat | mentions nobody else claimed (and ones passed on), every message (chime-ins), reactions (❌ 🔁) | Emoji descriptions |
 | Reminders | mentions starting with `remind me`, `reminder`, `remind`; its buttons and menu | Reminders |
 | Movie wheel | its buttons, menus and modals | none (it looks names up once at start) |
-| Memory | its buttons (`/memory forget` confirm/cancel); works through chat tools and its loop | Memory upkeep (hourly) |
+| Memory | its buttons (`/memory forget` confirm/cancel) and `BotEvent::WheelRoundResolved`; works through chat tools and its loop | Memory upkeep (hourly) |
 | Voice | none (only its chat tool) | none |
 | Drawing | none (only its chat tool) | none |
 | Snails | every message, edits, deletes | Snail picture retries, plus the backfill and the startup catch-up |
@@ -304,6 +304,7 @@ The port went in stages, one pull request each, all merged into `main`.
 | #192 | | CI, clippy and smoke tests: fix `clippy::chunks_exact_to_as_chunks` in `voice/audio.rs` so `cargo clippy --all-targets -- -D warnings` passes cleanly; tighten `util::frames::tests::playlists_are_refused` to require `"ffmpeg failed:"`; add whole-repo smoke tests in `main.rs` verifying `config.example.toml` against every feature's `Settings` struct (zero unknown keys or warnings) and applying all owners' SQLite migrations cleanly onto one in-memory DB; add `.github/workflows/ci.yml` running `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` with `ffmpeg` and Noto fonts installed. |
 | #193 | | Systemd hardening & docs/config sync: `deploy/vivy.service` adds `UMask=0077` (so `vivy.db` isn't created world-readable) and zero-risk systemd sandboxing (`CapabilityBoundingSet=`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectKernelLogs=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`); `.env.example`, `README.md`, `docs/architecture.md`, `docs/ai.md`, `docs/feature-map.md` and `docs/features/*.md` synced with current `main` (Gemini 4 Neon, Hunger Games burning-arena showdown, removed #158 check-ins, updated hook/tool/table/command lists, and PR numbers `#179`–`#189`). |
 | | | CI clippy fix on Rust 1.100 (`#[allow(clippy::needless_range_loop)]` on `wheel/sim.rs` test loop) and deduplicate merged PR rows (`#190`–`#193`) in `docs/feature-map.md`. |
+| | | Memory & wheel: `BotEvent::WheelRoundResolved` now carries `season`, `winner_name` and `movie`, and `Memory::on_bot_event` (`memory/movies.rs`) logs resolved rounds into `/memories/server/movies-watched.md` (with guild gating, in-place replacement on re-resolve, and oldest-entry trimming to stay within 8 KB). |
 
 ## Not built yet
 
@@ -312,6 +313,6 @@ The port went in stages, one pull request each, all merged into `main`.
 | Sentry | Error grouping through the `sentry` crate's `tracing` integration, on when `SENTRY_DSN` is set. GlitchTip is a self-hostable server for it. |
 | Wheel: `/wheel_spin` and balance history | A random winner with an animation, and each player's money over time |
 | More faces | Mischievous, grossed out, lonely, celebrating |
-| Listeners for bot events | `ReminderFired` and `WheelRoundResolved` are published, but nothing listens yet |
+| Listeners for bot events | `ReminderFired` is published, but nothing listens to it yet (`WheelRoundResolved` is now handled by memory) |
 | Voice channels | Not asked for; voice is messages only |
 | Vivy plays World of Warcraft 1.12 | Explored 2026-11-01, nothing built. Cherry's pick: [benilla](https://github.com/samwhosung/benilla) (a WoW 1.12.1 client in Rust and Bevy, own game files, a vmangos server) runs on her PC with a helper plugin; one Tailscale link carries the game's state out as JSON, actions in and rendered frames out, and Vivy on the server plays from the data and relays the frames to the watch page. The server has no GPU, so not there. Other players would be the server's scripted playerbots; LLM playerbot mods exist only for WotLK (AzerothCore). Minecraft (mineflayer) is the easier alternative |
