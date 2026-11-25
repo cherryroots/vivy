@@ -114,7 +114,7 @@ impl Collector {
                             events.push(ChatEvent::Progress(note.to_string()));
                         }
                     }
-                    "signature_delta" => block["signature"] = json!(text("signature")),
+                    "signature_delta" => append(block, "signature", text("signature")),
                     "citations_delta" => {
                         if !block["citations"].is_array() {
                             block["citations"] = json!([]);
@@ -673,5 +673,20 @@ mod tests {
             crate::ai::fallback::outage(&err),
             Some(crate::ai::fallback::Outage::Down)
         );
+    }
+
+    #[test]
+    fn split_signature_deltas_are_joined() {
+        let mut collector = Collector::default();
+        push_all(
+            &mut collector,
+            &[
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "first-"}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "second"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+            ],
+        );
+        assert_eq!(collector.finish().content[0]["signature"], "first-second");
     }
 }

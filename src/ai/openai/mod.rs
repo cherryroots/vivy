@@ -109,7 +109,7 @@ impl Default for OpenAiConfig {
             model: "gpt-6.1-sol".to_string(),
             reasoning_effort: "medium".to_string(),
             verbosity: "low".to_string(),
-            service_tier: Some("fast".to_string()),
+            service_tier: None,
             monthly_budget: 25.0,
             billed_spend: true,
             show_cache_hits: true,
@@ -749,8 +749,20 @@ mod tests {
         let body = client().request_body(&request, &[]);
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["instructions"], "Be nice.");
-        assert_eq!(body["service_tier"], "fast");
+        assert!(body.get("service_tier").is_none());
         assert_eq!(body["prompt_cache_key"], "vivy:chat");
+
+        let fast = OpenAi::new(
+            reqwest::Client::new(),
+            "key".into(),
+            None,
+            OpenAiConfig {
+                service_tier: Some("fast".into()),
+                ..OpenAiConfig::default()
+            },
+            None,
+        );
+        assert_eq!(fast.request_body(&request, &[])["service_tier"], "fast");
         assert_eq!(
             body["input"],
             json!([
@@ -975,5 +987,14 @@ mod tests {
             }]
         );
         assert_eq!(done.native.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn example_config_leaves_service_tier_unset() {
+        assert_eq!(OpenAiConfig::default().service_tier, None);
+        let config =
+            crate::core::config::Config::parse(include_str!("../../../config.example.toml"))
+                .unwrap();
+        assert_eq!(config.ai.openai.service_tier, None);
     }
 }
