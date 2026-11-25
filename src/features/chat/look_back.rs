@@ -3,9 +3,9 @@
 //! what she thought, wrote, which tools she called with what, and what came back.
 //!
 //! Everything comes from `chat_turns`. The steps are read from `native_json`, the
-//! provider's own output, which looks different for Claude and OpenAI; [`steps`] reads
-//! both. Only answers in channels chat may read are shown (in a DM, only that DM), so a
-//! DM never shows up in a server.
+//! provider's own output, which looks different for Claude, OpenAI and Gemini; [`steps`]
+//! reads all three. Only answers in channels chat may read are shown (in a DM, only that
+//! DM), so a DM never shows up in a server.
 
 use std::collections::HashMap;
 
@@ -13,6 +13,7 @@ use crate::util::discord::{ChannelId, MessageId};
 use chrono::DateTime;
 use chrono_tz::Tz;
 use serde_json::{Value, json};
+use tracing::debug;
 
 use super::channels;
 use super::store::{self, StoredPart, Turn};
@@ -173,7 +174,16 @@ async fn list(
             let ok = match allowed.get(&answer.channel_id) {
                 Some(ok) => *ok,
                 None => {
-                    let ok = may_see(ctx, asker, answer.channel_id).await?;
+                    let ok = match may_see(ctx, asker, answer.channel_id).await {
+                        Ok(ok) => ok,
+                        Err(err) => {
+                            debug!(
+                                channel = answer.channel_id,
+                                "skipping unreadable channel in look_back_at_answers: {err:#}"
+                            );
+                            false
+                        }
+                    };
                     allowed.insert(answer.channel_id, ok);
                     ok
                 }
@@ -462,8 +472,8 @@ fn render_step(step: &Step) -> String {
     }
 }
 
-/// The steps of an answer from its saved rounds. Claude's blocks and OpenAI's items are
-/// told apart by their `type`, so this doesn't need to know who wrote it.
+/// The steps of an answer from its saved rounds. Claude's blocks, OpenAI's items and
+/// Gemini's steps are told apart by their `type`, so this doesn't need to know who wrote it.
 fn steps(native_json: &str) -> Vec<Step> {
     let Some(rounds) = NativeRound::parse_list(native_json) else {
         return Vec::new();
@@ -490,7 +500,7 @@ fn steps(native_json: &str) -> Vec<Step> {
     steps
 }
 
-/// Adds what one block (Claude) or item (OpenAI) shows to `steps`.
+/// Adds what one block (Claude), item (OpenAI) or step (Gemini) shows to `steps`.
 fn read_item(item: &Value, steps: &mut Vec<Step>) {
     let kind = item["type"].as_str().unwrap_or_default();
     let compact = |value: &Value| match value {
@@ -529,7 +539,7 @@ fn read_item(item: &Value, steps: &mut Vec<Step>) {
                 *result = Some(summary);
             }
         }
-        // OpenAI
+        // OpenAI (and Gemini's `function_call`, which uses `id` instead of `call_id`)
         "reasoning" => {
             let text: Vec<&str> = item["summary"]
                 .as_array()
@@ -553,12 +563,19 @@ fn read_item(item: &Value, steps: &mut Vec<Step>) {
                 steps.push(Step::Wrote(text));
             }
         }
-        "function_call" => steps.push(Step::Call {
-            id: compact(&item["call_id"]),
-            name: compact(&item["name"]),
-            input: compact(&item["arguments"]),
-            result: None,
-        }),
+        "function_call" => {
+            let id = if item["call_id"].is_null() {
+                compact(&item["id"])
+            } else {
+                compact(&item["call_id"])
+            };
+            steps.push(Step::Call {
+                id,
+                name: compact(&item["name"]),
+                input: compact(&item["arguments"]),
+                result: None,
+            });
+        }
         "web_search_call" => steps.push(Step::Call {
             id: compact(&item["id"]),
             name: "web_search".to_string(),
@@ -587,7 +604,134 @@ fn read_item(item: &Value, steps: &mut Vec<Step>) {
                 result: Some(result),
             });
         }
+        // Gemini
+        "thought" => {
+            let text: Vec<&str> = item["summary"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|s| s["text"].as_str())
+                .collect();
+            if !text.is_empty() {
+                steps.push(Step::Thought(text.join(" ")));
+            }
+        }
+        "model_output" => {
+            let text: Vec<&str> = item["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["text"].as_str())
+                .collect();
+            let text = text.join("\n");
+            if !text.trim().is_empty() {
+                steps.push(Step::Wrote(text));
+            }
+        }
+        "google_search_call" => steps.push(Step::Call {
+            id: compact(&item["id"]),
+            name: "google_search".to_string(),
+            input: compact(&item["arguments"]),
+            result: None,
+        }),
+        "url_context_call" => steps.push(Step::Call {
+            id: compact(&item["id"]),
+            name: "url_context".to_string(),
+            input: compact(&item["arguments"]),
+            result: None,
+        }),
+        "code_execution_call" => {
+            let input = item["arguments"]["code"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| compact(&item["arguments"]));
+            steps.push(Step::Call {
+                id: compact(&item["id"]),
+                name: "code_execution".to_string(),
+                input,
+                result: None,
+            });
+        }
+        "google_search_result" | "url_context_result" | "code_execution_result" => {
+            let id = if item["call_id"].is_null() {
+                compact(&item["id"])
+            } else {
+                compact(&item["call_id"])
+            };
+            if !id.is_empty()
+                && let Some(Step::Call { result, .. }) = steps
+                    .iter_mut()
+                    .rev()
+                    .find(|s| matches!(s, Step::Call { id: call, .. } if *call == id))
+            {
+                *result = Some(gemini_result(kind, item));
+            }
+        }
         _ => {}
+    }
+}
+
+/// A short summary of a Gemini built-in tool's result step.
+fn gemini_result(kind: &str, item: &Value) -> String {
+    let raw = &item["result"];
+    match kind {
+        "google_search_result" => match raw {
+            Value::Array(results) => {
+                let titles: Vec<&str> =
+                    results.iter().filter_map(|r| r["title"].as_str()).collect();
+                if titles.is_empty() {
+                    format!("{} results", results.len())
+                } else {
+                    format!("{} results: {}", results.len(), titles.join("; "))
+                }
+            }
+            Value::Null => "(result not kept)".to_string(),
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        },
+        "url_context_result" => match raw {
+            Value::Array(pages) => {
+                let urls: Vec<String> = pages
+                    .iter()
+                    .filter_map(|p| {
+                        let url = p["url"].as_str()?;
+                        match p["status"].as_str() {
+                            Some(status) if !status.eq_ignore_ascii_case("success") => {
+                                Some(format!("{url} ({status})"))
+                            }
+                            _ => Some(url.to_string()),
+                        }
+                    })
+                    .collect();
+                if urls.is_empty() {
+                    raw.to_string()
+                } else {
+                    format!("read {}", urls.join("; "))
+                }
+            }
+            Value::Null => "(result not kept)".to_string(),
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        },
+        "code_execution_result" => {
+            let text = match raw {
+                Value::String(s) => s.clone(),
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            if item["is_error"].as_bool() == Some(true) {
+                if text.trim().is_empty() {
+                    "Error".to_string()
+                } else {
+                    format!("Error: {text}")
+                }
+            } else if text.trim().is_empty() {
+                "ok".to_string()
+            } else {
+                text
+            }
+        }
+        _ => raw.to_string(),
     }
 }
 
@@ -768,6 +912,44 @@ mod tests {
                 "- called code_interpreter print(1) → 1",
                 "- called get_current_time {} → Friday",
                 "- wrote: Here",
+            ]
+        );
+    }
+
+    #[test]
+    fn gemini_rounds() {
+        let rounds = json!([
+            {
+                "output": [
+                    {"type": "thought", "summary": [{"type": "text", "text": "Checking Oslo."}], "signature": "sig"},
+                    {"type": "google_search_call", "id": "s1", "arguments": {"queries": ["time in Oslo"]}},
+                    {"type": "google_search_result", "call_id": "s1", "result": [{"title": "Time in Oslo"}, {"title": "World Clock"}]},
+                    {"type": "url_context_call", "id": "u1", "arguments": {"urls": ["https://time.is/Oslo"]}},
+                    {"type": "url_context_result", "call_id": "u1", "result": [{"url": "https://time.is/Oslo", "status": "success"}]},
+                    {"type": "code_execution_call", "id": "c1", "arguments": {"language": "PYTHON", "code": "print(2 + 2)"}},
+                    {"type": "code_execution_result", "call_id": "c1", "result": "4\n", "is_error": false},
+                    {"type": "function_call", "id": "call_1", "name": "get_current_time", "arguments": {"timezone": "Europe/Oslo"}}
+                ],
+                "results": [{"call_id": "call_1", "output": "Friday 14:00"}]
+            },
+            {
+                "output": [
+                    {"type": "model_output", "content": [{"type": "text", "text": "It is 14:00 in Oslo."}]}
+                ]
+            }
+        ]);
+        let rendered: Vec<String> = steps(&rounds.to_string()).iter().map(render_step).collect();
+        assert_eq!(
+            rendered,
+            [
+                "Round 1:",
+                "- thought: Checking Oslo.",
+                r#"- called google_search {"queries":["time in Oslo"]} → 2 results: Time in Oslo; World Clock"#,
+                r#"- called url_context {"urls":["https://time.is/Oslo"]} → read https://time.is/Oslo"#,
+                "- called code_execution print(2 + 2) → 4",
+                r#"- called get_current_time {"timezone":"Europe/Oslo"} → Friday 14:00"#,
+                "Round 2:",
+                "- wrote: It is 14:00 in Oslo.",
             ]
         );
     }
