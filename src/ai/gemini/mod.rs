@@ -362,6 +362,9 @@ impl Gemini {
             .flat_map(|t| &t.parts)
             .flat_map(|part| match part {
                 Part::Video(video) => vec![(video, video.mime.as_str())],
+                Part::Audio(audio) if audio.data.len() > MAX_INLINE_AUDIO_BYTES => {
+                    vec![(audio, audio.mime.as_str())]
+                }
                 Part::File(file) => document_mime(file)
                     .map(|mime| (file, mime))
                     .into_iter()
@@ -480,16 +483,16 @@ fn opened_block(opened: &ToolFile, uri: &str, config: &GeminiConfig) -> Option<V
     Some(block)
 }
 
-/// Whether the request's new turns hold a video, a YouTube link or a document. Gemini's
-/// code execution refuses those ("The mime type: application/pdf is not supported for
-/// code execution"), so such a request goes without it.
+/// Whether the request's new turns hold a video, a YouTube link, audio or a document.
+/// Gemini's code execution refuses those ("The mime type: application/pdf is not supported
+/// for code execution"), so such a request goes without it.
 fn has_video_or_document(request: &ChatRequest) -> bool {
     let turns = match &request.input {
         Input::Full(turns) => turns,
         Input::After { new, .. } => new,
     };
     turns.iter().flat_map(|t| &t.parts).any(|part| match part {
-        Part::Video(_) | Part::YouTube(_) => true,
+        Part::Video(_) | Part::YouTube(_) | Part::Audio(_) => true,
         Part::File(file) => document_mime(file).is_some(),
         Part::ToolResult { files, .. } => !files.is_empty(),
         _ => false,
@@ -514,6 +517,8 @@ fn refuses_code(err: &anyhow::Error) -> bool {
 
 /// The most of a text file that goes into the request, in bytes (about 25k tokens).
 const MAX_TEXT_FILE: usize = 100_000;
+/// Audio clips up to this size go inline as base64; larger ones are uploaded via the Files API.
+const MAX_INLINE_AUDIO_BYTES: usize = 10 * 1024 * 1024;
 
 /// A request with at least this many of the bot's tools defers them (`defer_tools`):
 /// chat and chime-ins, not the memory jobs with a few.
@@ -625,6 +630,24 @@ fn input_steps(
                         "type": "video",
                         "uri": link,
                         "processing": config.youtube_processing,
+                    })),
+                },
+                Part::Audio(audio) if audio.data.len() <= MAX_INLINE_AUDIO_BYTES => {
+                    content.push(json!({
+                        "type": "audio",
+                        "data": base64(&audio.data),
+                        "mime_type": audio.mime,
+                    }));
+                }
+                Part::Audio(audio) => match uploads.next().and_then(Option::as_ref) {
+                    Some(uri) => content.push(json!({
+                        "type": "audio",
+                        "uri": uri,
+                        "mime_type": audio.mime,
+                    })),
+                    None => content.push(json!({
+                        "type": "text",
+                        "text": format!("[the audio {}, which couldn't be loaded]", audio.name),
                     })),
                 },
                 Part::File(file) if document_mime(file).is_some() => match uploads
@@ -1019,6 +1042,10 @@ impl ChatProvider for Gemini {
     }
 
     fn watches_video(&self) -> bool {
+        true
+    }
+
+    fn hears_audio(&self) -> bool {
         true
     }
 
@@ -1419,6 +1446,59 @@ mod tests {
         assert_eq!(thinking_level("gemini-4-hydrogen", "xhigh"), "xhigh");
         assert_eq!(thinking_level("gemini-4-argon", "xhigh"), "high");
         assert_eq!(thinking_level("gemini-4-argon", "low"), "low");
+    }
+
+    #[test]
+    fn audio_parts_inline_and_uploaded() {
+        let gemini = client();
+        assert!(gemini.hears_audio());
+
+        let small = ModelFile {
+            name: "voice-message.ogg".into(),
+            mime: "audio/ogg".into(),
+            data: b"OggS".to_vec(),
+        };
+        let big = ModelFile {
+            name: "long.ogg".into(),
+            mime: "audio/ogg".into(),
+            data: vec![0u8; MAX_INLINE_AUDIO_BYTES + 1],
+        };
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::Text("[Voice message]".into()),
+                Part::Audio(small.clone()),
+                Part::Audio(big.clone()),
+                Part::Audio(big),
+            ],
+        }];
+        let uploads = [Some("https://files/big-audio".to_string()), None];
+        let steps = input_steps(&turns, &uploads, &GeminiConfig::default(), &HashMap::new());
+        assert_eq!(
+            steps,
+            vec![json!({
+                "type": "user_input",
+                "content": [
+                    {"type": "text", "text": "[Voice message]"},
+                    {"type": "audio", "data": base64(b"OggS"), "mime_type": "audio/ogg"},
+                    {"type": "audio", "uri": "https://files/big-audio", "mime_type": "audio/ogg"},
+                    {"type": "text", "text": "[the audio long.ogg, which couldn't be loaded]"},
+                ]
+            })]
+        );
+
+        let request = ChatRequest {
+            system: String::new(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Audio(small)],
+            }]),
+            tools: Vec::new(),
+            cache_key: String::new(),
+            job: "chat",
+            answer_now: false,
+        };
+        assert!(has_video_or_document(&request));
     }
 
     /// Talks to the real API: a tool round with a PDF (so without code execution), then the

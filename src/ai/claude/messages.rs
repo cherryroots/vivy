@@ -81,8 +81,8 @@ pub fn to_messages(
                 } => content.push(tool_result(call_id, output, images)),
                 // Another provider's answer: its text parts stand in for it.
                 Part::Native { .. } => {}
-                // Claude reads videos as frame grids; these are only made for Gemini.
-                Part::Video(_) | Part::YouTube(_) => {}
+                // Claude reads videos as frame grids and can't hear audio; these are only made for Gemini.
+                Part::Video(_) | Part::YouTube(_) | Part::Audio(_) => {}
             }
         }
         if content.is_empty() {
@@ -661,6 +661,26 @@ mod tests {
         assert_eq!(
             blocks[0]["cache_control"],
             json!({"type": "ephemeral", "ttl": "1h"})
+        );
+    }
+
+    #[test]
+    fn audio_parts_are_skipped_safely() {
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::Text("[Voice message]".into()),
+                Part::Audio(ModelFile {
+                    name: "voice-message.ogg".into(),
+                    mime: "audio/ogg".into(),
+                    data: b"OggS".to_vec(),
+                }),
+            ],
+        }];
+        let messages = to_messages(&turns, "m", "s", &HashMap::new(), true);
+        assert_eq!(
+            messages,
+            vec![json!({"role": "user", "content": [{"type": "text", "text": "[Voice message]"}]})]
         );
     }
 }
