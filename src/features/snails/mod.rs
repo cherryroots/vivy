@@ -33,7 +33,7 @@ mod retry;
 mod store;
 
 use std::collections::HashSet;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::util::discord::{ChannelId, GuildId, Message, MessageId, get_message};
@@ -84,9 +84,12 @@ type Totals = (u64, u64, u64, u64);
 
 #[derive(Default)]
 pub struct Snails {
-    /// New messages waiting for their late link preview recheck. An edit event that reads
-    /// the message first takes it off, and the recheck is skipped.
+    /// New messages waiting for their late link preview recheck. An edit or delete event
+    /// takes it off, and the recheck is skipped.
     waiting: Mutex<HashSet<u64>>,
+    /// Per-message generation and deleted state, so a slow in-flight sync never overwrites
+    /// a newer edit or resurrects a deleted message.
+    tracker: Arc<index::MessageTracker>,
     /// The totals for the status picture, and when they were counted.
     totals: Mutex<Option<(Instant, Totals)>>,
 }
@@ -149,14 +152,19 @@ impl Feature for Snails {
         if !collect::has_content(msg) {
             return Ok(());
         }
-        // Noted before saving, so an edit that arrives while this downloads still counts.
+        // Noted before saving, so an edit or delete that arrives while this downloads still counts.
+        let id = msg.id.get();
+        let Some(guard) = self.tracker.begin_sync(id) else {
+            return Ok(());
+        };
         let recheck = msg.embeds.len() < media::preview_links(msg).len();
         if recheck {
-            self.waiting.lock().unwrap().insert(msg.id.get());
+            self.waiting.lock().unwrap().insert(id);
         }
-        if let Err(err) = check::on_new_message(ctx, guild, msg).await {
+        if let Err(err) = check::on_new_message(ctx, guild, msg, Some(&guard)).await {
             warn!("couldn't save the message's links and pictures: {err:#}");
         }
+        drop(guard);
         if !recheck {
             return Ok(());
         }
@@ -164,14 +172,17 @@ impl Feature for Snails {
             _ = ctx.shutdown.cancelled() => {}
             _ = tokio::time::sleep(PREVIEW_RECHECK) => {}
         }
-        // Still waiting unless an edit event read the message in the meantime.
-        let still_waiting = self.waiting.lock().unwrap().remove(&msg.id.get());
+        // Still waiting unless an edit or delete event arrived in the meantime.
+        let still_waiting = self.waiting.lock().unwrap().remove(&id);
         if !still_waiting || ctx.shutdown.is_cancelled() {
             return Ok(());
         }
+        let Some(guard) = self.tracker.begin_sync(id) else {
+            return Ok(());
+        };
         match get_message(&ctx.http, msg.channel_id, msg.id).await {
             Ok(fresh) => {
-                if let Err(err) = check::on_new_message(ctx, guild, &fresh).await {
+                if let Err(err) = check::on_new_message(ctx, guild, &fresh, Some(&guard)).await {
                     warn!("couldn't save the message's late link previews: {err:#}");
                 }
             }
@@ -187,12 +198,19 @@ impl Feature for Snails {
         let Some(guild) = msg.guild_id else {
             return Ok(());
         };
-        // Skip the database when the message has nothing to index now and had nothing before.
+        if msg.author.bot {
+            return Ok(());
+        }
+        // Skip the database when the message has nothing to index now and had nothing before
+        // (nor an in-flight sync that could still be downloading).
         let may_have_content = !media::links(&msg.content).is_empty()
             || !msg.embeds.is_empty()
             || !msg.attachments.is_empty();
         let id = msg.id.get();
+        // This read is newer than the recheck would be, so a waiting recheck is skipped.
+        self.waiting.lock().unwrap().remove(&id);
         if !may_have_content
+            && !self.tracker.is_in_flight(id)
             && !ctx
                 .db
                 .call(move |conn| Ok(store::is_indexed(conn, id)?))
@@ -200,12 +218,10 @@ impl Feature for Snails {
         {
             return Ok(());
         }
-        if msg.author.bot {
+        let Some(guard) = self.tracker.begin_sync(id) else {
             return Ok(());
-        }
-        // This read is newer than the recheck would be, so a waiting recheck is skipped.
-        self.waiting.lock().unwrap().remove(&msg.id.get());
-        if let Err(err) = check::on_new_message(ctx, guild, msg).await {
+        };
+        if let Err(err) = check::on_new_message(ctx, guild, msg, Some(&guard)).await {
             warn!("couldn't save an edited message's links and pictures: {err:#}");
         }
         Ok(())
@@ -219,13 +235,9 @@ impl Feature for Snails {
         messages: &[MessageId],
     ) -> Result<()> {
         let ids: Vec<u64> = messages.iter().map(|m| m.get()).collect();
+        self.mark_deleted(&ids);
         ctx.db
-            .call(move |conn| {
-                for id in ids {
-                    store::forget(conn, id)?;
-                }
-                Ok(())
-            })
+            .call(move |conn| Ok(store::forget_all(conn, &ids)?))
             .await
     }
 
@@ -252,6 +264,20 @@ impl Feature for Snails {
 }
 
 impl Snails {
+    /// Cancels any waiting preview rechecks and invalidates in-flight syncs for deleted
+    /// messages.
+    fn mark_deleted(&self, ids: &[u64]) {
+        {
+            let mut waiting = self.waiting.lock().unwrap();
+            for &id in ids {
+                waiting.remove(&id);
+            }
+        }
+        for &id in ids {
+            self.tracker.mark_deleted(id);
+        }
+    }
+
     /// The totals, counted again at most every [`TOTALS_FOR`]. The status picture asks
     /// every minute.
     async fn totals(&self, ctx: &BotCtx) -> Result<Totals> {
@@ -263,5 +289,24 @@ impl Snails {
         let totals = ctx.db.call(|conn| Ok(store::stats(conn)?)).await?;
         *self.totals.lock().unwrap() = Some((Instant::now(), totals));
         Ok(totals)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_clears_waiting_and_invalidates_in_flight_sync() {
+        let snails = Snails::default();
+        snails.waiting.lock().unwrap().insert(10);
+        snails.waiting.lock().unwrap().insert(20);
+        let guard = snails.tracker.begin_sync(10).unwrap();
+
+        snails.mark_deleted(&[10]);
+
+        assert!(!snails.waiting.lock().unwrap().contains(&10));
+        assert!(snails.waiting.lock().unwrap().contains(&20));
+        assert!(!guard.is_current());
     }
 }
