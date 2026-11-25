@@ -21,6 +21,7 @@ mod speech;
 mod store;
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -29,11 +30,12 @@ use base64::prelude::BASE64_STANDARD;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Feature, Result, Stat, user_error};
 use crate::util::discord::send_raw;
+use crate::util::search::snowflake_at;
 use crate::util::{env_key, month_start};
 
 const KEY_VAR: &str = "ELEVENLABS_API_KEY";
@@ -86,7 +88,55 @@ fn key() -> Option<String> {
     env_key(KEY_VAR)
 }
 
-pub struct Voice;
+/// Tracks characters currently in flight to ElevenLabs so concurrent calls cannot race past
+/// `monthly_characters` before the finished call is written to SQLite.
+#[derive(Default)]
+struct Reservations {
+    in_flight: Arc<Mutex<u64>>,
+}
+
+/// Releases reserved characters when a call finishes recording, fails, or is cancelled.
+struct Reservation {
+    in_flight: Arc<Mutex<u64>>,
+    characters: u64,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *in_flight = in_flight.saturating_sub(self.characters);
+    }
+}
+
+impl Reservations {
+    /// Checks `used + in_flight + characters <= limit` (when `limit > 0`) and reserves
+    /// `characters` until the returned guard is dropped.
+    fn try_reserve(&self, used: u64, characters: u64, limit: u64) -> Result<Reservation> {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let total = used.saturating_add(*in_flight);
+        if limit > 0 && total.saturating_add(characters) > limit {
+            return Err(user_error(format!(
+                "your voice is used up for this month ({total} of {limit} characters). Answer in text."
+            )));
+        }
+        *in_flight = in_flight.saturating_add(characters);
+        Ok(Reservation {
+            in_flight: Arc::clone(&self.in_flight),
+            characters,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct Voice {
+    reservations: Reservations,
+}
 
 #[async_trait]
 impl Feature for Voice {
@@ -160,14 +210,28 @@ The voice message is your whole answer, so usually write no text with it.",
             .db
             .call(move |conn| Ok(store::used_since(conn, since)?))
             .await?;
-        let limit = settings.monthly_characters;
-        if limit > 0 && used + characters as u64 > limit {
-            return Err(user_error(format!(
-                "your voice is used up for this month ({used} of {limit} characters). Answer in text."
-            )));
-        }
+        let reservation =
+            self.reservations
+                .try_reserve(used, characters as u64, settings.monthly_characters)?;
 
         let audio = speech::speak(&ctx.web, &key, &settings, &voice_id, &script).await?;
+        // ElevenLabs bills when TTS succeeds, so record the characters right away (under a
+        // temporary ID) before ffmpeg or Discord upload can fail.
+        let pending_id = snowflake_at(Utc::now()) + fastrand::u64(..1 << 22);
+        let sent = store::Sent {
+            message_id: pending_id,
+            guild_id: asker.guild.map(|g| g.get()),
+            channel_id: asker.channel.get(),
+            user_id: asker.user.get(),
+            characters,
+            seconds: 0.0,
+            at: Utc::now().timestamp(),
+        };
+        ctx.db
+            .call(move |conn| Ok(store::record(conn, &sent)?))
+            .await?;
+        drop(reservation);
+
         let clip = audio::prepare(&audio).await?;
         let mut payload = json!({
             "flags": IS_VOICE_MESSAGE,
@@ -195,18 +259,15 @@ The voice message is your whole answer, so usually write no text with it.",
             .posted
             .add(message.id, format!("[Voice message] {script}"));
 
-        let sent = store::Sent {
-            message_id: message.id.get(),
-            guild_id: asker.guild.map(|g| g.get()),
-            channel_id: asker.channel.get(),
-            user_id: asker.user.get(),
-            characters,
-            seconds: clip.seconds,
-            at: Utc::now().timestamp(),
-        };
-        ctx.db
-            .call(move |conn| Ok(store::record(conn, &sent)?))
-            .await?;
+        let message_id = message.id.get();
+        let seconds = clip.seconds;
+        if let Err(err) = ctx
+            .db
+            .call(move |conn| Ok(store::update_sent(conn, pending_id, message_id, seconds)?))
+            .await
+        {
+            warn!("couldn't update voice message record: {err:#}");
+        }
         Ok(format!(
             "Your voice message is sent ({:.1} seconds). It is your answer: write no text after it, unless something can only be shown in writing (a link, code).",
             clip.seconds
@@ -244,5 +305,34 @@ mod tests {
         assert_eq!(settings.model, "eleven_v4");
         assert!(settings.voice_id.is_empty());
         assert_eq!(settings.voices["gamemaker"], GAMEMAKER_VOICE);
+    }
+
+    #[test]
+    fn reservations_block_concurrent_overspend_and_release_on_drop() {
+        let reservations = Reservations::default();
+        // 20 already recorded in SQLite, monthly limit 100.
+        let first = reservations.try_reserve(20, 50, 100).unwrap();
+        // 20 + 50 in flight + 40 would exceed 100.
+        let err = reservations.try_reserve(20, 40, 100).err().unwrap();
+        assert!(err.to_string().contains("70 of 100"));
+        // 20 + 50 + 30 fits exactly.
+        let second = reservations.try_reserve(20, 30, 100).unwrap();
+        assert!(reservations.try_reserve(20, 1, 100).is_err());
+
+        // Dropping the first guard (e.g. TTS failed or cancelled) frees its 50 chars.
+        drop(first);
+        let third = reservations.try_reserve(20, 50, 100).unwrap();
+        drop(second);
+        drop(third);
+        assert_eq!(*reservations.in_flight.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn reservations_allow_unlimited_when_limit_is_zero() {
+        let reservations = Reservations::default();
+        let guard = reservations.try_reserve(100_000, 50_000, 0).unwrap();
+        assert_eq!(*reservations.in_flight.lock().unwrap(), 50_000);
+        drop(guard);
+        assert_eq!(*reservations.in_flight.lock().unwrap(), 0);
     }
 }

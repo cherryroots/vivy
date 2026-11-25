@@ -30,6 +30,9 @@
 
 mod store;
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
 use anyhow::Context as _;
 use async_trait::async_trait;
 use chrono::Utc;
@@ -360,7 +363,74 @@ async fn load_pictures(ctx: &BotCtx, asker: &Asker, source: &Source) -> Result<V
     }
 }
 
-pub struct Drawing;
+/// Tracks pictures currently being drawn so concurrent calls cannot race past
+/// `monthly_pictures` or `per_user_monthly_pictures` while OpenAI is drawing.
+#[derive(Default)]
+struct InFlight {
+    total: u64,
+    by_user: HashMap<u64, u64>,
+}
+
+#[derive(Default)]
+struct Reservations {
+    in_flight: Arc<Mutex<InFlight>>,
+}
+
+/// Releases one reserved picture slot when a call finishes, fails, or is cancelled.
+struct Reservation {
+    in_flight: Arc<Mutex<InFlight>>,
+    user: u64,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        in_flight.total = in_flight.total.saturating_sub(1);
+        if let Some(count) = in_flight.by_user.get_mut(&self.user) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                in_flight.by_user.remove(&self.user);
+            }
+        }
+    }
+}
+
+impl Reservations {
+    /// Checks both monthly limits including in-flight drawings and reserves one slot for
+    /// `user` until the returned guard is dropped.
+    fn try_reserve(
+        &self,
+        settings: &Settings,
+        drawn: u64,
+        by_asker: u64,
+        user: u64,
+    ) -> Result<Reservation> {
+        let mut in_flight = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let total = drawn.saturating_add(in_flight.total);
+        let user_total =
+            by_asker.saturating_add(in_flight.by_user.get(&user).copied().unwrap_or(0));
+        if let Some(refusal) = over_limit(settings, total, user_total) {
+            return Err(user_error(refusal));
+        }
+        in_flight.total = in_flight.total.saturating_add(1);
+        *in_flight.by_user.entry(user).or_insert(0) += 1;
+        Ok(Reservation {
+            in_flight: Arc::clone(&self.in_flight),
+            user,
+        })
+    }
+}
+
+#[derive(Default)]
+pub struct Drawing {
+    reservations: Reservations,
+}
 
 #[async_trait]
 impl Feature for Drawing {
@@ -434,9 +504,9 @@ Drawing takes up to a minute. The picture is your answer, so write at most a sho
                 ))
             })
             .await?;
-        if let Some(refusal) = over_limit(&settings, drawn, by_asker) {
-            return Err(user_error(refusal));
-        }
+        let _reservation = self
+            .reservations
+            .try_reserve(&settings, drawn, by_asker, user)?;
 
         let mut pictures: Vec<ModelImage> = Vec::new();
         for source in sources(args) {
@@ -711,5 +781,37 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.model, "gpt-image-2.6-flare");
         assert_eq!(settings.edit_model, "gpt-image-2.6-sunburst");
+    }
+
+    #[test]
+    fn reservations_enforce_monthly_and_per_user_limits() {
+        let settings = Settings {
+            monthly_pictures: 3,
+            per_user_monthly_pictures: 2,
+            ..Settings::default()
+        };
+        let reservations = Reservations::default();
+
+        // User 1 reserves two slots concurrently (reaches per-user limit of 2).
+        let u1_a = reservations.try_reserve(&settings, 0, 0, 1).unwrap();
+        let u1_b = reservations.try_reserve(&settings, 0, 0, 1).unwrap();
+        let err = reservations.try_reserve(&settings, 0, 0, 1).err().unwrap();
+        assert!(err.to_string().contains("for this month"));
+
+        // User 2 can still take the 3rd overall slot, then the monthly cap blocks everyone.
+        let u2_a = reservations.try_reserve(&settings, 0, 0, 2).unwrap();
+        let err = reservations.try_reserve(&settings, 0, 0, 3).err().unwrap();
+        assert!(err.to_string().contains("used up"));
+
+        // Dropping a guard (error or cancellation) releases both total and per-user counts.
+        drop(u1_a);
+        let u1_c = reservations.try_reserve(&settings, 0, 0, 1).unwrap();
+        drop(u1_b);
+        drop(u1_c);
+        drop(u2_a);
+
+        let state = reservations.in_flight.lock().unwrap();
+        assert_eq!(state.total, 0);
+        assert!(state.by_user.is_empty());
     }
 }

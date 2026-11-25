@@ -48,6 +48,21 @@ pub fn record(conn: &Connection, sent: &Sent) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Replaces the temporary ID and length recorded right after TTS with the real Discord
+/// message ID and audio length once the voice message is uploaded.
+pub fn update_sent(
+    conn: &Connection,
+    pending_id: u64,
+    message_id: u64,
+    seconds: f64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE voice_messages SET message_id = ?1, seconds = ?2 WHERE message_id = ?3",
+        params![message_id, seconds, pending_id],
+    )?;
+    Ok(())
+}
+
 /// How many voice messages were sent since `since`, and how many characters they had.
 pub fn used_since(conn: &Connection, since: i64) -> rusqlite::Result<(u64, u64)> {
     conn.query_row(
@@ -79,6 +94,9 @@ mod tests {
             record(&conn, &sent).unwrap();
         }
         assert_eq!(used_since(&conn, 0).unwrap(), (2, 80));
+        assert_eq!(used_since(&conn, 150).unwrap(), (1, 40));
+
+        update_sent(&conn, 2, 999, 4.2).unwrap();
         assert_eq!(used_since(&conn, 150).unwrap(), (1, 40));
     }
 }
