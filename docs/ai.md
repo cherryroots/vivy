@@ -23,6 +23,8 @@ All three providers are called over plain HTTP with `reqwest` and `serde_json`, 
 | `claude/mod.rs` | The Claude provider (Messages API), `ClaudeConfig`, `ContentKey`, pause and retry handling |
 | `claude/messages.rs` | Turns as Claude's messages, the tool list and the system block |
 | `claude/collect.rs` | `Collector`: rebuilds Claude's streamed content blocks and turns them into `ChatEvent`s |
+| `claude/batch.rs` | Half-price jobs through the Message Batches API: a batch of one, polled, replayed into `Collector` as if streamed |
+| `claude/keep_warm.rs` | `KeepWarm`: pinging chat's hour-long prompt cache before it expires, and counting what that saves (`claude_keep_warm`) |
 | `claude/uploads.rs` | Files API IDs kept in the `claude_uploads` table |
 | `claude/price.rs` | List prices per model, and what one response cost |
 | `claude/billing.rs` | Reading Anthropic's Cost API with an Admin key |
@@ -292,7 +294,7 @@ The upload is found by the original's bytes, even when a smaller copy was upload
 
 `fallback.rs`. `provider` under `[ai]` names the main provider and `fallback` the backup, either way round. `Ai::new` wraps the main provider in `Watched`, which passes every event on and reports how each answer ends to a shared `State`.
 
-Both providers return an `ApiError` (provider, status, message) for error answers, and `ApiError::outage` tells an outage from a bad request:
+Every provider returns an `ApiError` (provider, status, message) for error answers, and `ApiError::outage` tells an outage from a bad request:
 
 - **Out of credit**: Claude's "credit balance", a workspace spending limit ("API usage limits"), OpenAI's "quota" or "billing" wording. A 429 counts only with OpenAI's out-of-quota wording, since rate-limit messages can link to the billing page too. Chat moves to the backup for a day.
 - **Down**: 500, 502, 503, 504 or 529 after the provider's retries, an overloaded error mid-stream, no connection twice in a row (`fallback::send` waits 2 seconds and tries once more), or a stream that sent nothing for 5 minutes (the HTTP client's read timeout, set in `main.rs`). Chat moves to the backup for an hour.
@@ -304,13 +306,13 @@ Callers take `ctx.ai.chat()` once per answer and keep that provider for the whol
 
 ## Spend and billing
 
-`spend.rs`, `claude/price.rs`, `claude/billing.rs`, `openai/price.rs`, `openai/billing.rs`. There is one `Spend` per provider, each with its own budget, in `Ai::spends`: Claude's when Claude is the main provider or the fallback, OpenAI's when OpenAI is one of them or `OPENAI_TOKEN` is set for pictures. The control panel shows each one.
+`spend.rs`, `claude/price.rs`, `claude/billing.rs`, `openai/price.rs`, `openai/billing.rs`, `gemini/price.rs`. There is one `Spend` per provider, each with its own budget, in `Ai::spends`: Claude's and Gemini's when that provider is the main one or the fallback, OpenAI's when OpenAI is one of them or `OPENAI_TOKEN` is set (pictures, and the Hunger Games on its free tokens). The control panel shows each one.
 
 - After each Claude response, `add_spend` (in `claude/mod.rs`) prices its usage (input, cache writes and reads, output, web searches) with `price::cost`, from a table of list prices per model ID prefix. Cache writes cost 1.25 times the input price for 5 minutes and 2 times for an hour (`usage.cache_creation.ephemeral_1h_input_tokens`); web searches $10 per 1000. An unknown model is priced like Opus 5.5.
 - After each OpenAI response, `add_spend` (in `openai/mod.rs`) prices it with `price::chat_cost`: uncached input, cached input and output tokens from a table per model ID prefix, twice that on the `fast` service tier, plus $10 per 1000 web searches. Left out, so the estimate runs a little low: long-prompt prices, cache writes, and code interpreter containers ($0.03 a session). An unknown model is priced like gpt-6.1-sol. Pictures are priced by `price::image_cost`.
 - After each Gemini interaction, `add_spend` (in `gemini/mod.rs`) prices its `usage` with `price::cost`: `total_input_tokens` plus `total_tool_use_tokens` (pages URL context read) as input, less `total_cached_tokens` at the cache price, and `total_output_tokens` plus `total_thought_tokens` as output, plus $14 per 1000 Google searches. Prices are Google's Standard tier, all checked on its pricing page on 2026-11-21 (from Cherry's screenshots, since the sandbox can't reach it). Gemini 4 Neon costs $3 in, $0.15 cached, $15 out per million. Gemini 4 Carbon costs $2 in, $0.10 cached, $10 out per million until 2026-11-30 and twice that from 2026-12-01 (until 2026-11-21 the code called this table Argon's; Argon's own price wasn't checked, and it's priced like Carbon); the price table switches on that date, so from December Neon is the cheaper of the two. Gemini 4 Hydrogen, the cheap model, costs $1.50 in, $0.075 cached, $7.50 out per million. Other models are priced like Carbon. The first 5000 searches a month are free, which the estimate ignores, so it runs a little high. Google has no Admin API for the bill, so there's no `billed_spend` for Gemini.
 - `Spend::add` adds it to `ai_spend` (the month's total) and to `ai_spend_jobs` (per job). Months are calendar months in UTC.
-- At 80% and 100% of `monthly_budget` under `[ai.claude]` / `[ai.openai]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
+- At 80% and 100% of `monthly_budget` under `[ai.claude]`, `[ai.openai]` or `[ai.gemini]` there is one warning each per month (the `warned` column), which reaches the log channel. A budget of 0 turns them off.
 - With an Admin key in `.env` and `billed_spend` on, `main.rs` spawns `Spend::follow_bill` with that company's `Bill` on the shutdown tracker, which reads the bill now and every hour (until the bot stops) and replaces the month's total with it:
   - `ANTHROPIC_ADMIN_KEY`: Anthropic's Cost API (`claude/billing.rs`: `GET /v1/organizations/cost_report`, the whole organization, daily buckets, amounts in cents as strings). It asks from the month's first midnight to the next midnight (`ending_at`, UTC), so today's bucket is in. Without `ending_at` Anthropic ends at today's midnight, which on the 1st (UTC) is the start itself, and it answered "Invalid date range" all that day.
   - `OPENAI_ADMIN_KEY`: OpenAI's Costs API (`openai/billing.rs`: `GET /v1/organization/costs` with `start_time` at the month's start, the whole organization, daily buckets only, `amount.value` in USD). An ordinary API key can't read it. Daily buckets mean today's spend can show up late, so the estimate fills the gap until the next read. Answers in between add their estimate on top until the next read. A failing read is warned about once, then logged quietly.

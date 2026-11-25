@@ -16,21 +16,23 @@ Every feature has a section in `config.toml` and can be turned off or limited to
 
 ### Chat
 
-@-mention Vivy to talk to her; replying to one of her answers continues the conversation. `provider` under `[ai]` picks Claude or OpenAI, and `fallback` names a backup that takes over when the main one is out of credit (tried again a day later) or down (an hour later).
+@-mention Vivy to talk to her; replying to one of her answers continues the conversation. `provider` under `[ai]` picks Claude, OpenAI or Gemini, and `fallback` names a backup that takes over when the main one is out of credit (tried again a day later) or down (an hour later).
 
-- **Tools:** web search and web pages, code in a sandbox that keeps its files per channel (on Claude, with Anthropic's skills for spreadsheets, documents, slides and PDFs), attached files, message search, pins and server events. Ask for a poll ("@Vivy make a poll for movie night, Friday or Saturday") and she posts a real Discord poll.
+- **Tools:** web search and web pages, code in a sandbox that keeps its files per channel (on Claude, with Anthropic's skills for spreadsheets, documents, slides and PDFs), attached files (on Gemini also videos, YouTube links, and Word, PowerPoint and Excel files), message search, pins and server events. Ask for a poll ("@Vivy make a poll for movie night, Friday or Saturday") and she posts a real Discord poll.
+- **Gemini:** Gemini 4 Neon answers (thinking at `high`), and the cheaper Gemini 4 Hydrogen does chime-ins, emoji descriptions and the Apps menu helpers. A stored starter conversation keeps the system prompt and tools in Gemini's cache, and all her tools but `memory` are sent as names only until she needs one (`defer_tools`), which keeps each request small.
 - **Controls:** ❌ under an answer stops or deletes it, 🔁 asks again. Only the person who asked can use them.
 - **Apps menu:** right-click a message, then Apps: **Catch me up** (what was said from there on), **Explain this** and **Translate this** (into your Discord language). `/catchup` sums up what you missed since your last message. Only you see the answer.
 - **Chime-ins:** now and then (5% of messages, then a half-hour cooldown per channel) she reads the last 15 messages to learn from them, and 40% of those times she reacts to the last one with an emoji. She never posts a message nobody asked for.
+- **Her blocklist:** she decides herself who she's cold to (mostly people who ask her to leave them alone), and picks what each loses: chime-ins on their messages, real answers (a mention gets a curt reply from the cheap model instead), or the Apps menu helpers. Admins can add people for good with `ai_blocklist` in `config.toml`. Games and reminders still work for them.
 - **Her owner:** whoever owns the bot's Discord application can tell her what to do, even her mood and personality, which nobody else can, while owner mode is on (the 👑 button on the status message, which only the owner can press). Ask her who her owner is and she checks.
-- **Cost:** Claude's and OpenAI's spend are tracked per month, each against its own `monthly_budget`, with warnings in the log channel at 80% and 100%. Optional Admin keys (Anthropic's and OpenAI's) read the real bills; read the caution in `.env.example` first.
+- **Cost:** each provider's spend (Claude, OpenAI, Gemini) is tracked per month and per job, against its own `monthly_budget`, with warnings in the log channel at 80% and 100%. Optional Admin keys (Anthropic's and OpenAI's) read the real bills; read the caution in `.env.example` first. Gemini's is estimated from its list prices. Jobs nobody waits on (her mood, the daily reflection, the diary) run at half price: Claude's Message Batches API, the flex tier on OpenAI and Gemini.
 
 ### Memory and personality
 
 Vivy keeps notes between conversations in a folder per server (and a private one per person in DMs): a file per person and topic under `/memories/users/<id>/`, server notes like `channels.md` and `culture.md`, and notes about herself under `/memories/vivy/`, so she grows her own personality with each server. A person's own word about themselves overrules what others said.
 
 - `/memory show` shows what she saved about you, `/memory forget` deletes it, and admins can `/memory delete` anything.
-- Once a day she tidies each server's notes and updates her notes about herself. Once a week she writes a diary entry and posts it in `diary_channels`.
+- Once a day she tidies each server's notes (the ones that changed, plus a slice of older ones she rereads, checking doubtful notes against what people really wrote) and updates her notes about herself. Once a week she writes a diary entry and posts it in `diary_channels`.
 - Her mood sets her Discord status, and optionally her avatar (`faces_dir`), her nickname emoji (`nickname`) and the tone of her answers. Her banner follows the time of day (`banners_dir`).
 - She learns the server's custom emoji and uses them like a regular.
 
@@ -44,11 +46,11 @@ With a TinyFish key, Vivy can also search the web and read whole pages with Tiny
 
 ### Drawing
 
-With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.5 (on either chat provider), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use (and `per_user_monthly_pictures` each person's share), and each picture's cost counts toward OpenAI's spend.
+With `OPENAI_TOKEN` set, Vivy can draw pictures with GPT Image 2.6 (whichever provider chats), or change a picture someone posts or replies to. `monthly_pictures` under `[features.drawing]` caps the use (and `per_user_monthly_pictures` each person's share), and each picture's cost counts toward OpenAI's spend.
 
 ### Reminders
 
-`@Vivy remind me in 2h30m to …`, `in an hour and a half`, `at 16:30 CET`, `tomorrow evening`, `tonight`, `this friday`, `next week`, `on the 15th`, `march 3` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every other week`, `every 2 hours`, `daily`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, tomorrow at 9:00, or a time you type).
+`@Vivy remind me in 2h30m to …`, `in an hour and a half`, `at 16:30 CET`, `tomorrow evening`, `tonight`, `this friday`, `next week`, `on the 15th`, `march 3` or `on 2026-12-24 at noon`, or on repeat: `every day at 9:00`, `every weekday at 8:30`, `every monday`, `every other week`, `every 2 hours`, `daily`. The reply has a Cancel button, `/reminders` lists and deletes them (deleting a recurring one stops it), `/timezone` sets your zone, and delivered reminders have snooze buttons (10 minutes, an hour, or a time you type).
 
 ### Movie wheel
 
@@ -64,7 +66,7 @@ Links and pictures are remembered as they're posted. Right-click a message, then
 
 ### Hunger Games
 
-`/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round of a battle royale set in the server's own channels (the Scatter from the Octagon, days and nights, the boldest fighting for a prize in the Octagon, the final showdown in it), where weapons are found in the places themed to them and alliances form and break until one tribute wins. The fallen get last words (a real message of theirs), the host can let her work in fun things she remembers about the tributes, and with an ElevenLabs key her Gamemaker announcements are also voice messages in a Gamemaker voice of their own. The host can also have her draw a map of the arena with every round, with the tributes as sprites where the action is, and the victor surrounded by everyone they killed. Each round follows the last by itself, and `/games leaderboard` keeps the server's wins, kills and Octagons won (admins can start it over with `/games resetleaderboard`). The victor message names the cowards who never dared to step into the Octagon.
+`/games hungergames` opens the Reaping: the host picks tributes from a menu and anyone can volunteer. Then Vivy, as the Gamemaker, writes each round (with OpenAI by default, on its free daily tokens, whichever provider chats) of a battle royale set in the server's own channels (the Scatter from the Octagon, days and nights, the boldest fighting for a prize in the Octagon, the final showdown in it), where weapons are found in the places themed to them and alliances form and break until one tribute wins. The fallen get last words (a real message of theirs), the host can let her work in fun things she remembers about the tributes, and with an ElevenLabs key her Gamemaker announcements are also voice messages in a Gamemaker voice of their own. The host can also have her draw a map of the arena with every round, with the tributes as sprites where the action is, and the victor surrounded by everyone they killed. Each round follows the last by itself, and `/games leaderboard` keeps the server's wins, kills and Octagons won (admins can start it over with `/games resetleaderboard`). The victor message names the cowards who never dared to step into the Octagon.
 
 ### Control panel
 

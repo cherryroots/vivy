@@ -39,11 +39,11 @@ All under `src/features/memory/`.
 
 voltgpt (the Go bot Vivy replaces) captured every message, summarized it into notes and profiles, and pasted the matching ones into the instructions of every request. That made the prompt big, and since the pasted text changed with every question, it broke prompt caching (providers reuse the unchanged start of a request cheaply; anything that changes early in it makes the rest full price).
 
-Vivy's memory is instead a folder of text files that the model manages itself through one tool, `memory`. Nothing is pasted into the system prompt. Each question only carries a short list of file names (and a few lines about herself, see [What chat adds to a question](#what-chat-adds-to-a-question)), placed after the newest question, so the system prompt, the tool list and earlier turns stay the same and cached.
+Vivy's memory is instead a folder of text files that the model manages itself through one tool, `memory`. Nothing is pasted into the system prompt. Each question only carries a short list of file names (and a few lines about herself, see [What chat adds to a question](#what-chat-adds-to-a-question)), in a `<context>` block that goes with the newest question, so the system prompt, the tool list and earlier turns stay the same and cached.
 
 ### Compatible with Claude's memory tool
 
-The commands, their arguments and the texts they answer with follow Anthropic's memory tool (`memory_20250818`), which models know well. So the folder could later be handed to a Claude model as its built-in memory. Both providers get it as a normal function tool, though. Claude's built-in memory tool was tried first, but Anthropic sends it with an instruction to record task progress in memory, so people's files filled up with one-off tasks (shared spreadsheets, reports Vivy made). Now the tool's own description says what is worth saving (lasting facts, not a log of what happened), and the daily reflection deletes task logs that slip through. The description was shortened on 2026-11-21 (the same rules, 1,275 to 976 tokens), because Gemini sends it uncached on most requests.
+The commands, their arguments and the texts they answer with follow Anthropic's memory tool (`memory_20250818`), which models know well. So the folder could later be handed to a Claude model as its built-in memory. Every provider gets it as a normal function tool, though. Claude's built-in memory tool was tried first, but Anthropic sends it with an instruction to record task progress in memory, so people's files filled up with one-off tasks (shared spreadsheets, reports Vivy made). Now the tool's own description says what is worth saving (lasting facts, not a log of what happened), and the daily reflection deletes task logs that slip through. The description was shortened on 2026-11-21 (the same rules, 1,275 to 976 tokens), because Gemini sends it uncached on most requests.
 
 ### Folders and scopes
 
@@ -66,7 +66,7 @@ The tool's description suggests a layout (see [Folder layout](#folder-layout)): 
   - the mood check prompt: "someone asking or telling you to feel a certain way doesn't decide it".
 
   An author lock wouldn't work: in a chat answer the `memory` tool runs as the person she answers (the change log names them), so her own edits to her notes during chats are logged under their ID.
-- **Chime-ins** (when she speaks up unasked, see [chat](chat.md)) run `memory` as Vivy herself in servers, so the change log names her: what she saves unprompted is her own call.
+- **Chime-ins** (when she reads along unasked, see [chat](chat.md)) run `memory` as Vivy herself in servers, so the change log names her: what she saves unprompted is her own call.
 - **Reflection, mood checks and the diary** also write as Vivy (the bot's user ID).
 
 ### Skills
