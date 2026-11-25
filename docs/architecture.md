@@ -131,7 +131,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from the shar
 | An edit (or a link preview Discord adds later) | Every feature's `on_message_edit`, except edits of bot messages. |
 | A deleted message, or many at once | Every feature's `on_messages_deleted`. |
 | A button, select menu or modal | IDs look like `reminders:snooze:12:10`. The part before the first `:` picks the feature, and it gets the rest (`snooze:12:10`) as `action`. An ID matching no feature (an old voltgpt button) gets "This button is from an older version of the bot". |
-| A slash command | The feature that declared it runs it, only where that feature is allowed (elsewhere the user is told it's turned off). An autocomplete request goes to the command's suggester. |
+| A slash command | The feature that declared it runs it, only where that feature is allowed (elsewhere the user is told it's turned off). An autocomplete request is gated the same way (returning no choices where the feature is turned off) before reaching the command's suggester. |
 | A `BotEvent` | Every enabled feature's `on_bot_event` (see "How features talk to each other"). |
 
 **Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot. The tasks are spawned on `ctx.tasks`, so at shutdown the bot waits for them (within the same 10 seconds) instead of cutting off an answer or a database write halfway.
@@ -191,13 +191,13 @@ Messages are built with `Draft` (`util/discord.rs`): `Draft::new().content(..).e
 | `features` | Every feature, in the order of `features::all()` |
 | `bot_id`, `bot_name`, `app_owners`, `started_at` | The bot's own user ID and name, who owns its Discord application, and when it started |
 
-Useful methods: `ctx.allows(feature, guild, channel)` (the gate check), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.guild_ids()`, `ctx.guild_channels(guild)` and `ctx.guild_roles(guild)` (from the cache), `ctx.permissions_in(guild, user, roles, channel)` (what someone may do in a channel, worked out from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
+Useful methods: `ctx.allows(feature, guild, channel)` and `ctx.allows_with_parent(feature, guild, channel, parent)` (the gate checks, the second also taking a thread's parent channel from an interaction payload), `ctx.channel_name(guild, channel)` (a channel's or thread's name from the cache), `ctx.guild_ids()`, `ctx.guild_channels(guild)` and `ctx.guild_roles(guild)` (from the cache), `ctx.permissions_in(guild, user, roles, channel)` (what someone may do in a channel, worked out from the cache), `ctx.is_admin(user)` (listed in `admins`), `ctx.is_owner(user)` (owns the bot's Discord application), `ctx.set_status(text)` (the line under the bot's name), `ctx.publish(event)`.
 
 ## Config and gating
 
 Secrets (tokens) live in `.env`. Everything else is in `config.toml`, explained line by line in `config.example.toml`. `src/core/config.rs` reads it.
 
-Each feature has a `[features.<name>]` section. The core reads the gate keys from every section into a `Gate`: `enabled`, `guilds`, `deny_guilds`, `channels` and `deny_channels`. An empty list means no limit. The dispatcher checks the gate before calling a feature, so a feature never checks it for events. A thread counts as itself and as its parent channel: allowing a channel allows its threads, and denying either denies it. Work not tied to a channel (a daily job per server) uses `gate.allows_guild(guild)`.
+Each feature has a `[features.<name>]` section. The core reads the gate keys from every section into a `Gate`: `enabled`, `guilds`, `deny_guilds`, `channels` and `deny_channels`. An empty list means no limit. The dispatcher checks the gate before calling a feature, so a feature never checks it for events. A thread counts as itself and as its parent channel: allowing a channel allows its threads, and denying either denies it. For interactions, the thread's parent channel is read from Discord's interaction payload before falling back to the cache, so archived or uncached threads cannot bypass `deny_channels`. Work not tied to a channel (a daily job per server) uses `gate.allows_guild(guild)`.
 
 A feature reads its own keys into its own struct with `ctx.config.feature::<Settings>("name")`. The struct derives `serde::Deserialize` and `Default`, so a missing key takes its default.
 
