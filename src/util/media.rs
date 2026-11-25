@@ -249,6 +249,9 @@ pub async fn with_previews(http: &Http, msg: &Message) -> Message {
             if fresh.member.is_none() {
                 fresh.member = msg.member.clone();
             }
+            if let Some(referenced) = fresh.referenced_message.as_deref_mut() {
+                referenced.guild_id = referenced.guild_id.or(fresh.guild_id);
+            }
             fresh
         }
         Err(err) => {

@@ -194,15 +194,20 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         app_owners: Arc::new(app_owners),
         started_at: Utc::now(),
     };
-    if let Some(channel) = config.logging.log_channel {
-        logging::spawn_discord_poster(
+    let log_shutdown = CancellationToken::new();
+    let log_poster = match config.logging.log_channel {
+        Some(channel) => Some(logging::spawn_discord_poster(
             bot.http.clone(),
             ChannelId::new(channel),
             log_queue,
-            bot.shutdown.clone(),
-            &bot.tasks,
-        );
-    }
+            log_shutdown.clone(),
+        )),
+        None => {
+            // Drop the receiver so DiscordLayer stops buffering lines when no log channel is set.
+            drop(log_queue);
+            None
+        }
+    };
 
     // One task per shard reads its events. The first Ready starts the features.
     let started = Arc::new(AtomicBool::new(false));
@@ -222,9 +227,12 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         error!("the Discord connection stopped and can't reconnect");
     }
     info!(target: "lifecycle", "🔴 **Shutting down**");
-    // Tell background tasks to stop, then give them a moment to finish (the control
-    // panel marks itself offline, the log poster sends its last lines).
+    // Tell background tasks and shards to stop, close the gateway first so no new events
+    // arrive during the drain, then wait up to 10 seconds for in-flight tasks (the control
+    // panel marks itself offline).
     shutdown.cancel();
+    bot.gateway.close();
+    let _ = tokio::time::timeout(Duration::from_secs(2), shard_tasks.join_all()).await;
     tasks.close();
     if tokio::time::timeout(Duration::from_secs(10), tasks.wait())
         .await
@@ -232,8 +240,11 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
     {
         warn!("background tasks didn't stop within 10 seconds");
     }
-    bot.gateway.close();
-    let _ = tokio::time::timeout(Duration::from_secs(2), shard_tasks.join_all()).await;
+    // Cancel the Discord log poster last so shutdown logs and drain warnings are flushed.
+    log_shutdown.cancel();
+    if let Some(poster) = log_poster {
+        let _ = tokio::time::timeout(Duration::from_secs(5), poster).await;
+    }
     if refused {
         anyhow::bail!("the Discord connection stopped");
     }
@@ -306,7 +317,7 @@ async fn run_shard(bot: BotCtx, mut shard: Shard, number: usize, started: Arc<At
             let guilds = ready.guilds.iter().map(|guild| guild.id).collect();
             on_first_ready(&bot, guilds).await;
         }
-        dispatcher::handle_event(&bot, event).await;
+        dispatcher::handle_event(&bot, event);
     }
 }
 

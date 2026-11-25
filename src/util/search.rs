@@ -13,6 +13,7 @@
 use std::time::Duration;
 
 use super::discord::{Channel, GuildId, Message};
+use anyhow::Context as _;
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde_json::Value;
@@ -259,7 +260,7 @@ pub async fn search(
 ) -> anyhow::Result<Found> {
     let pairs = search.query().map_err(anyhow::Error::msg)?;
     let url = format!("https://discord.com/api/v10/guilds/{guild}/messages/search");
-    for _ in 0..TRIES {
+    for attempt in 0..TRIES {
         let response = web
             .get(&url)
             .header("Authorization", token)
@@ -267,28 +268,61 @@ pub async fn search(
             .send()
             .await?;
         let status = response.status();
-        let body: Value = response.json().await.unwrap_or_default();
+        let retry_header = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = response.bytes().await?;
         // 202: still indexing the server. 429: too many searches. Both say how long to wait.
         if status == StatusCode::ACCEPTED || status == StatusCode::TOO_MANY_REQUESTS {
-            let seconds = body["retry_after"].as_f64().unwrap_or(2.0);
-            let seconds = if seconds <= 0.0 { 1.0 } else { seconds };
-            debug!("message search waits {seconds:.1} s ({status})");
-            tokio::time::sleep(Duration::from_secs_f64(seconds.min(LONGEST_WAIT))).await;
+            if attempt + 1 < TRIES {
+                let body: Value = serde_json::from_slice(&bytes).unwrap_or_default();
+                let seconds = retry_after_seconds(retry_header.as_deref(), &body);
+                debug!("message search waits {seconds:.1} s ({status})");
+                tokio::time::sleep(Duration::from_secs_f64(seconds)).await;
+            }
             continue;
         }
         if !status.is_success() {
+            let body: Value = serde_json::from_slice(&bytes).unwrap_or_default();
             let reason = body["message"].as_str().unwrap_or("no reason given");
             anyhow::bail!("Discord search failed ({status}): {reason}");
         }
-        return Ok(read(&body));
+        return parse_response(&bytes, guild);
     }
     anyhow::bail!(
         "Discord is still indexing this server for search, or searches came too fast. Try again in a minute."
     )
 }
 
-/// The results from Discord's answer.
-fn read(body: &Value) -> Found {
+/// How many seconds to wait before trying again: prefers JSON `retry_after`, then the
+/// `Retry-After` HTTP header, clamped to `(0, LONGEST_WAIT]`.
+fn retry_after_seconds(header: Option<&str>, body: &Value) -> f64 {
+    let seconds = body["retry_after"]
+        .as_f64()
+        .filter(|s| s.is_finite())
+        .or_else(|| {
+            header
+                .and_then(|v| v.trim().parse::<f64>().ok())
+                .filter(|s| s.is_finite())
+        })
+        .unwrap_or(2.0);
+    let seconds = if seconds <= 0.0 { 1.0 } else { seconds };
+    seconds.min(LONGEST_WAIT)
+}
+
+/// Parses a 200 OK search response body, failing on invalid JSON instead of returning
+/// empty results.
+fn parse_response(bytes: &[u8], guild: GuildId) -> anyhow::Result<Found> {
+    let body: Value =
+        serde_json::from_slice(bytes).context("reading Discord search response JSON")?;
+    Ok(read(&body, guild))
+}
+
+/// The results from Discord's answer. Search is a REST endpoint, so returned messages have
+/// no `guild_id`; we fill in `guild` here.
+fn read(body: &Value, guild: GuildId) -> Found {
     let messages = body["messages"]
         .as_array()
         .into_iter()
@@ -298,8 +332,14 @@ fn read(body: &Value) -> Found {
             Value::Array(list) => list.first().cloned(),
             message => Some(message.clone()),
         })
-        .filter_map(|message| match serde_json::from_value(message) {
-            Ok(message) => Some(message),
+        .filter_map(|message| match serde_json::from_value::<Message>(message) {
+            Ok(mut message) => {
+                message.guild_id = message.guild_id.or(Some(guild));
+                if let Some(referenced) = message.referenced_message.as_deref_mut() {
+                    referenced.guild_id = referenced.guild_id.or(Some(guild));
+                }
+                Some(message)
+            }
             Err(err) => {
                 warn!("couldn't read a search result: {err}");
                 None
@@ -442,6 +482,7 @@ mod tests {
 
     #[test]
     fn reads_the_answer() {
+        let guild = GuildId::new(99);
         let message = json!({
             "id": "5", "channel_id": "6", "content": "hi there",
             "author": {"id": "7", "username": "moss", "discriminator": "0", "avatar": null},
@@ -449,16 +490,41 @@ mod tests {
             "tts": false, "mention_everyone": false, "mentions": [], "mention_roles": [],
             "attachments": [], "embeds": [], "pinned": false, "type": 0
         });
-        let found = read(&json!({
-            "total_results": 42,
-            "messages": [[message]],
-            "doing_deep_historical_index": true
-        }));
+        let found = read(
+            &json!({
+                "total_results": 42,
+                "messages": [[message]],
+                "doing_deep_historical_index": true
+            }),
+            guild,
+        );
         assert_eq!(found.total, 42);
         assert_eq!(found.messages.len(), 1);
         assert_eq!(found.messages[0].content, "hi there");
+        assert_eq!(found.messages[0].guild_id, Some(guild));
         assert!(found.indexing);
         assert!(found.threads.is_empty());
+    }
+
+    #[test]
+    fn parse_response_errors_on_invalid_json() {
+        let guild = GuildId::new(99);
+        assert!(parse_response(b"not json at all", guild).is_err());
+        assert!(parse_response(b"{\"total_results\": 1", guild).is_err());
+    }
+
+    #[test]
+    fn retry_after_honours_body_and_header() {
+        assert_eq!(
+            retry_after_seconds(Some("5"), &json!({ "retry_after": 1.5 })),
+            1.5
+        );
+        // Header used when JSON body is absent (e.g. Cloudflare HTML 429).
+        assert_eq!(retry_after_seconds(Some("3.5"), &Value::Null), 3.5);
+        // Clamped to LONGEST_WAIT and non-positive falls back to 1.0.
+        assert_eq!(retry_after_seconds(Some("60"), &Value::Null), LONGEST_WAIT);
+        assert_eq!(retry_after_seconds(Some("0"), &Value::Null), 1.0);
+        assert_eq!(retry_after_seconds(None, &Value::Null), 2.0);
     }
 
     #[test]

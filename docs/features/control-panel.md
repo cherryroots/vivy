@@ -39,7 +39,7 @@ The bot logs with the `tracing` crate's macros (`info!`, `warn!`, `error!`). `lo
 
 The dispatcher wraps every handler in a **span** (a named scope that log lines inside it belong to) with the feature, server, channel and message ID. `DiscordLayer` walks a log line's spans to find these, so each posted line names its feature (or the module that logged it, outside a handler) and links to the message that triggered it. When a handler fails, the dispatcher logs `"<feature> failed: {err:#}"`; the `{:#}` format prints the whole error chain (each "while doing X" context the error picked up).
 
-The layer only puts lines in a queue (capacity 1000; a full queue drops the line, and stdout still has it). `spawn_discord_poster` starts once the bot is connected and empties the queue every 5 seconds. So lines logged before the connection wait in the queue and are posted then. `render` groups identical lines in one batch into one line with a count (`**×12**`), puts an icon and the level in front (lifecycle lines are posted as they are), cuts each line to 1700 bytes, and packs the lines into messages under Discord's 2000-character limit. A failure to post goes to stderr with `eprintln!`, not to `tracing`, so it can't loop.
+The layer only puts lines in a queue (capacity 1000; a full queue drops the line, and stdout still has it). `spawn_discord_poster` starts once the bot is connected and empties the queue every 5 seconds; when `log_channel` is unset, `log_queue` is dropped so lines aren't buffered. At shutdown, `main` cancels the poster *after* waiting for other background tasks so shutdown notices and drain warnings are flushed. So lines logged before the connection wait in the queue and are posted then. `render` groups identical lines in one batch into one line with a count (`**×12**`), puts an icon and the level in front (lifecycle lines are posted as they are), cuts each line to 1700 bytes, and packs the lines into messages under Discord's 2000-character limit. A failure to post goes to stderr with `eprintln!`, not to `tracing`, so it can't loop.
 
 Lifecycle lines:
 
@@ -133,6 +133,7 @@ From `status::MIGRATIONS`:
 
 - **Migration 1**, `control_panel_state`: key and value. Holds the status message's location (`status_message` → `"<channel>/<message>"`).
 - **Migration 2**, `control_panel_samples`: name, time (`at`, unix seconds) and value; one row per name per slot. The graphs' history.
+- **Migration 3**: index `idx_control_panel_samples_at` on `control_panel_samples (at)` for `load` and old-sample pruning.
 
 The cache hit rate and cost per job are read from the core `ai_spend_jobs` table (see `src/core/db.rs` and `src/ai/spend.rs`), which this feature doesn't own.
 

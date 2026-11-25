@@ -46,7 +46,7 @@ use serde_json::Value;
 use twilight_model::channel::message::{EmojiReactionType, MessageFlags};
 
 use crate::util::discord::{
-    GatewayReaction, Message, MessageId, UserId, get_message, remove_reaction,
+    ChannelId, GatewayReaction, Message, MessageId, UserId, get_message, remove_reaction,
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -70,6 +70,9 @@ pub struct Chat {
 
 struct Running {
     requester: UserId,
+    /// The question being answered, once known. Keeps concurrent 🔁 runs from overlapping
+    /// even when a voice-only answer has no text messages left to reuse.
+    question_id: Option<i64>,
     cancel: CancellationToken,
     /// The answer's Discord messages, filled in as they're sent.
     message_ids: Arc<Mutex<Vec<MessageId>>>,
@@ -188,44 +191,82 @@ impl Feature for Chat {
         if let Err(err) = reply.show(&ctx.http, &answer::placeholder()).await {
             warn!("couldn't start the reply: {err:#}");
         }
-        let msg = media::with_previews(&ctx.http, msg).await;
+        // Register right away so ❌ on "💭 Thinking…" cancels before answering starts.
+        let Some(registered) = self.try_register(msg.author.id, None, reply.message_ids()) else {
+            return Ok(Mention::Handled);
+        };
 
-        // The message this one replies to, if any, is the conversation so far.
-        let parent_id = match &msg.referenced_message {
-            Some(referenced) => Some(history::turn_for_reference(ctx, referenced).await?),
-            None => None,
-        };
-        let asker = Asker {
-            user: msg.author.id,
-            guild: msg.guild_id,
-            channel: msg.channel_id,
-            message: msg.id,
-            posted: Default::default(),
-        };
-        let owner = history::is_owner_command(ctx, &msg).await;
-        let mut parts = history::read_message(ctx, &msg, rest, false, owner).await;
-        // Messages the question links to come with it, so she reads them without asking.
-        parts.extend(history::linked_messages(ctx, &asker, rest).await);
-        let question = NewTurn {
-            parent_id,
-            role: Role::User,
-            author_id: msg.author.id.get(),
-            channel_id: msg.channel_id.get(),
-            parts,
-            written: None,
-            started_at: None,
-            error: None,
-            created_at: Utc::now().timestamp(),
-        };
-        let message_id = msg.id.get();
-        let question_id = ctx
-            .db
-            .call(move |conn| store::add_turn(conn, &question, &[message_id]))
-            .await
-            .context("saving the question")?;
+        let setup = async {
+            let msg = media::with_previews(&ctx.http, msg).await;
+            if registered.cancel.is_cancelled() {
+                return Ok(None);
+            }
+            // The message this one replies to, if any, is the conversation so far.
+            let parent_id = match &msg.referenced_message {
+                Some(referenced) => {
+                    Some(history::turn_for_reference(ctx, referenced, msg.guild_id).await?)
+                }
+                None => None,
+            };
+            let asker = Asker {
+                user: msg.author.id,
+                guild: msg.guild_id,
+                channel: msg.channel_id,
+                message: msg.id,
+                posted: Default::default(),
+            };
+            let owner = history::is_owner_command(ctx, &msg).await;
+            let mut parts = history::read_message(ctx, &msg, rest, false, owner).await;
+            // Messages the question links to come with it, so she reads them without asking.
+            parts.extend(history::linked_messages(ctx, &asker, rest).await);
+            if registered.cancel.is_cancelled() {
+                return Ok(None);
+            }
+            let question = NewTurn {
+                parent_id,
+                role: Role::User,
+                author_id: msg.author.id.get(),
+                channel_id: msg.channel_id.get(),
+                parts,
+                written: None,
+                started_at: None,
+                error: None,
+                created_at: Utc::now().timestamp(),
+            };
+            let message_id = msg.id.get();
+            let question_id = ctx
+                .db
+                .call(move |conn| store::add_turn(conn, &question, &[message_id]))
+                .await
+                .context("saving the question")?;
+            Ok::<_, anyhow::Error>(Some((asker, question_id)))
+        }
+        .await;
 
-        self.answer(ctx, provider.as_ref(), asker, question_id, reply)
-            .await?;
+        let (asker, question_id) = match setup {
+            Ok(Some(ready)) => ready,
+            Ok(None) => {
+                cleanup_reply(ctx, msg.channel_id, &reply.message_ids()).await;
+                info!("answer stopped with ❌");
+                return Ok(Mention::Handled);
+            }
+            Err(err) => {
+                cleanup_reply(ctx, msg.channel_id, &reply.message_ids()).await;
+                return Err(err);
+            }
+        };
+        registered.set_question_id(question_id);
+
+        self.answer(
+            ctx,
+            provider.as_ref(),
+            asker,
+            question_id,
+            reply,
+            registered,
+            true,
+        )
+        .await?;
         Ok(Mention::Handled)
     }
 
@@ -272,7 +313,40 @@ fn provider(ctx: &BotCtx) -> Result<Arc<dyn ChatProvider>> {
 }
 
 impl Chat {
+    /// Registers an in-flight answer in `self.running` if no overlapping answer is already
+    /// running for the same question or any of `initial_ids`.
+    fn try_register(
+        &self,
+        requester: UserId,
+        question_id: Option<i64>,
+        initial_ids: Vec<MessageId>,
+    ) -> Option<Registered<'_>> {
+        let cancel = CancellationToken::new();
+        let message_ids = Arc::new(Mutex::new(initial_ids.clone()));
+        let mut running = self.running.lock().unwrap();
+        let busy = running.iter().any(|r| {
+            let same_question = question_id.is_some() && r.question_id == question_id;
+            let ids = r.message_ids.lock().unwrap();
+            same_question || initial_ids.iter().any(|id| ids.contains(id))
+        });
+        if busy {
+            return None;
+        }
+        running.push(Running {
+            requester,
+            question_id,
+            cancel: cancel.clone(),
+            message_ids: message_ids.clone(),
+        });
+        Some(Registered {
+            running: &self.running,
+            cancel,
+            message_ids,
+        })
+    }
+
     /// Answers the question turn `question_id` into `reply`, and saves the answer.
+    #[allow(clippy::too_many_arguments)]
     async fn answer(
         &self,
         ctx: &BotCtx,
@@ -280,62 +354,55 @@ impl Chat {
         asker: Asker,
         question_id: i64,
         reply: LiveReply,
+        registered: Registered<'_>,
+        cleanup_placeholder_on_error: bool,
     ) -> Result<()> {
-        // Registered first, before the slow work below, so a ❌ or a second 🔁 in the
-        // meantime sees this answer as running. A 🔁 starts with the old answer's
-        // messages; if another answer is already writing into them, leave it be.
-        let cancel = CancellationToken::new();
-        let message_ids = Arc::new(Mutex::new(reply.message_ids()));
-        {
-            let mut running = self.running.lock().unwrap();
-            let existing = reply.message_ids();
-            let busy = running.iter().any(|r| {
-                let ids = r.message_ids.lock().unwrap();
-                existing.iter().any(|id| ids.contains(id))
-            });
-            if busy {
-                return Ok(());
-            }
-            running.push(Running {
-                requester: asker.user,
-                cancel: cancel.clone(),
-                message_ids: message_ids.clone(),
-            });
-        }
-        // Takes the entry out again when this function ends, even by an error or a panic.
-        let _registered = Registered {
-            running: &self.running,
-            message_ids: message_ids.clone(),
-        };
+        let cancel = registered.cancel.clone();
+        let message_ids = registered.message_ids.clone();
+        let _registered = registered;
 
-        let turns = chime::settings(ctx).history_turns.max(1);
-        let chain = ctx
-            .db
-            .call(move |conn| store::chain(conn, question_id, turns))
-            .await?;
-        let mut input = history::build_input(ctx, provider, &chain).await;
-        // The features' context is saved with the question the first time it's answered,
-        // so a later request (🔁, or the rest of the conversation) sends the question
-        // exactly as before.
-        let has_context = chain.last().is_some_and(|question| {
-            question
-                .parts
-                .iter()
-                .any(|p| matches!(p, StoredPart::Context { .. }))
-        });
-        if !has_context {
-            let fresh = !chain.iter().any(|turn| turn.role == Role::Assistant);
-            let texts = answer::context_for(ctx, &asker, fresh).await;
-            let parts: Vec<StoredPart> = texts
-                .iter()
-                .map(|text| StoredPart::Context { text: text.clone() })
-                .collect();
-            ctx.db
-                .call(move |conn| store::add_parts(conn, question_id, &parts))
-                .await
-                .context("saving the question's context")?;
-            add_context(&mut input, &texts);
+        let prepare = async {
+            let turns = chime::settings(ctx).history_turns.max(1);
+            let chain = ctx
+                .db
+                .call(move |conn| store::chain(conn, question_id, turns))
+                .await?;
+            let mut input = history::build_input(ctx, provider, &chain).await;
+            // The features' context is saved with the question the first time it's answered,
+            // so a later request (🔁, or the rest of the conversation) sends the question
+            // exactly as before.
+            let has_context = chain.last().is_some_and(|question| {
+                question
+                    .parts
+                    .iter()
+                    .any(|p| matches!(p, StoredPart::Context { .. }))
+            });
+            if !has_context {
+                let fresh = !chain.iter().any(|turn| turn.role == Role::Assistant);
+                let texts = answer::context_for(ctx, &asker, fresh).await;
+                let parts: Vec<StoredPart> = texts
+                    .iter()
+                    .map(|text| StoredPart::Context { text: text.clone() })
+                    .collect();
+                ctx.db
+                    .call(move |conn| store::add_parts(conn, question_id, &parts))
+                    .await
+                    .context("saving the question's context")?;
+                add_context(&mut input, &texts);
+            }
+            Ok::<_, anyhow::Error>(input)
         }
+        .await;
+
+        let input = match prepare {
+            Ok(input) => input,
+            Err(err) => {
+                if cleanup_placeholder_on_error {
+                    cleanup_reply(ctx, asker.channel, &reply.message_ids()).await;
+                }
+                return Err(err);
+            }
+        };
 
         let started_at = Utc::now().timestamp();
         let job = Job {
@@ -416,6 +483,13 @@ impl Chat {
             return Ok(());
         };
         let provider = provider(ctx)?;
+        // Register before removing reactions or inspecting/deleting voice messages, so a
+        // second 🔁 or an ❌ in the meantime sees this regeneration as running.
+        let Some(registered) =
+            self.try_register(user, Some(found.question_id), found.answer_messages.clone())
+        else {
+            return Ok(());
+        };
         // Take the reaction away again, so it can be used for the next try.
         let _ = remove_reaction(&ctx.http, reaction).await;
 
@@ -444,10 +518,23 @@ impl Chat {
                 text_messages.push(id);
             }
         }
+        *registered.message_ids.lock().unwrap() = text_messages.clone();
+        if registered.cancel.is_cancelled() {
+            info!("answer stopped with ❌");
+            return Ok(());
+        }
         let reply = LiveReply::resume(reaction.channel_id, question_message, &text_messages);
         info!("writing an answer again for 🔁");
-        self.answer(ctx, provider.as_ref(), asker, found.question_id, reply)
-            .await
+        self.answer(
+            ctx,
+            provider.as_ref(),
+            asker,
+            found.question_id,
+            reply,
+            registered,
+            false,
+        )
+        .await
     }
 
     /// ❌ on a finished answer: deletes its messages, if `user` asked the question.
@@ -469,7 +556,20 @@ impl Chat {
 /// Removes a running answer from the list when dropped.
 struct Registered<'a> {
     running: &'a Mutex<Vec<Running>>,
+    cancel: CancellationToken,
     message_ids: Arc<Mutex<Vec<MessageId>>>,
+}
+
+impl Registered<'_> {
+    fn set_question_id(&self, question_id: i64) {
+        let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = running
+            .iter_mut()
+            .find(|r| Arc::ptr_eq(&r.message_ids, &self.message_ids))
+        {
+            entry.question_id = Some(question_id);
+        }
+    }
 }
 
 impl Drop for Registered<'_> {
@@ -477,6 +577,15 @@ impl Drop for Registered<'_> {
         // A poisoned lock only means another task panicked; the list is still usable.
         let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
         running.retain(|r| !Arc::ptr_eq(&r.message_ids, &self.message_ids));
+    }
+}
+
+/// Deletes the "💭 Thinking…" placeholder when pre-answer setup fails or is cancelled.
+async fn cleanup_reply(ctx: &BotCtx, channel: ChannelId, ids: &[MessageId]) {
+    for &id in ids {
+        if let Err(err) = ctx.http.delete_message(channel, id).await {
+            warn!("couldn't delete placeholder reply: {err}");
+        }
     }
 }
 
@@ -536,4 +645,39 @@ async fn find_answer(
         })
         .await?;
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_register_blocks_overlapping_messages_and_voice_only_same_question() {
+        let chat = Chat::default();
+        let alice = UserId::new(1);
+        let bob = UserId::new(2);
+        let m1 = MessageId::new(100);
+        let m2 = MessageId::new(101);
+
+        // Voice-only regeneration: empty message list, keyed by question_id.
+        let voice_reg = chat.try_register(alice, Some(42), vec![]).unwrap();
+        assert!(chat.try_register(alice, Some(42), vec![]).is_none());
+        // A different question with empty message_ids is not blocked.
+        let other_reg = chat.try_register(alice, Some(43), vec![]).unwrap();
+        drop(other_reg);
+        drop(voice_reg);
+        // Once dropped, the same question can register again.
+        assert!(chat.try_register(alice, Some(42), vec![]).is_some());
+
+        // Overlapping message IDs are blocked and ❌ cancels only for the requester.
+        let reg = chat.try_register(alice, None, vec![m1]).unwrap();
+        assert!(chat.is_running(m1));
+        assert!(chat.try_register(alice, None, vec![m1, m2]).is_none());
+        assert!(!chat.stop(m1, bob));
+        assert!(!reg.cancel.is_cancelled());
+        assert!(chat.stop(m1, alice));
+        assert!(reg.cancel.is_cancelled());
+        drop(reg);
+        assert!(!chat.is_running(m1));
+    }
 }

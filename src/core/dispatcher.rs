@@ -34,7 +34,7 @@ use crate::util::discord::{
 };
 
 /// Called for every gateway event, after the cache has seen it.
-pub async fn handle_event(bot: &BotCtx, event: Event) {
+pub fn handle_event(bot: &BotCtx, event: Event) {
     match event {
         Event::MessageCreate(msg) => on_message(bot, &msg.0),
         Event::ReactionAdd(reaction) => on_reaction_add(bot, &reaction.0),
@@ -45,7 +45,7 @@ pub async fn handle_event(bot: &BotCtx, event: Event) {
         Event::MessageDeleteBulk(event) => {
             on_messages_deleted(bot, event.guild_id, event.channel_id, event.ids)
         }
-        Event::InteractionCreate(interaction) => on_interaction(bot, interaction.0).await,
+        Event::InteractionCreate(interaction) => on_interaction(bot, interaction.0),
         Event::Ready(_) => {
             // The first Ready is the start itself; later ones are full reconnects, which
             // `main.rs` logs.
@@ -191,7 +191,7 @@ fn on_messages_deleted(
     }
 }
 
-async fn on_interaction(bot: &BotCtx, interaction: Interaction) {
+fn on_interaction(bot: &BotCtx, interaction: Interaction) {
     match (&interaction.kind, &interaction.data) {
         (InteractionType::ApplicationCommand, Some(InteractionData::ApplicationCommand(_))) => {
             on_command(bot, interaction)
@@ -202,12 +202,12 @@ async fn on_interaction(bot: &BotCtx, interaction: Interaction) {
         ) => on_autocomplete(bot, interaction),
         (_, Some(InteractionData::MessageComponent(_))) => {
             if let Some(i) = ComponentInteraction::from_interaction(&interaction) {
-                on_component(bot, i).await;
+                on_component(bot, i);
             }
         }
         (_, Some(InteractionData::ModalSubmit(_))) => {
             if let Some(i) = ModalInteraction::from_interaction(&interaction) {
-                on_modal(bot, i).await;
+                on_modal(bot, i);
             }
         }
         _ => {}
@@ -319,18 +319,18 @@ fn on_autocomplete(bot: &BotCtx, interaction: Interaction) {
     });
 }
 
-async fn on_component(bot: &BotCtx, i: ComponentInteraction) {
+fn on_component(bot: &BotCtx, i: ComponentInteraction) {
     let reply = ReplyTo::Interaction {
         id: i.id,
         token: i.token.clone(),
     };
     let Some((feature, action)) = route_custom_id(bot, &i.custom_id) else {
         // Most likely a button on a message from voltgpt.
-        tell_user(bot, &reply, STALE).await;
+        spawn_tell_user(bot, reply, STALE);
         return;
     };
     if !bot.allows_with_parent(feature.name(), i.guild_id, i.channel_id, i.thread_parent_id) {
-        tell_user(bot, &reply, &turned_off(feature.name())).await;
+        spawn_tell_user(bot, reply, turned_off(feature.name()));
         return;
     }
     let span = info_span!(
@@ -348,17 +348,17 @@ async fn on_component(bot: &BotCtx, i: ComponentInteraction) {
     });
 }
 
-async fn on_modal(bot: &BotCtx, i: ModalInteraction) {
+fn on_modal(bot: &BotCtx, i: ModalInteraction) {
     let reply = ReplyTo::Interaction {
         id: i.id,
         token: i.token.clone(),
     };
     let Some((feature, action)) = route_custom_id(bot, &i.custom_id) else {
-        tell_user(bot, &reply, STALE).await;
+        spawn_tell_user(bot, reply, STALE);
         return;
     };
     if !bot.allows_with_parent(feature.name(), i.guild_id, i.channel_id, i.thread_parent_id) {
-        tell_user(bot, &reply, &turned_off(feature.name())).await;
+        spawn_tell_user(bot, reply, turned_off(feature.name()));
         return;
     }
     let span = info_span!(
@@ -372,6 +372,15 @@ async fn on_modal(bot: &BotCtx, i: ModalInteraction) {
     let (bot2, action) = (bot.clone(), action.to_string());
     run(bot, feature.name(), span, reply, async move {
         feature.on_modal(&bot2, &i, &action).await
+    });
+}
+
+/// Sends a one-off reply on `bot.tasks` so the shard event loop never waits on HTTP.
+fn spawn_tell_user(bot: &BotCtx, reply: ReplyTo, text: impl Into<String>) {
+    let bot = bot.clone();
+    let text = text.into();
+    bot.tasks.clone().spawn(async move {
+        tell_user(&bot, &reply, &text).await;
     });
 }
 
