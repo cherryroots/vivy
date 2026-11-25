@@ -3,18 +3,18 @@
 //! what the server's channels are for, so the arena's areas fit them (`areas.rs`).
 //!
 //! The memory feature keeps her notes about a person in `/memories/users/<user id>/`, and
-//! about the channels in `/memories/server/channels.md`. This
-//! file doesn't import that feature: it finds whichever feature offers the `memory` chat
-//! tool and runs `view` with it, as Vivy herself, the same way a chat answer would (see
-//! `games/herself.rs`). With
-//! memory off in the server, or no notes, a tribute simply has none.
+//! about the channels in `/memories/server/channels.md`. This file doesn't import that
+//! feature: it finds whichever feature offers the `memory` chat tool and runs `view` with
+//! it, as Vivy herself, the same way a chat answer would. With memory off in the server,
+//! or no notes, a tribute simply has none.
 
-use crate::util::discord::{ChannelId, GuildId, MessageId};
+use std::sync::Arc;
+
 use serde_json::json;
 use tracing::debug;
 
-use crate::core::{Asker, BotCtx};
-use crate::features::games::herself::{file_text, memory_file};
+use crate::core::{Asker, BotCtx, Feature};
+use crate::util::discord::{ChannelId, GuildId, MessageId};
 
 /// The most of one tribute's notes she's given, in characters.
 const MOST: usize = 800;
@@ -25,6 +25,31 @@ const CHANNELS: &str = "/memories/server/channels.md";
 /// The most of that note she's given, in characters.
 const MOST_CHANNELS: usize = 4000;
 
+/// The `memory` feature and an `Asker` acting as Vivy, when memory is enabled here.
+fn memory_tool(
+    ctx: &BotCtx,
+    guild: GuildId,
+    channel: ChannelId,
+    message: MessageId,
+) -> Option<(Arc<dyn Feature>, Asker)> {
+    if !ctx.allows("memory", Some(guild), channel) {
+        return None;
+    }
+    let memory = ctx
+        .features
+        .iter()
+        .find(|f| f.tools().iter().any(|t| t.name == "memory"))?
+        .clone();
+    let herself = Asker {
+        user: ctx.bot_id,
+        guild: Some(guild),
+        channel,
+        message,
+        posted: Default::default(),
+    };
+    Some((memory, herself))
+}
+
 /// Her note about what the server's channels are for, or `None` without one (or with
 /// memory off in the server).
 pub async fn channels(
@@ -33,7 +58,15 @@ pub async fn channels(
     channel: ChannelId,
     message: MessageId,
 ) -> Option<String> {
-    memory_file(ctx, guild, channel, message, CHANNELS, MOST_CHANNELS).await
+    let (memory, herself) = memory_tool(ctx, guild, channel, message)?;
+    let args = json!({"command": "view", "path": CHANNELS});
+    match memory.run_tool(ctx, &herself, "memory", &args).await {
+        Ok(view) => file_text(&view).map(|text| crate::util::shorten_at_word(&text, MOST_CHANNELS)),
+        Err(err) => {
+            debug!("couldn't read {CHANNELS}: {err:#}");
+            None
+        }
+    }
 }
 
 /// Her notes about each of `tributes`, in the same order: `None` for someone she has no
@@ -46,26 +79,13 @@ pub async fn about(
     tributes: &[u64],
 ) -> Vec<Option<String>> {
     let mut notes = vec![None; tributes.len()];
-    if !ctx.allows("memory", Some(guild), channel) {
+    let Some((memory, herself)) = memory_tool(ctx, guild, channel, message) else {
         return notes;
-    }
-    let Some(memory) = ctx
-        .features
-        .iter()
-        .find(|f| f.tools().iter().any(|t| t.name == "memory"))
-    else {
-        return notes;
-    };
-    let herself = Asker {
-        user: ctx.bot_id,
-        guild: Some(guild),
-        channel,
-        message,
-        posted: Default::default(),
     };
     for (i, id) in tributes.iter().enumerate() {
         let dir = format!("/memories/users/{id}");
         let view = |path: String| {
+            let memory = &memory;
             let herself = &herself;
             async move {
                 let args = json!({"command": "view", "path": path});
@@ -95,6 +115,21 @@ pub async fn about(
     notes
 }
 
+/// A file's text from what `view` answered, without the header and line numbers. `None`
+/// when it isn't a file's content (a directory, a missing path).
+fn file_text(view: &str) -> Option<String> {
+    let mut lines = view.lines();
+    if !lines.next()?.starts_with("Here's the content of") {
+        return None;
+    }
+    let body: Vec<&str> = lines
+        .map(|line| line.split_once('\t').map_or(line, |(_, text)| text))
+        .collect();
+    let body = body.join("\n");
+    let body = body.trim();
+    (!body.is_empty()).then(|| body.to_string())
+}
+
 /// The files a directory listing names under `dir` (not `dir` itself, nor anything that
 /// isn't a file: a directory's view lists instead of showing text, see [`file_text`]).
 fn files_in(listing: &str, dir: &str) -> Vec<String> {
@@ -113,6 +148,16 @@ fn files_in(listing: &str, dir: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_file_view_loses_its_line_numbers() {
+        let view = "Here's the content of /memories/users/7/games.md with line numbers:\n     1\tPlays chess\n     2\tHates losing";
+        assert_eq!(
+            file_text(view).as_deref(),
+            Some("Plays chess\nHates losing")
+        );
+        assert_eq!(file_text("Here're the files ..."), None);
+    }
 
     #[test]
     fn a_listing_gives_the_files_under_the_folder() {

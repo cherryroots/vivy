@@ -12,7 +12,7 @@ use twilight_util::builder::message::SelectMenuBuilder;
 use super::game::{Blow, Endgame, FEWEST_FOR_TEAMS, Game, Kind, Reward, fill};
 use super::last_words::LastWords;
 use super::writer::title;
-use crate::features::games::who_said_it::ui::{COLOR, escape};
+use crate::features::games::{COLOR, escape};
 use crate::util::discord::{UserId, button, buttons, emoji, menu_row};
 use crate::util::shorten_at_word;
 use crate::util::split::{DISCORD_LIMIT, split_message};

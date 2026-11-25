@@ -27,7 +27,8 @@ use crate::ai::ChatProvider;
 use crate::core::{
     BotCtx, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
 };
-use crate::features::games::who_said_it::sources::{self, From, Source};
+use crate::features::games::quotes::QuoteRules;
+use crate::features::games::sources::{self, From, Source};
 use crate::util::discord::{
     ChannelId, ChannelType, Draft, GuildId, Message, MessageId, Permissions, UserId, display_name,
     member_name, no_pings, start_typing,
@@ -291,12 +292,12 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
     let bot = ctx.bot.clone();
-    // The who-said-it settings are for the quote reader (last words).
+    // The quote rules come from `[features.games.who_said_it]` (shared for last words).
     let crate::features::games::Settings {
-        who_said_it: quote_settings,
+        who_said_it,
         hunger_games: settings,
-        ..
     } = bot.config.feature("games")?;
+    let quote_rules = who_said_it.quote_rules();
     let provider = bot.ai.provider(settings.provider).or_else(|| bot.ai.chat());
     let provider = provider.ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
@@ -352,7 +353,7 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
             provider,
             arena,
             sources,
-            quote_settings,
+            quote_rules,
         };
         run(&bot, setup, &running, lobby_message, &settings).await;
         drop(leave);
@@ -369,7 +370,7 @@ struct Setup {
     arena: Vec<Place>,
     /// Where last words are read from.
     sources: Vec<Source>,
-    quote_settings: crate::features::games::who_said_it::Settings,
+    quote_rules: QuoteRules,
 }
 
 /// A place in the arena: its channel's name and ID.
@@ -474,7 +475,7 @@ async fn run(
         provider,
         arena: mut links,
         sources,
-        quote_settings,
+        quote_rules,
     } = setup;
     // One place per tribute, the same ones all game, but at most `max_places` (by default
     // one ring of zones around the Octagon, so the map stays readable: Cherry's call).
@@ -491,7 +492,7 @@ async fn run(
         bot.clone(),
         guild,
         sources,
-        quote_settings,
+        quote_rules,
         ids.clone(),
     )));
     // What each place is like, from her note about what the channels are for, worked out
