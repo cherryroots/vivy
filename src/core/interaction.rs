@@ -178,6 +178,7 @@ pub struct CommandCtx {
     pub bot: BotCtx,
     pub interaction: Arc<Interaction>,
     pub data: Arc<CommandData>,
+    author: User,
     /// Whether answers are private (only the person who used the command sees them).
     ephemeral: bool,
     /// [`NOT_ANSWERED`], [`DEFERRED`] or [`ANSWERED`], shared by the clones.
@@ -185,11 +186,17 @@ pub struct CommandCtx {
 }
 
 impl CommandCtx {
-    pub fn new(bot: BotCtx, interaction: Arc<Interaction>, data: Arc<CommandData>) -> CommandCtx {
+    pub fn new(
+        bot: BotCtx,
+        interaction: Arc<Interaction>,
+        data: Arc<CommandData>,
+        author: User,
+    ) -> CommandCtx {
         CommandCtx {
             bot,
             interaction,
             data,
+            author,
             ephemeral: false,
             state: Arc::new(AtomicU8::new(NOT_ANSWERED)),
         }
@@ -208,17 +215,11 @@ impl CommandCtx {
     }
 
     pub fn author(&self) -> &User {
-        // One of the two is always there: `member.user` in servers, `user` in DMs.
-        self.interaction
-            .member
-            .as_ref()
-            .and_then(|member| member.user.as_ref())
-            .or(self.interaction.user.as_ref())
-            .expect("an interaction has a user")
+        &self.author
     }
 
     pub fn author_id(&self) -> UserId {
-        self.author().id
+        self.author.id
     }
 
     pub fn guild_id(&self) -> Option<GuildId> {
@@ -227,6 +228,11 @@ impl CommandCtx {
 
     pub fn channel_id(&self) -> ChannelId {
         channel_of(&self.interaction)
+    }
+
+    /// The parent channel when the command was used in a thread.
+    pub fn thread_parent_id(&self) -> Option<ChannelId> {
+        thread_parent_of(&self.interaction)
     }
 
     /// For a right-click "Apps" command on a message: that message.
@@ -238,7 +244,7 @@ impl CommandCtx {
     /// Shows "thinking…" so the answer can take longer than 3 seconds. The next
     /// `say` or `send` replaces it.
     pub async fn defer(&self) -> Result<()> {
-        if self.state.swap(DEFERRED, Ordering::SeqCst) != NOT_ANSWERED {
+        if !begin_defer(&self.state) {
             return Ok(());
         }
         let data = InteractionResponseData {
@@ -249,13 +255,17 @@ impl CommandCtx {
             kind: InteractionResponseType::DeferredChannelMessageWithSource,
             data: Some(data),
         };
-        create_response(
+        let result = create_response(
             &self.bot,
             self.interaction.id,
             &self.interaction.token,
             &response,
         )
-        .await
+        .await;
+        if result.is_err() {
+            rollback_state(&self.state, DEFERRED, NOT_ANSWERED);
+        }
+        result
     }
 
     /// Answers with a line of text.
@@ -277,14 +287,22 @@ impl CommandCtx {
                     kind: InteractionResponseType::ChannelMessageWithSource,
                     data: Some(response_data(draft)),
                 };
-                create_response(&self.bot, self.interaction.id, token, &response).await?;
+                if let Err(err) =
+                    create_response(&self.bot, self.interaction.id, token, &response).await
+                {
+                    rollback_state(&self.state, ANSWERED, NOT_ANSWERED);
+                    return Err(err);
+                }
                 Ok(Reply {
                     token: token.clone(),
                     followup: None,
                 })
             }
             DEFERRED => {
-                edit_original(&self.bot, token, &draft).await?;
+                if let Err(err) = edit_original(&self.bot, token, &draft).await {
+                    rollback_state(&self.state, ANSWERED, DEFERRED);
+                    return Err(err);
+                }
                 Ok(Reply {
                     token: token.clone(),
                     followup: None,
@@ -299,6 +317,19 @@ impl CommandCtx {
             }
         }
     }
+}
+
+/// Moves an interaction's response state from `NOT_ANSWERED` to `DEFERRED`.
+/// Returns `false` when it was already deferred or answered, leaving the state untouched.
+fn begin_defer(state: &AtomicU8) -> bool {
+    state
+        .compare_exchange(NOT_ANSWERED, DEFERRED, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+}
+
+/// Restores `state` from `from` back to `to` after a failed response call.
+fn rollback_state(state: &AtomicU8, from: u8, to: u8) {
+    let _ = state.compare_exchange(from, to, Ordering::SeqCst, Ordering::SeqCst);
 }
 
 /// An answer [`CommandCtx::send`] sent, to read or change later.
@@ -351,6 +382,8 @@ pub struct ComponentInteraction {
     pub token: String,
     pub guild_id: Option<GuildId>,
     pub channel_id: ChannelId,
+    /// The parent channel when the button or menu was used in a thread.
+    pub thread_parent_id: Option<ChannelId>,
     /// Who pressed it.
     pub user: User,
     /// Their member info in this server. `None` in DMs.
@@ -376,6 +409,7 @@ impl ComponentInteraction {
             token: interaction.token.clone(),
             guild_id: interaction.guild_id,
             channel_id: channel_of(interaction),
+            thread_parent_id: thread_parent_of(interaction),
             user: user_of(interaction)?,
             member: interaction.member.clone(),
             message: interaction.message.clone()?,
@@ -393,6 +427,8 @@ pub struct ModalInteraction {
     pub token: String,
     pub guild_id: Option<GuildId>,
     pub channel_id: ChannelId,
+    /// The parent channel when the form was submitted in a thread.
+    pub thread_parent_id: Option<ChannelId>,
     pub user: User,
     /// The message whose button opened the form, if one did.
     pub message: Option<Message>,
@@ -413,6 +449,7 @@ impl ModalInteraction {
             token: interaction.token.clone(),
             guild_id: interaction.guild_id,
             channel_id: channel_of(interaction),
+            thread_parent_id: thread_parent_of(interaction),
             user: user_of(interaction)?,
             message: interaction.message.clone(),
             custom_id: data.custom_id.clone(),
@@ -550,7 +587,17 @@ fn channel_of(interaction: &Interaction) -> ChannelId {
         .unwrap_or_else(|| twilight_model::id::Id::new(1))
 }
 
-fn user_of(interaction: &Interaction) -> Option<User> {
+/// The parent channel when the interaction happened in a thread. Regular channels put
+/// their category ID in `parent_id`, so non-threads return `None`.
+pub(crate) fn thread_parent_of(interaction: &Interaction) -> Option<ChannelId> {
+    let channel = interaction.channel.as_ref()?;
+    if !channel.kind.is_thread() {
+        return None;
+    }
+    channel.parent_id
+}
+
+pub(crate) fn user_of(interaction: &Interaction) -> Option<User> {
     interaction
         .member
         .as_ref()
@@ -667,4 +714,94 @@ pub async fn suggest(
 /// The option being typed in an autocomplete request.
 pub fn typed(data: &CommandData) -> Option<Typed> {
     find_typed(&data.options, &mut Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn interaction_from_json(mut value: serde_json::Value) -> Interaction {
+        let obj = value.as_object_mut().unwrap();
+        obj.entry("id").or_insert_with(|| json!("1"));
+        obj.entry("application_id").or_insert_with(|| json!("2"));
+        obj.entry("type").or_insert_with(|| json!(2));
+        obj.entry("data")
+            .or_insert_with(|| json!({ "id": "3", "name": "test", "type": 1 }));
+        obj.entry("token").or_insert_with(|| json!("tok"));
+        obj.entry("version").or_insert_with(|| json!(1));
+        obj.entry("authorizing_integration_owners")
+            .or_insert_with(|| json!({}));
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn user_of_handles_member_dm_and_missing_user() {
+        let missing = interaction_from_json(json!({}));
+        assert!(user_of(&missing).is_none());
+
+        let dm = interaction_from_json(json!({
+            "user": { "id": "42", "username": "cherry", "discriminator": "0" }
+        }));
+        assert_eq!(user_of(&dm).unwrap().id, UserId::new(42));
+
+        let guild = interaction_from_json(json!({
+            "member": {
+                "deaf": false,
+                "mute": false,
+                "flags": 0,
+                "roles": [],
+                "user": { "id": "77", "username": "vivy", "discriminator": "0" }
+            }
+        }));
+        assert_eq!(user_of(&guild).unwrap().id, UserId::new(77));
+    }
+
+    #[test]
+    fn thread_parent_of_only_reads_threads() {
+        let thread = interaction_from_json(json!({
+            "channel": { "id": "20", "type": 11, "parent_id": "10" }
+        }));
+        assert_eq!(thread_parent_of(&thread), Some(ChannelId::new(10)));
+
+        // A regular text channel's parent_id is its category, not a thread parent.
+        let text_channel = interaction_from_json(json!({
+            "channel": { "id": "20", "type": 0, "parent_id": "10" }
+        }));
+        assert_eq!(thread_parent_of(&text_channel), None);
+
+        let no_channel = interaction_from_json(json!({}));
+        assert_eq!(thread_parent_of(&no_channel), None);
+    }
+
+    #[test]
+    fn defer_does_not_overwrite_answered_and_rollback_restores_state() {
+        let state = AtomicU8::new(NOT_ANSWERED);
+        assert!(begin_defer(&state));
+        assert_eq!(state.load(Ordering::SeqCst), DEFERRED);
+
+        // Deferring again is a no-op.
+        assert!(!begin_defer(&state));
+        assert_eq!(state.load(Ordering::SeqCst), DEFERRED);
+
+        // Failed defer rolls back to NOT_ANSWERED.
+        rollback_state(&state, DEFERRED, NOT_ANSWERED);
+        assert_eq!(state.load(Ordering::SeqCst), NOT_ANSWERED);
+
+        // Failed initial send rolls back to NOT_ANSWERED.
+        assert_eq!(state.swap(ANSWERED, Ordering::SeqCst), NOT_ANSWERED);
+        rollback_state(&state, ANSWERED, NOT_ANSWERED);
+        assert_eq!(state.load(Ordering::SeqCst), NOT_ANSWERED);
+
+        // Failed edit after defer rolls back to DEFERRED.
+        assert!(begin_defer(&state));
+        assert_eq!(state.swap(ANSWERED, Ordering::SeqCst), DEFERRED);
+        rollback_state(&state, ANSWERED, DEFERRED);
+        assert_eq!(state.load(Ordering::SeqCst), DEFERRED);
+
+        // Once answered, defer must not corrupt the state back to DEFERRED.
+        assert_eq!(state.swap(ANSWERED, Ordering::SeqCst), DEFERRED);
+        assert!(!begin_defer(&state));
+        assert_eq!(state.load(Ordering::SeqCst), ANSWERED);
+    }
 }
