@@ -216,7 +216,7 @@ async fn list(
     for answer in &answers {
         let question = answer.parent_id.and_then(|id| questions.get(&id));
         let place = if everywhere {
-            Some(channels::describe(ctx, ChannelId::new(answer.channel_id)).await)
+            Some(channels::describe(ctx, asker.guild, ChannelId::new(answer.channel_id)).await)
         } else {
             None
         };
@@ -321,7 +321,11 @@ async fn detail(ctx: &BotCtx, asker: &Asker, answer: &Turn, zone: Tz) -> Result<
             })
             .await?
     };
-    let place = channels::describe(ctx, ChannelId::new(answer.channel_id)).await;
+    let place = if asker.guild.is_some() {
+        channels::describe(ctx, asker.guild, ChannelId::new(answer.channel_id)).await
+    } else {
+        "a DM".to_string()
+    };
     let link = messages.first().map(|&first| {
         message_link(
             asker.guild,
