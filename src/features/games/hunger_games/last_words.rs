@@ -65,7 +65,7 @@ pub async fn load(
         .filter(|t| !picked.contains_key(t) && !settings.exclude_users.contains(t))
         .collect();
     if !missing.is_empty() {
-        read_for(&ctx, &sources, &settings, &missing, &mut picked).await;
+        read_for(&ctx, guild, &sources, &settings, &missing, &mut picked).await;
     }
     info!(
         tributes = tributes.len(),
@@ -154,6 +154,7 @@ fn choose(
 /// run out.
 async fn read_for(
     ctx: &BotCtx,
+    guild: GuildId,
     sources: &[Source],
     settings: &Settings,
     missing: &[u64],
@@ -164,7 +165,8 @@ async fn read_for(
     while reads < most && missing.iter().any(|t| !picked.contains_key(t)) {
         let batch = AT_ONCE.min(most - reads);
         reads += batch;
-        let results = join_all((0..batch).map(|_| quotes::read_once(ctx, sources, settings))).await;
+        let results =
+            join_all((0..batch).map(|_| quotes::read_once(ctx, guild, sources, settings))).await;
         let mut worked = false;
         for result in results {
             match result {

@@ -31,6 +31,7 @@ const DISCORD_EPOCH_MS: i64 = 1_420_070_400_000;
 /// one locked channel doesn't stop a whole-server game.
 pub async fn load(
     ctx: &BotCtx,
+    guild: GuildId,
     sources: &[Source],
     settings: &Settings,
 ) -> anyhow::Result<(Vec<Quote>, Vec<Person>)> {
@@ -44,7 +45,7 @@ pub async fn load(
     let mut people: HashMap<u64, Person> = HashMap::new();
     let mut failed = None;
     for _ in 0..reads {
-        let found = match read_once(ctx, sources, settings).await {
+        let found = match read_once(ctx, guild, sources, settings).await {
             Ok(found) => found,
             Err(err) => {
                 failed = Some(err);
@@ -75,6 +76,7 @@ pub async fn load(
 /// is too new to read.
 pub async fn read_once(
     ctx: &BotCtx,
+    guild: GuildId,
     sources: &[Source],
     settings: &Settings,
 ) -> anyhow::Result<Vec<(Quote, Person)>> {
@@ -94,8 +96,22 @@ pub async fn read_once(
     let messages = get_messages(&ctx.http, source.channel, Page::Before(id_at(at)), 100)
         .await
         .inspect_err(|err| debug!("couldn't read {}: {err:#}", source.channel))?;
-    // Messages read from Discord don't say their server; the link needs it.
-    let guild = ctx.cache.channel(source.channel).and_then(|c| c.guild_id);
+    Ok(extract_quotes(
+        messages,
+        guild,
+        source.name.as_deref(),
+        settings,
+    ))
+}
+
+/// Turns a page of Discord messages into `(Quote, Person)` pairs using the known `guild`
+/// (messages read over REST omit `guild_id`, and archived threads may not be in the cache).
+fn extract_quotes(
+    messages: Vec<Message>,
+    guild: GuildId,
+    place: Option<&str>,
+    settings: &Settings,
+) -> Vec<(Quote, Person)> {
     let mut found = Vec::new();
     for msg in messages {
         if settings.exclude_users.contains(&msg.author.id.get()) {
@@ -112,12 +128,12 @@ pub async fn read_once(
             author: person.id,
             text,
             posted: to_chrono(msg.timestamp).format("%B %Y").to_string(),
-            place: source.name.clone(),
-            link: message_link(guild, msg.channel_id, msg.id),
+            place: place.map(str::to_string),
+            link: message_link(Some(guild), msg.channel_id, msg.id),
         };
         found.push((quote, person));
     }
-    Ok(found)
+    found
 }
 
 /// Swaps in server nicknames for everyone the rounds show. Someone who left the
@@ -266,5 +282,39 @@ mod tests {
         let at = DateTime::from_timestamp_millis(DISCORD_EPOCH_MS + 1000).unwrap();
         assert_eq!(id_at(at).get(), 1000 << 22);
         assert_eq!(created_at(id_at(at)), at);
+    }
+
+    #[test]
+    fn extract_quotes_uses_known_guild_id_never_at_me() {
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "id": "99",
+            "channel_id": "7",
+            "author": {
+                "id": "5",
+                "username": "cherry",
+                "discriminator": "0",
+                "bot": false
+            },
+            "content": "this is a long enough quote from an archived thread",
+            "timestamp": "2025-03-10T12:00:00.000000+00:00",
+            "tts": false,
+            "mention_everyone": false,
+            "mentions": [],
+            "mention_roles": [],
+            "attachments": [],
+            "embeds": [],
+            "pinned": false,
+            "type": 0
+        }))
+        .unwrap();
+        let found = extract_quotes(
+            vec![msg],
+            GuildId::new(42),
+            Some("archived-thread"),
+            &Settings::default(),
+        );
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0.link, "https://discord.com/channels/42/7/99");
+        assert!(!found[0].0.link.contains("@me"));
     }
 }
