@@ -133,11 +133,12 @@ impl Feature for Reminders {
             }
         };
 
-        // Only keep what the bot can upload again in this server, which depends on its boosts.
+        // Only keep what the bot can upload again in this server, and stay within the
+        // per-reminder storage budget.
         let tier = msg
             .guild_id
             .and_then(|id| ctx.cache.guild(id).map(|guild| guild.premium_tier()));
-        let (images, skipped) = download_images(msg, upload_limit(tier)).await;
+        let (images, skipped, hit_storage_limit) = download_images(msg, upload_limit(tier)).await;
         let new = NewReminder {
             user_id: msg.author.id.get(),
             channel_id: msg.channel_id.get(),
@@ -180,6 +181,7 @@ impl Feature for Reminders {
                 zone_hint,
                 image_count,
                 &skipped,
+                hit_storage_limit,
             ))
             .components(vec![ui::cancel_button(id)])
             .reply_to(msg.id)
@@ -279,13 +281,12 @@ impl Reminders {
     /// The Cancel button under "I'll remind you": deletes that reminder, if it's still
     /// pending and the one pressing it set it.
     async fn cancel(&self, ctx: &BotCtx, i: &ComponentInteraction, id: i64) -> Result<()> {
-        let reminder = ctx.db.call(move |conn| Ok(store::get(conn, id)?)).await?;
-        if let Some(reminder) = &reminder
-            && reminder.user_id != i.user.id.get()
+        let owner = ctx.db.call(move |conn| Ok(store::owner(conn, id)?)).await?;
+        if let Some(owner) = owner
+            && owner != i.user.id.get()
         {
             return Err(user_error(format!(
-                "Only <@{}> can cancel this reminder.",
-                reminder.user_id
+                "Only <@{owner}> can cancel this reminder."
             )));
         }
         if !self.remove(ctx, id, i.user.id).await? {
@@ -304,15 +305,14 @@ impl Reminders {
 
     /// Checks that `user` can snooze delivered reminder `id`.
     async fn snoozable(&self, ctx: &BotCtx, user: UserId, id: i64) -> Result<()> {
-        let reminder = ctx
+        let owner = ctx
             .db
-            .call(move |conn| Ok(store::get(conn, id)?))
+            .call(move |conn| Ok(store::owner(conn, id)?))
             .await?
             .ok_or_else(|| user_error("This reminder is too old to snooze."))?;
-        if reminder.user_id != user.get() {
+        if owner != user.get() {
             return Err(user_error(format!(
-                "Only <@{}> can snooze this reminder.",
-                reminder.user_id
+                "Only <@{owner}> can snooze this reminder."
             )));
         }
         Ok(())
@@ -357,29 +357,78 @@ fn upload_limit(tier: Option<PremiumTier>) -> u64 {
     }
 }
 
-/// Downloads the images (and videos) attached to the message. Returns them and the names
-/// of the ones that couldn't be kept: bigger than `max_bytes`, or the download failed.
-async fn download_images(msg: &Message, max_bytes: u64) -> (Vec<Image>, Vec<String>) {
+/// Maximum total image bytes stored in SQLite for a single reminder across all attachments.
+const MAX_TOTAL_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachmentFit {
+    /// Fits within both the server upload limit and the remaining per-reminder budget.
+    /// Holds the maximum bytes `download` may read for this file.
+    Fit(u64),
+    /// Bigger than the server's per-file upload limit.
+    TooBigForServer,
+    /// Would push this reminder past [`MAX_TOTAL_IMAGE_BYTES`].
+    OverTotalLimit,
+}
+
+fn attachment_fit(
+    size: u64,
+    per_file_limit: u64,
+    used_bytes: u64,
+    total_limit: u64,
+) -> AttachmentFit {
+    if size > per_file_limit {
+        return AttachmentFit::TooBigForServer;
+    }
+    let remaining = total_limit.saturating_sub(used_bytes);
+    if size > remaining {
+        return AttachmentFit::OverTotalLimit;
+    }
+    AttachmentFit::Fit(per_file_limit.min(remaining))
+}
+
+/// Downloads the images (and videos) attached to the message. Returns them, the names of
+/// the ones that couldn't be kept (bigger than `max_bytes`, past the 25 MiB total budget,
+/// or failed to download), and whether the per-reminder total budget was hit.
+async fn download_images(msg: &Message, max_bytes: u64) -> (Vec<Image>, Vec<String>, bool) {
     let mut images = Vec::new();
     let mut skipped = Vec::new();
+    let mut total_bytes: u64 = 0;
+    let mut hit_total_limit = false;
     // Discord only sets a width on images and videos.
     for attachment in msg.attachments.iter().filter(|a| a.width.is_some()) {
-        if attachment.size > max_bytes {
-            skipped.push(attachment.filename.clone());
-            continue;
-        }
-        match download(&attachment.url, max_bytes as usize).await {
-            Ok(data) => images.push(Image {
-                filename: attachment.filename.clone(),
-                data,
-            }),
+        let limit = match attachment_fit(
+            attachment.size,
+            max_bytes,
+            total_bytes,
+            MAX_TOTAL_IMAGE_BYTES,
+        ) {
+            AttachmentFit::Fit(limit) => limit,
+            AttachmentFit::TooBigForServer => {
+                skipped.push(attachment.filename.clone());
+                continue;
+            }
+            AttachmentFit::OverTotalLimit => {
+                hit_total_limit = true;
+                skipped.push(attachment.filename.clone());
+                continue;
+            }
+        };
+        match download(&attachment.url, limit as usize).await {
+            Ok(data) => {
+                total_bytes = total_bytes.saturating_add(data.len() as u64);
+                images.push(Image {
+                    filename: attachment.filename.clone(),
+                    data,
+                });
+            }
             Err(err) => {
                 warn!("couldn't download {}: {err:#}", attachment.filename);
                 skipped.push(attachment.filename.clone());
             }
         }
     }
-    (images, skipped)
+    (images, skipped, hit_total_limit)
 }
 
 #[cfg(test)]
@@ -393,5 +442,39 @@ mod tests {
         assert_eq!(upload_limit(Some(PremiumTier::Tier1)), 20 * mib);
         assert_eq!(upload_limit(Some(PremiumTier::Tier2)), 50 * mib);
         assert_eq!(upload_limit(Some(PremiumTier::Tier3)), 100 * mib);
+    }
+
+    #[test]
+    fn total_image_budget_caps_attachments() {
+        let mib = 1024 * 1024;
+        let total = MAX_TOTAL_IMAGE_BYTES;
+        // Two 10 MiB files fit in 25 MiB; a third 10 MiB file hits the total cap.
+        assert_eq!(
+            attachment_fit(10 * mib, 20 * mib, 0, total),
+            AttachmentFit::Fit(20 * mib)
+        );
+        assert_eq!(
+            attachment_fit(10 * mib, 20 * mib, 10 * mib, total),
+            AttachmentFit::Fit(15 * mib)
+        );
+        assert_eq!(
+            attachment_fit(10 * mib, 20 * mib, 20 * mib, total),
+            AttachmentFit::OverTotalLimit
+        );
+        // A 5 MiB file still fits in the remaining 5 MiB.
+        assert_eq!(
+            attachment_fit(5 * mib, 20 * mib, 20 * mib, total),
+            AttachmentFit::Fit(5 * mib)
+        );
+        // On a boosted server (50 MiB upload limit), a 30 MiB file still hits the 25 MiB cap.
+        assert_eq!(
+            attachment_fit(30 * mib, 50 * mib, 0, total),
+            AttachmentFit::OverTotalLimit
+        );
+        // On a normal server (20 MiB upload limit), a 22 MiB file hits the server limit first.
+        assert_eq!(
+            attachment_fit(22 * mib, 20 * mib, 0, total),
+            AttachmentFit::TooBigForServer
+        );
     }
 }
