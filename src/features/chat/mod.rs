@@ -202,7 +202,8 @@ impl Feature for Chat {
             message: msg.id,
             posted: Default::default(),
         };
-        let mut parts = history::read_message(ctx, &msg, rest, false).await;
+        let owner = history::is_owner_command(ctx, &msg).await;
+        let mut parts = history::read_message(ctx, &msg, rest, false, owner).await;
         // Messages the question links to come with it, so she reads them without asking.
         parts.extend(history::linked_messages(ctx, &asker, rest).await);
         let question = NewTurn {

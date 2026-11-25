@@ -13,6 +13,7 @@ use chrono::{DateTime, Datelike, TimeDelta, TimeZone, Utc};
 use serde_json::Value;
 
 use super::{API, VERSION};
+use crate::ai::api::error_message;
 use crate::ai::spend::Bill;
 
 #[derive(Clone)]
@@ -58,13 +59,15 @@ impl Bill for Billing {
                 .await
                 .context("couldn't reach Anthropic")?;
             let status = response.status();
-            let body: Value = response.json().await.unwrap_or_default();
-            if !status.is_success() {
-                let message = body["error"]["message"]
-                    .as_str()
-                    .unwrap_or("no reason given");
-                anyhow::bail!("Anthropic's cost report answered {status}: {message}");
-            }
+            let text = if status.is_success() {
+                response
+                    .text()
+                    .await
+                    .context("reading Anthropic's cost report failed")?
+            } else {
+                response.text().await.unwrap_or_default()
+            };
+            let body = parse_page(status, &text)?;
             cents += total_cents(&body);
             match body["next_page"].as_str() {
                 Some(next) if body["has_more"] == true => page = Some(next.to_string()),
@@ -72,6 +75,17 @@ impl Bill for Billing {
             }
         }
     }
+}
+
+/// Checks the HTTP status and parses one page of Anthropic's cost report.
+fn parse_page(status: reqwest::StatusCode, text: &str) -> anyhow::Result<Value> {
+    if !status.is_success() {
+        anyhow::bail!(
+            "Anthropic's cost report answered {status}: {}",
+            error_message(text)
+        );
+    }
+    serde_json::from_str(text).context("Anthropic sent invalid JSON")
 }
 
 /// The days to ask for: from the month's first midnight to the next midnight, both UTC,
@@ -137,5 +151,24 @@ mod tests {
             month_so_far(at("2026-12-31T23:59:00Z")),
             range("2026-12-01T00:00:00Z", "2027-01-01T00:00:00Z")
         );
+    }
+
+    #[test]
+    fn invalid_200_json_returns_an_error() {
+        let ok = parse_page(reqwest::StatusCode::OK, r#"{"data": []}"#).unwrap();
+        assert_eq!(total_cents(&ok), 0.0);
+
+        let err = parse_page(reqwest::StatusCode::OK, r#"{"data": [{"#).unwrap_err();
+        assert!(format!("{err:#}").contains("invalid JSON"));
+
+        let err = parse_page(reqwest::StatusCode::OK, "").unwrap_err();
+        assert!(format!("{err:#}").contains("invalid JSON"));
+
+        let err = parse_page(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error": {"message": "invalid x-api-key"}}"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("invalid x-api-key"));
     }
 }

@@ -396,7 +396,9 @@ impl Claude {
                 .collect();
             body["container"] = json!({"skills": skills});
         }
-        if let Some(id) = self.containers.lock().unwrap().get(&request.cache_key) {
+        if run.code
+            && let Some(id) = self.containers.lock().unwrap().get(&request.cache_key)
+        {
             set_container(&mut body, Some(id));
         }
         body
@@ -714,8 +716,6 @@ impl ChatProvider for Claude {
         };
         let (mut body, uploaded) = self.prepare(&request, turns).await;
         let sender = self.sender();
-        // Before sending: the cache's hour counts from the start of the request.
-        self.warm.used(&body, request.job).await;
         if self.batched(request.job) {
             let wait = Duration::from_secs(u64::from(self.config.batch_wait_minutes) * 60);
             match batch::send(&sender, &body, wait).await {
@@ -728,6 +728,7 @@ impl ChatProvider for Claude {
                 ),
             }
         }
+        let mut started = Utc::now();
         let mut result = sender.messages(&body).await;
         // Uploads expire, and can be deleted; upload those files again.
         if let Err(err) = &result
@@ -736,6 +737,7 @@ impl ChatProvider for Claude {
             info!("{} Claude uploads are gone, uploading again", gone.len());
             self.uploads.forget(&gone).await;
             (body, _) = self.prepare(&request, turns).await;
+            started = Utc::now();
             result = sender.messages(&body).await;
         }
         // Containers expire; start a new one.
@@ -746,9 +748,12 @@ impl ChatProvider for Claude {
             info!("the code execution container expired, starting a new one");
             self.containers.lock().unwrap().remove(&request.cache_key);
             set_container(&mut body, None);
+            started = Utc::now();
             result = sender.messages(&body).await;
         }
         let response = result?;
+        // Only once the request worked, using when it started (the cache's hour counts from then).
+        self.warm.used(&body, request.job, started).await;
         Ok(self.answer(sender, &request, body, Answer::Stream(response)))
     }
 
@@ -1266,5 +1271,44 @@ mod tests {
         });
         assert!(!container_gone(&other));
         assert!(!container_gone(&anyhow::anyhow!("container")));
+    }
+
+    #[test]
+    fn non_code_jobs_never_attach_a_cached_container() {
+        let claude = client(ClaudeConfig::default());
+        claude
+            .containers
+            .lock()
+            .unwrap()
+            .insert("discord:1".into(), "container_1".into());
+        // Chat uses code execution and gets the cached container.
+        let chat = body_of(&claude, &request(), Vec::new());
+        assert_eq!(chat["container"]["id"], "container_1");
+        // Reflection has code disabled and must not attach the cached container ID.
+        let reflection = ChatRequest {
+            job: "reflection",
+            ..request()
+        };
+        assert!(
+            body_of(&claude, &reflection, Vec::new())
+                .get("container")
+                .is_none()
+        );
+
+        // Same when code_execution is turned off in config.
+        let no_code = client(ClaudeConfig {
+            code_execution: false,
+            ..ClaudeConfig::default()
+        });
+        no_code
+            .containers
+            .lock()
+            .unwrap()
+            .insert("discord:1".into(), "container_1".into());
+        assert!(
+            body_of(&no_code, &request(), Vec::new())
+                .get("container")
+                .is_none()
+        );
     }
 }

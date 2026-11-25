@@ -225,7 +225,11 @@ fn on_command(bot: &BotCtx, interaction: Interaction) {
     let Some(InteractionData::ApplicationCommand(data)) = interaction.data.clone() else {
         return;
     };
-    let ctx = CommandCtx::new(bot.clone(), Arc::new(interaction), Arc::new(*data));
+    let Some(author) = interaction::user_of(&interaction) else {
+        warn!(id = %interaction.id, command = %data.name, "command interaction had no user");
+        return;
+    };
+    let ctx = CommandCtx::new(bot.clone(), Arc::new(interaction), Arc::new(*data), author);
     let Some(command) = find_command(bot, &ctx.data.name) else {
         warn!("no command is called /{}", ctx.data.name);
         return;
@@ -244,7 +248,12 @@ fn on_command(bot: &BotCtx, interaction: Interaction) {
     bot.tasks.spawn(
         async move {
             // A command is only allowed where its feature is.
-            if !bot2.allows(feature, ctx.guild_id(), ctx.channel_id()) {
+            if !bot2.allows_with_parent(
+                feature,
+                ctx.guild_id(),
+                ctx.channel_id(),
+                ctx.thread_parent_id(),
+            ) {
                 let draft = Draft::new().content(turned_off(feature)).ephemeral();
                 if let Err(err) = ctx.send(draft).await {
                     warn!("couldn't say the command is turned off: {err:#}");
@@ -272,6 +281,10 @@ fn on_autocomplete(bot: &BotCtx, interaction: Interaction) {
     let Some(InteractionData::ApplicationCommand(data)) = interaction.data.clone() else {
         return;
     };
+    let Some(author) = interaction::user_of(&interaction) else {
+        warn!(id = %interaction.id, command = %data.name, "autocomplete interaction had no user");
+        return;
+    };
     let Some(command) = find_command(bot, &data.name) else {
         return;
     };
@@ -279,15 +292,25 @@ fn on_autocomplete(bot: &BotCtx, interaction: Interaction) {
     else {
         return;
     };
+    let feature = command.feature;
     let interaction = Arc::new(interaction);
-    let ctx = CommandCtx::new(bot.clone(), interaction.clone(), Arc::new(*data));
+    let ctx = CommandCtx::new(bot.clone(), interaction.clone(), Arc::new(*data), author);
     let bot2 = bot.clone();
     bot.tasks.spawn(async move {
-        let choices = match suggest(ctx, typed).await {
-            Ok(choices) => choices,
-            Err(err) => {
-                warn!("autocomplete failed: {err:#}");
-                Vec::new()
+        let choices = if !bot2.allows_with_parent(
+            feature,
+            ctx.guild_id(),
+            ctx.channel_id(),
+            ctx.thread_parent_id(),
+        ) {
+            Vec::new()
+        } else {
+            match suggest(ctx, typed).await {
+                Ok(choices) => choices,
+                Err(err) => {
+                    warn!("autocomplete failed: {err:#}");
+                    Vec::new()
+                }
             }
         };
         if let Err(err) = interaction::suggest(&bot2, &interaction, choices).await {
@@ -306,7 +329,7 @@ async fn on_component(bot: &BotCtx, i: ComponentInteraction) {
         tell_user(bot, &reply, STALE).await;
         return;
     };
-    if !bot.allows(feature.name(), i.guild_id, i.channel_id) {
+    if !bot.allows_with_parent(feature.name(), i.guild_id, i.channel_id, i.thread_parent_id) {
         tell_user(bot, &reply, &turned_off(feature.name())).await;
         return;
     }
@@ -334,7 +357,7 @@ async fn on_modal(bot: &BotCtx, i: ModalInteraction) {
         tell_user(bot, &reply, STALE).await;
         return;
     };
-    if !bot.allows(feature.name(), i.guild_id, i.channel_id) {
+    if !bot.allows_with_parent(feature.name(), i.guild_id, i.channel_id, i.thread_parent_id) {
         tell_user(bot, &reply, &turned_off(feature.name())).await;
         return;
     }
