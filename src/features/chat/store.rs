@@ -70,6 +70,8 @@ pub const MIGRATIONS: &[&str] = &[
     );",
     // 6: what each person on the blocklist loses, comma-separated; NULL for everything.
     "ALTER TABLE ai_blocklist ADD COLUMN features TEXT;",
+    // 7: a short gloss for each server emoji, used in lean chime-ins.
+    "ALTER TABLE chat_emoji ADD COLUMN short_description TEXT NOT NULL DEFAULT '';",
 ];
 
 /// One piece of a stored turn. Media is kept as a link and downloaded again when an old
@@ -381,14 +383,30 @@ pub fn answers(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
+/// What a server's custom emoji looks like: a full sentence and a short gloss.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmojiDescription {
+    pub description: String,
+    pub short_description: String,
+}
+
 /// The emoji of a server that have a description, by ID.
 pub fn emoji_descriptions(
     conn: &Connection,
     guild: u64,
-) -> rusqlite::Result<std::collections::HashMap<u64, String>> {
-    let mut stmt =
-        conn.prepare("SELECT emoji_id, description FROM chat_emoji WHERE guild_id = ?1")?;
-    let rows = stmt.query_map([guild], |row| Ok((row.get(0)?, row.get(1)?)))?;
+) -> rusqlite::Result<std::collections::HashMap<u64, EmojiDescription>> {
+    let mut stmt = conn.prepare(
+        "SELECT emoji_id, description, short_description FROM chat_emoji WHERE guild_id = ?1",
+    )?;
+    let rows = stmt.query_map([guild], |row| {
+        Ok((
+            row.get(0)?,
+            EmojiDescription {
+                description: row.get(1)?,
+                short_description: row.get(2)?,
+            },
+        ))
+    })?;
     rows.collect()
 }
 
@@ -398,12 +416,28 @@ pub fn set_emoji_description(
     guild: u64,
     name: &str,
     description: &str,
+    short_description: &str,
 ) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO chat_emoji (emoji_id, guild_id, name, description) VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO chat_emoji (emoji_id, guild_id, name, description, short_description)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (emoji_id) DO UPDATE SET name = excluded.name,
-            description = excluded.description",
-        params![emoji, guild, name, description],
+            description = excluded.description,
+            short_description = excluded.short_description",
+        params![emoji, guild, name, description, short_description],
+    )?;
+    Ok(())
+}
+
+/// Updates only the short gloss of an existing emoji row (for backfilling old rows).
+pub fn set_emoji_short_description(
+    conn: &Connection,
+    emoji: u64,
+    short_description: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE chat_emoji SET short_description = ?1 WHERE emoji_id = ?2",
+        params![short_description, emoji],
     )?;
     Ok(())
 }
@@ -461,12 +495,56 @@ mod tests {
     #[test]
     fn emoji_descriptions_by_server() {
         let conn = test_connection("chat", MIGRATIONS);
-        set_emoji_description(&conn, 10, 1, "pog", "a surprised face").unwrap();
-        set_emoji_description(&conn, 10, 1, "pog2", "a very surprised face").unwrap();
-        set_emoji_description(&conn, 11, 2, "kek", "laughing").unwrap();
+        set_emoji_description(&conn, 10, 1, "pog", "a surprised face", "surprised hype").unwrap();
+        set_emoji_description(
+            &conn,
+            10,
+            1,
+            "pog2",
+            "a very surprised face",
+            "very surprised hype",
+        )
+        .unwrap();
+        set_emoji_description(&conn, 11, 2, "kek", "laughing", "hard laugh").unwrap();
         let first = emoji_descriptions(&conn, 1).unwrap();
         assert_eq!(first.len(), 1);
-        assert_eq!(first[&10], "a very surprised face");
+        assert_eq!(
+            first[&10],
+            EmojiDescription {
+                description: "a very surprised face".into(),
+                short_description: "very surprised hype".into(),
+            }
+        );
+
+        set_emoji_short_description(&conn, 10, "shocked excitement").unwrap();
+        let updated = emoji_descriptions(&conn, 1).unwrap();
+        assert_eq!(updated[&10].description, "a very surprised face");
+        assert_eq!(updated[&10].short_description, "shocked excitement");
+    }
+
+    #[test]
+    fn migration_7_adds_short_description_defaulting_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..6] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO chat_emoji (emoji_id, guild_id, name, description)
+             VALUES (42, 1, 'smug', 'A smug cat grinning at a joke.')",
+            [],
+        )
+        .unwrap();
+
+        conn.execute_batch(MIGRATIONS[6]).unwrap();
+
+        let rows = emoji_descriptions(&conn, 1).unwrap();
+        assert_eq!(
+            rows[&42],
+            EmojiDescription {
+                description: "A smug cat grinning at a joke.".into(),
+                short_description: String::new(),
+            }
+        );
     }
 
     #[test]

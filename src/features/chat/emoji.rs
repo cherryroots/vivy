@@ -34,7 +34,11 @@ static FAILED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 /// The most emoji `list_server_emoji` returns.
 const MAX_LISTED: usize = 250;
 
-const SYSTEM: &str = "You describe Discord custom emoji. Answer with one short line, under 15 words: what the picture shows and the feeling or reaction it's used for. No preamble.";
+const SYSTEM: &str = "You describe Discord custom emoji. Answer with exactly two lines, no preamble:\n\
+SHORT: <3 to 6 word gloss of the vibe/meaning, no period>\n\
+LONG: <one full sentence describing what it shows and when people use it>";
+
+const SHORT_SYSTEM: &str = "Turn a Discord custom emoji description into a 3 to 6 word gloss of its vibe or meaning, with no period and no preamble.";
 
 pub fn def() -> ToolDef {
     ToolDef {
@@ -55,15 +59,16 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
-/// The server's emoji for a chime-in reaction, so she can pick one of them without
-/// looking them up first. Empty when the server has none (or in DMs).
+/// The server's emoji for a chime-in reaction, in compact `:name: <short>` form (no
+/// snowflake IDs; `reaction_code` resolves `:name:` to `<:name:id>`). Empty when the
+/// server has none (or in DMs).
 pub async fn for_chime_in(ctx: &BotCtx, guild: Option<GuildId>) -> String {
     let Some(guild) = guild else {
         return String::new();
     };
-    match described(ctx, guild).await {
+    match compact_list(ctx, guild).await {
         Ok(lines) if !lines.is_empty() => format!(
-            "\n\nBesides plain emoji you can use this server's own, as your reaction, written as their code:\n{}",
+            "\n\nBesides plain emoji you can use this server's own as your reaction (write :name:):\n{}",
             lines.join("\n")
         ),
         Ok(_) => String::new(),
@@ -71,6 +76,38 @@ pub async fn for_chime_in(ctx: &BotCtx, guild: Option<GuildId>) -> String {
             warn!("listing the server's emoji: {err:#}");
             String::new()
         }
+    }
+}
+
+/// Compact list of the server's emoji for chime-ins: `:name: <short_description>` (no
+/// snowflake IDs), falling back to `:name:` when `short_description` is empty.
+pub async fn compact_list(ctx: &BotCtx, guild: GuildId) -> Result<Vec<String>> {
+    let emoji = server_emoji(ctx, guild);
+    if emoji.is_empty() {
+        return Ok(Vec::new());
+    }
+    let id = guild.get();
+    let described = ctx
+        .db
+        .call(move |conn| Ok(store::emoji_descriptions(conn, id)?))
+        .await?;
+    Ok(emoji
+        .iter()
+        .take(MAX_LISTED)
+        .map(|e| {
+            let short = described
+                .get(&e.id.get())
+                .map(|entry| entry.short_description.as_str());
+            format_compact_line(&e.name, short)
+        })
+        .collect())
+}
+
+/// One compact emoji line for chime-ins: `:name: <short>` or `:name:` when empty.
+fn format_compact_line(name: &str, short_description: Option<&str>) -> String {
+    match short_description.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(short) => format!(":{name}: {short}"),
+        None => format!(":{name}:"),
     }
 }
 
@@ -89,8 +126,10 @@ async fn described(ctx: &BotCtx, guild: GuildId) -> Result<Vec<String>> {
         .iter()
         .take(MAX_LISTED)
         .map(|e| match described.get(&e.id.get()) {
-            Some(text) => format!("{e}: {text}"),
-            None => e.to_string(),
+            Some(entry) if !entry.description.is_empty() => {
+                format!("{e}: {}", entry.description)
+            }
+            _ => e.to_string(),
         })
         .collect())
 }
@@ -231,7 +270,8 @@ async fn run(ctx: BotCtx) {
     }
 }
 
-/// Describes the emoji of every server chat is on in that don't have a description yet.
+/// Describes the emoji of every server chat is on in that don't have a description yet,
+/// and backfills missing short descriptions from existing long descriptions.
 async fn describe_new(ctx: &BotCtx) -> Result<()> {
     if ctx.ai.chat().is_none() {
         return Ok(());
@@ -245,9 +285,16 @@ async fn describe_new(ctx: &BotCtx) -> Result<()> {
             .db
             .call(move |conn| Ok(store::emoji_descriptions(conn, id)?))
             .await?;
-        let new: Vec<Emoji> = server_emoji(ctx, guild)
-            .into_iter()
-            .filter(|e| !described.contains_key(&e.id.get()) && !failed_before(e))
+        let all = server_emoji(ctx, guild);
+        let new: Vec<Emoji> = all
+            .iter()
+            .filter(|e| {
+                !failed_before(e)
+                    && described
+                        .get(&e.id.get())
+                        .is_none_or(|entry| entry.description.is_empty())
+            })
+            .cloned()
             .collect();
         if !new.is_empty() {
             info!("describing {} new emoji", new.len());
@@ -257,18 +304,56 @@ async fn describe_new(ctx: &BotCtx) -> Result<()> {
                 return Ok(());
             }
             match describe(ctx, &emoji).await {
-                Ok(text) => {
+                Ok((short, long)) => {
                     let (emoji_id, name) = (emoji.id.get(), emoji.name.clone());
                     ctx.db
                         .call(move |conn| {
                             Ok(store::set_emoji_description(
-                                conn, emoji_id, id, &name, &text,
+                                conn, emoji_id, id, &name, &long, &short,
                             )?)
                         })
                         .await?;
                 }
                 Err(err) => {
                     warn!("couldn't describe :{}: {err:#}", emoji.name);
+                    let mut failed = FAILED.lock().unwrap();
+                    failed.get_or_insert_default().insert(emoji.id.get());
+                }
+            }
+        }
+
+        // Backfill existing rows that have a long description but no short gloss yet,
+        // using a cheap text-only call so we don't re-download every emoji image.
+        let need_short: Vec<(Emoji, String)> = all
+            .into_iter()
+            .filter(|e| !failed_before(e))
+            .filter_map(|e| {
+                let entry = described.get(&e.id.get())?;
+                (!entry.description.is_empty() && entry.short_description.is_empty())
+                    .then(|| (e, entry.description.clone()))
+            })
+            .collect();
+        if !need_short.is_empty() {
+            info!("backfilling {} short emoji descriptions", need_short.len());
+        }
+        for (emoji, long) in need_short {
+            if ctx.shutdown.is_cancelled() {
+                return Ok(());
+            }
+            match condense_short(ctx, &emoji.name, &long).await {
+                Ok(short) => {
+                    let emoji_id = emoji.id.get();
+                    ctx.db
+                        .call(move |conn| {
+                            Ok(store::set_emoji_short_description(conn, emoji_id, &short)?)
+                        })
+                        .await?;
+                }
+                Err(err) => {
+                    warn!(
+                        "couldn't backfill short description for :{}: {err:#}",
+                        emoji.name
+                    );
                     let mut failed = FAILED.lock().unwrap();
                     failed.get_or_insert_default().insert(emoji.id.get());
                 }
@@ -285,8 +370,9 @@ fn failed_before(emoji: &Emoji) -> bool {
         .is_some_and(|ids| ids.contains(&emoji.id.get()))
 }
 
-/// Shows the model the emoji's picture (frames, for an animated one) and returns its line.
-async fn describe(ctx: &BotCtx, emoji: &Emoji) -> Result<String> {
+/// Shows the model the emoji's picture (frames, for an animated one) and returns
+/// `(short_description, long_description)`.
+async fn describe(ctx: &BotCtx, emoji: &Emoji) -> Result<(String, String)> {
     let provider = ctx.ai.chat().ok_or_else(|| anyhow::anyhow!("no model"))?;
     let media = if emoji.animated {
         Media {
@@ -323,11 +409,96 @@ async fn describe(ctx: &BotCtx, emoji: &Emoji) -> Result<String> {
         answer_now: false,
     };
     let done = complete(provider.as_ref(), request, &NoTools, 1).await?;
+    parse_description(&done.text)
+}
+
+/// Condenses an existing long emoji description into a 3–6 word gloss (no image needed).
+async fn condense_short(ctx: &BotCtx, name: &str, long: &str) -> Result<String> {
+    let provider = ctx.ai.chat().ok_or_else(|| anyhow::anyhow!("no model"))?;
+    let request = ChatRequest {
+        system: SHORT_SYSTEM.to_string(),
+        input: Input::Full(vec![Turn {
+            role: Role::User,
+            parts: vec![Part::Text(format!(":{name}: {long}"))],
+        }]),
+        tools: Vec::new(),
+        cache_key: "emoji".to_string(),
+        job: "emoji",
+        answer_now: false,
+    };
+    let done = complete(provider.as_ref(), request, &NoTools, 1).await?;
     let line = done.text.trim().lines().next().unwrap_or_default().trim();
-    if line.is_empty() {
+    let cleaned = strip_label(line, "SHORT:")
+        .unwrap_or(line)
+        .trim_end_matches('.');
+    if cleaned.is_empty() {
+        anyhow::bail!("the model gave no short description");
+    }
+    Ok(shorten(cleaned, 60))
+}
+
+/// Parses the two-line `SHORT:` / `LONG:` output from [`describe`].
+/// Falls back cleanly if a model returns a single line or omits one label.
+fn parse_description(text: &str) -> Result<(String, String)> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    if lines.is_empty() {
         anyhow::bail!("the model gave no description");
     }
-    Ok(shorten(line, 150))
+
+    let mut short: Option<&str> = None;
+    let mut long: Option<&str> = None;
+    for line in &lines {
+        if let Some(rest) = strip_label(line, "SHORT:") {
+            if !rest.is_empty() {
+                short = Some(rest);
+            }
+        } else if let Some(rest) = strip_label(line, "LONG:")
+            && !rest.is_empty()
+        {
+            long = Some(rest);
+        }
+    }
+
+    match (short, long) {
+        (Some(s), Some(l)) => Ok((clean_short(s), shorten(l, 150))),
+        (None, Some(l)) => {
+            let long = shorten(l, 150);
+            Ok((short_fallback(&long), long))
+        }
+        (Some(s), None) => {
+            let short = clean_short(s);
+            let long = shorten(s, 150);
+            Ok((short, long))
+        }
+        (None, None) => {
+            let long = shorten(lines[0], 150);
+            Ok((short_fallback(&long), long))
+        }
+    }
+}
+
+/// Strips a case-insensitive prefix like `"SHORT:"` and trims the remainder.
+fn strip_label<'a>(line: &'a str, label: &str) -> Option<&'a str> {
+    let prefix = line.get(..label.len())?;
+    prefix
+        .eq_ignore_ascii_case(label)
+        .then(|| line[label.len()..].trim())
+}
+
+fn clean_short(text: &str) -> String {
+    shorten(text.trim().trim_end_matches('.'), 60)
+}
+
+/// Shortens a full sentence to its first 6 words for a safe fallback gloss.
+fn short_fallback(long: &str) -> String {
+    let words: Vec<&str> = long.split_whitespace().take(6).collect();
+    let joined = words.join(" ");
+    let trimmed = joined.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    shorten(trimmed, 60)
 }
 
 /// For one-round requests: there are no tools to call.
@@ -393,5 +564,59 @@ mod tests {
         assert_eq!(reaction_code("pog", &codes), "<:pog:123>");
         assert_eq!(reaction_code(":dance:", &codes), "<a:dance:456>");
         assert_eq!(reaction_code("😂", &codes), "😂");
+    }
+
+    #[test]
+    fn parses_short_and_long_descriptions() {
+        let (short, long) = parse_description(
+            "SHORT: smug cheeky cat grin.\nLONG: A cat smirking knowingly, used for teasing or smug wins.",
+        )
+        .unwrap();
+        assert_eq!(short, "smug cheeky cat grin");
+        assert_eq!(
+            long,
+            "A cat smirking knowingly, used for teasing or smug wins."
+        );
+
+        // Case-insensitive labels.
+        let (short, long) =
+            parse_description("short: hyped shock\nlong: Wide-eyed excited face.").unwrap();
+        assert_eq!(short, "hyped shock");
+        assert_eq!(long, "Wide-eyed excited face.");
+    }
+
+    #[test]
+    fn parse_description_falls_back_on_single_line() {
+        let (short, long) =
+            parse_description("A tired frog sipping coffee, used when waking up early.").unwrap();
+        assert_eq!(short, "A tired frog sipping coffee, used");
+        assert_eq!(
+            long,
+            "A tired frog sipping coffee, used when waking up early."
+        );
+
+        // Only LONG provided.
+        let (short, long) = parse_description("LONG: Laughing dog rolling on the floor.").unwrap();
+        assert_eq!(short, "Laughing dog rolling on the floor");
+        assert_eq!(long, "Laughing dog rolling on the floor.");
+
+        // Only SHORT provided.
+        let (short, long) = parse_description("SHORT: pure chaos energy.").unwrap();
+        assert_eq!(short, "pure chaos energy");
+        assert_eq!(long, "pure chaos energy.");
+
+        assert!(parse_description("   \n  ").is_err());
+    }
+
+    #[test]
+    fn compact_line_uses_short_without_snowflake_ids() {
+        assert_eq!(
+            format_compact_line("pog", Some("surprised hype")),
+            ":pog: surprised hype"
+        );
+        assert_eq!(format_compact_line("pog", Some("")), ":pog:");
+        assert_eq!(format_compact_line("pog", Some("   ")), ":pog:");
+        assert_eq!(format_compact_line("pog", None), ":pog:");
+        assert!(!format_compact_line("pog", Some("surprised hype")).contains("<:"));
     }
 }
