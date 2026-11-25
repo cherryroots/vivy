@@ -457,6 +457,11 @@ fn static_mime(mime: &str) -> &'static str {
     match mime {
         "image/jpeg" => "image/jpeg",
         "image/webp" => "image/webp",
+        "image/heic" => "image/heic",
+        "image/heif" => "image/heif",
+        "image/avif" => "image/avif",
+        "image/bmp" => "image/bmp",
+        "image/tiff" => "image/tiff",
         "image/gif" => "image/gif",
         "video/mp4" => "video/mp4",
         "video/webm" => "video/webm",
@@ -673,5 +678,26 @@ mod tests {
         assert!(!is_discord_attachment(
             "https://example.com/attachments/a.png"
         ));
+    }
+
+    #[test]
+    fn static_mime_keeps_convertible_formats() {
+        for mime in [
+            "image/heic",
+            "image/heif",
+            "image/avif",
+            "image/bmp",
+            "image/tiff",
+            "image/jpeg",
+            "image/webp",
+            "image/gif",
+            "video/mp4",
+            "video/webm",
+            "video/quicktime",
+        ] {
+            assert_eq!(static_mime(mime), mime);
+        }
+        assert_eq!(static_mime("image/png"), "image/png");
+        assert_eq!(static_mime("application/octet-stream"), "image/png");
     }
 }

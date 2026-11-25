@@ -54,7 +54,7 @@ use super::sse::SseParser;
 use super::{
     ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, Part, Turn, job_settings,
 };
-use crate::util::media::ModelImage;
+use crate::util::media::{ModelImage, decode_bounded};
 
 pub(crate) const API: &str = "https://api.anthropic.com/v1";
 pub(crate) const VERSION: &str = "2023-06-01";
@@ -613,7 +613,7 @@ async fn shrink_image(data: Vec<u8>) -> Option<ModelImage> {
         return None;
     }
     tokio::task::spawn_blocking(move || {
-        let image = image::load_from_memory(&data).ok()?;
+        let image = decode_bounded(&data).ok()?;
         let fits = image.width() <= MAX_IMAGE_SIDE && image.height() <= MAX_IMAGE_SIDE;
         // `resize` fills the bounds, so a picture that's only too many bytes would grow;
         // that one is just saved again as JPEG, which is smaller.

@@ -74,7 +74,7 @@ pub async fn load_picture(picture: &Picture) -> anyhow::Result<DynamicImage> {
                 .with_context(|| format!("downloading {}", picture.original))?
         }
     };
-    let img = tokio::task::spawn_blocking(move || decode(&data))
+    let img = tokio::task::spawn_blocking(move || media::decode_bounded(&data))
         .await?
         .context("decoding the picture")?;
     // An empty picture has nothing to fingerprint (and would break the crops).
@@ -82,17 +82,6 @@ pub async fn load_picture(picture: &Picture) -> anyhow::Result<DynamicImage> {
         anyhow::bail!("the picture is empty");
     }
     Ok(img)
-}
-
-/// Decodes a picture, refusing huge ones so a small file can't ask for gigabytes of memory.
-fn decode(data: &[u8]) -> image::ImageResult<DynamicImage> {
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8192);
-    limits.max_image_height = Some(8192);
-    limits.max_alloc = Some(128 * 1024 * 1024);
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()?;
-    reader.limits(limits);
-    reader.decode()
 }
 
 /// A picture that downloaded, with its fingerprint.
