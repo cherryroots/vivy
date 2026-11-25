@@ -193,3 +193,26 @@ impl Feature for Memory {
         Ok(vec![panel])
     }
 }
+
+/// Checks every split settings struct under `[features.memory]` and records unknown keys.
+#[cfg(test)]
+pub(super) fn check_settings(config: &crate::core::config::Config) -> anyhow::Result<()> {
+    config.feature_part::<banner::Settings>("memory")?;
+    config.feature_part::<diary::Settings>("memory")?;
+    config.feature_part::<face::Settings>("memory")?;
+    config.feature_part::<mood::Settings>("memory")?;
+    config.feature_part::<name::Settings>("memory")?;
+    config.feature_part::<sweep::Settings>("memory")?;
+    config.warn_unknown(
+        "memory",
+        &[
+            config.ignored_by::<banner::Settings>("memory"),
+            config.ignored_by::<diary::Settings>("memory"),
+            config.ignored_by::<face::Settings>("memory"),
+            config.ignored_by::<mood::Settings>("memory"),
+            config.ignored_by::<name::Settings>("memory"),
+            config.ignored_by::<sweep::Settings>("memory"),
+        ],
+    );
+    Ok(())
+}

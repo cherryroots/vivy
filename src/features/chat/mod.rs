@@ -25,7 +25,7 @@ mod apps;
 mod avatar;
 mod blocklist;
 mod channels;
-mod chime;
+pub(super) mod chime;
 mod emoji;
 mod history;
 mod look_back;

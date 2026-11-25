@@ -64,13 +64,7 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         .context("opening the database")?;
     let migration_features = features.clone();
     db.call(move |conn| {
-        db::migrate(conn, "core", db::CORE_MIGRATIONS)?;
-        // Claude's saved uploads (see ai/claude/uploads.rs).
-        db::migrate(conn, "claude", ai::claude::UPLOAD_MIGRATIONS)?;
-        db::migrate(conn, "claude_keep_warm", ai::claude::KEEP_WARM_MIGRATIONS)?;
-        for feature in migration_features.iter() {
-            db::migrate(conn, feature.name(), feature.migrations())?;
-        }
+        migrate_all(conn, &migration_features)?;
         Ok(())
     })
     .await
@@ -484,5 +478,64 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+/// Runs every owner's database migrations: core, Claude's tables, and every feature.
+fn migrate_all(
+    conn: &mut rusqlite::Connection,
+    features: &[Arc<dyn crate::core::Feature>],
+) -> anyhow::Result<usize> {
+    let mut ran = 0;
+    ran += db::migrate(conn, "core", db::CORE_MIGRATIONS)?;
+    // Claude's saved uploads (see ai/claude/uploads.rs).
+    ran += db::migrate(conn, "claude", ai::claude::UPLOAD_MIGRATIONS)?;
+    ran += db::migrate(conn, "claude_keep_warm", ai::claude::KEEP_WARM_MIGRATIONS)?;
+    for feature in features {
+        ran += db::migrate(conn, feature.name(), feature.migrations())?;
+    }
+    Ok(ran)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn example_config_has_no_unknown_keys_or_warnings() {
+        let config = Config::parse(include_str!("../config.example.toml")).unwrap();
+        features::check_all_settings(&config).unwrap();
+
+        let warned = config.warned_keys();
+        assert!(
+            warned.is_empty(),
+            "unknown keys in config.example.toml: {warned:?}"
+        );
+
+        let all = features::all();
+        let names: Vec<&str> = all.iter().map(|f| f.name()).collect();
+        // `config.example.toml` intentionally leaves `admins = []` for the user to fill in.
+        let warnings: Vec<String> = config
+            .startup_warnings(&names)
+            .into_iter()
+            .filter(|w| !w.contains("`admins` is empty"))
+            .collect();
+        assert!(
+            warnings.is_empty(),
+            "unexpected warnings for config.example.toml: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn all_migrations_apply_cleanly() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        db::configure(&mut conn).unwrap();
+        let features = features::all();
+
+        let applied = migrate_all(&mut conn, &features).unwrap();
+        assert!(applied > 0, "expected at least one migration to run");
+
+        // Running migrations a second time should be a no-op.
+        assert_eq!(migrate_all(&mut conn, &features).unwrap(), 0);
     }
 }
