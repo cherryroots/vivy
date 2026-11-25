@@ -44,6 +44,7 @@ pub enum Part {
     File(ModelFile),            // any other attachment: name, MIME type, bytes
     Video(ModelFile),           // a video as it is, only for a provider that watches videos (Gemini)
     YouTube(String),            // a YouTube link, the same
+    Audio(ModelFile),           // audio as it is (like a voice message), only for a provider that hears audio (Gemini)
     ToolResult { call_id: String, output: String },
     Native { provider: String, model: String, rounds: Vec<NativeRound> },
 }
@@ -106,6 +107,10 @@ pub trait ChatProvider: Send + Sync {
         false
     }
 
+    fn hears_audio(&self) -> bool {
+        false
+    }
+
     async fn stream(
         &self,
         request: ChatRequest,
@@ -120,7 +125,7 @@ Some Rust terms here:
 - `#[async_trait]` (from the `async-trait` crate) lets a trait have `async fn` methods that can be called through `dyn ChatProvider`.
 - `Send + Sync` means a provider can be shared between threads and tasks. The bot keeps providers as `Arc<dyn ChatProvider>`: a shared pointer to "some type that implements the trait".
 - `stream` returns the receiving end of a `tokio::sync::mpsc` channel. The provider spawns a task that reads the HTTP stream and sends events into the channel until `Done` or an error. Dropping the receiver stops the request: the provider's task notices that sending failed and returns.
-- `sends_full_history` and `watches_video` have a default body, so a provider only overrides them when it needs to. Claude returns `true`: every request carries the whole conversation, so history sends every turn's media and never changes earlier turns (see [chat](features/chat.md)). Gemini returns `true` from `watches_video`: history then sends posted videos as `Part::Video` (the file itself) and YouTube links as `Part::YouTube`, instead of frame grids. Claude and OpenAI never get those two parts and skip them.
+- `sends_full_history`, `watches_video` and `hears_audio` have a default body, so a provider only overrides them when it needs to. Claude returns `true` from `sends_full_history`: every request carries the whole conversation, so history sends every turn's media and never changes earlier turns (see [chat](features/chat.md)). Gemini returns `true` from `watches_video` and `hears_audio`: history then sends posted videos as `Part::Video`, YouTube links as `Part::YouTube`, and Discord voice messages as `Part::Audio`, instead of frame grids or a note saying the model can't listen. Claude and OpenAI skip those parts safely.
 
 ## The tool loop
 
@@ -236,10 +241,11 @@ What each response cost is added to `Spend` (see below), even when it was stoppe
 - The HTTP client for Gemini waits up to 15 minutes for the next bytes (5 elsewhere): Google says hard prompts can think for several minutes, and asks for at least 15.
 - Thinking levels: every Gemini 4 model takes `low`, `medium` and `high`; Neon and Hydrogen also take `xhigh`. None takes `minimal` or `max` (checked live 2026-11-21). `thinking_level()` sends `high` when a job asks Argon or Carbon for `xhigh`, so a per-job model can't break a request; `config_warnings` flags any other word at startup.
 - Built-in tools: `google_search` and `url_context` when the job has the web (search, then read the pages it found or the links people post), `code_execution` when it has code. Then the bot's tools as `function` tools.
-- Code execution and videos or PDFs don't mix: Gemini answers 400 "The mime type: application/pdf is not supported for code execution" (`video/mp4`, `video/unknown` for YouTube) whenever the interaction holds one, also on a follow-up whose new turns don't, because Gemini still holds the earlier video. Office files are refused the same way. So a request whose new turns have a video, YouTube link or document goes without `code_execution` (`has_video_or_document`), and when Gemini still refuses for an older one (`refuses_code`), the request is sent once more without it. Before 2026-11-21 every Gemini chat with a video, YouTube link or PDF failed this way.
+- Code execution and videos, audio or PDFs don't mix: Gemini answers 400 "The mime type: application/pdf is not supported for code execution" (`video/mp4`, `video/unknown` for YouTube, `audio/ogg`) whenever the interaction holds one, also on a follow-up whose new turns don't, because Gemini still holds the earlier media. Office files are refused the same way. So a request whose new turns have a video, YouTube link, audio or document goes without `code_execution` (`has_video_or_document`), and when Gemini still refuses for an older one (`refuses_code`), the request is sent once more without it. Before 2026-11-21 every Gemini chat with a video, YouTube link or PDF failed this way.
 - Gemini stores every interaction (55 days on a paid key), so like OpenAI `Done.continuation` is the interaction's ID, and the next request sends `previous_interaction_id` with only what's new. Gemini keeps its own thinking (and its thought signatures) on its side, so `Part::Native` is ignored.
 - `input` is a list of steps: a person's turn is `user_input`, an earlier answer is `model_output` with its text (when the conversation started on another provider), and each tool result is a `function_result` with the call's `call_id` and `name`. The tool loop only keeps the call ID, so the provider remembers each call's name in `call_names` (bounded to the newest 1000 entries in FIFO order, so old answers drop off without clearing concurrent in-flight tool calls).
 - Pictures go inline as `{"type": "image", "data": <base64>, "mime_type": ...}`.
+- Audio (`Part::Audio`, like Discord voice messages) goes inline as `{"type": "audio", "data": <base64>, "mime_type": ...}` when up to 10 MB (`MAX_INLINE_AUDIO_BYTES`); larger clips are uploaded with the Files API and sent as `{"type": "audio", "uri": ..., "mime_type": ...}`.
 - Videos people post are uploaded with the Files API (`files.rs`: a resumable upload, then the file is checked every 2 seconds until Google has processed it) and sent as `{"type": "video", "uri": ..., "processing": video_processing}`. The model watches the whole video with its sound, not a few frames. Google deletes uploads after 48 hours; uploads from the last 47 are reused by content (the same `ContentKey` hash as Claude's uploads), in memory only, with expired entries evicted on lookup and insert.
 - YouTube links in people's messages (`youtube.com/watch`, `youtu.be`, shorts, live) are sent as videos by their link, `{"type": "video", "uri": "https://www.youtube.com/watch?v=...", "processing": youtube_processing}`: only public videos work, at most 10 per request, from the newest 4 messages that link any (`history::youtube_videos`). YouTube's preview thumbnail is still sent as a picture too.
 - A YouTube link that starts partway (`t=90`, `t=1m30s`, `start=` on embeds, `#t=`) keeps its start in the link `media::youtube_link` makes (`&t=<seconds>`). Gemini then watches 2 minutes from there in full (`YOUTUBE_CLIP`; `"processing": {"type": "static", "start_offset": "90s", "end_offset": "210s"}`, about 100 tokens a second), with a note saying where it starts. Agentic processing takes no offsets. Checked live on 2026-11-21.

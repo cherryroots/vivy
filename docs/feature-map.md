@@ -32,7 +32,7 @@ Every feature is a folder under `src/features/`, listed in `features::all()` (`s
 |---|---|---|---|
 | Chat | `chat/` | Answers when someone @-mentions Vivy, with web search, code, files and the bot's own tools; reads along now and then and may react with an emoji; keeps her own blocklist; knows the server's emoji | @-mention, reply to an answer, ❌ and 🔁 reactions, Catch me up, Explain this and Translate this (right-click a message → Apps), `/catchup` |
 | Reminders | `reminders/` | Pings you at a time you name, in plain words, with the pictures you attached, once or on repeat | `@Vivy remind me ...`, `/reminders`, `/timezone`, Cancel and snooze buttons, chat tools |
-| Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`, buttons |
+| Movie wheel | `wheel/` | A betting game for movie night, drawn as a picture, in seasons | `/wheel status`, `/wheel history`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`, buttons |
 | Memory | `memory/` | A folder of notes per server (and per person in DMs) that Vivy keeps herself; her own notes, mood, face, banner, nickname, and a weekly diary | The `memory` and `set_mood` chat tools, `/memory show`, `/memory forget`, `/memory delete` |
 | Voice | `voice/` | Vivy sends Discord voice messages in her own voice | The `send_voice_message` chat tool |
 | Drawing | `drawing/` | Vivy draws pictures, or changes ones people post, with GPT Image 2.6 | The `draw_picture` chat tool |
@@ -305,13 +305,15 @@ The port went in stages, one pull request each, all merged into `main`.
 | #193 | | Systemd hardening & docs/config sync: `deploy/vivy.service` adds `UMask=0077` (so `vivy.db` isn't created world-readable) and zero-risk systemd sandboxing (`CapabilityBoundingSet=`, `PrivateDevices=true`, `ProtectKernelTunables=true`, `ProtectKernelModules=true`, `ProtectKernelLogs=true`, `ProtectControlGroups=true`, `RestrictSUIDSGID=true`, `LockPersonality=true`); `.env.example`, `README.md`, `docs/architecture.md`, `docs/ai.md`, `docs/feature-map.md` and `docs/features/*.md` synced with current `main` (Gemini 4 Neon, Hunger Games burning-arena showdown, removed #158 check-ins, updated hook/tool/table/command lists, and PR numbers `#179`–`#189`). |
 | | | CI clippy fix on Rust 1.100 (`#[allow(clippy::needless_range_loop)]` on `wheel/sim.rs` test loop) and deduplicate merged PR rows (`#190`–`#193`) in `docs/feature-map.md`. |
 | | | Memory & wheel: `BotEvent::WheelRoundResolved` now carries `season`, `winner_name` and `movie`, and `Memory::on_bot_event` (`memory/movies.rs`) logs resolved rounds into `/memories/server/movies-watched.md` (with guild gating, in-place replacement on re-resolve, and oldest-entry trimming to stay within 8 KB). |
+| | | Voice message replies: `Part::Audio` and `ChatProvider::hears_audio` (implemented on Gemini with inline base64 up to 10 MB or Files API upload above that, safely skipped on Claude/OpenAI); dispatcher routes Discord voice messages (`IS_VOICE_MESSAGE`) replying to Vivy or sent in DMs to chat even with empty text; chat downloads voice clips (up to 10 MB), stores `[Voice message]` + `StoredPart::Audio` in history, and adds a voice-reply instruction note when `send_voice_message` is available so Vivy replies in her own voice (falling back to text if unavailable or over quota). |
+| | | Wheel: balance history line chart (`wheel/graph.rs`, `ledger::balance_history`, `ledger::is_season_over`): `/wheel history [season]` renders a dark-theme SVG-to-PNG line chart of every player's balance from `Start` through each resolved round, and picking the last option on the wheel automatically posts the season's final balance history graph in the channel. |
 
 ## Not built yet
 
 | Idea | Notes |
 |---|---|
 | Sentry | Error grouping through the `sentry` crate's `tracing` integration, on when `SENTRY_DSN` is set. GlitchTip is a self-hostable server for it. |
-| Wheel: `/wheel_spin` and balance history | A random winner with an animation, and each player's money over time |
+| Wheel: `/wheel_spin` | A random winner with an animation |
 | More faces | Mischievous, grossed out, lonely, celebrating |
 | Listeners for bot events | `ReminderFired` is published, but nothing listens to it yet (`WheelRoundResolved` is now handled by memory) |
 | Voice channels | Not asked for; voice is messages only |

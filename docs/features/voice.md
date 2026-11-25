@@ -4,7 +4,7 @@ Vivy can answer with a real Discord voice message (the kind with a play button a
 
 ## Using it
 
-There are no commands. In chat, ask Vivy to say something out loud; the chat model decides when to use the `send_voice_message` tool.
+There are no commands. In chat, ask Vivy to say something out loud, or reply to one of her messages with a Discord voice message (or send her a voice message in a DM); the chat model decides when to use the `send_voice_message` tool, and replies in her own voice to incoming voice messages when voice is available (falling back to text if voice is unavailable or over quota).
 
 The tool is only offered when `ELEVENLABS_API_KEY` is set in `.env`, and only in normal chat answers (not in chime-ins, whose tool list is an allow-list in `src/features/chat/chime.rs` that leaves it out). Sending also needs `ffmpeg` installed and the Send Voice Messages permission in the channel.
 

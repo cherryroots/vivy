@@ -8,12 +8,14 @@
 //! - `actions.rs`: the buttons, menus and bet modal
 //! - `ui.rs`: the status buttons, menus and modal, and their IDs
 //! - `render.rs`: the round as a picture
+//! - `graph.rs`: the season balance history line chart
 //! - `names.rs`: display names for the stored user IDs
-//! - `commands.rs`: `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`
+//! - `commands.rs`: `/wheel status`, `/wheel history`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`
 //! - `tools.rs`: `get_wheel_status` for chat
 
 mod actions;
 mod commands;
+mod graph;
 mod ledger;
 mod names;
 mod render;
