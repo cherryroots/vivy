@@ -205,6 +205,8 @@ fn report(name: &str, stats: &Stats) {
     );
     // Who finished first in each game.
     let mut firsts = vec![0usize; PLAYERS as usize];
+    // Clippy 1.100 flags `g` as needless_range_loop, though `g` indexes every player's `finals[p][g]`.
+    #[allow(clippy::needless_range_loop)]
     for g in 0..GAMES {
         let best = (0..PLAYERS as usize)
             .max_by_key(|&p| (stats.finals[p][g], std::cmp::Reverse(p)))
