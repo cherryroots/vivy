@@ -321,7 +321,7 @@ Nothing else changes: the dispatcher, chat and the control panel find it through
 
 ## Testing
 
-`cargo test` runs every test; none needs Discord or an API key. Pure functions have unit tests next to them (`#[cfg(test)] mod tests` at the bottom of a file). Store functions are tested on `db::test_connection`. One test is `#[ignore]`d because it's a simulation rather than a check: `wheel::sim::compare_rules`, run it with `cargo test compare_rules -- --ignored --nocapture`. `cargo clippy` and `cargo fmt` keep the style.
+`cargo test` runs every test; none needs Discord or an API key. Pure functions have unit tests next to them (`#[cfg(test)] mod tests` at the bottom of a file). Store functions are tested on `db::test_connection`. Whole-repo smoke tests in `src/main.rs` check `config.example.toml` against every feature's `Settings` struct (zero unknown keys or warnings) and apply all owners' migrations (`core`, `claude`, `claude_keep_warm`, and every feature) onto one in-memory SQLite database. One test is `#[ignore]`d because it's a simulation rather than a check: `wheel::sim::compare_rules`, run it with `cargo test compare_rules -- --ignored --nocapture`. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` keep the style; `.github/workflows/ci.yml` runs formatting, clippy, and tests on pushes and pull requests to `main`.
 
 ## Where to start reading
 

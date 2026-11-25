@@ -311,6 +311,14 @@ Copy config.example.toml to start one.",
         }
     }
 
+    /// Unknown feature keys already warned about, for tests.
+    #[cfg(test)]
+    pub fn warned_keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.warned.lock().unwrap().iter().cloned().collect();
+        keys.sort();
+        keys
+    }
+
     /// Reads a feature section into `T`, and returns the keys `T` didn't read.
     fn read_section<T: DeserializeOwned + Default>(
         &self,
