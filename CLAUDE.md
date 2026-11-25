@@ -49,8 +49,10 @@ cargo clippy && cargo fmt
 
 ## Money and tokens
 
-- Claude is the main provider: Opus 5.5 for her voice (chat, chime-ins, reflection, diary), cheaper models for background jobs (`[ai.claude.jobs.*]`). Cherry has about $100 a month of API credit.
-- OpenAI: Cherry is in the data-sharing program, so GPT-6 Astra, Luna and 6.1 Sol share 1M free tokens a day (UTC). Free tokens train on what's sent, which is why OpenAI is only the chat fallback.
+- Gemini chats on Cherry's server since 2026-11-22 (`provider = "gemini"` in her `config.toml`; the example still says `claude`): Gemini 4 Neon for her answers, thinking at `high`, and Gemini 4 Hydrogen for chime-ins, emoji descriptions, the Apps menu helpers and curt answers to people on her blocklist. It's paid from Cherry's Google Cloud credit, and her spend is estimated from list prices (Google has no bill API; reading the Cloud Billing export is #169). Tokens matter most here: the cached starter interaction, `defer_tools` and the short tool texts exist to keep each request small (see `docs/ai.md`).
+- Claude was the main provider before that, and still works the same when picked: Opus 5.5 for her voice (chat, chime-ins, reflection, diary), cheaper models for background jobs (`[ai.claude.jobs.*]`). Cherry has about $100 a month of Anthropic credit.
+- Mood, reflection and diary run at half price on every provider (`batch`: Claude's Message Batches API, the flex tier on OpenAI and Gemini), since nobody waits on them.
+- OpenAI: Cherry is in the data-sharing program, so GPT-6 Astra, Luna and 6.1 Sol share 1M free tokens a day (UTC). Free tokens train on what's sent, which is why OpenAI is only ever the chat fallback. The Hunger Games are written on those free tokens by default, whatever provider chats.
 
 ## Cloud sandbox keys
 
