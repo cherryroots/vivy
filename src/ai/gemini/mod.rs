@@ -27,7 +27,7 @@ mod files;
 mod price;
 mod starter;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -104,6 +104,30 @@ impl Default for GeminiConfig {
     }
 }
 
+/// Most recent tool call IDs kept in [`CallNames`]: old answers' calls drop off the front
+/// instead of clearing the whole map, so concurrent in-flight tool calls keep their names.
+const MAX_CALL_NAMES: usize = 1000;
+
+/// Tool call names by call ID, bounded in insertion order (FIFO).
+#[derive(Default)]
+struct CallNames {
+    by_id: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+impl CallNames {
+    fn insert(&mut self, id: String, name: String) {
+        if self.by_id.insert(id.clone(), name).is_none() {
+            self.order.push_back(id);
+            while self.by_id.len() > MAX_CALL_NAMES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.by_id.remove(&oldest);
+                }
+            }
+        }
+    }
+}
+
 pub struct Gemini {
     http: reqwest::Client,
     key: String,
@@ -111,7 +135,7 @@ pub struct Gemini {
     files: Files,
     /// The name of each of the bot's tools Gemini called, by call ID: a tool's answer has
     /// to name the tool again, and the tool loop only keeps the ID.
-    call_names: Arc<Mutex<HashMap<String, String>>>,
+    call_names: Arc<Mutex<CallNames>>,
     /// Where what each interaction cost is added up; `None` in tests.
     spend: Option<Spend>,
     /// The stored interactions new conversations continue from (see `starter.rs`).
@@ -224,7 +248,7 @@ impl Gemini {
             Input::Full(turns) => (turns, None),
             Input::After { continuation, new } => (new, Some(continuation)),
         };
-        let names = self.call_names.lock().unwrap().clone();
+        let names = self.call_names.lock().unwrap().by_id.clone();
         let input = input_steps(turns, uploads, &self.config, &names);
 
         let mut job = job_settings(&self.config.jobs, request.job, Some(CHEAP_MODEL));
@@ -925,12 +949,8 @@ fn stream_error(error: &Value) -> ApiError {
 }
 
 /// Keeps the name of each function call in `steps`, for its result in the next round.
-fn remember_names(names: &Mutex<HashMap<String, String>>, steps: &[Value]) {
+fn remember_names(names: &Mutex<CallNames>, steps: &[Value]) {
     let mut names = names.lock().unwrap();
-    // Old answers' calls aren't needed again; don't let the list grow.
-    if names.len() > 1000 {
-        names.clear();
-    }
     for call in tool_calls(steps) {
         names.insert(call.id, call.name);
     }
@@ -1809,5 +1829,55 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(outage(&err), Some(Outage::Down));
+    }
+
+    #[test]
+    fn remember_names_evicts_oldest_first() {
+        let names = Mutex::new(CallNames::default());
+        let steps: Vec<Value> = (0..MAX_CALL_NAMES + 5)
+            .map(|i| {
+                json!({
+                    "type": "function_call",
+                    "id": format!("call_{i}"),
+                    "name": format!("tool_{i}"),
+                    "arguments": {},
+                })
+            })
+            .collect();
+        remember_names(&names, &steps);
+
+        let guard = names.lock().unwrap();
+        assert_eq!(guard.by_id.len(), MAX_CALL_NAMES);
+        assert_eq!(guard.order.len(), MAX_CALL_NAMES);
+        // The oldest 5 were evicted.
+        for i in 0..5 {
+            assert!(!guard.by_id.contains_key(&format!("call_{i}")));
+        }
+        // The newest MAX_CALL_NAMES (including in-flight calls) stay.
+        for i in 5..MAX_CALL_NAMES + 5 {
+            assert_eq!(
+                guard.by_id.get(&format!("call_{i}")).map(String::as_str),
+                Some(format!("tool_{i}").as_str())
+            );
+        }
+        drop(guard);
+
+        // Re-inserting an existing call ID updates it without duplicating the queue or evicting.
+        remember_names(
+            &names,
+            &[json!({
+                "type": "function_call",
+                "id": "call_5",
+                "name": "tool_5_updated",
+                "arguments": {},
+            })],
+        );
+        let guard = names.lock().unwrap();
+        assert_eq!(guard.by_id.len(), MAX_CALL_NAMES);
+        assert_eq!(guard.order.len(), MAX_CALL_NAMES);
+        assert_eq!(
+            guard.by_id.get("call_5").map(String::as_str),
+            Some("tool_5_updated")
+        );
     }
 }
