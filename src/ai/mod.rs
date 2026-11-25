@@ -49,6 +49,9 @@ pub enum Part {
     Video(ModelFile),
     /// A YouTube video by its link, for a provider that watches videos itself.
     YouTube(String),
+    /// Audio as it is (like a Discord voice message), for a provider that hears audio itself
+    /// ([`ChatProvider::hears_audio`]).
+    Audio(ModelFile),
     /// The answer to a [`ToolCall`], sent back to the model.
     ToolResult {
         call_id: String,
@@ -507,6 +510,12 @@ pub trait ChatProvider: Send + Sync {
     /// Whether the model watches videos itself (Gemini). History then sends a posted video
     /// as [`Part::Video`] and YouTube links as [`Part::YouTube`], instead of frame grids.
     fn watches_video(&self) -> bool {
+        false
+    }
+
+    /// Whether the model hears audio itself (Gemini). History then sends voice messages as
+    /// [`Part::Audio`] instead of a note saying it can't listen to them.
+    fn hears_audio(&self) -> bool {
         false
     }
 

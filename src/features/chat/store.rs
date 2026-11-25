@@ -99,6 +99,12 @@ pub enum StoredPart {
         name: String,
         mime: String,
     },
+    /// A Discord voice message's audio attachment, kept as a link so history stays small.
+    Audio {
+        url: String,
+        name: String,
+        mime: String,
+    },
 }
 
 /// [`MediaKind`] as stored.
@@ -629,6 +635,11 @@ mod tests {
             url: "https://x/a.png".into(),
             kind: StoredKind::Image,
             mime: "image/png".into(),
+        });
+        turn.parts.push(StoredPart::Audio {
+            url: "https://x/voice-message.ogg".into(),
+            name: "voice-message.ogg".into(),
+            mime: "audio/ogg".into(),
         });
         let id = add_turn(&mut conn, &turn, &[1]).unwrap();
         assert_eq!(get_turn(&conn, id).unwrap().unwrap().parts, turn.parts);

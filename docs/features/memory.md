@@ -32,6 +32,7 @@ All under `src/features/memory/`.
 | `diary.rs` | The weekly diary. |
 | `sweep.rs` | The slice of older notes each reflection rereads, and the line saying where each came from. Pure. |
 | `check.rs` | `check_messages`, the reflection's read-only search of what people wrote, and `ReflectRunner`, its two tools. |
+| `movies.rs` | Listens for `BotEvent::WheelRoundResolved` and logs watched movies into `/memories/server/movies-watched.md`. |
 
 ## How it works
 
@@ -182,6 +183,15 @@ She gets her self notes, a `view` of `/memories`, and the text of the files chan
 - An entry that was written but couldn't be posted anywhere is kept in memory and posted on the next try, instead of asking the model again (unless it's more than a week old). If the bot has no access to any target, it tries daily and warns once. Posting to at least one target counts as posted.
 - A channel that can't be found is warned about once a week.
 
+### Watched movies from the wheel
+
+`movies.rs`. When the movie wheel resolves a round, it publishes `BotEvent::WheelRoundResolved`. Memory listens in `on_bot_event`, checks that `memory` is allowed in that server (`ctx.gate("memory").allows_guild(guild_id)`), and writes a line to `/memories/server/movies-watched.md` inside one SQLite transaction (creating the file with `# Watched movies (movie wheel)` on the first round, logged under the bot's user ID so it doesn't trigger a reflection on its own):
+
+- With a movie: `- YYYY-MM-DD: **<movie>** (picked by <winner_name>, S<season> R<round>)`
+- Without a movie: `- YYYY-MM-DD: <winner_name> won the wheel (S<season> R<round>)`
+
+If an entry for `S<season> R<round>` already exists (for example after Undo Winner), it is replaced in place rather than duplicated. If appending would push the file past `folder::MAX_FILE` (8 KB), the oldest `- ...` entries are trimmed from the top first.
+
 ### Keeping the change log small
 
 The hourly loop deletes rows in `memory_changes` older than 90 days (`store::prune_changes`), except a server's changes since its last reflection, which the next reflection still lists.
@@ -198,6 +208,7 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 - `name`: "memory".
 - `commands`: `/memory`.
 - `on_component`: `/memory forget` confirm/cancel buttons (`memory:forget:<user>` / `memory:keep:<user>`).
+- `on_bot_event`: logs `BotEvent::WheelRoundResolved` into `/memories/server/movies-watched.md` (`movies::record`).
 - `migrations`: `store::MIGRATIONS`.
 - `tools` and `run_tool`: `memory` and `set_mood`; `run_tool` sends `set_mood` to `set_mood::run` and everything else to `tool::run`.
 - `tool_status`: "📝 Remembering…" for `memory` ("📖 Checking my notes…" when it only views a file), "💭 Thinking…" for `set_mood` in chat's status line.
@@ -253,6 +264,7 @@ The paths the `memory` tool's description suggests:
 ├── server/
 │   ├── channels.md         what each channel is for
 │   ├── culture.md          in-jokes, running gags, norms
+│   ├── movies-watched.md   resolved movie wheel rounds (logged automatically)
 │   └── events.md, games.md, ... as they come up
 └── vivy/                   Vivy's own, only she decides
     ├── personality.md      character, tone, humor

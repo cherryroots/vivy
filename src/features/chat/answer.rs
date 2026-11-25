@@ -443,6 +443,14 @@ async fn stream_answer(
     ))
 }
 
+/// Whether `send_voice_message` is available where `asker` is.
+pub(super) fn has_voice_tool(ctx: &BotCtx, asker: &Asker) -> bool {
+    ctx.features
+        .iter()
+        .filter(|f| ctx.allows(f.name(), asker.guild, asker.channel))
+        .any(|f| f.tools().iter().any(|t| t.name == "send_voice_message"))
+}
+
 /// The tools of every feature enabled where the asker is, and which feature owns each.
 pub(super) fn tools_for(
     ctx: &BotCtx,

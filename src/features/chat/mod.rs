@@ -367,7 +367,8 @@ impl Chat {
                 .db
                 .call(move |conn| store::chain(conn, question_id, turns))
                 .await?;
-            let mut input = history::build_input(ctx, provider, &chain).await;
+            let voice_available = answer::has_voice_tool(ctx, &asker);
+            let mut input = history::build_input(ctx, provider, &chain, voice_available).await;
             // The features' context is saved with the question the first time it's answered,
             // so a later request (🔁, or the rest of the conversation) sends the question
             // exactly as before.
