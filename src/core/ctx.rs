@@ -74,18 +74,26 @@ impl BotCtx {
     /// Whether `feature` may run in this server (`None` in DMs) and channel. Use this rather
     /// than `gate(..).allows(..)`: it also applies the gate of a thread's parent channel.
     pub fn allows(&self, feature: &str, guild: Option<GuildId>, channel: ChannelId) -> bool {
-        self.gate(feature)
-            .allows(guild, channel, self.thread_parent(guild, channel))
+        self.allows_with_parent(feature, guild, channel, None)
+    }
+
+    /// Like [`BotCtx::allows`], using a known thread `parent` (such as from an interaction's
+    /// channel payload) before falling back to the gateway cache. Archived or uncached threads
+    /// aren't in the cache, so passing the parent keeps channel gates working there too.
+    pub fn allows_with_parent(
+        &self,
+        feature: &str,
+        guild: Option<GuildId>,
+        channel: ChannelId,
+        parent: Option<ChannelId>,
+    ) -> bool {
+        let parent = resolve_thread_parent(&self.cache, guild, channel, parent);
+        self.gate(feature).allows(guild, channel, parent)
     }
 
     /// The channel a thread is in, or `None` when `channel` isn't a thread the cache knows.
     pub fn thread_parent(&self, guild: Option<GuildId>, channel: ChannelId) -> Option<ChannelId> {
-        guild?;
-        let channel = self.cache.channel(channel)?;
-        if !channel.kind.is_thread() {
-            return None;
-        }
-        channel.parent_id
+        resolve_thread_parent(&self.cache, guild, channel, None)
     }
 
     /// A channel's or thread's name, from the cache. `None` when the cache doesn't know it.
@@ -213,5 +221,56 @@ pub async fn app_owners(http: &Http) -> Vec<UserId> {
             .map(|member| member.user.id)
             .collect(),
         None => info.owner.map(|owner| owner.id).into_iter().collect(),
+    }
+}
+
+/// Resolves a thread's parent channel: prefers a known parent (from an interaction payload),
+/// otherwise looks up the thread in the gateway cache.
+fn resolve_thread_parent(
+    cache: &InMemoryCache,
+    guild: Option<GuildId>,
+    channel: ChannelId,
+    known_parent: Option<ChannelId>,
+) -> Option<ChannelId> {
+    guild?;
+    if known_parent.is_some() {
+        return known_parent;
+    }
+    let channel = cache.channel(channel)?;
+    if !channel.kind.is_thread() {
+        return None;
+    }
+    channel.parent_id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uncached_thread_uses_known_parent_for_gate() {
+        let cache = InMemoryCache::new();
+        let config = Config::parse(
+            r#"
+            [features.chat]
+            deny_channels = [10]
+            "#,
+        )
+        .unwrap();
+        let guild = Some(GuildId::new(1));
+        let thread = ChannelId::new(20);
+        let parent = Some(ChannelId::new(10));
+
+        // Without the interaction's parent_id, the empty cache can't know the thread's parent.
+        let from_cache = resolve_thread_parent(&cache, guild, thread, None);
+        assert_eq!(from_cache, None);
+
+        // With the interaction's parent_id, the denied parent channel blocks the thread.
+        let resolved = resolve_thread_parent(&cache, guild, thread, parent);
+        assert_eq!(resolved, parent);
+        assert!(!config.gate("chat").allows(guild, thread, resolved));
+
+        // In DMs, there is no thread parent.
+        assert_eq!(resolve_thread_parent(&cache, None, thread, parent), None);
     }
 }
