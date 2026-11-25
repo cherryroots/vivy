@@ -24,6 +24,10 @@ use super::frames;
 
 /// Photos bigger than this aren't downloaded. Models refuse very large images anyway.
 const MAX_IMAGE_BYTES: usize = 20 * 1024 * 1024;
+/// Largest width or height a decoded picture may have (pixels).
+const MAX_IMAGE_SIDE: u32 = 8192;
+/// Most memory decoding one picture may allocate (128 MiB).
+const MAX_IMAGE_ALLOC: u64 = 128 * 1024 * 1024;
 /// GIFs and videos bigger than this aren't downloaded. Discord's own upload limit is 100 MB.
 const MAX_VIDEO_BYTES: usize = 100 * 1024 * 1024;
 /// How long one download may take in all. The download client only limits connecting and
@@ -68,9 +72,6 @@ const TYPES: &[(&str, &str, MediaKind)] = &[
     ("webm", "video/webm", MediaKind::Video),
     ("mov", "video/quicktime", MediaKind::Video),
 ];
-
-/// The picture formats models accept as they are. Anything else in `TYPES` is converted.
-const MODEL_IMAGE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/gif"];
 
 /// Works out what a file is: from the content type Discord reports when there is one,
 /// otherwise from the URL's file extension.
@@ -543,6 +544,91 @@ pub fn png_link(url: &str, size: u32) -> String {
     format!("{folder}/{stem}.png?size={size}")
 }
 
+/// Image decoding limits shared everywhere: refuses huge dimensions or decompression bombs
+/// so a small file can't ask for gigabytes of memory.
+fn image_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_SIDE);
+    limits.max_image_height = Some(MAX_IMAGE_SIDE);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+    limits
+}
+
+/// Decodes a picture from bytes, guessing its format and enforcing [`image_limits`] so a
+/// small file can't ask for gigabytes of memory.
+pub fn decode_bounded(data: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()?;
+    reader.limits(image_limits());
+    reader.decode()
+}
+
+/// Whether `data` starts with an ISO BMFF `ftyp` box for HEIC, HEIF or AVIF.
+/// `image::guess_format` doesn't know HEIC/HEIF, so we check the container brand.
+fn is_heif_or_avif(data: &[u8]) -> bool {
+    let Some(header) = data.get(..12) else {
+        return false;
+    };
+    &header[4..8] == b"ftyp"
+        && matches!(
+            &header[8..12],
+            b"heic"
+                | b"heix"
+                | b"hevc"
+                | b"hevx"
+                | b"heim"
+                | b"heis"
+                | b"hevm"
+                | b"hevs"
+                | b"mif1"
+                | b"msf1"
+                | b"avif"
+                | b"avis"
+        )
+}
+
+/// Checks that `data` is actually a picture (from its magic bytes, not the URL or header)
+/// and returns it in a format models accept: PNG, JPEG and WebP stay as they are, a GIF
+/// gives its first frame as PNG, and HEIC/HEIF/AVIF/BMP/TIFF are converted to PNG via
+/// ffmpeg. Refuses HTML, text or other non-image bytes.
+async fn decode_or_convert_image(data: Vec<u8>) -> anyhow::Result<ModelImage> {
+    match image::guess_format(&data) {
+        Ok(image::ImageFormat::Png) => Ok(ModelImage {
+            mime: "image/png",
+            data,
+        }),
+        Ok(image::ImageFormat::Jpeg) => Ok(ModelImage {
+            mime: "image/jpeg",
+            data,
+        }),
+        Ok(image::ImageFormat::WebP) => Ok(ModelImage {
+            mime: "image/webp",
+            data,
+        }),
+        Ok(image::ImageFormat::Gif) => {
+            let png = first_frame_png(data).await?;
+            Ok(ModelImage {
+                mime: "image/png",
+                data: png,
+            })
+        }
+        Ok(_) => {
+            let png = frames::to_png(&data).await?;
+            Ok(ModelImage {
+                mime: "image/png",
+                data: png,
+            })
+        }
+        Err(_) if is_heif_or_avif(&data) => {
+            let png = frames::to_png(&data).await?;
+            Ok(ModelImage {
+                mime: "image/png",
+                data: png,
+            })
+        }
+        Err(_) => bail!("it isn't a picture (a web page? Use the picture's own link)"),
+    }
+}
+
 /// Downloads `media` and returns the images a model should see: the image itself, or frame
 /// grids for a GIF or video.
 pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
@@ -554,19 +640,10 @@ pub async fn load_for_model(media: &Media) -> anyhow::Result<Vec<ModelImage>> {
         .await
         .with_context(|| format!("downloading {}", media.url))?;
     if media.kind == MediaKind::Image {
-        if MODEL_IMAGE_TYPES.contains(&media.mime) {
-            return Ok(vec![ModelImage {
-                mime: media.mime,
-                data,
-            }]);
-        }
-        let png = frames::to_png(&data)
+        let image = decode_or_convert_image(data)
             .await
-            .with_context(|| format!("converting {} to PNG", media.url))?;
-        return Ok(vec![ModelImage {
-            mime: "image/png",
-            data: png,
-        }]);
+            .with_context(|| format!("reading {}", media.url))?;
+        return Ok(vec![image]);
     }
     let grids = match frames::frame_grids(&data, frames::Layout::for_kind(media.kind)).await {
         Ok(grids) => grids,
@@ -613,37 +690,17 @@ pub async fn load_small(
 /// A still picture from a link someone gave (not one found in a message): downloaded like
 /// the rest (local and private addresses refused, at most 20 MB), its type read from its
 /// bytes, since a link may not say. JPEG, PNG and WebP come as they are; a GIF gives its
-/// first frame and other picture types are converted to PNG.
+/// first frame and other picture types (including HEIC/HEIF/AVIF) are converted to PNG.
 pub async fn load_still(url: &str) -> anyhow::Result<ModelImage> {
     let data = download(url, MAX_IMAGE_BYTES).await?;
-    let mime = match image::guess_format(&data) {
-        Ok(image::ImageFormat::Png) => "image/png",
-        Ok(image::ImageFormat::Jpeg) => "image/jpeg",
-        Ok(image::ImageFormat::WebP) => "image/webp",
-        Ok(image::ImageFormat::Gif) => {
-            let png = first_frame_png(data).await?;
-            return Ok(ModelImage {
-                mime: "image/png",
-                data: png,
-            });
-        }
-        Ok(_) => {
-            let png = frames::to_png(&data).await?;
-            return Ok(ModelImage {
-                mime: "image/png",
-                data: png,
-            });
-        }
-        Err(_) => bail!("it isn't a picture (a web page? Use the picture's own link)"),
-    };
-    Ok(ModelImage { mime, data })
+    decode_or_convert_image(data).await
 }
 
 /// `image` shrunk to fit in `max_side` × `max_side` pixels, as a PNG. One that already fits
 /// is left as it is.
 async fn shrink(image: ModelImage, max_side: u32) -> anyhow::Result<ModelImage> {
     tokio::task::spawn_blocking(move || {
-        let picture = image::load_from_memory(&image.data).context("decoding the picture")?;
+        let picture = decode_bounded(&image.data).context("decoding the picture")?;
         if picture.width() <= max_side && picture.height() <= max_side {
             return Ok(image);
         }
@@ -664,8 +721,10 @@ async fn shrink(image: ModelImage, max_side: u32) -> anyhow::Result<ModelImage> 
 /// The first frame of a GIF as a PNG, decoded without ffmpeg.
 async fn first_frame_png(data: Vec<u8>) -> anyhow::Result<Vec<u8>> {
     tokio::task::spawn_blocking(move || {
-        let picture = image::load_from_memory_with_format(&data, image::ImageFormat::Gif)
-            .context("decoding the GIF")?;
+        let mut reader =
+            image::ImageReader::with_format(std::io::Cursor::new(&data), image::ImageFormat::Gif);
+        reader.limits(image_limits());
+        let picture = reader.decode().context("decoding the GIF")?;
         let mut png = Vec::new();
         picture
             .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -1062,5 +1121,48 @@ mod tests {
         let picture = image::load_from_memory(&shrunk.data).unwrap();
         assert_eq!((picture.width(), picture.height()), (512, 256));
         assert_eq!(shrunk.mime, "image/png");
+    }
+
+    #[tokio::test]
+    async fn decode_or_convert_validates_magic_bytes() {
+        for bad in [
+            b"<!doctype html><html><body>404</body></html>".as_slice(),
+            b"just plain text",
+            b"",
+            // An MP4 video header is not a still HEIC/AVIF picture.
+            b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00",
+        ] {
+            let err = decode_or_convert_image(bad.to_vec()).await.unwrap_err();
+            assert!(
+                err.to_string().contains("isn't a picture"),
+                "unexpected error for {bad:?}: {err}"
+            );
+        }
+
+        // Valid PNG passes through with its detected MIME.
+        let valid = png(4, 3);
+        let decoded = decode_or_convert_image(valid.data.clone()).await.unwrap();
+        assert_eq!(decoded.mime, "image/png");
+        assert_eq!(decoded.data, valid.data);
+
+        // HEIC/HEIF/AVIF ftyp headers are recognized for conversion.
+        assert!(is_heif_or_avif(b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00"));
+        assert!(is_heif_or_avif(b"\x00\x00\x00\x18ftypmif1\x00\x00\x00\x00"));
+        assert!(is_heif_or_avif(b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00"));
+        assert!(!is_heif_or_avif(
+            b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00"
+        ));
+        assert!(!is_heif_or_avif(b"short"));
+    }
+
+    #[test]
+    fn decode_bounded_enforces_limits() {
+        let small = png(8, 6);
+        let picture = decode_bounded(&small.data).unwrap();
+        assert_eq!((picture.width(), picture.height()), (8, 6));
+
+        // Wider than MAX_IMAGE_SIDE (8192) is refused before allocating.
+        let too_wide = png(MAX_IMAGE_SIDE + 1, 1);
+        assert!(decode_bounded(&too_wide.data).is_err());
     }
 }

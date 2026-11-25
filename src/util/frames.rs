@@ -5,6 +5,7 @@
 //! `scale` + `pad` fit each one into a square cell, `tile` lays them out), so there's no image
 //! code here. `ffmpeg` and `ffprobe` must be installed on the server.
 
+use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
@@ -19,6 +20,9 @@ const FPS: f64 = 3.0;
 const TIMEOUT: Duration = Duration::from_secs(60);
 /// Used when ffprobe can't tell how long the file is.
 const UNKNOWN_DURATION_SECS: f64 = 10.0;
+/// Largest width or height `to_png` will write (pixels). Bigger pictures are scaled down,
+/// keeping their shape; smaller ones stay their own size.
+const MAX_PNG_SIDE: u32 = 4096;
 
 /// The files are from strangers, and ffmpeg guesses their format from the contents. Some
 /// formats it knows (playlists like HLS, `concat` lists) can tell it to open other files or
@@ -77,10 +81,10 @@ impl Layout {
 /// Picks the frame rate and the grid shape (columns, rows) for a clip of `duration` seconds.
 /// Short clips get a grid just big enough for their frames, instead of a mostly empty 9×9.
 fn plan(duration: f64, layout: Layout) -> (f64, u32, u32) {
-    let duration = if duration > 0.0 {
-        duration
-    } else {
+    let duration = if !duration.is_finite() || duration <= 0.0 {
         UNKNOWN_DURATION_SECS
+    } else {
+        duration
     };
     let fps = FPS.min(f64::from(layout.max_frames()) / duration);
     let frames = ((duration * fps).ceil() as u32).clamp(1, layout.max_frames());
@@ -120,12 +124,13 @@ pub async fn frame_grids(data: &[u8], layout: Layout) -> anyhow::Result<Vec<Vec<
     let output = dir.path().join("grid_%03d.png");
     let mut command = Command::new("ffmpeg");
     command
-        .args(["-hide_banner", "-loglevel", "error"])
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
         .args(SAFE_INPUT)
         .arg("-i")
         .arg(&input)
         .args(["-vf", &filter, "-frames:v", &layout.max_grids.to_string()])
         .arg(&output)
+        .stdin(Stdio::null())
         .kill_on_drop(true);
     let result = tokio::time::timeout(TIMEOUT, command.output())
         .await
@@ -161,14 +166,18 @@ pub async fn to_png(data: &[u8]) -> anyhow::Result<Vec<u8>> {
     let input = dir.path().join("input");
     tokio::fs::write(&input, data).await?;
     let output = dir.path().join("picture.png");
+    let scale = format!(
+        "scale=min({MAX_PNG_SIDE}\\,iw):min({MAX_PNG_SIDE}\\,ih):force_original_aspect_ratio=decrease"
+    );
     let mut command = Command::new("ffmpeg");
     command
-        .args(["-hide_banner", "-loglevel", "error"])
+        .args(["-nostdin", "-hide_banner", "-loglevel", "error"])
         .args(SAFE_IMAGE_INPUT)
         .arg("-i")
         .arg(&input)
-        .args(["-frames:v", "1"])
+        .args(["-vf", &scale, "-frames:v", "1"])
         .arg(&output)
+        .stdin(Stdio::null())
         .kill_on_drop(true);
     let result = tokio::time::timeout(TIMEOUT, command.output())
         .await
@@ -194,14 +203,20 @@ async fn probe_duration(path: &std::path::Path) -> anyhow::Result<f64> {
         .args(["-show_entries", "format=duration"])
         .args(["-of", "default=noprint_wrappers=1:nokey=1"])
         .arg(path)
+        .stdin(Stdio::null())
         .kill_on_drop(true);
     let output = tokio::time::timeout(TIMEOUT, command.output())
         .await
         .context("ffprobe took too long")??;
     let text = String::from_utf8_lossy(&output.stdout);
-    text.trim()
+    let duration: f64 = text
+        .trim()
         .parse()
-        .with_context(|| format!("ffprobe printed {text:?}"))
+        .with_context(|| format!("ffprobe printed {text:?}"))?;
+    if !duration.is_finite() || duration <= 0.0 {
+        bail!("ffprobe printed invalid duration {duration}");
+    }
+    Ok(duration)
 }
 
 #[cfg(test)]
@@ -224,8 +239,10 @@ mod tests {
         let (fps, columns, rows) = plan(3600.0, VIDEO);
         assert!((fps - 0.225).abs() < 1e-9);
         assert_eq!((columns, rows), (9, 9));
-        // Unknown length: treated as 10 s.
-        assert_eq!(plan(0.0, VIDEO), (3.0, 6, 5));
+        // Unknown, negative, or non-finite length: treated as 10 s.
+        for bad in [0.0, -5.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(plan(bad, VIDEO), (3.0, 6, 5), "duration={bad}");
+        }
     }
 
     /// Makes a short test clip with ffmpeg's built-in test pattern.
@@ -280,6 +297,34 @@ mod tests {
             assert_eq!(png_size(&png), (64, 48), "{extension}");
         }
         assert!(to_png(b"not a picture").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn to_png_caps_large_images_without_upscaling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.bmp");
+        let status = Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=blue:s=5000x2500",
+                "-frames:v",
+                "1",
+            ])
+            .arg(&path)
+            .stdin(Stdio::null())
+            .status()
+            .await
+            .expect("ffmpeg must be installed to run this test");
+        assert!(status.success());
+        let bmp = tokio::fs::read(&path).await.unwrap();
+        let png = to_png(&bmp).await.unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        assert_eq!(png_size(&png), (4096, 2048));
     }
 
     /// Width and height of a PNG, read from its header.
