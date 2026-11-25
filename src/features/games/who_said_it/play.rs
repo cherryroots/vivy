@@ -26,8 +26,8 @@ struct Running {
     /// Tells this game's buttons from an older game's in the same channel.
     id: u32,
     game: Mutex<Game>,
-    /// When the current question was posted, for how long each answer took.
-    asked_at: Mutex<Instant>,
+    /// Which round was posted and when, for how long each answer took.
+    asked_at: Mutex<(usize, Instant)>,
 }
 
 /// The channels with a game: `None` while its quotes are being read, so a second
@@ -127,7 +127,7 @@ pub async fn who_said_it(ctx: &CommandCtx, args: WhoSaidIt) -> Result<()> {
     let count = questions
         .map_or(settings.rounds, |questions| questions as usize)
         .clamp(1, 20);
-    let rounds = match quotes::load(&bot, &sources, &settings).await {
+    let rounds = match quotes::load(&bot, guild, &sources, &settings).await {
         Ok((quotes, people)) => make_rounds(quotes, &people, count, |list| {
             fastrand::shuffle(list);
         }),
@@ -163,7 +163,7 @@ pub async fn who_said_it(ctx: &CommandCtx, args: WhoSaidIt) -> Result<()> {
     let running = Arc::new(Running {
         id: fastrand::u32(..),
         game: Mutex::new(Game::new(rounds, settings.answer_seconds)),
-        asked_at: Mutex::new(Instant::now()),
+        asked_at: Mutex::new((0, Instant::now())),
     });
     GAMES.lock().unwrap().insert(channel, Some(running.clone()));
     info!("Who said it? started with {count} questions");
@@ -201,6 +201,9 @@ async fn play(
                 Draft::new().embed(embed).components(buttons),
             )
         };
+        // Reset before sending so a fast click that arrives before the HTTP reply isn't
+        // measured against the previous round's timestamp (which would strip its speed bonus).
+        *running.asked_at.lock().unwrap() = (index, Instant::now());
         let message = match question.send(&bot.http, channel).await {
             Ok(message) => message,
             Err(err) => {
@@ -208,7 +211,9 @@ async fn play(
                 break;
             }
         };
-        *running.asked_at.lock().unwrap() = Instant::now();
+        if running.game.lock().unwrap().answers() == 0 {
+            *running.asked_at.lock().unwrap() = (index, Instant::now());
+        }
 
         tokio::select! {
             () = bot.shutdown.cancelled() => break,
@@ -274,7 +279,7 @@ pub async fn on_component(
     let text = match running {
         None => "This game is over.".to_string(),
         Some(running) => {
-            let took = running.asked_at.lock().unwrap().elapsed().as_millis() as u64;
+            let took = elapsed_for_round(&running.asked_at.lock().unwrap(), round);
             let mut game = running.game.lock().unwrap();
             let result = game.pick(round, player, &name, choice, took);
             let name_of = |id: u64| {
@@ -294,4 +299,29 @@ pub async fn on_component(
         .create_response(bot, Response::Message(response))
         .await?;
     Ok(())
+}
+
+/// Milliseconds elapsed since `round` was posted, or `0` if a click arrived before
+/// `asked_at` moved on from an earlier round (so rounds 2+ never lose their speed bonus).
+fn elapsed_for_round(asked_at: &(usize, Instant), round: usize) -> u64 {
+    if asked_at.0 == round {
+        asked_at.1.elapsed().as_millis() as u64
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn elapsed_for_round_ignores_stale_timestamp_from_previous_round() {
+        let old = Instant::now() - Duration::from_secs(25);
+        assert_eq!(elapsed_for_round(&(0, old), 1), 0);
+
+        let recent = Instant::now() - Duration::from_millis(500);
+        let took = elapsed_for_round(&(1, recent), 1);
+        assert!((450..5_000).contains(&took), "unexpected elapsed: {took}");
+    }
 }
