@@ -516,7 +516,7 @@ async fn format_message_up_to(ctx: &BotCtx, msg: &Message, zone: Tz, max_chars: 
         .and_then(|m| m.nick.as_deref())
         .unwrap_or(display_name(&msg.author));
     let text = channels::name_people(ctx, msg, &msg.content);
-    let text = channels::name_channels(ctx, &text).await;
+    let text = channels::name_channels(ctx, channels::message_guild(ctx, msg), &text).await;
     let mut line = format!("[{time}] {name}: {}", shorten(&text, max_chars));
     if !msg.attachments.is_empty() {
         let names: Vec<&str> = msg
@@ -805,7 +805,10 @@ async fn server_events(ctx: &BotCtx, asker: &Asker) -> Result<String> {
         }
         lines.push(when);
         if let Some(channel) = event.channel_id {
-            lines.push(format!("Where: {}", channels::describe(ctx, channel).await));
+            lines.push(format!(
+                "Where: {}",
+                channels::describe(ctx, Some(guild), channel).await
+            ));
         } else if let Some(place) = event
             .entity_metadata
             .as_ref()

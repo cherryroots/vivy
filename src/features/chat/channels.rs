@@ -9,8 +9,9 @@ use std::ops::Range;
 use tracing::warn;
 
 use crate::core::BotCtx;
+use crate::core::config::Gate;
 use crate::util::discord::{
-    Channel, ChannelId, ChannelType, Message, RoleId, UserId, display_name, error_code,
+    Channel, ChannelId, ChannelType, GuildId, Message, RoleId, UserId, display_name, error_code,
     error_status, get_channel,
 };
 
@@ -18,19 +19,29 @@ use crate::util::discord::{
 #[derive(Debug, PartialEq)]
 struct Found {
     channel: ChannelId,
+    /// For a channel link, the server ID written in the URL.
+    guild: Option<GuildId>,
     /// The bytes of the mention or link.
     span: Range<usize>,
     /// A mention is replaced by the name; a link keeps its text and gets the name after it.
     link: bool,
 }
 
+/// The server `msg` belongs to: from the message itself, or from the cache for its channel
+/// (messages fetched over Discord's REST API have no `guild_id`).
+pub(super) fn message_guild(ctx: &BotCtx, msg: &Message) -> Option<GuildId> {
+    msg.guild_id
+        .or_else(|| ctx.cache.channel(msg.channel_id).and_then(|c| c.guild_id))
+}
+
 /// `text` with "<@123>" replaced by "@name" (their nickname in the server when it's
 /// known) and "<@&123>" by "@role name", so the model sees who was mentioned. Channel
 /// mentions are left for [`name_channels`].
 pub fn name_people(ctx: &BotCtx, msg: &Message, text: &str) -> String {
+    let guild = message_guild(ctx, msg);
     replace_mentions(text, |mentioned| match mentioned {
-        Mentioned::Person(user) => person_name(ctx, msg, user),
-        Mentioned::Role(role) => role_name(ctx, role),
+        Mentioned::Person(user) => person_name(ctx, msg, guild, user),
+        Mentioned::Role(role) => role_name(ctx, guild, role),
     })
 }
 
@@ -78,8 +89,8 @@ fn replace_mentions(text: &str, mut name: impl FnMut(Mentioned) -> String) -> St
 }
 
 /// What to call someone mentioned in `msg`.
-fn person_name(ctx: &BotCtx, msg: &Message, user: UserId) -> String {
-    if let Some(guild) = msg.guild_id
+fn person_name(ctx: &BotCtx, msg: &Message, guild: Option<GuildId>, user: UserId) -> String {
+    if let Some(guild) = guild
         && let Some(member) = ctx.cache.member(guild, user)
         && let Some(nick) = member.nick()
     {
@@ -98,25 +109,39 @@ fn person_name(ctx: &BotCtx, msg: &Message, user: UserId) -> String {
     }
 }
 
-/// What to call a mentioned role.
-fn role_name(ctx: &BotCtx, role: RoleId) -> String {
+/// What to call a mentioned role. Only roles in `guild` are named; roles from other
+/// servers (or in DMs) stay hidden.
+fn role_name(ctx: &BotCtx, guild: Option<GuildId>, role: RoleId) -> String {
+    let Some(guild) = guild else {
+        return "deleted-role".to_string();
+    };
     match ctx.cache.role(role) {
-        Some(cached) => cached.resource().name.clone(),
-        None => "deleted-role".to_string(),
+        Some(cached) if cached.guild_id() == guild => cached.resource().name.clone(),
+        _ => "deleted-role".to_string(),
     }
 }
 
 /// `text` with "<#123>" replaced by "#name", and " (#name)" after each link to a channel
-/// (not to a message: those are read with `read_message_link`).
-pub async fn name_channels(ctx: &BotCtx, text: &str) -> String {
+/// (not to a message: those are read with `read_message_link`). Only channels in `guild`
+/// that chat gating allows are named; other servers, DMs and chat-denied channels become
+/// `#unknown-channel`.
+pub async fn name_channels(ctx: &BotCtx, guild: Option<GuildId>, text: &str) -> String {
     let found = find_channels(text);
     if found.is_empty() {
         return text.to_string();
     }
     let mut names: HashMap<ChannelId, String> = HashMap::new();
     for f in &found {
+        // A channel link that already names another server (or in a DM) is refused
+        // without asking Discord.
+        if f.guild.is_some_and(|link_guild| Some(link_guild) != guild) {
+            names
+                .entry(f.channel)
+                .or_insert_with(|| "#unknown-channel".to_string());
+            continue;
+        }
         if let Entry::Vacant(slot) = names.entry(f.channel) {
-            slot.insert(describe(ctx, f.channel).await);
+            slot.insert(describe(ctx, guild, f.channel).await);
         }
     }
     let mut out = String::with_capacity(text.len());
@@ -136,18 +161,23 @@ pub async fn name_channels(ctx: &BotCtx, text: &str) -> String {
     out
 }
 
-/// What the model reads for a channel: "#general", "#clips (a thread in #art)",
-/// "#my-game (a post in #gamedev)", or a note when it can't be named.
-pub async fn describe(ctx: &BotCtx, channel: ChannelId) -> String {
+/// What the model reads for a channel in `guild`: "#general", "#clips (a thread in #art)",
+/// "#my-game (a post in #gamedev)", or a note when it can't be named. Refuses DMs,
+/// channels in other servers, and channels turned off by `[features.chat]` gating.
+pub async fn describe(ctx: &BotCtx, guild: Option<GuildId>, channel: ChannelId) -> String {
+    let Some(guild) = guild else {
+        return "#unknown-channel".to_string();
+    };
     let found = match cached(ctx, channel) {
         Some(found) => found,
         None => match get_channel(&ctx.http, channel).await {
-            Ok(found) if found.kind == ChannelType::Private => return "a DM".to_string(),
-            Ok(found) if found.guild_id.is_some() => found,
-            Ok(_) => return "#unknown-channel".to_string(),
+            Ok(found) => found,
             Err(err) => return missing(channel, &err),
         },
     };
+    if !allows_channel(ctx.gate("chat"), guild, &found) {
+        return "#unknown-channel".to_string();
+    }
     let name = found.name.as_deref().unwrap_or("unknown-channel");
     let is_thread = found.kind.is_thread();
     let parent = found
@@ -163,6 +193,17 @@ pub async fn describe(ctx: &BotCtx, channel: ChannelId) -> String {
         None if is_thread => format!("#{name} (a thread)"),
         None => format!("#{name}"),
     }
+}
+
+/// Whether `found` belongs to `guild` and is allowed by chat's `gate`. A thread checks its
+/// parent channel too. Within the same server, any channel chat gating allows is fine even
+/// if the asker can't see it (Cherry's rule).
+fn allows_channel(gate: &Gate, guild: GuildId, found: &Channel) -> bool {
+    if found.kind == ChannelType::Private || found.guild_id != Some(guild) {
+        return false;
+    }
+    let parent = found.parent_id.filter(|_| found.kind.is_thread());
+    gate.allows(Some(guild), found.id, parent)
 }
 
 /// A channel or thread from the cache.
@@ -196,6 +237,7 @@ fn find_channels(text: &str) -> Vec<Found> {
             let end = at + 2 + len + 1;
             found.push(Found {
                 channel,
+                guild: None,
                 span: at..end,
                 link: false,
             });
@@ -207,13 +249,14 @@ fn find_channels(text: &str) -> Vec<Found> {
                 .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')'))
                 .unwrap_or(rest.len());
             let mut end = at + len;
-            if let Some(channel) = channel_link(&rest[..len]) {
+            if let Some((guild, channel)) = channel_link(&rest[..len]) {
                 // "<link>" and "[text](link)" keep their closing bracket before the name.
                 if matches!(text[end..].chars().next(), Some('>' | ')')) {
                     end += 1;
                 }
                 found.push(Found {
                     channel,
+                    guild: Some(guild),
                     span: at..end,
                     link: true,
                 });
@@ -226,20 +269,25 @@ fn find_channels(text: &str) -> Vec<Found> {
     found
 }
 
-/// The channel in "https://discord.com/channels/<server>/<channel>". `None` for message
-/// links, DM links and anything else.
-fn channel_link(link: &str) -> Option<ChannelId> {
+/// The (server, channel) in "https://discord.com/channels/<server>/<channel>". `None` for
+/// message links, DM links and anything else.
+fn channel_link(link: &str) -> Option<(GuildId, ChannelId)> {
     let url = reqwest::Url::parse(link).ok()?;
     let host = url.host_str()?;
-    if !(host.ends_with("discord.com") || host.ends_with("discordapp.com")) {
+    // discord.com or a subdomain like ptb.discord.com (never "notdiscord.com").
+    let is_discord = ["discord.com", "discordapp.com"]
+        .iter()
+        .any(|site| host == *site || host.ends_with(&format!(".{site}")));
+    if !is_discord {
         return None;
     }
     let parts: Vec<&str> = url.path_segments()?.filter(|p| !p.is_empty()).collect();
     let ["channels", guild, channel] = parts.as_slice() else {
         return None;
     };
-    parse_id(guild)?;
-    parse_id(channel)
+    let guild = GuildId::new(parse_id(guild)?.get());
+    let channel = parse_id(channel)?;
+    Some((guild, channel))
 }
 
 /// A Discord ID. Never 0: twilight panics on an ID of 0.
@@ -309,6 +357,55 @@ mod tests {
         assert!(ids("https://discord.com/channels/1/2/3").is_empty());
         assert!(ids("https://discord.com/channels/@me/2").is_empty());
         assert!(ids("https://example.com/channels/1/2").is_empty());
+        assert!(ids("https://notdiscord.com/channels/1/2").is_empty());
+        assert!(ids("https://evildiscordapp.com/channels/1/2").is_empty());
         assert!(ids("https://discord.com/channels/1/0").is_empty());
+    }
+
+    #[test]
+    fn allows_channel_enforces_guild_and_chat_gating() {
+        let gate: Gate = toml::from_str("deny_channels = [20]").unwrap();
+        let make =
+            |id: u64, kind: ChannelType, guild: Option<u64>, parent: Option<u64>| -> Channel {
+                serde_json::from_value(serde_json::json!({
+                    "id": id.to_string(),
+                    "type": u8::from(kind),
+                    "guild_id": guild.map(|g| g.to_string()),
+                    "parent_id": parent.map(|p| p.to_string()),
+                    "name": "chan",
+                }))
+                .unwrap()
+            };
+        let g1 = GuildId::new(1);
+        // Same server, allowed by chat gating.
+        assert!(allows_channel(
+            &gate,
+            g1,
+            &make(10, ChannelType::GuildText, Some(1), None)
+        ));
+        // Same server, denied by chat gating.
+        assert!(!allows_channel(
+            &gate,
+            g1,
+            &make(20, ChannelType::GuildText, Some(1), None)
+        ));
+        // Thread whose parent is denied by chat gating.
+        assert!(!allows_channel(
+            &gate,
+            g1,
+            &make(21, ChannelType::PublicThread, Some(1), Some(20))
+        ));
+        // Another server.
+        assert!(!allows_channel(
+            &gate,
+            g1,
+            &make(30, ChannelType::GuildText, Some(2), None)
+        ));
+        // A DM channel.
+        assert!(!allows_channel(
+            &gate,
+            g1,
+            &make(40, ChannelType::Private, None, None)
+        ));
     }
 }
