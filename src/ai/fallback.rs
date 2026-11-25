@@ -135,6 +135,19 @@ pub fn outage(err: &anyhow::Error) -> Option<Outage> {
     None
 }
 
+/// Whether a failed flex-tier request is worth retrying on the standard tier.
+/// Auth failures (401/403) and out-of-credit errors will fail on standard too.
+pub fn retry_without_flex(err: &anyhow::Error) -> bool {
+    if outage(err) == Some(Outage::OutOfCredit) {
+        return false;
+    }
+    !err.chain().any(|cause| {
+        cause
+            .downcast_ref::<ApiError>()
+            .is_some_and(|api| matches!(api.status.as_u16(), 401 | 403))
+    })
+}
+
 /// The main provider is out: why, since when, and when to try it again.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Switched {
@@ -176,6 +189,16 @@ impl State {
         };
         let retry_at = now + outage.retry_after();
         let mut switched = self.switched.lock().unwrap();
+        // Don't let a shorter backoff (e.g. a concurrent 1 h Down error) shorten or
+        // overwrite an active 24 h OutOfCredit backoff.
+        if let Some(current) = *switched
+            && (retry_at <= current.retry_at
+                || (current.outage == Outage::OutOfCredit
+                    && outage == Outage::Down
+                    && now < current.retry_at))
+        {
+            return;
+        }
         let (main, backup) = (display_name(self.main), display_name(self.backup));
         match *switched {
             None => warn!(
@@ -377,5 +400,46 @@ mod tests {
 
         state.worked();
         assert_eq!(state.switched(), None);
+    }
+
+    #[test]
+    fn concurrent_down_does_not_downgrade_out_of_credit() {
+        let state = State::new("claude", "openai");
+        let now = Utc::now();
+
+        // Out of credit sets a 24 h backoff.
+        state.failed(&api_error(400, "credit balance is too low"), now);
+        let original = state.switched().unwrap();
+        assert_eq!(original.outage, Outage::OutOfCredit);
+        assert_eq!(original.retry_at, now + TimeDelta::days(1));
+
+        // A concurrent Down error shortly after must not shorten it to 1 h.
+        state.failed(&api_error(529, "Overloaded"), now + TimeDelta::minutes(1));
+        assert_eq!(state.switched(), Some(original));
+
+        // Even late in the 24 h window, before retry_at, Down keeps OutOfCredit intact.
+        state.failed(
+            &api_error(503, "Unavailable"),
+            now + TimeDelta::hours(23) + TimeDelta::minutes(30),
+        );
+        assert_eq!(state.switched(), Some(original));
+    }
+
+    #[test]
+    fn retry_without_flex_skips_auth_and_credit_errors() {
+        assert!(!retry_without_flex(&api_error(401, "invalid api key")));
+        assert!(!retry_without_flex(&api_error(403, "forbidden")));
+        assert!(!retry_without_flex(&api_error(
+            429,
+            "You exceeded your current quota"
+        )));
+        assert!(!retry_without_flex(&api_error(
+            400,
+            "Your credit balance is too low"
+        )));
+        // Transient capacity / unsupported flex errors still fall back to standard.
+        assert!(retry_without_flex(&api_error(503, "high demand")));
+        assert!(retry_without_flex(&api_error(429, "rate limited")));
+        assert!(retry_without_flex(&api_error(400, "unsupported tier")));
     }
 }

@@ -307,7 +307,7 @@ impl KeepWarm {
             .as_str()
             .or(body["model"].as_str())
             .unwrap_or_default();
-        let usd = price::cost(&usage, model);
+        let usd = price::cost(&usage, model, false);
         let cold = usage.cache_write > 0;
         self.state
             .lock()
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(usage.cache_read, 14_000);
         assert_eq!(usage.cache_write, 0);
         // 14k read at $0.20 and 3 at $4.
-        let usd = price::cost(&usage, "claude-opus-5-5");
+        let usd = price::cost(&usage, "claude-opus-5-5", false);
         assert!((usd - 0.002_812).abs() < 1e-9, "{usd}");
     }
 
