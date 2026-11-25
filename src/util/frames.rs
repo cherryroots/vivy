@@ -397,6 +397,7 @@ mod tests {
     async fn playlists_are_refused() {
         // An HLS playlist would make ffmpeg fetch the file it names.
         let playlist = b"#EXTM3U\n#EXTINF:1,\nhttp://127.0.0.1:1/x.ts\n#EXT-X-ENDLIST\n";
-        assert!(frame_grids(playlist, VIDEO).await.is_err());
+        let err = frame_grids(playlist, VIDEO).await.unwrap_err().to_string();
+        assert!(err.starts_with("ffmpeg failed:"), "unexpected error: {err}");
     }
 }

@@ -354,16 +354,7 @@ impl Reply {
         match &self.followup {
             Some(message) => {
                 let http = ctx.bot.http.interaction(ctx.bot.application_id);
-                let mut request = http.update_followup(&self.token, message.id);
-                if let Some(content) = &draft.content {
-                    request = request.content(Some(content));
-                }
-                if let Some(components) = &draft.components {
-                    request = request.components(Some(components));
-                }
-                if let Some(embeds) = &draft.embeds {
-                    request = request.embeds(Some(embeds));
-                }
+                let request = build_update_followup(&http, &self.token, message.id, &draft);
                 Ok(request.await?.model().await?)
             }
             None => edit_original(&ctx.bot, &self.token, &draft).await,
@@ -667,6 +658,36 @@ async fn edit_original(bot: &BotCtx, token: &str, draft: &Draft) -> Result<Messa
     Ok(request.await?.model().await?)
 }
 
+/// Builds an update request for a follow-up message, keeping all draft fields.
+fn build_update_followup<'a>(
+    interaction: &'a twilight_http::client::InteractionClient<'a>,
+    token: &'a str,
+    message_id: crate::util::discord::MessageId,
+    draft: &'a Draft,
+) -> twilight_http::request::application::interaction::UpdateFollowup<'a> {
+    let mut request = interaction.update_followup(token, message_id);
+    if let Some(content) = &draft.content {
+        request = request.content(Some(content));
+    }
+    if let Some(components) = &draft.components {
+        request = request.components(Some(components));
+    }
+    if let Some(embeds) = &draft.embeds {
+        request = request.embeds(Some(embeds));
+    }
+    if !draft.files.is_empty() {
+        request = request.attachments(&draft.files);
+    }
+    if let Some(keep) = &draft.keep_files {
+        request = request.keep_attachment_ids(keep);
+    }
+    if let Some(mentions) = &draft.allowed_mentions {
+        request = request.allowed_mentions(Some(mentions));
+    }
+    // Note: twilight-http 0.17's `UpdateFollowup` has no `.flags(...)` builder method.
+    request
+}
+
 async fn followup(
     interaction: &twilight_http::client::InteractionClient<'_>,
     token: &str,
@@ -803,5 +824,35 @@ mod tests {
         assert_eq!(state.swap(ANSWERED, Ordering::SeqCst), DEFERRED);
         assert!(!begin_defer(&state));
         assert_eq!(state.load(Ordering::SeqCst), ANSWERED);
+    }
+
+    #[tokio::test]
+    async fn update_followup_preserves_files_keep_files_and_mentions() {
+        use twilight_http::request::TryIntoRequest as _;
+        use twilight_model::id::Id;
+
+        let client = crate::util::discord::Http::new("token".into());
+        let interaction = client.interaction(Id::new(1));
+        let mut draft = Draft::new()
+            .content("updated")
+            .file("note.txt", b"hello".to_vec())
+            .allowed_mentions(crate::util::discord::no_pings());
+        draft.keep_files = Some(vec![Id::new(99)]);
+
+        let req = build_update_followup(&interaction, "tok", Id::new(42), &draft)
+            .try_into_request()
+            .unwrap();
+        let form = req
+            .form()
+            .expect("file upload uses multipart form")
+            .clone()
+            .build();
+        let body = String::from_utf8_lossy(&form);
+        assert!(body.contains("note.txt"), "missing attached file: {body}");
+        assert!(body.contains("\"id\":99"), "missing keep_files ID: {body}");
+        assert!(
+            body.contains("\"allowed_mentions\""),
+            "missing allowed_mentions: {body}"
+        );
     }
 }

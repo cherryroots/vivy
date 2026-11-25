@@ -62,10 +62,8 @@ pub async fn prepare(audio: &[u8]) -> anyhow::Result<Clip> {
         "-",
     ])
     .await?;
-    let samples: Vec<i16> = raw
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+    let (pairs, _) = raw.as_chunks::<2>();
+    let samples: Vec<i16> = pairs.iter().map(|&pair| i16::from_le_bytes(pair)).collect();
     if samples.is_empty() {
         bail!("the audio was empty");
     }
