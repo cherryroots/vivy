@@ -1,8 +1,8 @@
 //! Turning Discord messages into chat turns, and stored turns into what the model reads.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::util::discord::{Message, UserId};
+use crate::util::discord::{GuildId, Message, UserId};
 use anyhow::Context as _;
 use futures::future::join_all;
 use serde_json::{Value, json};
@@ -30,12 +30,23 @@ const MEDIA_TURNS: usize = 4;
 /// At most this many YouTube videos go in one request (Gemini's limit).
 const MAX_YOUTUBE_VIDEOS: usize = 10;
 
-/// The name the model sees for a message's author: server nickname, display name or
-/// username.
-fn author_name(msg: &Message) -> String {
+/// The name the model sees for a message's author: server nickname (from the message or
+/// the cache, since REST-fetched and `referenced_message` payloads omit `member`), display
+/// name or username.
+fn author_name(ctx: &BotCtx, msg: &Message, guild: Option<GuildId>) -> String {
+    let cached_nick = guild.and_then(|guild| {
+        ctx.cache
+            .member(guild, msg.author.id)
+            .and_then(|member| member.nick().map(str::to_string))
+    });
+    resolve_author_name(msg, cached_nick.as_deref())
+}
+
+fn resolve_author_name(msg: &Message, cached_nick: Option<&str>) -> String {
     msg.member
         .as_ref()
         .and_then(|m| m.nick.clone())
+        .or_else(|| cached_nick.map(str::to_string))
         .or_else(|| msg.author.global_name.clone())
         .unwrap_or_else(|| msg.author.name.clone())
 }
@@ -80,8 +91,9 @@ pub async fn read_message(
     owner: bool,
 ) -> Vec<StoredPart> {
     // "<@123>" becomes "@name" and "<#123>" "#name", so the model sees who and where.
+    let guild = channels::message_guild(ctx, msg);
     let text = channels::name_people(ctx, msg, text);
-    let text = channels::name_channels(ctx, channels::message_guild(ctx, msg), &text).await;
+    let text = channels::name_channels(ctx, guild, &text).await;
     let text = if from_bot {
         text
     } else {
@@ -91,7 +103,7 @@ pub async fn read_message(
             embed_text(msg),
             text.trim()
         );
-        user_tag(&author_name(msg), msg.author.id, owner, &inside)
+        user_tag(&author_name(ctx, msg, guild), msg.author.id, owner, &inside)
     };
 
     let mut parts = vec![StoredPart::Text { text }];
@@ -482,48 +494,76 @@ fn is_discord_attachment(url: &str) -> bool {
         || parsed.path().starts_with("/ephemeral-attachments/"))
 }
 
+/// Discord's `/attachments/refresh-urls` accepts at most 50 URLs per request.
+const MAX_REFRESH_URLS: usize = 50;
+
+/// Deduplicates `urls`, keeps only Discord attachment links, and splits them into batches
+/// of at most [`MAX_REFRESH_URLS`].
+fn refresh_url_chunks(urls: &[String]) -> Vec<Vec<String>> {
+    let mut seen = HashSet::new();
+    let unique: Vec<String> = urls
+        .iter()
+        .filter(|u| is_discord_attachment(u) && seen.insert(u.as_str()))
+        .cloned()
+        .collect();
+    unique
+        .chunks(MAX_REFRESH_URLS)
+        .map(|chunk| chunk.to_vec())
+        .collect()
+}
+
 /// Asks Discord for fresh copies of expired attachment links. Returns old → new. On any
 /// error the old links are used as they are.
 async fn refresh_urls(ctx: &BotCtx, urls: &[String]) -> HashMap<String, String> {
-    let urls: Vec<&String> = urls.iter().filter(|u| is_discord_attachment(u)).collect();
-    if urls.is_empty() {
+    let chunks = refresh_url_chunks(urls);
+    if chunks.is_empty() {
         return HashMap::new();
     }
-    let result: anyhow::Result<Value> = async {
-        let response = ctx
-            .web
-            .post("https://discord.com/api/v10/attachments/refresh-urls")
-            .header("Authorization", ctx.token())
-            .json(&json!({ "attachment_urls": urls }))
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(response.json().await?)
-    }
-    .await;
-    match result {
-        Ok(body) => body["refreshed_urls"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|pair| {
-                Some((
-                    pair["original"].as_str()?.to_string(),
-                    pair["refreshed"].as_str()?.to_string(),
-                ))
-            })
-            .collect(),
-        Err(err) => {
-            warn!("couldn't refresh attachment links: {err:#}");
-            HashMap::new()
+    let mut refreshed = HashMap::new();
+    for chunk in chunks {
+        let result: anyhow::Result<Value> = async {
+            let response = ctx
+                .web
+                .post("https://discord.com/api/v10/attachments/refresh-urls")
+                .header("Authorization", ctx.token())
+                .json(&json!({ "attachment_urls": chunk }))
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok(response.json().await?)
+        }
+        .await;
+        match result {
+            Ok(body) => {
+                refreshed.extend(
+                    body["refreshed_urls"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|pair| {
+                            Some((
+                                pair["original"].as_str()?.to_string(),
+                                pair["refreshed"].as_str()?.to_string(),
+                            ))
+                        }),
+                );
+            }
+            Err(err) => {
+                warn!("couldn't refresh attachment links: {err:#}");
+            }
         }
     }
+    refreshed
 }
 
 /// The turn for the message someone replied to: the stored one if the bot has seen it,
 /// otherwise a new turn made from it (a reply to someone else's message, or to a voltgpt
-/// answer).
-pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::Result<i64> {
+/// answer). `guild` fills in `referenced.guild_id` when Discord omits it on reply payloads.
+pub async fn turn_for_reference(
+    ctx: &BotCtx,
+    referenced: &Message,
+    guild: Option<GuildId>,
+) -> anyhow::Result<i64> {
     let id = referenced.id.get();
     if let Some(turn) = ctx
         .db
@@ -532,10 +572,12 @@ pub async fn turn_for_reference(ctx: &BotCtx, referenced: &Message) -> anyhow::R
     {
         return Ok(turn.id);
     }
+    let mut referenced = referenced.clone();
+    referenced.guild_id = referenced.guild_id.or(guild);
     let from_bot = referenced.author.id == ctx.bot_id;
     // Never mark a replied-to message as an owner command, even if owner mode is on now:
     // someone replying to an old message from Cherry must not turn it into `owner="true"`.
-    let parts = read_message(ctx, referenced, &referenced.content, from_bot, false).await;
+    let parts = read_message(ctx, &referenced, &referenced.content, from_bot, false).await;
     let turn = store::NewTurn {
         parent_id: None,
         role: if from_bot {
@@ -699,5 +741,38 @@ mod tests {
         }
         assert_eq!(static_mime("image/png"), "image/png");
         assert_eq!(static_mime("application/octet-stream"), "image/png");
+    }
+
+    #[test]
+    fn refresh_url_chunks_deduplicates_filters_and_splits_at_50() {
+        let mut urls: Vec<String> = (0..105)
+            .map(|i| format!("https://cdn.discordapp.com/attachments/1/2/{i}.png"))
+            .collect();
+        // Add duplicates and a non-Discord URL.
+        urls.push(urls[0].clone());
+        urls.push(urls[50].clone());
+        urls.push("https://example.com/pic.png".into());
+
+        let chunks = refresh_url_chunks(&urls);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0].len(), 50);
+        assert_eq!(chunks[1].len(), 50);
+        assert_eq!(chunks[2].len(), 5);
+        assert_eq!(chunks[0][0], urls[0]);
+        assert_eq!(chunks[2][4], urls[104]);
+    }
+
+    #[test]
+    fn resolve_author_name_falls_back_to_cached_nick() {
+        let mut msg = crate::util::discord::test_message(json!({ "content": "hi" }));
+        msg.author.name = "cherry_user".into();
+        msg.author.global_name = Some("Cherry".into());
+        msg.member = None;
+
+        // REST-fetched / referenced_message without `member` uses cached server nickname.
+        assert_eq!(resolve_author_name(&msg, Some("ServerNick")), "ServerNick");
+        assert_eq!(resolve_author_name(&msg, None), "Cherry");
+        msg.author.global_name = None;
+        assert_eq!(resolve_author_name(&msg, None), "cherry_user");
     }
 }

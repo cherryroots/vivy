@@ -22,7 +22,6 @@ use crate::util::discord::{ChannelId, Draft, Http, no_pings};
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id};
 use tracing::{Event, Level, Subscriber};
@@ -476,20 +475,22 @@ where
 // Posting to Discord
 // ---------------------------------------------------------------------------------------
 
-/// Posts queued log lines to `channel` every few seconds until shutdown.
+/// Posts queued log lines to `channel` every few seconds until `shutdown` is cancelled,
+/// then flushes whatever is still in the queue. Runs outside the main `TaskTracker` so
+/// `main` can cancel and flush it *after* other background tasks have finished stopping.
 pub fn spawn_discord_poster(
     http: Arc<Http>,
     channel: ChannelId,
     mut receiver: mpsc::Receiver<LogLine>,
     shutdown: CancellationToken,
-    tasks: &TaskTracker,
-) {
-    tasks.spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(5));
         loop {
             let stopping = tokio::select! {
-                _ = tick.tick() => false,
+                biased;
                 _ = shutdown.cancelled() => true,
+                _ = tick.tick() => false,
             };
             let mut lines = Vec::new();
             while let Ok(line) = receiver.try_recv() {
@@ -509,7 +510,7 @@ config.toml): {err}. Is the bot in that channel?"
                 break;
             }
         }
-    });
+    })
 }
 
 /// Groups identical lines ("×12") and packs them into messages under Discord's limit.
@@ -695,5 +696,13 @@ mod tests {
     #[test]
     fn truncates_on_char_boundary() {
         assert_eq!(truncate("ééé", 3), "é…");
+    }
+
+    #[test]
+    fn dropping_log_queue_stops_buffering() {
+        let (sender, receiver) = mpsc::channel(1000);
+        drop(receiver);
+        let err = sender.try_send(line(Level::WARN, "ignored")).unwrap_err();
+        assert!(matches!(err, mpsc::error::TrySendError::Closed(_)));
     }
 }
