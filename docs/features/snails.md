@@ -10,7 +10,7 @@ Snails spots reposts. A "snail" is someone posting a link or a picture the serve
 - **`/snails reset`** (admins only): starts the leaderboard over. Every count in the server goes back to zero (this week, all time, and the control panel's "Caught this week" for it). The saved links and pictures stay, so a repost of something posted before the reset still counts.
 - **`/snails backfill start | pause | status`** (admins only): reads the server's older history so older posts count too. It never starts on its own. `start` also continues a paused crawl. `status` shows how far it got (and the channel being read right now), the pictures waiting for a retry grouped by host, and the pictures dropped after their last try (like `` `pbs.twimg.com` (50x) ``).
 
-The only setting is the usual gate in `[features.snails]` (`enabled`, plus the shared `guilds` / `channels` keys); `config.example.toml` explains them. Setup is in the README.
+Settings live under `[features.snails]`: the usual gate (`enabled`, plus the shared `guilds` / `channels` keys) and `count_within_days` (default 7); `config.example.toml` explains them. Setup is in the README.
 
 ## Files
 
@@ -133,7 +133,7 @@ On every start, `spawn_catch_up` reads what was posted while the bot was offline
 | Method | What it does here |
 |---|---|
 | `name` | `"snails"` |
-| `commands` | Check Snail (`check::check_snail`) and `/snails` (`board::snails`), whose subcommands are `top` (`board::top`), `reset` (`board::reset`) and `backfill` (`backfill::snail_backfill`). |
+| `commands` | Check Snail (`check::check_snail`) and `/snails` (`board::snails`), whose subcommands are `top` (`board::top`), `recent` (`board::recent`), `reset` (`board::reset`) and `backfill` (`backfill::snail_backfill`). |
 | `migrations` | `store::MIGRATIONS` |
 | `start` | Resumes crawls that were running (in servers the gate allows), starts the catch-up, and starts the retry loop. Never starts a new crawl. |
 | `on_message` | Saves and checks a new message, then reads it again after 12 seconds for late previews, unless every link already has one or an edit was read first. |

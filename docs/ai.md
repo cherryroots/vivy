@@ -95,7 +95,7 @@ From `src/ai/mod.rs` (doc comments trimmed):
 ```rust
 #[async_trait]
 pub trait ChatProvider: Send + Sync {
-    fn name(&self) -> &'static str;   // "openai", "claude"
+    fn name(&self) -> &'static str;   // "openai", "claude", "gemini"
     fn model(&self) -> &str;
 
     fn sends_full_history(&self) -> bool {
@@ -335,7 +335,7 @@ Background loops: the timers `"Anthropic bill"` and `"OpenAI bill"` (`"hourly"`)
 
 `[ai]` in `config.toml` is read into `AiConfig` (`mod.rs`): `provider`, `fallback`, `[ai.claude]` (`ClaudeConfig`), `[ai.openai]` (`OpenAiConfig`) and `[ai.gemini]` (`GeminiConfig`). `config.example.toml` explains each key. Keys come from `.env`: `ANTHROPIC_API_KEY`, `OPENAI_TOKEN` (and optional `OPENAI_BASE`), `GEMINI_API_KEY`, and the optional `ANTHROPIC_ADMIN_KEY` and `OPENAI_ADMIN_KEY`.
 
-`ai_from_env` in `src/main.rs` builds the providers at startup. Only the main provider's key is read, plus the fallback's when one is set (and different from the main one). Without the main key, `ctx.ai.chat()` returns `None` and chat says it is turned off; a missing fallback key only means there is no fallback. All providers share one `reqwest::Client` with a 10-second connect timeout and a 5-minute read timeout.
+`ai_from_env` in `src/main.rs` builds the providers at startup: the main provider and `fallback` (when set and different), plus every other provider whose key is in `.env` so features that pick their own (like the Hunger Games on OpenAI) can use them via `ctx.ai.provider(...)`. Without the main key, `ctx.ai.chat()` returns `None` and chat says it is turned off; a missing fallback key only means there is no fallback. Claude and OpenAI share a `reqwest::Client` with a 10-second connect timeout and a 5-minute read timeout; Gemini uses a 15-minute read timeout for long thinking runs.
 
 ## Adding a provider
 

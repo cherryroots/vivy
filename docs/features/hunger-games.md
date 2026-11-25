@@ -159,7 +159,7 @@ While people read a round, the next one is already being written (and drawn), in
 
 ## Feature hooks it uses
 
-Through the games feature (`games/mod.rs`): the `hungergames` and `leaderboard` subcommands of `/games`, `on_component` for IDs starting with `games:hunger:`, and the games feature's migrations (owner `games`). The leaderboard is `/games leaderboard`, not `/games hungergames leaderboard`: Discord allows only two levels under a command, and making `hungergames` a group would turn starting a game into `/games hungergames start`.
+Through the games feature (`games/mod.rs`): the `hungergames`, `leaderboard` and `resetleaderboard` subcommands of `/games`, `on_component` for IDs starting with `games:hunger:`, and the games feature's migrations (owner `games`). The leaderboard is `/games leaderboard`, not `/games hungergames leaderboard`: Discord allows only two levels under a command, and making `hungergames` a group would turn starting a game into `/games hungergames start`.
 
 ## Tables
 

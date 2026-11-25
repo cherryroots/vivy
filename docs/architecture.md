@@ -103,21 +103,21 @@ Which feature uses which hook:
 
 | Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | games | tinyfish |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
-| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| `commands` | ✓ | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
+| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `mention_prefixes` | `""` | `remind me`, ... | | | | | | | | |
 | `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | | ✓ |
 | `chat_context` | | | | ✓ | | | | | | |
 | `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | | |
-| `panels` | ✓ | | | ✓ | | | | | | |
+| `panels` | | | | ✓ | | | | | | |
 | `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | | |
-| `on_mention` | ✓ | ✓ | | | | | | |
-| `on_message` | ✓ | | | | ✓ | | | |
-| `on_reaction_add` | ✓ | | | | | | | |
-| `on_message_edit` | | | | | ✓ | | | |
-| `on_messages_deleted` | | | | | ✓ | | | |
-| `on_component` | | ✓ | ✓ | | | | | | ✓ | |
-| `on_modal` | | ✓ | ✓ | | | | | |
+| `on_mention` | ✓ | ✓ | | | | | | | | |
+| `on_message` | ✓ | | | | ✓ | | | | | |
+| `on_reaction_add` | ✓ | | | | | | | | | |
+| `on_message_edit` | | | | | ✓ | | | | | |
+| `on_messages_deleted` | | | | | ✓ | | | | | |
+| `on_component` | | ✓ | ✓ | ✓ | | | | ✓ | ✓ | |
+| `on_modal` | | ✓ | ✓ | | | | | | | |
 
 ## How events reach features
 
@@ -219,7 +219,7 @@ Inside the closure everything is ordinary synchronous Rust, and the connection i
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
-Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
+Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` and `claude_keep_warm` belong to Claude's migration owners.
 
 For tests, `db::test_connection(owner, migrations)` gives an in-memory database with the core tables and one feature's tables.
 
@@ -271,7 +271,7 @@ Since features never import each other, the core gives them four ways to work to
 | `message_links.rs` | Discord message links: `parse_link`, `find_message_links`, `can_read` (which channels Vivy may read for an asker: this DM, or any channel of the asker's server that `[features.chat]` gating doesn't turn off, whether or not the asker can see it) and `linked_message` (the message a link points to, if `can_read` allows it). Chat (`get_message`, links in a question, search, `look_back`) and drawing use them. |
 | `search.rs` | `search`: Discord's message search (`GET /guilds/{id}/messages/search`, which Twilight doesn't have yet) with every filter of the API in `Search` (content and slop, channels, authors and author types, mentions, roles, @everyone, replies, pinned, has, embed types and providers, link sites, attachment names and extensions, min/max ID, sort, limit, offset, NSFW; chat's tool offers all but slop, @everyone, and embed types and providers, to keep its description short, and always includes NSFW channels). It waits and tries again on 202 (still indexing) and 429 (too fast), honouring JSON `retry_after` and the `Retry-After` header without sleeping after the final failed attempt, fails on invalid 200 JSON instead of returning empty results, and fills in `guild_id` on returned messages. `snowflake_at` turns a time into a message ID. The results cover everything the bot can read, so callers filter them. Chat's `search_messages` and the Hunger Games' last words use it. |
 | `http.rs` | `client_builder`: the user agent and timeouts every HTTP client starts from |
-| `text.rs` | Text from text-file attachments and embeds, for chat |
+| `text.rs` | Text from text-file attachments and embeds, plus XML trust-boundary tag escaping (`break_boundary_tags`) and one-line label sanitization (`sanitize_label`) for chat |
 | `mod.rs` | `shorten`: cut text to a number of characters, ending in "…"; `env_key`: a key from `.env`, `None` when missing or empty; `month_start`: where this month's limits start counting |
 
 ## Importing from voltgpt
