@@ -5,11 +5,12 @@
 //! day: waking up, getting hungry, getting sleepy.
 
 use chrono::Utc;
+use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-use super::{face, name, reflect, store};
+use super::{face, folder, name, reflect, store};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
 
@@ -45,8 +46,8 @@ struct Args {
 }
 
 /// The faces she can pick, for the start of a conversation. `None` without faces.
-pub fn faces_note(ctx: &BotCtx) -> Option<String> {
-    let names = face::names(ctx);
+pub async fn faces_note(ctx: &BotCtx) -> Option<String> {
+    let names = face::names(ctx).await;
     (!names.is_empty()).then(|| {
         format!(
             "Your faces (for set_mood and the face: line of your mood): {}.",
@@ -63,7 +64,7 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
     };
     let args: Args = serde_json::from_value(args.clone())
         .map_err(|err| user_error(format!("not valid set_mood arguments: {err}")))?;
-    let names = face::names(ctx);
+    let names = face::names(ctx).await;
     let face = match args
         .face
         .as_deref()
@@ -102,29 +103,63 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
     let scope = store::scope(Some(guild.get()), asker.user.get());
     let (owned, user) = (scope.clone(), asker.user.get());
     let (mood, status) = (args.mood, args.status);
-    ctx.db
+    let now = Utc::now().timestamp();
+    let limit_err = ctx
+        .db
         .call(move |conn| {
-            let tx = conn.transaction()?;
-            let before = store::load(&tx, &owned)?;
-            let mut after = before.clone();
-            let mut file = before.get(reflect::MOOD_FILE).cloned().unwrap_or_default();
-            file = set_line(&file, "mood", &mood);
-            file = set_line(&file, "status", &status);
-            if let Some(face) = &face {
-                file = set_line(&file, "face", face);
-            }
-            if let Some(emoji) = &emoji {
-                file = set_line(&file, "emoji", emoji);
-            }
-            after.insert(reflect::MOOD_FILE.to_string(), file);
-            store::save(&tx, &owned, &before, &after, user, Utc::now().timestamp())?;
-            tx.commit()?;
-            Ok(())
+            Ok(save_mood(
+                conn,
+                &owned,
+                user,
+                &mood,
+                &status,
+                face.as_deref(),
+                emoji.as_deref(),
+                now,
+            )?)
         })
         .await?;
+    if let Err(err) = limit_err {
+        return Err(user_error(err));
+    }
     info!(scope, "changed her mood in a conversation");
     reflect::apply_mood(ctx, &scope).await;
     Ok("Your mood is updated.".to_string())
+}
+
+/// Rewrites `mood.md` inside one transaction, enforcing folder limits and bumping
+/// `memory_mood_checks` so a timed check doesn't overwrite a conversation mood right away.
+#[allow(clippy::too_many_arguments)]
+fn save_mood(
+    conn: &mut Connection,
+    scope: &str,
+    user: u64,
+    mood: &str,
+    status: &str,
+    face: Option<&str>,
+    emoji: Option<&str>,
+    now: i64,
+) -> rusqlite::Result<std::result::Result<(), String>> {
+    let tx = conn.transaction()?;
+    let before = store::load(&tx, scope)?;
+    let mut after = before.clone();
+    let mut file = before.get(reflect::MOOD_FILE).cloned().unwrap_or_default();
+    file = set_line(&file, "mood", mood);
+    file = set_line(&file, "status", status);
+    if let Some(face) = face {
+        file = set_line(&file, "face", face);
+    }
+    if let Some(emoji) = emoji {
+        file = set_line(&file, "emoji", emoji);
+    }
+    after.insert(reflect::MOOD_FILE.to_string(), file);
+    if let Err(err) = folder::check_limits(&before, &after) {
+        return Ok(Err(err));
+    }
+    store::save(&tx, scope, &before, &after, user, now)?;
+    store::set_mood_checked(&tx, scope, now)?;
+    tx.commit()?;
+    Ok(Ok(()))
 }
 
 /// `mood` with the line labelled `label` set to `value`: replaced where it is, or added
@@ -136,9 +171,7 @@ fn set_line(mood: &str, label: &str, value: &str) -> String {
     let mut lines: Vec<String> = mood
         .lines()
         .map(|line| {
-            let matches = reflect::mood_line(line, label).is_some()
-                || line.trim().eq_ignore_ascii_case(&format!("{label}:"));
-            if !found && matches {
+            if !found && reflect::labeled_line(line, label).is_some() {
                 found = true;
                 new.clone()
             } else {
@@ -156,6 +189,12 @@ fn set_line(mood: &str, label: &str, value: &str) -> String {
 mod tests {
     use super::*;
 
+    fn db() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        crate::core::db::migrate(&mut conn, "memory", store::MIGRATIONS).unwrap();
+        conn
+    }
+
     #[test]
     fn sets_lines() {
         let mood = "mood: sleepy\n- **Status**: \"zzz\"\nthinking: soup";
@@ -164,10 +203,43 @@ mod tests {
             changed,
             "mood: sleepy\nstatus: wide awake now\nthinking: soup"
         );
+        // Empty formatted lines are replaced in place rather than leaving a hidden duplicate.
+        let empty = "- **Mood**:\n- **Status**: ";
+        let replaced = set_line(&set_line(empty, "mood", "bright"), "status", "awake");
+        assert_eq!(replaced, "mood: bright\nstatus: awake");
+        assert_eq!(reflect::mood_line(&replaced, "mood"), Some("bright".into()));
         assert_eq!(
             set_line("mood: ok", "face", "happy"),
             "mood: ok\nface: happy"
         );
         assert_eq!(set_line("", "mood", "fine"), "mood: fine");
+    }
+
+    #[test]
+    fn enforces_limits_and_bumps_mood_checked_at() {
+        let mut conn = db();
+        let res = save_mood(
+            &mut conn, "server:1", 7, "happy", "chilling", None, None, 500,
+        )
+        .unwrap();
+        assert!(res.is_ok());
+        assert_eq!(
+            store::mood_checked_at(&conn, "server:1").unwrap(),
+            Some(500)
+        );
+
+        // Oversized mood file is rejected and doesn't overwrite or bump mood_checked_at.
+        let huge = "x".repeat(folder::MAX_FILE + 1);
+        let err = save_mood(&mut conn, "server:1", 7, &huge, "status", None, None, 600).unwrap();
+        assert!(err.is_err());
+        assert_eq!(
+            store::mood_checked_at(&conn, "server:1").unwrap(),
+            Some(500)
+        );
+        let loaded = store::load(&conn, "server:1").unwrap();
+        assert_eq!(
+            reflect::mood_line(&loaded[reflect::MOOD_FILE], "mood"),
+            Some("happy".into())
+        );
     }
 }

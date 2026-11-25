@@ -68,30 +68,52 @@ impl ToolRunner for ReflectRunner {
     }
 }
 
-async fn check(ctx: &BotCtx, guild: GuildId, args: &Value) -> anyhow::Result<String> {
-    let text = |key: &str| {
-        args[key]
-            .as_str()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-    };
+/// Parses `from` and `query` for `check_messages`. Rejects invalid non-empty `from`
+/// values instead of silently dropping the author filter when `query` is also given.
+fn parse_args(args: &Value) -> anyhow::Result<(Option<u64>, Option<String>)> {
     // The model may write the id as a number, or as a mention.
     let from = match &args["from"] {
-        Value::Number(n) => n.as_u64(),
-        Value::String(s) => s
-            .trim()
-            .trim_start_matches("<@")
-            .trim_start_matches('!')
-            .trim_end_matches('>')
-            .parse()
-            .ok(),
-        _ => None,
+        Value::Null => None,
+        Value::Number(n) => {
+            let id = n
+                .as_u64()
+                .filter(|&id| id != 0)
+                .ok_or_else(|| anyhow::anyhow!("`from` must be a numeric user id"))?;
+            Some(id)
+        }
+        Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                let id = trimmed
+                    .trim_start_matches("<@")
+                    .trim_start_matches('!')
+                    .trim_end_matches('>')
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|&id| id != 0)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("`from` must be a numeric user id, not {trimmed:?}")
+                    })?;
+                Some(id)
+            }
+        }
+        _ => anyhow::bail!("`from` must be a numeric user id"),
     };
-    let query = text("query");
+    let query = args["query"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     if from.is_none() && query.is_none() {
         anyhow::bail!("give `from` (a user id), `query`, or both");
     }
+    Ok((from, query))
+}
+
+async fn check(ctx: &BotCtx, guild: GuildId, args: &Value) -> anyhow::Result<String> {
+    let (from, query) = parse_args(args)?;
     let found = search::search(
         &ctx.web,
         ctx.token(),
@@ -163,4 +185,35 @@ async fn chat_may_read(ctx: &BotCtx, guild: GuildId, channel: ChannelId) -> bool
     }
     let parent = target.parent_id.filter(|_| target.kind.is_thread());
     ctx.gate("chat").allows(Some(guild), channel, parent)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_from_and_rejects_invalid_author_with_query() {
+        assert_eq!(
+            parse_args(&json!({"from": "123", "query": "cats"})).unwrap(),
+            (Some(123), Some("cats".into()))
+        );
+        assert_eq!(
+            parse_args(&json!({"from": "<@!456>"})).unwrap(),
+            (Some(456), None)
+        );
+        assert_eq!(
+            parse_args(&json!({"from": 789, "query": "  "})).unwrap(),
+            (Some(789), None)
+        );
+        assert_eq!(
+            parse_args(&json!({"from": "", "query": "soup"})).unwrap(),
+            (None, Some("soup".into()))
+        );
+        // Invalid `from` returns an error even when `query` is present.
+        assert!(parse_args(&json!({"from": "alice", "query": "cats"})).is_err());
+        assert!(parse_args(&json!({"from": 0, "query": "cats"})).is_err());
+        assert!(parse_args(&json!({"from": "0", "query": "cats"})).is_err());
+        assert!(parse_args(&json!({"from": true, "query": "cats"})).is_err());
+        assert!(parse_args(&json!({})).is_err());
+    }
 }
