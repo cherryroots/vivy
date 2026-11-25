@@ -132,4 +132,19 @@ mod tests {
         let history = load_for_graphs(&conn, now, 28 * day).unwrap();
         assert_eq!(history[&claude], vec![(29 * day, 2.0)]);
     }
+
+    #[test]
+    fn migration_creates_samples_at_index() {
+        let conn = test_connection("control_panel", MIGRATIONS);
+        let exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_control_panel_samples_at'
+                   AND tbl_name = 'control_panel_samples'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(exists, 1);
+    }
 }

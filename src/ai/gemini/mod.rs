@@ -187,6 +187,7 @@ impl Gemini {
         if let Err(err) = &result
             && body["service_tier"] == "flex"
             && !is_not_found(err)
+            && super::fallback::retry_without_flex(err)
         {
             info!("Gemini's flex tier failed, asking on the standard tier: {err:#}");
             body.as_object_mut().unwrap().remove("service_tier");
@@ -779,7 +780,7 @@ impl Collector {
             "thought_summary" => {
                 let text = delta["content"]["text"].as_str().unwrap_or_default();
                 self.summary.push_str(text);
-                step["summary"] = json!([{"type": "text", "text": self.summary}]);
+                append_summary(step, text);
                 if self.progress && !self.summary.trim().is_empty() {
                     vec![ChatEvent::Progress(self.summary.trim().to_string())]
                 } else {
@@ -822,7 +823,7 @@ impl Collector {
     }
 }
 
-/// Adds streamed text to a step's last text content.
+/// Adds streamed text to a step's last text content, mutating in place.
 fn append_text(step: &mut Value, text: &str) {
     if !step["content"].is_array() {
         step["content"] = json!([]);
@@ -830,10 +831,27 @@ fn append_text(step: &mut Value, text: &str) {
     let content = step["content"].as_array_mut().unwrap();
     match content.last_mut() {
         Some(last) if last["type"] == "text" => {
-            let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
-            last["text"] = json!(joined);
+            if let Some(Value::String(existing)) = last.get_mut("text") {
+                existing.push_str(text);
+            } else {
+                last["text"] = Value::String(text.to_string());
+            }
         }
         _ => content.push(json!({"type": "text", "text": text})),
+    }
+}
+
+/// Adds streamed text to a thought step's summary, mutating in place.
+fn append_summary(step: &mut Value, text: &str) {
+    if let Some(first) = step
+        .get_mut("summary")
+        .and_then(Value::as_array_mut)
+        .and_then(|list| list.first_mut())
+        && let Some(Value::String(existing)) = first.get_mut("text")
+    {
+        existing.push_str(text);
+    } else {
+        step["summary"] = json!([{"type": "text", "text": text}]);
     }
 }
 
@@ -1045,7 +1063,14 @@ impl ChatProvider for Gemini {
                         return;
                     }
                 };
-                for event in parser.push(&chunk) {
+                let events = match parser.push(&chunk) {
+                    Ok(events) => events,
+                    Err(err) => {
+                        let _ = sender.send(Err(err)).await;
+                        return;
+                    }
+                };
+                for event in events {
                     // The stream ends with `data: [DONE]`.
                     let Ok(data) = serde_json::from_str::<Value>(&event.data) else {
                         continue;
@@ -1878,6 +1903,44 @@ mod tests {
         assert_eq!(
             guard.by_id.get("call_5").map(String::as_str),
             Some("tool_5_updated")
+        );
+    }
+
+    #[test]
+    fn thought_summary_and_text_deltas_append_in_place() {
+        let mut collector = Collector {
+            progress: true,
+            ..Collector::default()
+        };
+        let events = collect(
+            &mut collector,
+            &[
+                json!({"event_type": "step.start", "index": 0, "step": {"type": "thought"}}),
+                json!({"event_type": "step.delta", "index": 0, "delta": {"type": "thought_summary", "content": {"type": "text", "text": "Checking "}}}),
+                json!({"event_type": "step.delta", "index": 0, "delta": {"type": "thought_summary", "content": {"type": "text", "text": "more."}}}),
+                json!({"event_type": "step.start", "index": 1, "step": {"type": "model_output"}}),
+                json!({"event_type": "step.delta", "index": 1, "delta": {"type": "text", "text": "Hel"}}),
+                json!({"event_type": "step.delta", "index": 1, "delta": {"type": "text", "text": "lo!"}}),
+            ],
+        );
+        assert_eq!(
+            events,
+            [
+                ChatEvent::Activity(Activity::Thinking),
+                ChatEvent::Progress("Checking".into()),
+                ChatEvent::Progress("Checking more.".into()),
+                ChatEvent::Activity(Activity::Writing),
+                ChatEvent::TextDelta("Hel".into()),
+                ChatEvent::TextDelta("lo!".into()),
+            ]
+        );
+        assert_eq!(
+            collector.steps[0]["summary"],
+            json!([{"type": "text", "text": "Checking more."}])
+        );
+        assert_eq!(
+            collector.steps[1]["content"],
+            json!([{"type": "text", "text": "Hello!"}])
         );
     }
 }

@@ -68,17 +68,19 @@ fn prices_for(model: &str, usage: &Usage) -> Prices {
         .map_or(UNKNOWN, |(_, prices)| *prices)
 }
 
-/// What one response cost, in USD.
-pub fn cost(usage: &Usage, model: &str) -> f64 {
+/// What one response cost, in USD. When `batched` is true (Message Batches API), token
+/// costs are halved while the per-search fee stays full price.
+pub fn cost(usage: &Usage, model: &str, batched: bool) -> f64 {
     let p = prices_for(model, usage);
     let per_token = |count: u64, price: f64| count as f64 * price / 1_000_000.0;
     let write_1h = usage.cache_write_1h.min(usage.cache_write);
-    per_token(usage.input, p.input)
+    let tokens = per_token(usage.input, p.input)
         + per_token(usage.cache_write - write_1h, p.input * 1.25)
         + per_token(write_1h, p.input * 2.0)
         + per_token(usage.cache_read, p.cache_read)
-        + per_token(usage.output, p.output)
-        + usage.web_searches as f64 * WEB_SEARCH
+        + per_token(usage.output, p.output);
+    let factor = if batched { 0.5 } else { 1.0 };
+    tokens * factor + usage.web_searches as f64 * WEB_SEARCH
 }
 
 /// What reading `tokens` from the cache saves, in USD, over writing them to the 1-hour
@@ -115,17 +117,26 @@ mod tests {
     fn prices_a_response() {
         let usage = usage();
         // 0.004 + 0.01 + 0.02 + 0.03 + 0.02
-        let usd = cost(&usage, "claude-opus-5-5");
+        let usd = cost(&usage, "claude-opus-5-5", false);
         assert!(close(usd, 0.084), "{usd}");
         // 0.002 + 0.005 + 0.02 + 0.015 + 0.02
-        assert!(close(cost(&usage, "claude-sonnet-5-5"), 0.062));
+        assert!(close(cost(&usage, "claude-sonnet-5-5", false), 0.062));
         // Opus 5 isn't priced like Opus 5.5, though its ID starts the same.
         // 0.005 + 0.0125 + 0.05 + 0.0375 + 0.02
-        assert!(close(cost(&usage, "claude-opus-5"), 0.125));
+        assert!(close(cost(&usage, "claude-opus-5", false), 0.125));
         // 0.01 + 0.025 + 0.025 + 0.075 + 0.02
-        assert!(close(cost(&usage, "claude-fable-5-1"), 0.155));
-        assert_eq!(cost(&usage, "claude-new-model"), usd);
-        assert_eq!(cost(&Usage::default(), "claude-opus-5-5"), 0.0);
+        assert!(close(cost(&usage, "claude-fable-5-1", false), 0.155));
+        assert_eq!(cost(&usage, "claude-new-model", false), usd);
+        assert_eq!(cost(&Usage::default(), "claude-opus-5-5", false), 0.0);
+    }
+
+    #[test]
+    fn batched_halves_tokens_not_web_searches() {
+        let usage = usage();
+        // Tokens: 0.004 + 0.01 + 0.02 + 0.03 = 0.064 -> halved to 0.032.
+        // Web searches: 2 * $0.01 = 0.02 (not halved). Total = 0.052.
+        let usd = cost(&usage, "claude-opus-5-5", true);
+        assert!(close(usd, 0.052), "{usd}");
     }
 
     #[test]
@@ -136,7 +147,7 @@ mod tests {
             ..Usage::default()
         };
         // 600k at 1.25 x $4 + 400k at 2 x $4
-        assert!(close(cost(&usage, "claude-opus-5-5"), 3.0 + 3.2));
+        assert!(close(cost(&usage, "claude-opus-5-5", false), 3.0 + 3.2));
     }
 
     #[test]
@@ -151,7 +162,7 @@ mod tests {
             input: 50_000,
             ..Usage::default()
         };
-        assert!(close(cost(&short, "claude-haiku-5-5"), 0.005));
+        assert!(close(cost(&short, "claude-haiku-5-5", false), 0.005));
         // Cache reads count toward the prompt's length.
         let long = Usage {
             input: 50_000,
@@ -159,6 +170,6 @@ mod tests {
             ..Usage::default()
         };
         // 0.025 + 0.003
-        assert!(close(cost(&long, "claude-haiku-5-5"), 0.028));
+        assert!(close(cost(&long, "claude-haiku-5-5", false), 0.028));
     }
 }

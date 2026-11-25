@@ -280,9 +280,11 @@ impl Collector {
 }
 
 fn append(block: &mut Value, key: &str, text: &str) {
-    let mut joined = block[key].as_str().unwrap_or_default().to_string();
-    joined.push_str(text);
-    block[key] = json!(joined);
+    if let Some(Value::String(existing)) = block.get_mut(key) {
+        existing.push_str(text);
+    } else {
+        block[key] = Value::String(text.to_string());
+    }
 }
 
 /// Streamed tool arguments as JSON: nothing at all means no arguments.
@@ -688,5 +690,16 @@ mod tests {
             ],
         );
         assert_eq!(collector.finish().content[0]["signature"], "first-second");
+    }
+
+    #[test]
+    fn append_mutates_existing_string_and_initializes_missing_fields() {
+        let mut block = json!({"type": "text", "text": "a"});
+        append(&mut block, "text", "b");
+        append(&mut block, "text", "c");
+        append(&mut block, "signature", "s1");
+        append(&mut block, "signature", "s2");
+        assert_eq!(block["text"], "abc");
+        assert_eq!(block["signature"], "s1s2");
     }
 }
