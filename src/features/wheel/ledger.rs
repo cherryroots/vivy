@@ -343,6 +343,61 @@ pub fn ledger(season: &Season) -> Vec<RoundLedger> {
     result
 }
 
+/// One player's balance at the start of the season (0) and after each resolved round.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerHistory {
+    pub user: u64,
+    /// `balances[0]` is 0 (before round 1); `balances[i + 1]` is the balance after
+    /// `rounds[i]` resolved.
+    pub balances: Vec<i64>,
+}
+
+/// Every player's balance over the resolved rounds of a season.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BalanceHistory {
+    /// Round numbers of the resolved rounds, oldest first.
+    pub rounds: Vec<i64>,
+    /// One entry per player, in the order they first played.
+    pub players: Vec<PlayerHistory>,
+}
+
+/// Computes each player's balance at Round 0 (0) and after every resolved round in the
+/// season, using [`ledger`] so the numbers match the wheel's standings exactly.
+pub fn balance_history(season: &Season) -> BalanceHistory {
+    let all_players = players(season);
+    let numbers = ledger(season);
+    let mut rounds = Vec::new();
+    let mut series: Vec<Vec<i64>> = all_players.iter().map(|_| vec![0]).collect();
+
+    for (round, round_ledger) in season.rounds.iter().zip(&numbers) {
+        if round.winner.is_none() {
+            continue;
+        }
+        rounds.push(round.number);
+        for (user, balances) in all_players.iter().zip(&mut series) {
+            let after = round_ledger.standing(*user).map_or(0, Standing::after);
+            balances.push(after);
+        }
+    }
+
+    let players = all_players
+        .into_iter()
+        .zip(series)
+        .map(|(user, balances)| PlayerHistory { user, balances })
+        .collect();
+
+    BalanceHistory { rounds, players }
+}
+
+/// Whether every option on the wheel has won (at least one option exists and none remain).
+pub fn is_season_over(season: &Season) -> bool {
+    if season.options.is_empty() {
+        return false;
+    }
+    let won: Vec<u64> = season.rounds.iter().filter_map(|r| r.winner).collect();
+    season.options.iter().all(|option| won.contains(option))
+}
+
 /// One line of a resolved round's outcome.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
@@ -844,5 +899,118 @@ mod tests {
         let mut resolved = later.clone();
         resolved.rounds.pop();
         assert!(check_bet(&resolved, ALICE, CHARLIE, "10").is_err());
+    }
+
+    #[test]
+    fn balance_history_starts_at_zero_and_matches_ledger() {
+        // Round 1 (Pool): Alice, Bob, Charlie claim 100.
+        // Alice bets 20 on Bob, Bob bets 15 on Alice, Charlie doesn't bet (tax 30).
+        // Pot = 20 + 15 + 30 = 65. Bob wins: Alice gets whole pot 65 (payout +45 -> 145).
+        // Bob loses 15 (-> 85). Charlie loses 30 tax (-> 70).
+        // Round 2 (Pool): Alice and Bob claim 100 (Alice 245, Bob 185, Charlie 70).
+        // Alice bets 25 on Charlie, Bob bets 25 on Alice, Charlie bets 10 on Charlie.
+        // Pot = 25 + 25 + 10 = 60. Charlie wins: Alice (25/35 of 60 = 42, payout +17 -> 262),
+        // Charlie (10/35 of 60 = 17, payout +7 -> 77), Bob (-25 -> 160).
+        // Round 3 is open and must not appear in history yet.
+        let s = pool(
+            &[ALICE, BOB, CHARLIE],
+            vec![
+                round(
+                    1,
+                    Some(BOB),
+                    &[ALICE, BOB, CHARLIE],
+                    vec![bet(ALICE, BOB, 20), bet(BOB, ALICE, 15)],
+                ),
+                round(
+                    2,
+                    Some(CHARLIE),
+                    &[ALICE, BOB],
+                    vec![
+                        bet(ALICE, CHARLIE, 25),
+                        bet(BOB, ALICE, 25),
+                        bet(CHARLIE, CHARLIE, 10),
+                    ],
+                ),
+                round(3, None, &[ALICE], vec![]),
+            ],
+        );
+
+        let history = balance_history(&s);
+        assert_eq!(history.rounds, [1, 2]);
+        assert_eq!(
+            history.players,
+            [
+                PlayerHistory {
+                    user: ALICE,
+                    balances: vec![0, 145, 262],
+                },
+                PlayerHistory {
+                    user: BOB,
+                    balances: vec![0, 85, 160],
+                },
+                PlayerHistory {
+                    user: CHARLIE,
+                    balances: vec![0, 70, 77],
+                },
+            ]
+        );
+        // Verify exact agreement with ledger standings after each resolved round.
+        let rounds = ledger(&s);
+        for player in &history.players {
+            assert_eq!(player.balances[0], 0);
+            assert_eq!(
+                player.balances[1],
+                rounds[0].standing(player.user).unwrap().after()
+            );
+            assert_eq!(
+                player.balances[2],
+                rounds[1].standing(player.user).unwrap().after()
+            );
+        }
+    }
+
+    #[test]
+    fn balance_history_with_no_resolved_rounds() {
+        let s = pool(
+            &[ALICE, BOB],
+            vec![round(1, None, &[ALICE], vec![bet(ALICE, BOB, 20)])],
+        );
+        let history = balance_history(&s);
+        assert!(history.rounds.is_empty());
+        assert_eq!(
+            history.players,
+            [PlayerHistory {
+                user: ALICE,
+                balances: vec![0],
+            }]
+        );
+    }
+
+    #[test]
+    fn season_end_detection() {
+        // Empty wheel is never "over".
+        let empty = pool(&[], vec![round(1, None, &[], vec![])]);
+        assert!(!is_season_over(&empty));
+
+        // 2 options, 1 resolved -> still 1 option left.
+        let mid = pool(
+            &[ALICE, BOB],
+            vec![
+                round(1, Some(ALICE), &[ALICE], vec![]),
+                round(2, None, &[], vec![]),
+            ],
+        );
+        assert!(!is_season_over(&mid));
+
+        // Both options won -> season is over (even with the new empty round appended).
+        let done = pool(
+            &[ALICE, BOB],
+            vec![
+                round(1, Some(ALICE), &[ALICE], vec![]),
+                round(2, Some(BOB), &[BOB], vec![]),
+                round(3, None, &[], vec![]),
+            ],
+        );
+        assert!(is_season_over(&done));
     }
 }
