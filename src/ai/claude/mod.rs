@@ -1129,12 +1129,20 @@ mod tests {
         assert!(body.get("container").is_none());
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
 
-        // Chime-ins send what chat sends, so they share its cache.
+        // Chime-ins skip code execution and its container, while keeping the main effort
+        // and web tools.
         let chat = job("chat", request().tools);
         let chime = job("chime", request().tools);
         assert_eq!(chat["system"], chime["system"]);
-        assert_eq!(chat["tools"], chime["tools"]);
         assert_eq!(chat["output_config"], chime["output_config"]);
+        assert!(chime.get("container").is_none());
+        let chime_tools: Vec<&str> = chime["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(chime_tools, ["web_search", "web_fetch", "get_current_time"]);
 
         // config.toml changes a job; what it leaves out keeps the built-in default, and
         // chat always uses the main model.

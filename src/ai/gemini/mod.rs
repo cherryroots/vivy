@@ -172,7 +172,7 @@ impl Gemini {
     ) -> anyhow::Result<(Value, reqwest::Response)> {
         let mut body = self.request_body(request, uploads, code);
         let new_conversation = body.get("previous_interaction_id").is_none();
-        let starter = if new_conversation && !request.tools.is_empty() {
+        let starter = if should_use_starter(request, new_conversation) {
             self.starter(&body).await
         } else {
             None
@@ -397,6 +397,12 @@ impl Gemini {
         }
         uploads
     }
+}
+
+/// Whether a request should create/continue a cached starter interaction.
+/// Chime-ins are spaced well over 5 minutes apart, so a chime starter would expire cold.
+fn should_use_starter(request: &ChatRequest, new_conversation: bool) -> bool {
+    new_conversation && !request.tools.is_empty() && request.job != "chime"
 }
 
 /// The thinking level `model` takes for `wanted`. Only Neon and Hydrogen think at "xhigh";
@@ -1230,7 +1236,7 @@ mod tests {
         // A mood check can wait: the flex tier, at half price. Chat answers can't.
         assert_eq!(body["service_tier"], "flex");
 
-        // Chime-ins and the cheap jobs take Hydrogen.
+        // Chime-ins and the cheap jobs take Hydrogen, and chime-ins have no code execution.
         for job in ["chime", "emoji", "translate", "curt"] {
             let cheap = ChatRequest {
                 job,
@@ -1240,8 +1246,34 @@ mod tests {
                 cache_key: String::new(),
                 answer_now: false,
             };
-            assert_eq!(gemini.request_body(&cheap, &[], true)["model"], CHEAP_MODEL);
+            let body = gemini.request_body(&cheap, &[], true);
+            assert_eq!(body["model"], CHEAP_MODEL);
+            assert!(!body["tools"].to_string().contains("code_execution"));
         }
+    }
+
+    #[test]
+    fn skips_starter_for_chime_job() {
+        let tool = ToolDef {
+            name: "memory",
+            description: "Memory.",
+            parameters: json!({"type": "object", "properties": {}}),
+        };
+        let make = |job: &'static str, tools: Vec<ToolDef>| ChatRequest {
+            system: "Vivy".into(),
+            input: Input::Full(Vec::new()),
+            tools,
+            cache_key: "discord:1".into(),
+            job,
+            answer_now: false,
+        };
+        assert!(should_use_starter(&make("chat", vec![tool.clone()]), true));
+        assert!(!should_use_starter(
+            &make("chat", vec![tool.clone()]),
+            false
+        ));
+        assert!(!should_use_starter(&make("chat", Vec::new()), true));
+        assert!(!should_use_starter(&make("chime", vec![tool]), true));
     }
 
     #[test]
