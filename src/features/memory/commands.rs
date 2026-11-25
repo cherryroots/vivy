@@ -43,12 +43,27 @@ async fn run(ctx: CommandCtx) -> Result<()> {
     }
 }
 
-/// `forget` suggests only your own files; the others every file here.
+#[derive(Debug, PartialEq, Eq)]
+enum AutocompleteMode {
+    None,
+    Own,
+    Any,
+}
+
+fn autocomplete_mode(subcommand: &str, is_admin: bool) -> AutocompleteMode {
+    match subcommand {
+        "forget" => AutocompleteMode::Own,
+        "delete" if !is_admin => AutocompleteMode::None,
+        _ => AutocompleteMode::Any,
+    }
+}
+
+/// `forget` suggests only your own files; `delete` is admin-only; `show` suggests every file here.
 async fn autocomplete(ctx: CommandCtx, typed: Typed) -> Result<Vec<Choice>> {
-    if typed.subcommand == "forget" {
-        Ok(own_file(&ctx, &typed.value).await)
-    } else {
-        Ok(any_file(&ctx, &typed.value).await)
+    match autocomplete_mode(&typed.subcommand, ctx.bot.is_admin(ctx.author_id())) {
+        AutocompleteMode::None => Ok(Vec::new()),
+        AutocompleteMode::Own => Ok(own_file(&ctx, &typed.value).await),
+        AutocompleteMode::Any => Ok(any_file(&ctx, &typed.value).await),
     }
 }
 
@@ -360,5 +375,14 @@ mod tests {
         );
         assert_eq!(dump(&folder, "/memories").matches("# ").count(), 3);
         assert_eq!(dump(&folder, "/memories/users/2"), "");
+    }
+
+    #[test]
+    fn delete_autocomplete_requires_admin() {
+        assert_eq!(autocomplete_mode("delete", false), AutocompleteMode::None);
+        assert_eq!(autocomplete_mode("delete", true), AutocompleteMode::Any);
+        assert_eq!(autocomplete_mode("forget", false), AutocompleteMode::Own);
+        assert_eq!(autocomplete_mode("forget", true), AutocompleteMode::Own);
+        assert_eq!(autocomplete_mode("show", false), AutocompleteMode::Any);
     }
 }
