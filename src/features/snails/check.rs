@@ -94,8 +94,13 @@ async fn find_snails(
 /// notes that for the control panel's count. A message counts once however often it
 /// changes. Nothing is posted: snails are only pointed out when someone asks with Check
 /// Snail.
-pub async fn on_new_message(ctx: &BotCtx, guild: GuildId, msg: &Message) -> Result<()> {
-    let synced = index::sync_message(ctx, guild, msg).await?;
+pub async fn on_new_message(
+    ctx: &BotCtx,
+    guild: GuildId,
+    msg: &Message,
+    guard: Option<&index::SyncGuard>,
+) -> Result<()> {
+    let synced = index::sync_message(ctx, guild, msg, guard).await?;
     count_if_snail(ctx, guild, msg, &synced.new_links, &synced.new_pictures).await
 }
 
@@ -178,6 +183,9 @@ async fn earlier_posts(
         .db
         .call(move |conn| Ok(store::same_links(conn, g, &keys, before)?))
         .await?;
+    let same_links = filter_allowed_posts(same_links, |channel| {
+        ctx.allows("snails", Some(guild), channel)
+    });
     let mut unchecked = 0;
     for posted in same_links {
         if snails.len() >= limit {
@@ -194,7 +202,7 @@ async fn earlier_posts(
     }
 
     let checked: Vec<Fingerprint> = pictures.iter().map(|p| p.fp.clone()).collect();
-    for candidate in close_pictures(ctx, g, checked, before).await? {
+    for candidate in close_pictures(ctx, guild, checked, before).await? {
         if snails.iter().any(|s| s.posted == candidate.posted) {
             continue;
         }
@@ -211,6 +219,14 @@ async fn earlier_posts(
     }
     snails.sort_by_key(|s| s.posted.message);
     Ok((snails, unchecked))
+}
+
+/// Drops earlier posts from channels where `[features.snails]` is turned off.
+fn filter_allowed_posts(posts: Vec<Posted>, allows: impl Fn(ChannelId) -> bool) -> Vec<Posted> {
+    posts
+        .into_iter()
+        .filter(|posted| allows(ChannelId::new(posted.channel)))
+        .collect()
 }
 
 /// Saves the checked message too, so later checks find it. Pictures that failed go on the
@@ -248,15 +264,18 @@ async fn save_if_new(
 }
 
 /// Older pictures within the match distance, closest first, at most one per stored picture.
+/// Candidates from channels where `[features.snails]` is turned off are skipped before the
+/// cap so they never surface or crowd out allowed matches.
 async fn close_pictures(
     ctx: &BotCtx,
-    guild: u64,
+    guild: GuildId,
     checked: Vec<Fingerprint>,
     before: u64,
 ) -> Result<Vec<Candidate>> {
     if checked.is_empty() {
         return Ok(Vec::new());
     }
+    let g = guild.get();
     let checked = std::sync::Arc::new(checked);
     let mut found: Vec<Candidate> = Vec::new();
     let mut after = 0;
@@ -265,7 +284,7 @@ async fn close_pictures(
         // runs on a blocking thread and other features' queries don't wait for it.
         let (rows, next) = ctx
             .db
-            .call(move |conn| Ok(store::pictures_after(conn, guild, before, after)?))
+            .call(move |conn| Ok(store::pictures_after(conn, g, before, after)?))
             .await?;
         let checked = checked.clone();
         let chunk = tokio::task::spawn_blocking(move || store::close_to(&checked, &rows)).await?;
@@ -275,6 +294,7 @@ async fn close_pictures(
             None => break,
         }
     }
+    found.retain(|c| ctx.allows("snails", Some(guild), ChannelId::new(c.posted.channel)));
     found.sort_by_key(|c| c.distance);
     let mut unique: Vec<Candidate> = Vec::new();
     for c in found {
@@ -384,5 +404,42 @@ mod tests {
         assert!(recent(now - 8 * 86_400, now, 30 * DAY_SECS));
         // A message from 2023 that an edit or a retry brings back.
         assert!(!recent(1_685_302_717, now, week));
+    }
+
+    #[test]
+    fn earlier_posts_respect_channel_gate() {
+        let config = crate::Config::parse(
+            r#"
+            [features.snails]
+            deny_channels = [20]
+            "#,
+        )
+        .unwrap();
+        let gate = config.gate("snails");
+        let guild = Some(GuildId::new(1));
+        let posts = vec![
+            Posted {
+                message: 1,
+                channel: 10,
+                author: 100,
+            },
+            Posted {
+                message: 2,
+                channel: 20,
+                author: 101,
+            },
+            // Thread 21 inside denied parent 20.
+            Posted {
+                message: 3,
+                channel: 21,
+                author: 102,
+            },
+        ];
+        let allowed = filter_allowed_posts(posts, |ch| {
+            let parent = (ch.get() == 21).then_some(ChannelId::new(20));
+            gate.allows(guild, ch, parent)
+        });
+        assert_eq!(allowed.len(), 1);
+        assert_eq!(allowed[0].message, 1);
     }
 }

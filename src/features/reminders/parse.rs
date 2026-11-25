@@ -270,6 +270,9 @@ pub fn resolve(when: &When, now: DateTime<Utc>, home: Tz) -> Result<DateTime<Utc
             for &(n, unit) in parts {
                 t = add(t, n, unit, home).ok_or_else(too_far)?;
             }
+            if t <= now {
+                return Err("That duration is zero.".to_string());
+            }
             Ok(t)
         }
         When::At { day, time, zone } => {
@@ -288,31 +291,40 @@ pub fn resolve(when: &When, now: DateTime<Utc>, home: Tz) -> Result<DateTime<Utc
                 Some(Day::Today) => today,
                 Some(Day::Tomorrow) => today.succ_opt().ok_or_else(too_far)?,
                 Some(Day::NextWeek) => today + Days::new(7),
-                // The next 15th: this month's if its time is still ahead, else next month's.
+                // The next Nth: the earliest month that has day N and whose time is still ahead.
                 Some(Day::Monthly(day)) => {
-                    let candidate = |months: u32| {
-                        today
-                            .checked_add_months(Months::new(months))
-                            .and_then(|d| d.with_day(*day))
-                    };
-                    let this_month = candidate(0).filter(|&date| {
-                        date > today
+                    let first_of_month = today.with_day(1).ok_or_else(too_far)?;
+                    let found = (0..=12).find_map(|months| {
+                        let date = first_of_month
+                            .checked_add_months(Months::new(months))?
+                            .with_day(*day)?;
+                        if date > today
                             || (date == today && to_utc(zone, date, time).is_ok_and(|t| t > now))
+                        {
+                            Some(date)
+                        } else {
+                            None
+                        }
                     });
-                    match this_month.or_else(|| candidate(1)) {
+                    match found {
                         Some(date) => date,
                         None => return Err(format!("No month has a day {day}.")),
                     }
                 }
-                // The next March 3: this year's if still ahead, else next year's.
+                // The next March 3 (or Feb 29 in the next leap year; up to 8 years across a
+                // non-leap century like 2100).
                 Some(Day::Yearly { month, day }) => {
-                    let candidate =
-                        |years: i32| NaiveDate::from_ymd_opt(today.year() + years, *month, *day);
-                    let this_year = candidate(0).filter(|&date| {
-                        date > today
+                    let found = (0..=8).find_map(|years| {
+                        let date = NaiveDate::from_ymd_opt(today.year() + years, *month, *day)?;
+                        if date > today
                             || (date == today && to_utc(zone, date, time).is_ok_and(|t| t > now))
+                        {
+                            Some(date)
+                        } else {
+                            None
+                        }
                     });
-                    match this_year.or_else(|| candidate(1)) {
+                    match found {
                         Some(date) => date,
                         None => return Err(format!("There's no day {day} in that month.")),
                     }
@@ -375,6 +387,40 @@ pub fn next_repeat(
     Err(too_far())
 }
 
+/// The next time `repeat` comes up after `after`, anchored at `scheduled` for interval
+/// rules so late deliveries don't drift the schedule.
+pub fn next_repeat_after(
+    repeat: &Repeat,
+    scheduled: DateTime<Utc>,
+    after: DateTime<Utc>,
+    home: Tz,
+) -> Result<DateTime<Utc>, String> {
+    let target = scheduled.max(after);
+    let Rule::Interval(n, unit) = repeat.rule else {
+        return next_repeat(repeat, target, home);
+    };
+    let zone = repeat.zone.unwrap_or(home);
+    let too_far = || "That's too far in the future.".to_string();
+    if unit == Unit::Hour {
+        let step = i64::from(n) * 3600;
+        let k = (target.timestamp() - scheduled.timestamp()) / step + 1;
+        let next = scheduled
+            .timestamp()
+            .checked_add(k.checked_mul(step).ok_or_else(too_far)?)
+            .ok_or_else(too_far)?;
+        return DateTime::from_timestamp(next, 0).ok_or_else(too_far);
+    }
+    // Step by multiples of `n` from `scheduled` so calendar intervals don't drift.
+    for step in 1_u32.. {
+        let total = n.checked_mul(step).ok_or_else(too_far)?;
+        let candidate = add(scheduled, total, unit, zone).ok_or_else(too_far)?;
+        if candidate > target {
+            return Ok(candidate);
+        }
+    }
+    Err(too_far())
+}
+
 /// How a repeat is saved and shown: "every monday at 09:00 Europe/Oslo", "every 2 hours".
 /// The zone (`home` when the repeat named none) is written out, so later changes to the
 /// user's timezone don't move it, and [`parse_repeat`] reads it back.
@@ -393,9 +439,11 @@ pub fn describe_repeat(repeat: &Repeat, home: Tz) -> String {
                 Unit::Day => "day",
                 Unit::Hour | Unit::Minute | Unit::Second => "hour",
             };
-            let every = match n {
-                1 => format!("every {name}"),
-                n => format!("every {n} {name}s"),
+            let every = match (n, unit) {
+                // "every day" parses as Rule::Daily (09:00), so keep the "1" for an interval.
+                (1, Unit::Day) => "every 1 day".to_string(),
+                (1, _) => format!("every {name}"),
+                (n, _) => format!("every {n} {name}s"),
             };
             // Hours are exact; days and longer follow the calendar in the zone.
             return match unit {
@@ -709,7 +757,11 @@ fn duration(input: &mut &str) -> ModalResult<Vec<(u32, Unit)>> {
     let separator = (space0, opt((alt((",", word("and"))), space0)));
     let parts: Vec<Vec<(u32, Unit)>> =
         repeat(1.., preceded(separator, duration_part)).parse_next(input)?;
-    Ok(parts.into_iter().flatten().collect())
+    let parts: Vec<(u32, Unit)> = parts.into_iter().flatten().collect();
+    if parts.iter().all(|&(n, _)| n == 0) {
+        return backtrack();
+    }
+    Ok(parts)
 }
 
 /// "2h", "30 minutes", "an hour", "half an hour", "1.5 hours", "1h30", "an hour and a half".
@@ -823,7 +875,10 @@ fn numeric_clock(input: &mut &str) -> ModalResult<NaiveTime> {
         Some(false) => hour % 12,
     };
     match NaiveTime::from_hms_opt(hour, minute.unwrap_or(0), second.unwrap_or(0)) {
-        Some(time) => Ok(time),
+        Some(time) => {
+            token_end.parse_next(input)?;
+            Ok(time)
+        }
         None => backtrack(),
     }
 }
@@ -851,17 +906,8 @@ fn day(input: &mut &str) -> ModalResult<Day> {
 /// A date without a year: "the 15th", "15th", "march 3", "3rd of march", "3 march", "24.12".
 fn calendar_day(input: &mut &str) -> ModalResult<Day> {
     alt((
-        // "24.12", "24.12.2026"
-        (
-            day_number,
-            '.',
-            month_number,
-            opt(preceded('.', year_number)),
-        )
-            .verify_map(|(day, _, month, year)| match year {
-                Some(year) => NaiveDate::from_ymd_opt(year, month, day).map(Day::Date),
-                None => Some(Day::Yearly { month, day }),
-            }),
+        // "24.12", "02.05", "24.12.2026"
+        dot_date,
         // "march 3", "march 3rd"
         (month_name, space1, ordinal).map(|(month, _, day)| Day::Yearly { month, day }),
         // "3rd of march", "3 march"
@@ -873,10 +919,42 @@ fn calendar_day(input: &mut &str) -> ModalResult<Day> {
     .parse_next(input)
 }
 
+/// "24.12", "02.05", "24.12.2026". Without a year, the month must be two digits (like
+/// "24.12" or "02.05") so decimal numbers like "2.5 kg" aren't read as May 2nd.
+fn dot_date(input: &mut &str) -> ModalResult<Day> {
+    let day = day_number.parse_next(input)?;
+    '.'.parse_next(input)?;
+    let month_str: &str = take_while(1..=2, |c: char| c.is_ascii_digit()).parse_next(input)?;
+    let month: u32 = month_str
+        .parse()
+        .map_err(|_| ErrMode::Backtrack(ContextError::new()))?;
+    if !(1..=12).contains(&month) {
+        return backtrack();
+    }
+    let year = opt(preceded('.', year_number)).parse_next(input)?;
+    token_end.parse_next(input)?;
+    if year.is_none() {
+        // Reject single-digit months without a year ("2.5 kg") and version numbers ("1.12.3").
+        let dot_digit = input
+            .strip_prefix('.')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        if month_str.len() < 2 || dot_digit {
+            return backtrack();
+        }
+    }
+    match year {
+        Some(year) => NaiveDate::from_ymd_opt(year, month, day)
+            .map(Day::Date)
+            .ok_or_else(|| ErrMode::Backtrack(ContextError::new())),
+        None => Ok(Day::Yearly { month, day }),
+    }
+}
+
 /// "3", "3rd", "15th": a day of the month, 1 to 31.
 fn ordinal(input: &mut &str) -> ModalResult<u32> {
     let day = day_number.parse_next(input)?;
     opt(any_word(&["st", "nd", "rd", "th"])).parse_next(input)?;
+    token_end.parse_next(input)?;
     Ok(day)
 }
 
@@ -884,6 +962,7 @@ fn ordinal(input: &mut &str) -> ModalResult<u32> {
 fn ordinal_only(input: &mut &str) -> ModalResult<u32> {
     let day = day_number.parse_next(input)?;
     any_word(&["st", "nd", "rd", "th"]).parse_next(input)?;
+    token_end.parse_next(input)?;
     Ok(day)
 }
 
@@ -892,17 +971,6 @@ fn day_number(input: &mut &str) -> ModalResult<u32> {
         .parse_to()
         .parse_next(input)?;
     if (1..=31).contains(&n) {
-        Ok(n)
-    } else {
-        backtrack()
-    }
-}
-
-fn month_number(input: &mut &str) -> ModalResult<u32> {
-    let n: u32 = take_while(1..=2, |c: char| c.is_ascii_digit())
-        .parse_to()
-        .parse_next(input)?;
-    if (1..=12).contains(&n) {
         Ok(n)
     } else {
         backtrack()
@@ -1007,6 +1075,7 @@ fn date(input: &mut &str) -> ModalResult<NaiveDate> {
         .parse_next(input)?;
     let month = preceded('-', two_digits).parse_next(input)?;
     let day = preceded('-', two_digits).parse_next(input)?;
+    token_end.parse_next(input)?;
     match NaiveDate::from_ymd_opt(year, month, day) {
         Some(date) => Ok(date),
         None => backtrack(),
@@ -1028,6 +1097,15 @@ fn zone(input: &mut &str) -> ModalResult<Tz> {
 // ---------------------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------------------
+
+/// Succeeds when the next character is not a letter, digit, or apostrophe (so "2.125",
+/// "2.12kg" or "2026-12-245" isn't read as a prefix date).
+fn token_end(input: &mut &str) -> ModalResult<()> {
+    not(one_of(|c: char| {
+        c.is_alphanumeric() || c == '\'' || c == '’'
+    }))
+    .parse_next(input)
+}
 
 /// Matches `w` ignoring case, as a whole word: "in" matches "in 2h" but not "inside".
 /// Digits may follow, so "h" still matches in "2h30m". An apostrophe counts as part of the
@@ -1674,6 +1752,109 @@ mod tests {
         assert_eq!(
             run("at 5pm ET voilà"),
             (utc(2026, 2, 22, 22, 0), "voilà".into())
+        );
+    }
+
+    #[test]
+    fn every_1_day_round_trips_as_interval() {
+        let parsed = parse_reminder("every 1 day stretch").unwrap();
+        let When::Every(repeat) = parsed.when else {
+            panic!("expected repeat");
+        };
+        assert_eq!(repeat.rule, Rule::Interval(1, Unit::Day));
+        let saved = describe_repeat(&repeat, Tz::Europe__Oslo);
+        assert_eq!(saved, "every 1 day Europe/Oslo");
+        // Reading it back must stay Rule::Interval(1, Unit::Day), not mutate into Rule::Daily.
+        let back = parse_repeat(&saved).unwrap();
+        assert_eq!(back.rule, Rule::Interval(1, Unit::Day));
+        assert_eq!(back.zone, Some(Tz::Europe__Oslo));
+        assert_eq!(repeat_for_display(&saved, Tz::Europe__Oslo), "every 1 day");
+        assert_eq!(
+            repeat_for_display(&saved, Tz::UTC),
+            "every 1 day in Europe/Oslo"
+        );
+    }
+
+    #[test]
+    fn monthly_day_skips_shorter_months() {
+        // Jan 30 10:00 -> Feb has no 30th -> Mar 30 09:00.
+        assert_eq!(
+            run_in("on the 30th rent", utc(2026, 1, 30, 10, 0), Tz::UTC),
+            (utc(2026, 3, 30, 9, 0), "rent".into())
+        );
+        // Mar 31 10:00 -> Apr has no 31st -> May 31 09:00.
+        assert_eq!(
+            run_in("on the 31st report", utc(2026, 3, 31, 10, 0), Tz::UTC),
+            (utc(2026, 5, 31, 9, 0), "report".into())
+        );
+        // Feb 15 -> Feb has no 31st -> Mar 31 09:00.
+        assert_eq!(
+            run_in("31st report", utc(2026, 2, 15, 10, 0), Tz::UTC),
+            (utc(2026, 3, 31, 9, 0), "report".into())
+        );
+    }
+
+    #[test]
+    fn feb_29_advances_to_next_leap_year() {
+        // 2026 is not a leap year; next Feb 29 is 2028.
+        assert_eq!(
+            run_in("feb 29 leap day", utc(2026, 2, 22, 12, 0), Tz::UTC),
+            (utc(2028, 2, 29, 9, 0), "leap day".into())
+        );
+        // Past 09:00 on 2028-02-29 -> 2032-02-29.
+        assert_eq!(
+            run_in("feb 29 leap day", utc(2028, 2, 29, 10, 0), Tz::UTC),
+            (utc(2032, 2, 29, 9, 0), "leap day".into())
+        );
+        // Impossible dates still fail.
+        let bad = parse_reminder("feb 30 nope").unwrap();
+        assert!(resolve(&bad.when, now(), Tz::UTC).is_err());
+    }
+
+    #[test]
+    fn zero_durations_are_rejected() {
+        for text in ["in 0s x", "in 0m x", "in 0h 0m x", "in 0.0 hours x"] {
+            assert!(parse_reminder(text).is_err(), "{text} should fail");
+        }
+        assert!(parse_when("in 0s").is_err());
+        // Fractional non-zero durations still work.
+        assert_eq!(
+            run("in 0.5 hours tea"),
+            (now() + TimeDelta::minutes(30), "tea".into())
+        );
+    }
+
+    #[test]
+    fn decimals_and_joined_tokens_are_not_dates() {
+        // "2.5 kg in 1h" must not be misparsed as May 2nd.
+        assert_eq!(
+            run("2.5 kg in 1h"),
+            (now() + TimeDelta::hours(1), "2.5 kg".into())
+        );
+        assert_eq!(
+            run("2.5kg in 1h"),
+            (now() + TimeDelta::hours(1), "2.5kg".into())
+        );
+        assert_eq!(
+            run("2.125 kg in 1h"),
+            (now() + TimeDelta::hours(1), "2.125 kg".into())
+        );
+        assert_eq!(
+            run("1.12.3 release in 1h"),
+            (now() + TimeDelta::hours(1), "1.12.3 release".into())
+        );
+        assert_eq!(
+            run("march 300 in 1h"),
+            (now() + TimeDelta::hours(1), "march 300".into())
+        );
+        // Real European dates with 2-digit months or explicit years still work.
+        assert_eq!(
+            run("02.05 presents"),
+            (utc(2026, 5, 2, 9, 0), "presents".into())
+        );
+        assert_eq!(
+            run("2.5.2026 presents"),
+            (utc(2026, 5, 2, 9, 0), "presents".into())
         );
     }
 }
