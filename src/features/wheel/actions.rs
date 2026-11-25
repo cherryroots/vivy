@@ -2,12 +2,12 @@
 //! database transaction, and only talks to Discord after it committed.
 //!
 //! Redrawing a status message after a change reads the season again, draws it and edits the
-//! message while holding the server's redraw lock ([`redraw_lock`]). When two people bet at
+//! message while holding that message's redraw lock ([`redraw_lock`]). When two people bet at
 //! once, the second redraw waits for the first and then shows both bets; without the lock,
 //! the slower drawing could land last and show the older state.
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 
 use anyhow::{Context as _, bail};
 use chrono::Utc;
@@ -150,24 +150,51 @@ pub async fn redraw_last(ctx: &BotCtx, guild: GuildId) -> Option<bool> {
     Some(edit_status(ctx, channel, MessageId::new(message), guild, &game, index).await)
 }
 
-/// One lock per server, held while a status message is read, drawn and edited, plus how
-/// many redraws are waiting for it.
+/// One lock per status message, held while the message is read, drawn and edited, plus how
+/// many redraws are waiting for each round ID on that message.
 #[derive(Default)]
 struct Redraw {
     lock: tokio::sync::Mutex<()>,
-    waiting: std::sync::atomic::AtomicUsize,
+    waiting: Mutex<HashMap<i64, usize>>,
 }
 
-static REDRAWS: LazyLock<Mutex<HashMap<u64, Arc<Redraw>>>> = LazyLock::new(Mutex::default);
+impl Redraw {
+    /// Notes that a redraw for `round` is waiting for this message's lock.
+    fn queue(&self, round: i64) {
+        *self.waiting.lock().unwrap().entry(round).or_default() += 1;
+    }
 
-/// The server's redraw lock (made the first time it's needed).
-fn redraw_lock(guild: GuildId) -> Arc<Redraw> {
-    REDRAWS
-        .lock()
-        .unwrap()
-        .entry(guild.get())
-        .or_default()
-        .clone()
+    /// Takes this redraw's turn for `round`. Returns `true` when another redraw for the
+    /// same message and round is already waiting behind it, so this one can be skipped.
+    fn superseded(&self, round: i64) -> bool {
+        let mut waiting = self.waiting.lock().unwrap();
+        let left = waiting.get_mut(&round).map_or(0, |n| {
+            *n = n.saturating_sub(1);
+            *n
+        });
+        if left == 0 {
+            waiting.remove(&round);
+        }
+        left > 0
+    }
+}
+
+static REDRAWS: LazyLock<Mutex<HashMap<u64, Weak<Redraw>>>> = LazyLock::new(Mutex::default);
+
+/// The message's redraw lock (made while a redraw is running, and pruned once idle).
+fn redraw_lock(message: MessageId) -> Arc<Redraw> {
+    redraw_lock_in(&REDRAWS, message)
+}
+
+fn redraw_lock_in(map: &Mutex<HashMap<u64, Weak<Redraw>>>, message: MessageId) -> Arc<Redraw> {
+    let mut locks = map.lock().unwrap();
+    locks.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(existing) = locks.get(&message.get()).and_then(Weak::upgrade) {
+        return existing;
+    }
+    let redraw = Arc::new(Redraw::default());
+    locks.insert(message.get(), Arc::downgrade(&redraw));
+    redraw
 }
 
 /// Round `index` of `game` as it is now: the season is read again, so a change someone else
@@ -202,7 +229,7 @@ async fn update_status(
     game: &Game,
     index: usize,
 ) -> Result<()> {
-    let redraw = redraw_lock(guild);
+    let redraw = redraw_lock(i.message.id);
     let _turn = redraw.lock.lock().await;
     let status = fresh_status(ctx, guild, game, index).await?;
     i.edit_response(ctx, status.update()).await?;
@@ -259,15 +286,17 @@ pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) 
         _ => None,
     };
     let result = handle_component(ctx, i, guild, parsed, action).await;
-    match (result, status) {
+    match result {
         // The round on that message is over: say so, with a button to the current one.
-        (Err(err), Some(message)) if is_not_current(&err) => {
-            let (text, button) = ui::not_current(NOT_CURRENT, message);
-            let response = Draft::new().content(text).components(button).ephemeral();
-            i.create_response(ctx, Response::Message(response)).await?;
-            Ok(())
+        Err(err) => {
+            if let Some(response) = not_current_response(&err, status) {
+                i.create_response(ctx, Response::Message(response)).await?;
+                Ok(())
+            } else {
+                Err(err)
+            }
         }
-        (result, _) => result,
+        Ok(()) => Ok(()),
     }
 }
 
@@ -275,6 +304,25 @@ pub async fn on_component(ctx: &BotCtx, i: &ComponentInteraction, action: &str) 
 fn is_not_current(err: &anyhow::Error) -> bool {
     err.downcast_ref::<UserError>()
         .is_some_and(|e| e.0 == NOT_CURRENT)
+}
+
+/// Builds the ephemeral stale-round reply with its "View Current Round" button when `err`
+/// is [`NOT_CURRENT`] and we know which status message the interaction came from.
+fn not_current_response(err: &anyhow::Error, status_message: Option<u64>) -> Option<Draft> {
+    let message = status_message?;
+    if !is_not_current(err) {
+        return None;
+    }
+    let (text, button) = ui::not_current(NOT_CURRENT, message);
+    Some(Draft::new().content(text).components(button).ephemeral())
+}
+
+/// The status message a modal is about, for the button under a stale-round error.
+fn modal_status_message(parsed: Option<&Action>) -> Option<u64> {
+    match parsed {
+        Some(Action::Amount { message, .. }) => Some(*message),
+        _ => None,
+    }
 }
 
 async fn handle_component(
@@ -323,7 +371,9 @@ async fn handle_component(
 
 pub async fn on_modal(ctx: &BotCtx, i: &ModalInteraction, action: &str) -> Result<()> {
     let guild = i.guild_id.ok_or_else(|| user_error(SERVER_ONLY))?;
-    match Action::parse(action) {
+    let parsed = Action::parse(action);
+    let status = modal_status_message(parsed.as_ref());
+    let result = match parsed {
         Some(Action::Amount { round, on, message }) => {
             amount_entered(ctx, i, guild, round, on, message).await
         }
@@ -333,6 +383,18 @@ pub async fn on_modal(ctx: &BotCtx, i: &ModalInteraction, action: &str) -> Resul
             season,
         }) => reset(ctx, i, guild, keep_options, season).await,
         _ => bail!("unknown modal {action:?}"),
+    };
+    match result {
+        // The round on that message is over: say so, with a button to the current one.
+        Err(err) => {
+            if let Some(response) = not_current_response(&err, status) {
+                i.create_response(ctx, Response::Message(response)).await?;
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+        Ok(()) => Ok(()),
     }
 }
 
@@ -933,13 +995,14 @@ async fn edit_status(
     game: &Game,
     index: usize,
 ) -> bool {
-    use std::sync::atomic::Ordering;
-    let redraw = redraw_lock(guild);
-    redraw.waiting.fetch_add(1, Ordering::SeqCst);
+    let round = game.season.rounds[index].id;
+    let redraw = redraw_lock(message);
+    redraw.queue(round);
     let _turn = redraw.lock.lock().await;
-    // Ten people claiming at once would mean ten pictures in a row. The redraw queued
-    // behind this one reads the season fresh, so it shows this change too: let it draw.
-    if redraw.waiting.fetch_sub(1, Ordering::SeqCst) > 1 {
+    // Ten people claiming at once would mean ten pictures in a row. When another redraw
+    // for the same message and round is queued behind this one, it reads the season fresh
+    // and shows this change too: let it draw.
+    if redraw.superseded(round) {
         return true;
     }
     let edit = match fresh_status(ctx, guild, game, index).await {
@@ -961,4 +1024,76 @@ async fn edit_status(
 /// The text typed into a modal (each wheel modal has one field).
 fn modal_value(i: &ModalInteraction) -> Option<String> {
     i.first_value().map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use twilight_model::channel::message::MessageFlags;
+
+    #[test]
+    fn redraw_lock_keys_per_message_and_prunes_stale_entries() {
+        let map: Mutex<HashMap<u64, Weak<Redraw>>> = Mutex::default();
+        let m1 = MessageId::new(101);
+        let m2 = MessageId::new(202);
+
+        let lock1a = redraw_lock_in(&map, m1);
+        let lock1b = redraw_lock_in(&map, m1);
+        let lock2 = redraw_lock_in(&map, m2);
+        assert!(Arc::ptr_eq(&lock1a, &lock1b));
+        assert!(!Arc::ptr_eq(&lock1a, &lock2));
+        assert_eq!(map.lock().unwrap().len(), 2);
+
+        // Once both references to m1 are dropped, the next lookup prunes m1's dead Weak.
+        drop(lock1a);
+        drop(lock1b);
+        let _lock3 = redraw_lock_in(&map, MessageId::new(303));
+        let guard = map.lock().unwrap();
+        assert!(!guard.contains_key(&m1.get()));
+        assert!(guard.contains_key(&m2.get()));
+        assert!(guard.contains_key(&303));
+    }
+
+    #[test]
+    fn redraw_coalesces_same_round_but_not_different_rounds() {
+        let redraw = Redraw::default();
+
+        // Two queued redraws for round 10: the first is superseded, the second draws.
+        redraw.queue(10);
+        redraw.queue(10);
+        assert!(redraw.superseded(10));
+        assert!(!redraw.superseded(10));
+
+        // Overlapping redraws for different rounds on the same message never drop each other.
+        redraw.queue(10);
+        redraw.queue(11);
+        assert!(!redraw.superseded(10));
+        assert!(!redraw.superseded(11));
+        assert!(redraw.waiting.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn not_current_response_attaches_refresh_button_for_stale_modal() {
+        let parsed = Action::parse("amount:7:2:999");
+        let status = modal_status_message(parsed.as_ref());
+        assert_eq!(status, Some(999));
+        assert_eq!(modal_status_message(Action::parse("name:7").as_ref()), None);
+        assert_eq!(
+            modal_status_message(Action::parse("newseason:0:1").as_ref()),
+            None
+        );
+
+        let err = user_error(NOT_CURRENT);
+        let draft = not_current_response(&err, status).expect("should build refresh reply");
+        assert_eq!(draft.content.as_deref(), Some(NOT_CURRENT));
+        assert_eq!(draft.flags, Some(MessageFlags::EPHEMERAL));
+        let rows = serde_json::to_value(draft.components.unwrap()).unwrap();
+        let button = &rows[0]["components"][0];
+        assert_eq!(button["custom_id"], "wheel:refresh:999");
+        assert_eq!(button["label"], "View Current Round");
+
+        // Unrelated errors or missing status messages pass through untouched.
+        assert!(not_current_response(&user_error("other"), status).is_none());
+        assert!(not_current_response(&err, None).is_none());
+    }
 }

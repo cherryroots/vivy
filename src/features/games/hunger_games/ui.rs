@@ -31,8 +31,8 @@ pub enum Action {
     Pictures,
     /// The host turns a team Games (pairs who win together) on or off.
     Teams,
-    /// A vote for the prize of the coming Octagon.
-    Prize(Reward),
+    /// A vote for the prize of the coming Octagon at `round`.
+    Prize(usize, Reward),
 }
 
 /// A button's or menu's ID: `games:hunger:<game>:<action>`. `game` tells a game from
@@ -46,7 +46,7 @@ pub fn custom_id(game: u32, action: Action) -> String {
         Action::Memories => "memories".to_string(),
         Action::Pictures => "pictures".to_string(),
         Action::Teams => "teams".to_string(),
-        Action::Prize(reward) => format!("prize-{}", reward_key(reward)),
+        Action::Prize(round, reward) => format!("prize:{round}:{}", reward_key(reward)),
     };
     format!("games:hunger:{game}:{action}")
 }
@@ -64,11 +64,13 @@ pub fn parse_id(action: &str) -> Option<(u32, Action)> {
         "memories" => Action::Memories,
         "pictures" => Action::Pictures,
         "teams" => Action::Teams,
-        _ => Action::Prize(
-            Reward::ALL
-                .into_iter()
-                .find(|&r| what.strip_prefix("prize-") == Some(reward_key(r)))?,
-        ),
+        _ => {
+            let rest = what.strip_prefix("prize:")?;
+            let (round, reward) = rest.split_once(':')?;
+            let round = round.parse().ok()?;
+            let reward = Reward::ALL.into_iter().find(|&r| reward == reward_key(r))?;
+            Action::Prize(round, reward)
+        }
     };
     Some((game, action))
 }
@@ -86,6 +88,7 @@ fn reward_key(reward: Reward) -> &'static str {
 /// the rounds.
 pub fn prize_vote(
     game: u32,
+    round: usize,
     votes: &[(Reward, usize)],
     closes_at: i64,
 ) -> (String, Vec<Component>) {
@@ -103,7 +106,7 @@ pub fn prize_vote(
     }
     let row = Reward::ALL.into_iter().map(|r| {
         button(
-            custom_id(game, Action::Prize(r)),
+            custom_id(game, Action::Prize(round, r)),
             r.name(),
             ButtonStyle::Primary,
         )
@@ -455,10 +458,32 @@ pub fn unspoken(line: &str) -> String {
     shown.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// The opening message as the Games begin: tribute count, teams (or why teams didn't turn
+/// on), and old grudges. Long intros come in several parts.
+pub fn intro(game: &Game, teams_wanted: bool) -> Vec<String> {
+    let mut text = format!(
+        "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Scatter…",
+        game.tributes.len()
+    );
+    if let Some(teams) = teams(game) {
+        text.push_str("\n\n");
+        text.push_str(&teams);
+    } else if teams_wanted {
+        text.push_str(&format!(
+            "\n\n👥 Teams need {FEWEST_FOR_TEAMS} or more tributes, so it's every tribute for themselves."
+        ));
+    }
+    if let Some(grudges) = grudges(game) {
+        text.push_str("\n\n");
+        text.push_str(&grudges);
+    }
+    split_message(&text, DISCORD_LIMIT)
+}
+
 /// The cannons at the end of a day (`title` like "The fallen of day 2"): one for each
 /// tribute who fell (user ID, kills, last words), with their kills and their last words
-/// when they have some.
-pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String {
+/// when they have some. Long lists come in several parts.
+pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> Vec<String> {
     let mut text = format!("### 💥 {title}\n");
     if fallen.is_empty() {
         text.push_str("No cannons today. Everyone made it through.");
@@ -484,7 +509,7 @@ pub fn cannons(title: &str, fallen: &[(u64, u32, Option<LastWords>)]) -> String 
             lines.join("\n")
         ));
     }
-    text
+    split_message(&text, DISCORD_LIMIT)
 }
 
 /// The end: the winners (one, or a team of two), her line to them, everyone's placing
@@ -660,9 +685,9 @@ mod tests {
             Action::Memories,
             Action::Pictures,
             Action::Teams,
-            Action::Prize(Reward::Weapon),
-            Action::Prize(Reward::Armour),
-            Action::Prize(Reward::Hunt),
+            Action::Prize(2, Reward::Weapon),
+            Action::Prize(2, Reward::Armour),
+            Action::Prize(2, Reward::Hunt),
         ] {
             let id = custom_id(9, action);
             let rest = id.strip_prefix("games:").unwrap();
@@ -671,6 +696,8 @@ mod tests {
         assert_eq!(parse_id("pick:1:2:3"), None);
         assert_eq!(parse_id("hunger:9:next:4"), None);
         assert_eq!(parse_id("hunger:9:dance"), None);
+        assert_eq!(parse_id("hunger:9:prize-weapon"), None);
+        assert_eq!(parse_id("hunger:9:prize:bad:weapon"), None);
     }
 
     #[test]
@@ -689,11 +716,56 @@ mod tests {
             text: "brb".into(),
             link: "https://discord.com/channels/1/2/3".into(),
         };
-        let text = cannons("The fallen of day 1", &[(2, 0, Some(words)), (1, 2, None)]);
+        let text = cannons("The fallen of day 1", &[(2, 0, Some(words)), (1, 2, None)]).join("");
         assert!(text.starts_with("### 💥 The fallen of day 1\n2 cannons sound"));
         assert!(!text.contains("||"));
         assert!(text.contains("💥 <@2>: “brb” [↗](<https://discord.com/channels/1/2/3>)"));
         assert!(text.contains("💥 <@1>, 2 kills"));
+    }
+
+    #[test]
+    fn long_cannons_and_intro_come_in_parts() {
+        let fallen: Vec<(u64, u32, Option<LastWords>)> = (1..=20)
+            .map(|id| {
+                (
+                    id,
+                    id as u32,
+                    Some(LastWords {
+                        text: "remember me ".repeat(15),
+                        link: format!("https://discord.com/channels/1/2/{id}"),
+                    }),
+                )
+            })
+            .collect();
+        let parts = cannons("The fallen of day 1", &fallen);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
+        assert!(parts[0].starts_with("### 💥 The fallen of day 1\n20 cannons sound"));
+        assert!(parts.last().unwrap().contains("<@20>"));
+
+        let mut game = Game::new((1..=24).map(|id| (id, format!("P{id}"))).collect());
+        game.pair_up();
+        let long_weapon = "the exceedingly ornate ceremonial ".repeat(6);
+        let grudges: Vec<(u64, u64, u32, Option<Blow>)> = (1..=8)
+            .map(|i| {
+                (
+                    i,
+                    i + 8,
+                    3,
+                    Some(Blow {
+                        weapon: Some(long_weapon.clone()),
+                        place: Some(100 + i),
+                        octagon: false,
+                    }),
+                )
+            })
+            .collect();
+        game.remember(&grudges);
+        let parts = intro(&game, true);
+        assert!(parts.len() > 1);
+        assert!(parts.iter().all(|p| p.chars().count() <= DISCORD_LIMIT));
+        assert!(parts[0].starts_with("🎥 The cameras are rolling: **24 tributes**"));
+        assert!(parts.join("\n").contains("**Old grudges:**"));
     }
 
     #[test]
@@ -952,7 +1024,7 @@ mod tests {
     #[test]
     fn the_prize_vote_shows_counts_then_the_winner() {
         let counts = [(Reward::Weapon, 1), (Reward::Armour, 0), (Reward::Hunt, 2)];
-        let (text, rows) = prize_vote(4, &counts, 1700);
+        let (text, rows) = prize_vote(4, 3, &counts, 1700);
         assert!(text.contains("Voting closes <t:1700:R>"));
         assert!(text.contains("🛡️ **Golden armour**: can't die for the next two rounds · 0 votes"));
         assert!(text.contains("🐺 **The hunt**"));

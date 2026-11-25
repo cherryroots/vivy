@@ -189,6 +189,8 @@ async fn wheel_add(ctx: CommandCtx, args: WheelAdd) -> Result<()> {
             added.push((user.id.get(), movie));
         }
     }
+    // Looking up names and redrawing the picture can take longer than Discord waits.
+    ctx.defer().await?;
     let now = Utc::now().timestamp();
     let list = added.clone();
     // Whether each user was changed (added or removed), in the same order.
@@ -257,6 +259,8 @@ async fn wheel_movie(ctx: CommandCtx, args: WheelMovie) -> Result<()> {
     require_admin(&ctx)?;
     let guild = guild(&ctx)?;
     let movie = ui::clean_movie(movie.as_deref().unwrap_or("")).map_err(user_error)?;
+    // Looking up names and redrawing the picture can take longer than Discord waits.
+    ctx.defer().await?;
     let id = user.id.get();
     let saved = movie.clone();
     let now = Utc::now().timestamp();
@@ -318,6 +322,8 @@ async fn insert_bet(ctx: CommandCtx, args: WheelBet) -> Result<()> {
     if !(0..=1_000_000_000).contains(&amount) {
         return Err(user_error("The amount must be from 0 to 1,000,000,000."));
     }
+    // Looking up uncached names can take longer than Discord waits.
+    ctx.defer().await?;
     let bet = Bet {
         by: by.id.get(),
         on: on.id.get(),

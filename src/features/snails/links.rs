@@ -150,8 +150,12 @@ fn post_id(site: &str, host: &str, segs: &[&str], url: &Url) -> Option<String> {
     let first = segs.first().copied();
     let id = match site {
         "x" => after(segs, "status")?.to_string(),
-        // Bluesky post ids are only unique per account, so keep the handle.
-        "bsky" => format!("{}/{}", after(segs, "profile")?, after(segs, "post")?),
+        // Bluesky post ids are only unique per account, so keep the handle (case-insensitive).
+        "bsky" => format!(
+            "{}/{}",
+            after(segs, "profile")?.to_ascii_lowercase(),
+            after(segs, "post")?
+        ),
         "threads" => after(segs, "post")?.to_string(),
         "instagram" => {
             let i = segs
@@ -166,7 +170,12 @@ fn post_id(site: &str, host: &str, segs: &[&str], url: &Url) -> Option<String> {
             _ => param("v")?,
         },
         "reddit" if host == "redd.it" => first?.to_string(),
-        "reddit" => after(segs, "comments")?.to_string(),
+        "reddit" => after(segs, "comments")
+            .or(match segs {
+                ["gallery", id, ..] => Some(*id),
+                _ => None,
+            })?
+            .to_string(),
         "facebook" => after(segs, "posts")
             .or(after(segs, "videos"))
             .or(after(segs, "reel"))
@@ -383,6 +392,15 @@ fn plain_key(url: &Url, host: &str, segs: &[&str], junk: &[&str]) -> String {
     key
 }
 
+/// Whether `host` is `domain` itself or a subdomain of it (`old.reddit.com`, not
+/// `notreddit.com`).
+fn is_host_or_subdomain(host: &str, domain: &str) -> bool {
+    host == domain
+        || host
+            .strip_suffix(domain)
+            .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 /// Short links that hide the post id. Following the redirect gives the full link, which is
 /// far cheaper than downloading and hashing a picture.
 pub fn needs_resolving(link: &str) -> bool {
@@ -397,14 +415,19 @@ pub fn needs_resolving(link: &str) -> bool {
         host.as_str(),
         "vm.tiktok.com"
             | "vt.tiktok.com"
+            | "vm.vxtiktok.com"
+            | "vt.vxtiktok.com"
             | "pin.it"
             | "fb.watch"
             | "t.co"
             | "bit.ly"
             | "on.soundcloud.com"
             | "spotify.link"
-    ) || (host == "tiktok.com" && segs.first() == Some(&"t"))
-        || (host.ends_with("reddit.com") && segs.get(2) == Some(&"s"))
+    ) || ((host == "tiktok.com" || is_host_or_subdomain(&host, "vxtiktok.com"))
+        && segs.first() == Some(&"t"))
+        || ((is_host_or_subdomain(&host, "reddit.com")
+            || is_host_or_subdomain(&host, "rxddit.com"))
+            && segs.get(2) == Some(&"s"))
         || (host == "facebook.com" && segs.first() == Some(&"share"))
 }
 
@@ -782,8 +805,55 @@ mod tests {
     #[test]
     fn short_links() {
         assert!(needs_resolving("https://vm.tiktok.com/ZMabc123/"));
+        assert!(needs_resolving("https://vm.vxtiktok.com/ZMabc123/"));
+        assert!(needs_resolving("https://vt.vxtiktok.com/ZMabc123/"));
+        assert!(needs_resolving("https://vxtiktok.com/t/ZMabc123/"));
+        assert!(needs_resolving("https://d.vxtiktok.com/t/ZMabc123/"));
         assert!(needs_resolving("https://www.reddit.com/r/memes/s/AbC123"));
+        assert!(needs_resolving("https://old.reddit.com/r/memes/s/AbC123"));
+        assert!(needs_resolving("https://rxddit.com/r/memes/s/AbC123"));
+        assert!(needs_resolving("https://d.rxddit.com/r/memes/s/AbC123"));
         assert!(needs_resolving("https://pin.it/abc"));
         assert!(!needs_resolving("https://x.com/u/status/1"));
+        assert!(!needs_resolving(
+            "https://vxtiktok.com/@user/video/7412345678901234567"
+        ));
+        assert!(!needs_resolving(
+            "https://rxddit.com/r/memes/comments/1abcde/x"
+        ));
+        // Look-alike hosts that merely end with the domain name must not match.
+        assert!(!needs_resolving("https://notreddit.com/r/memes/s/AbC123"));
+        assert!(!needs_resolving("https://notrxddit.com/r/memes/s/AbC123"));
+        assert!(!needs_resolving("https://notvxtiktok.com/t/ZMabc123/"));
+    }
+
+    #[test]
+    fn reddit_gallery_and_bluesky_handle_case() {
+        assert_eq!(
+            link_key("https://www.reddit.com/gallery/1abcde"),
+            Some("reddit:1abcde".to_string())
+        );
+        assert!(same(
+            "https://www.reddit.com/gallery/1abcde",
+            "https://www.reddit.com/r/memes/comments/1abcde/funny_title/"
+        ));
+        assert!(same(
+            "https://rxddit.com/gallery/1abcde",
+            "https://redd.it/1abcde"
+        ));
+        // A subreddit literally named `gallery` is not a gallery post.
+        assert_ne!(
+            link_key("https://www.reddit.com/r/gallery/top"),
+            Some("reddit:top".to_string())
+        );
+        // Bluesky handles are case-insensitive.
+        assert_eq!(
+            link_key("https://bsky.app/profile/Cherry.Bsky.Social/post/3l5abcxyz"),
+            Some("bsky:cherry.bsky.social/3l5abcxyz".to_string())
+        );
+        assert!(same(
+            "https://bsky.app/profile/Cherry.Bsky.Social/post/3l5abcxyz",
+            "https://fxbsky.app/profile/cherry.bsky.social/post/3l5abcxyz"
+        ));
     }
 }

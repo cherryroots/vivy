@@ -178,31 +178,54 @@ pub struct RecentCatch {
 
 /// The server's most recent snails, newest first, at most `limit`. Older rows have no
 /// channel saved, so it is looked up in the saved messages instead.
+#[cfg(test)]
 pub fn recent_caught(
     conn: &Connection,
     guild: u64,
     limit: usize,
 ) -> rusqlite::Result<Vec<RecentCatch>> {
+    recent_caught_matching(conn, guild, limit, |_| true)
+}
+
+/// Like [`recent_caught`], keeping only rows for which `allowed` returns true (used to
+/// hide snails from channels where snails is turned off).
+pub fn recent_caught_matching(
+    conn: &Connection,
+    guild: u64,
+    limit: usize,
+    mut allowed: impl FnMut(&RecentCatch) -> bool,
+) -> rusqlite::Result<Vec<RecentCatch>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
     let mut stmt = conn.prepare(
         "SELECT c.message_id, COALESCE(c.channel_id, m.channel_id), c.author_id, c.caught_at,
                 c.original_channel_id, c.original_id
          FROM snail_caught c
          LEFT JOIN snail_messages m ON m.message_id = c.message_id
          WHERE c.guild_id = ?1
-         ORDER BY c.caught_at DESC, c.message_id DESC LIMIT ?2",
+         ORDER BY c.caught_at DESC, c.message_id DESC",
     )?;
-    stmt.query_map(params![guild, limit as i64], |row| {
+    let mut rows = stmt.query([guild])?;
+    let mut found = Vec::new();
+    while let Some(row) = rows.next()? {
         let original_channel: Option<u64> = row.get(4)?;
         let original_message: Option<u64> = row.get(5)?;
-        Ok(RecentCatch {
+        let catch = RecentCatch {
             message: row.get(0)?,
             channel: row.get(1)?,
             author: row.get(2)?,
             at: row.get(3)?,
             original: original_channel.zip(original_message),
-        })
-    })?
-    .collect()
+        };
+        if allowed(&catch) {
+            found.push(catch);
+            if found.len() >= limit {
+                break;
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Clears the server's counted snails, for a fresh leaderboard. The saved links and pictures

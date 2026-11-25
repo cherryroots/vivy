@@ -120,6 +120,9 @@ impl Standing {
     /// The smallest total bet that avoids the tax: [`TAX_THRESHOLD`]% of the money, rounded
     /// up.
     pub fn safe_bet(&self) -> i64 {
+        if self.money <= 0 {
+            return 0;
+        }
         (self.money * TAX_THRESHOLD + 99) / 100
     }
 }
@@ -281,7 +284,7 @@ pub fn ledger(season: &Season) -> Vec<RoundLedger> {
                 .map(|b| b.amount)
                 .sum();
             let bet_percent = if money > 0 { bet * 100 / money } else { 0 };
-            let tax = if bet_percent < TAX_THRESHOLD {
+            let tax = if money > 0 && bet_percent < TAX_THRESHOLD {
                 money * 3 * (TAX_THRESHOLD - bet_percent) / 100
             } else {
                 0
@@ -402,7 +405,9 @@ pub fn parse_amount(input: &str, money: i64) -> Option<i64> {
     match input.strip_suffix('%') {
         Some(percent) => {
             let percent: i64 = percent.trim().parse().ok()?;
-            Some((money * percent + 99) / 100)
+            // In i128 so a huge percentage typed in the modal can't overflow i64.
+            let amount = (i128::from(money) * i128::from(percent) + 99) / 100;
+            i64::try_from(amount).ok()
         }
         None => input.parse().ok(),
     }
@@ -757,6 +762,42 @@ mod tests {
         assert_eq!(parse_amount(" 25% ", 201), Some(51));
         assert_eq!(parse_amount("100%", 70), Some(70));
         assert_eq!(parse_amount("lots", 70), None);
+        // Huge percentages don't overflow i64.
+        assert_eq!(parse_amount("9223372036854775807%", 200), None);
+        assert_eq!(
+            parse_amount("1000000000000000000%", 100),
+            Some(1_000_000_000_000_000_000)
+        );
+        assert_eq!(parse_amount("1000000000000000000%", 1000), None);
+    }
+
+    #[test]
+    fn negative_balance_never_produces_negative_tax_or_drains_pot() {
+        // Admin /wheel bet gave Alice a 200 bet in round 1 with only 100, so she loses 200
+        // and carries -100 into round 2. She must not get a negative tax that adds money or
+        // drains the Pool pot.
+        let s = pool(
+            &[ALICE, BOB, CHARLIE],
+            vec![
+                round(
+                    1,
+                    Some(BOB),
+                    &[ALICE, CHARLIE],
+                    vec![bet(ALICE, CHARLIE, 200), bet(CHARLIE, BOB, 50)],
+                ),
+                round(2, None, &[CHARLIE], vec![]),
+            ],
+        );
+        let rounds = ledger(&s);
+        let alice = rounds[1].standing(ALICE).unwrap();
+        assert_eq!(alice.money, -100);
+        assert_eq!(alice.tax, 0);
+        assert_eq!(alice.safe_bet(), 0);
+        assert_eq!(alice.after(), -100);
+        // Round 2 pot has only Charlie's positive tax (not reduced by Alice's negative balance).
+        let charlie = rounds[1].standing(CHARLIE).unwrap();
+        assert!(charlie.tax > 0);
+        assert_eq!(rounds[1].pot, rounds[1].carried + charlie.tax);
     }
 
     #[test]

@@ -115,6 +115,9 @@ pub const MIGRATIONS: &[&str] = &[
     // asks the next start to drop the ones that no longer count, once (see `drop_old_links`).
     "CREATE TABLE snail_link_cleanup (pending INTEGER NOT NULL);
     INSERT INTO snail_link_cleanup VALUES (1);",
+    // 8: `caught_since` (the status picture's "Caught this week") filters by caught_at across
+    // every server, without a guild_id.
+    "CREATE INDEX IF NOT EXISTS idx_snail_caught_at ON snail_caught (caught_at);",
 ];
 
 /// A fingerprinted picture of a message.
@@ -296,6 +299,18 @@ pub fn forget(conn: &Connection, message: u64) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Forgets several deleted messages in one SQLite transaction.
+pub fn forget_all(conn: &mut Connection, messages: &[u64]) -> rusqlite::Result<()> {
+    if messages.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction()?;
+    for &message in messages {
+        forget(&tx, message)?;
+    }
+    tx.commit()
+}
+
 /// Once after migration 7: drops saved links for which `counts` is false, and returns how
 /// many went. Does nothing on later starts, so articles saved since stay.
 pub fn drop_old_links(conn: &mut Connection, counts: fn(&str) -> bool) -> rusqlite::Result<usize> {
@@ -376,6 +391,44 @@ mod tests {
         );
         assert_eq!(drop_old_links(&mut conn, counts).unwrap(), 0);
         assert_eq!(message_links(&conn, 6).unwrap(), ["news.example.com/story"]);
+    }
+
+    #[test]
+    fn migration_8_creates_caught_at_index() {
+        let conn = test_connection("snails", MIGRATIONS);
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS (
+                     SELECT 1 FROM sqlite_master
+                     WHERE type = 'index' AND name = 'idx_snail_caught_at'
+                       AND tbl_name = 'snail_caught'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(exists, "idx_snail_caught_at index should exist");
+    }
+
+    #[test]
+    fn forget_all_removes_messages_in_one_transaction() {
+        let mut conn = test_connection("snails", MIGRATIONS);
+        let mut m5 = indexed(5, &["x:1"], vec![fp(0)]);
+        m5.failed = vec![failure("cdn/5.png", "cdn")];
+        save_now(&mut conn, &m5, 1_000);
+        save_now(&mut conn, &indexed(6, &["x:2"], vec![fp(1)]), 1_000);
+        save_now(&mut conn, &indexed(7, &["x:3"], vec![fp(2)]), 1_000);
+
+        forget_all(&mut conn, &[]).unwrap();
+        assert!(is_indexed(&conn, 5).unwrap());
+
+        forget_all(&mut conn, &[5, 6]).unwrap();
+        assert!(!is_indexed(&conn, 5).unwrap());
+        assert!(!is_indexed(&conn, 6).unwrap());
+        assert!(is_indexed(&conn, 7).unwrap());
+        assert!(message_links(&conn, 5).unwrap().is_empty());
+        assert!(message_pictures(&conn, 6).unwrap().is_empty());
+        assert!(waiting_failures(&conn, 5).unwrap().is_empty());
     }
 }
 
