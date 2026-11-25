@@ -17,7 +17,7 @@ use twilight_model::channel::message::component::Component;
 
 use super::ledger::{self, CLAIM, Season, TAX_THRESHOLD, check_bet, ledger};
 use super::ui::{self, Action, PickKind, View};
-use super::{names, render, store};
+use super::{graph, names, render, store};
 use crate::core::errors::UserError;
 use crate::core::{
     BotCtx, BotEvent, ComponentInteraction, ModalInteraction, Respond as _, Response, Result,
@@ -118,6 +118,38 @@ pub async fn post_status(
         .allowed_mentions(no_pings());
     let sent = message.send(&ctx.http, channel).await?;
     remember_status(ctx, guild, channel, sent.id).await;
+    Ok(())
+}
+
+/// Renders the season's balance history chart as a PNG.
+pub async fn history_png(ctx: &BotCtx, guild: GuildId, season: &Season) -> Result<Vec<u8>> {
+    let names = names::lookup(ctx, guild, &ledger::players(season)).await;
+    let season = season.clone();
+    tokio::task::spawn_blocking(move || graph::history_png(&season, &names)).await?
+}
+
+/// Posts the season's final balance history chart in `channel`.
+async fn post_history(
+    ctx: &BotCtx,
+    channel: ChannelId,
+    guild: GuildId,
+    season: &Season,
+) -> Result<()> {
+    let history = ledger::balance_history(season);
+    if history.rounds.is_empty() || history.players.is_empty() {
+        return Ok(());
+    }
+    let png = history_png(ctx, guild, season).await?;
+    let content = format!(
+        "Season {} is complete! Here's how everyone's balance changed over the season.",
+        season.number
+    );
+    Draft::new()
+        .content(content)
+        .file("wheel-history.png", png)
+        .allowed_mentions(no_pings())
+        .send(&ctx.http, channel)
+        .await?;
     Ok(())
 }
 
@@ -774,6 +806,11 @@ async fn picked(
                 post_status(ctx, i.channel_id, guild, &game, game.latest(), &line).await
             {
                 warn!("couldn't post the new round: {err:#}");
+            }
+            if ledger::is_season_over(&game.season)
+                && let Err(err) = post_history(ctx, i.channel_id, guild, &game.season).await
+            {
+                warn!("couldn't post the season balance history: {err:#}");
             }
         }
     }
