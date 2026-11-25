@@ -170,8 +170,7 @@ pub trait Feature: Send + Sync + 'static {
         Ok(())
     }
 
-    /// An event published by another feature. No feature implements this yet (see
-    /// `core/events.rs`).
+    /// An event published by another feature (see `core/events.rs`).
     async fn on_bot_event(&self, _ctx: &BotCtx, _event: &BotEvent) -> Result<()> {
         Ok(())
     }

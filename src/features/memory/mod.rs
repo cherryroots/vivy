@@ -20,6 +20,7 @@
 //! - `sweep.rs`: the slice of older notes each reflection rereads, with where they came from
 //! - `check.rs`: `check_messages`, the reflection's read-only search of what people wrote
 //! - `retry.rs`: waiting a few hours before a failed reflection or diary tries again
+//! - `movies.rs`: logs resolved movie wheel rounds into `/memories/server/movies-watched.md`
 
 mod banner;
 mod check;
@@ -28,6 +29,7 @@ mod diary;
 mod face;
 mod folder;
 mod mood;
+mod movies;
 mod name;
 mod reflect;
 mod retry;
@@ -41,7 +43,9 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::ai::ToolDef;
-use crate::core::{Asker, BotCtx, Command, ComponentInteraction, Feature, Panel, Result, Stat};
+use crate::core::{
+    Asker, BotCtx, BotEvent, Command, ComponentInteraction, Feature, Panel, Result, Stat,
+};
 
 pub struct Memory;
 
@@ -70,6 +74,30 @@ impl Feature for Memory {
         action: &str,
     ) -> Result<()> {
         commands::on_component(ctx, i, action).await
+    }
+
+    async fn on_bot_event(&self, ctx: &BotCtx, event: &BotEvent) -> Result<()> {
+        if let BotEvent::WheelRoundResolved {
+            guild_id,
+            season,
+            round,
+            winner,
+            winner_name,
+            movie,
+        } = event
+        {
+            movies::record(
+                ctx,
+                *guild_id,
+                *season,
+                *round,
+                *winner,
+                winner_name,
+                movie.as_deref(),
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     fn tool_status(&self, tool: &str, args: &Value) -> Option<&'static str> {

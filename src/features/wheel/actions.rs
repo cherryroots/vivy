@@ -784,16 +784,18 @@ async fn picked(
             let resolved = game.latest() - 1;
             let number = game.season.rounds[resolved].number;
             info!("round {number} won by {on}");
+            let names = names::lookup(ctx, guild, &[on]).await;
+            let winner_name = ui::name(&names, on).to_string();
+            let movie = game.season.movies.get(&on).cloned();
             ctx.publish(BotEvent::WheelRoundResolved {
                 guild_id: guild,
+                season: game.season.number,
                 round: number,
                 winner: UserId::new(on),
+                winner_name: winner_name.clone(),
+                movie: movie.clone(),
             });
-            let names = names::lookup(ctx, guild, &[on]).await;
-            let winner = ui::with_movie(
-                ui::name(&names, on),
-                game.season.movies.get(&on).map(String::as_str),
-            );
+            let winner = ui::with_movie(&winner_name, movie.as_deref());
             let text = format!("Set {winner} as the winner of round {number}.");
             i.create_response(ctx, update_text(text)).await?;
             edit_status(ctx, i.channel_id, message, guild, &game, resolved).await;
