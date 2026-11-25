@@ -251,6 +251,10 @@ impl ChatProvider for Watched {
         self.inner.watches_video()
     }
 
+    fn hears_audio(&self) -> bool {
+        self.inner.hears_audio()
+    }
+
     fn opens_files(&self) -> bool {
         self.inner.opens_files()
     }

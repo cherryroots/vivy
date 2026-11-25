@@ -97,12 +97,15 @@ pub async fn read_message(
     let text = if from_bot {
         text
     } else {
-        let inside = format!(
+        let mut inside = format!(
             "{}{}{}",
             attachment_text(msg).await,
             embed_text(msg),
             text.trim()
         );
+        if inside.trim().is_empty() && media::is_voice_message(msg) {
+            inside = "[Voice message]".to_string();
+        }
         user_tag(&author_name(ctx, msg, guild), msg.author.id, owner, &inside)
     };
 
@@ -113,10 +116,17 @@ pub async fn read_message(
     parts
 }
 
-/// A message's pictures, videos and other files, up to the limits per message, with a
-/// note when some were left out.
+/// A message's pictures, videos, voice audio and other files, up to the limits per message,
+/// with a note when some were left out.
 fn media_parts(msg: &Message) -> Vec<StoredPart> {
     let mut parts = Vec::new();
+    if let Some(voice) = media::find_voice_message(msg) {
+        parts.push(StoredPart::Audio {
+            url: voice.url,
+            name: voice.name,
+            mime: voice.mime,
+        });
+    }
     let media = media::find_media(msg);
     let files = media::find_files(msg);
     // The model is told what it doesn't get, so it doesn't answer as if it saw it all.
@@ -213,9 +223,25 @@ pub fn context_block(texts: &[String]) -> Option<String> {
     Some(format!("<context>\n{}\n</context>", texts.join("\n")))
 }
 
+/// Note added to the current turn when someone sent a voice message, the model can hear
+/// it, and `send_voice_message` is available, so Vivy naturally replies in her own voice.
+pub(super) fn voice_reply_note(
+    is_voice_turn: bool,
+    hears_audio: bool,
+    voice_available: bool,
+) -> Option<&'static str> {
+    (is_voice_turn && hears_audio && voice_available)
+        .then_some("[Sent a voice message — reply with a voice message using send_voice_message]")
+}
+
 /// Picks what to send: only the new turns when the newest answer in the chain was written
 /// by this provider and model and can be continued, otherwise the whole chain.
-pub async fn build_input(ctx: &BotCtx, provider: &dyn ChatProvider, chain: &[Turn]) -> Input {
+pub async fn build_input(
+    ctx: &BotCtx,
+    provider: &dyn ChatProvider,
+    chain: &[Turn],
+    voice_available: bool,
+) -> Input {
     let continuable = chain.iter().rposition(|turn| {
         turn.role == Role::Assistant
             && turn.provider.as_deref() == Some(provider.name())
@@ -229,33 +255,54 @@ pub async fn build_input(ctx: &BotCtx, provider: &dyn ChatProvider, chain: &[Tur
     } else {
         MEDIA_TURNS
     };
+    let watches_video = provider.watches_video();
+    let hears_audio = provider.hears_audio();
     match continuable {
         Some(i) => Input::After {
             continuation: chain[i].continuation_id.clone().unwrap_or_default(),
-            new: to_model_turns(ctx, &chain[i + 1..], media_turns, provider.watches_video()).await,
+            new: to_model_turns(
+                ctx,
+                &chain[i + 1..],
+                media_turns,
+                watches_video,
+                hears_audio,
+                voice_available,
+            )
+            .await,
         },
-        None => {
-            Input::Full(to_model_turns(ctx, chain, media_turns, provider.watches_video()).await)
-        }
+        None => Input::Full(
+            to_model_turns(
+                ctx,
+                chain,
+                media_turns,
+                watches_video,
+                hears_audio,
+                voice_available,
+            )
+            .await,
+        ),
     }
 }
 
 /// Stored turns as the model reads them, with media downloaded for the newest
 /// `media_turns` turns that have some. Media that can't be loaded is replaced by a short
 /// note, so the model knows something was there. For a model that `watches_video`, videos
-/// stay videos and YouTube links in those turns are added as videos too.
+/// stay videos and YouTube links in those turns are added as videos too. For a model that
+/// `hears_audio`, voice messages are sent as audio; otherwise a note says it can't hear them.
 async fn to_model_turns(
     ctx: &BotCtx,
     turns: &[Turn],
     media_turns: usize,
     watches_video: bool,
+    hears_audio: bool,
+    voice_available: bool,
 ) -> Vec<ai::Turn> {
     let with_media: Vec<i64> = turns
         .iter()
         .filter(|t| {
             t.parts
                 .iter()
-                .any(|p| matches!(p, StoredPart::Media { .. }))
+                .any(|p| matches!(p, StoredPart::Media { .. } | StoredPart::Audio { .. }))
         })
         .map(|t| t.id)
         .collect();
@@ -268,8 +315,14 @@ async fn to_model_turns(
         .flat_map(|t| t.parts.iter().map(move |p| (t, p)))
         .filter_map(|(t, p)| match p {
             StoredPart::Media { url, .. } if loaded_turns.contains(&t.id) => Some(url.clone()),
+            StoredPart::Audio { url, .. } if hears_audio && loaded_turns.contains(&t.id) => {
+                Some(url.clone())
+            }
             StoredPart::File { url, .. } => Some(url.clone()),
-            StoredPart::Media { .. } | StoredPart::Text { .. } | StoredPart::Context { .. } => None,
+            StoredPart::Media { .. }
+            | StoredPart::Audio { .. }
+            | StoredPart::Text { .. }
+            | StoredPart::Context { .. } => None,
         })
         .collect();
     let fresh = refresh_urls(ctx, &urls).await;
@@ -283,7 +336,7 @@ async fn to_model_turns(
     for group in to_load.chunks(PARALLEL_LOADS) {
         let loads = group
             .iter()
-            .map(|part| load_part(part, &fresh, watches_video));
+            .map(|part| load_part(part, &fresh, watches_video, hears_audio));
         loaded.extend(join_all(loads).await);
     }
     let mut loaded = loaded.into_iter();
@@ -294,7 +347,7 @@ async fn to_model_turns(
     };
 
     let mut result = Vec::new();
-    for turn in turns {
+    for (index, turn) in turns.iter().enumerate() {
         let mut parts = Vec::new();
         let context: Vec<String> = turn
             .parts
@@ -317,8 +370,20 @@ async fn to_model_turns(
                 StoredPart::Media { .. } if turn.role == Role::User => {
                     parts.push(Part::Text("[an earlier image]".into()));
                 }
-                // Answers never carry media or files of their own.
-                StoredPart::Media { .. } | StoredPart::File { .. } => {}
+                StoredPart::Audio { .. } if turn.role == Role::User => {
+                    parts.push(Part::Text("[an earlier voice message]".into()));
+                }
+                // Answers never carry media, audio or files of their own.
+                StoredPart::Media { .. } | StoredPart::Audio { .. } | StoredPart::File { .. } => {}
+            }
+        }
+        if index + 1 == turns.len() && turn.role == Role::User {
+            let is_voice_turn = turn
+                .parts
+                .iter()
+                .any(|p| matches!(p, StoredPart::Audio { .. }));
+            if let Some(note) = voice_reply_note(is_voice_turn, hears_audio, voice_available) {
+                parts.push(Part::Text(note.into()));
             }
         }
         if let Some(links) = youtube.get(&turn.id) {
@@ -339,11 +404,11 @@ async fn to_model_turns(
 const PARALLEL_LOADS: usize = 4;
 
 /// Whether `part` of `turn` is downloaded for the model: a person's files, and their
-/// pictures and videos in the newest turns that have some (`loaded_turns`).
+/// pictures, videos and voice messages in the newest turns that have some (`loaded_turns`).
 fn loads(turn: &Turn, part: &StoredPart, loaded_turns: &[i64]) -> bool {
     match part {
         _ if turn.role == Role::Assistant => false,
-        StoredPart::Media { .. } => loaded_turns.contains(&turn.id),
+        StoredPart::Media { .. } | StoredPart::Audio { .. } => loaded_turns.contains(&turn.id),
         StoredPart::File { .. } => true,
         StoredPart::Text { .. } | StoredPart::Context { .. } => false,
     }
@@ -382,13 +447,15 @@ fn youtube_videos(turns: &[Turn], media_turns: usize) -> HashMap<i64, Vec<String
     found
 }
 
-/// Downloads one picture, video or file for the model. One that can't be loaded becomes a
-/// short note, so the model knows something was there. A model that `watches_video` gets
-/// videos as they are.
+/// Downloads one picture, video, voice message or file for the model. One that can't be
+/// loaded becomes a short note, so the model knows something was there. A model that
+/// `watches_video` gets videos as they are, and one that `hears_audio` gets voice messages
+/// as [`Part::Audio`].
 async fn load_part(
     part: &StoredPart,
     fresh: &HashMap<String, String>,
     watches_video: bool,
+    hears_audio: bool,
 ) -> Vec<Part> {
     match part {
         StoredPart::Media { url, kind, mime } => {
@@ -415,6 +482,28 @@ async fn load_part(
                 Err(err) => {
                     warn!("couldn't load {url} for chat: {err:#}");
                     vec![Part::Text("[an image that couldn't be loaded]".into())]
+                }
+            }
+        }
+        StoredPart::Audio { url, name, mime } => {
+            if !hears_audio {
+                return vec![Part::Text(
+                    "[Sent a voice message, but this AI model can't hear audio. Let them know you couldn't listen to it.]"
+                        .into(),
+                )];
+            }
+            let link = fresh.get(url).unwrap_or(url);
+            match media::download_audio(link).await {
+                Ok(data) => vec![Part::Audio(ModelFile {
+                    name: name.clone(),
+                    mime: mime.clone(),
+                    data,
+                })],
+                Err(err) => {
+                    warn!("couldn't load voice message {name} for chat: {err:#}");
+                    vec![Part::Text(
+                        "[a voice message that couldn't be loaded]".into(),
+                    )]
                 }
             }
         }
@@ -774,5 +863,55 @@ mod tests {
         assert_eq!(resolve_author_name(&msg, None), "Cherry");
         msg.author.global_name = None;
         assert_eq!(resolve_author_name(&msg, None), "cherry_user");
+    }
+
+    #[test]
+    fn voice_reply_note_only_when_voice_and_audio_and_tool_available() {
+        let note = voice_reply_note(true, true, true).unwrap();
+        assert!(note.contains("send_voice_message"));
+        assert_eq!(voice_reply_note(false, true, true), None);
+        assert_eq!(voice_reply_note(true, false, true), None);
+        assert_eq!(voice_reply_note(true, true, false), None);
+    }
+
+    #[test]
+    fn media_parts_extracts_voice_message_as_audio_only() {
+        use twilight_model::channel::message::MessageFlags;
+
+        let msg = crate::util::discord::test_message(json!({
+            "content": "",
+            "flags": MessageFlags::IS_VOICE_MESSAGE.bits(),
+            "attachments": [{
+                "id": "1",
+                "filename": "voice-message.ogg",
+                "size": 500,
+                "url": "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg",
+                "proxy_url": "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg",
+                "content_type": "audio/ogg"
+            }]
+        }));
+        assert_eq!(
+            media_parts(&msg),
+            vec![StoredPart::Audio {
+                url: "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg".into(),
+                name: "voice-message.ogg".into(),
+                mime: "audio/ogg".into(),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn audio_part_falls_back_when_provider_cannot_hear() {
+        let part = StoredPart::Audio {
+            url: "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg".into(),
+            name: "voice-message.ogg".into(),
+            mime: "audio/ogg".into(),
+        };
+        let parts = load_part(&part, &HashMap::new(), false, false).await;
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            Part::Text(text) => assert!(text.contains("can't hear audio")),
+            other => panic!("expected fallback text note, got {other:?}"),
+        }
     }
 }

@@ -30,6 +30,8 @@ const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_IMAGE_ALLOC: u64 = 128 * 1024 * 1024;
 /// GIFs and videos bigger than this aren't downloaded. Discord's own upload limit is 100 MB.
 const MAX_VIDEO_BYTES: usize = 100 * 1024 * 1024;
+/// Voice messages bigger than this aren't downloaded.
+pub const MAX_AUDIO_BYTES: usize = 10 * 1024 * 1024;
 /// How long one download may take in all. The download client only limits connecting and
 /// silence, so without this a server that trickles bytes could hold up a reply for long.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
@@ -177,8 +179,44 @@ pub struct FoundFile {
     pub mime: String,
 }
 
-/// The message's attachments that [`find_media`] doesn't take, in order.
+/// Whether `msg` is a Discord voice message (`IS_VOICE_MESSAGE`, bit 13).
+pub fn is_voice_message(msg: &Message) -> bool {
+    msg.flags
+        .is_some_and(|flags| flags.contains(MessageFlags::IS_VOICE_MESSAGE))
+}
+
+/// The audio attachment of a Discord voice message, if `msg` is one.
+pub fn find_voice_message(msg: &Message) -> Option<FoundFile> {
+    if !is_voice_message(msg) {
+        return None;
+    }
+    let attachment = msg.attachments.iter().find(|a| {
+        a.content_type
+            .as_deref()
+            .and_then(|t| t.split(';').next())
+            .is_some_and(|t| t.trim().starts_with("audio/"))
+            || a.filename.to_ascii_lowercase().ends_with(".ogg")
+    })?;
+    let mime = attachment
+        .content_type
+        .as_deref()
+        .and_then(|t| t.split(';').next())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| "audio/ogg".to_string());
+    Some(FoundFile {
+        url: attachment.url.clone(),
+        name: attachment.filename.clone(),
+        mime,
+    })
+}
+
+/// The message's attachments that [`find_media`] doesn't take, in order. Voice messages are
+/// handled separately by [`find_voice_message`].
 pub fn find_files(msg: &Message) -> Vec<FoundFile> {
+    if is_voice_message(msg) {
+        return Vec::new();
+    }
     msg.attachments
         .iter()
         .filter(|a| classify(a.content_type.as_deref(), &a.url).is_none())
@@ -435,6 +473,11 @@ async fn fetch(client: &reqwest::Client, url: &str, max_bytes: usize) -> anyhow:
 /// Downloads a video as it is, for a model that watches videos itself.
 pub async fn download_video(url: &str) -> anyhow::Result<Vec<u8>> {
     download(url, MAX_VIDEO_BYTES).await
+}
+
+/// Downloads a Discord voice message's audio, capped at [`MAX_AUDIO_BYTES`].
+pub async fn download_audio(url: &str) -> anyhow::Result<Vec<u8>> {
+    download(url, MAX_AUDIO_BYTES).await
 }
 
 /// The YouTube video `link` points at, as a plain watch link
@@ -1167,5 +1210,33 @@ mod tests {
         // Wider than MAX_IMAGE_SIDE (8192) is refused before allocating.
         let too_wide = png(MAX_IMAGE_SIDE + 1, 1);
         assert!(decode_bounded(&too_wide.data).is_err());
+    }
+
+    #[test]
+    fn voice_message_detection_and_attachment() {
+        let mut msg = crate::util::discord::test_message(json!({
+            "content": "",
+            "flags": MessageFlags::IS_VOICE_MESSAGE.bits(),
+            "attachments": [{
+                "id": "1",
+                "filename": "voice-message.ogg",
+                "size": 1234,
+                "url": "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg",
+                "proxy_url": "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg",
+                "content_type": "audio/ogg; codecs=opus"
+            }]
+        }));
+        assert!(is_voice_message(&msg));
+        let found = find_voice_message(&msg).unwrap();
+        assert_eq!(found.name, "voice-message.ogg");
+        assert_eq!(found.mime, "audio/ogg");
+        // Voice attachments are not duplicated as generic files.
+        assert!(find_files(&msg).is_empty());
+
+        // Without IS_VOICE_MESSAGE, an ogg attachment is a normal file, not a voice message.
+        msg.flags = None;
+        assert!(!is_voice_message(&msg));
+        assert!(find_voice_message(&msg).is_none());
+        assert_eq!(find_files(&msg).len(), 1);
     }
 }

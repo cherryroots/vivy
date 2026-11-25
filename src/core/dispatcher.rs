@@ -80,7 +80,7 @@ fn on_message(bot: &BotCtx, msg: &Message) {
         );
     }
 
-    if !mentions_user(&msg, bot.bot_id) {
+    if !mentions_user(&msg, bot.bot_id) && !is_voice_message_for_bot(&msg, bot.bot_id) {
         return;
     }
     let text = strip_mentions(&msg.content, bot.bot_id);
@@ -541,6 +541,18 @@ fn route_custom_id<'a>(bot: &BotCtx, custom_id: &'a str) -> Option<(Arc<dyn Feat
     Some((feature.clone(), action))
 }
 
+/// Whether `msg` is a Discord voice message directed at the bot: either sent in a DM or
+/// replying to one of the bot's messages. Voice messages have empty text, so people can't
+/// type `@Vivy` in them.
+pub fn is_voice_message_for_bot(msg: &Message, bot_id: UserId) -> bool {
+    crate::util::media::is_voice_message(msg)
+        && (msg.guild_id.is_none()
+            || msg
+                .referenced_message
+                .as_ref()
+                .is_some_and(|r| r.author.id == bot_id))
+}
+
 /// Removes the `<@bot>` or `<@!bot>` a message starts with, so "@Vivy remind me ..." routes
 /// on "remind me". Mentions of her later in the text stay: in "stop being mean to @Vivy"
 /// she is who the message is about, and chat shows them as "@Vivy".
@@ -675,5 +687,56 @@ mod tests {
             "stop being mean to <@42>"
         );
         assert_eq!(strip_mentions("<@42> is <@42> ok?", bot), "is <@42> ok?");
+    }
+
+    #[test]
+    fn voice_message_routing_for_bot() {
+        use serde_json::json;
+        use twilight_model::channel::message::MessageFlags;
+
+        let bot = UserId::new(42);
+        let voice_bits = MessageFlags::IS_VOICE_MESSAGE.bits();
+
+        // Voice message replying to Vivy with empty content (even without reply ping).
+        let reply_to_vivy = crate::util::discord::test_message(json!({
+            "content": "",
+            "guild_id": "100",
+            "flags": voice_bits,
+            "referenced_message": {
+                "id": "9",
+                "channel_id": "2",
+                "author": {"id": "42", "username": "Vivy", "discriminator": "0000", "bot": true},
+                "content": "hello",
+                "timestamp": "2026-10-01T00:00:00.000000+00:00",
+                "tts": false,
+                "mention_everyone": false,
+                "mentions": [],
+                "mention_roles": [],
+                "attachments": [],
+                "embeds": [],
+                "pinned": false,
+                "type": 0
+            }
+        }));
+        assert!(is_voice_message_for_bot(&reply_to_vivy, bot));
+
+        // Voice message in a DM with Vivy (no guild_id, no mention, empty content).
+        let dm_voice = crate::util::discord::test_message(json!({
+            "content": "",
+            "flags": voice_bits,
+        }));
+        assert!(is_voice_message_for_bot(&dm_voice, bot));
+
+        // Voice message in a server not replying to Vivy is ignored.
+        let guild_voice = crate::util::discord::test_message(json!({
+            "content": "",
+            "guild_id": "100",
+            "flags": voice_bits,
+        }));
+        assert!(!is_voice_message_for_bot(&guild_voice, bot));
+
+        // Regular (non-voice) message in a DM without mention is not matched here.
+        let dm_text = crate::util::discord::test_message(json!({ "content": "hi" }));
+        assert!(!is_voice_message_for_bot(&dm_text, bot));
     }
 }

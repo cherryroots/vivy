@@ -428,8 +428,8 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>], code: bool) -> Vec<Va
                 })),
                 // OpenAI remembers its own answers; the turn's text is enough.
                 (Part::Native { .. }, _) => {}
-                // OpenAI reads videos as frame grids; these are only made for Gemini.
-                (Part::Video(_) | Part::YouTube(_), _) => {}
+                // OpenAI reads videos as frame grids and can't hear audio; these are only made for Gemini.
+                (Part::Video(_) | Part::YouTube(_) | Part::Audio(_), _) => {}
             }
         }
         if !content.is_empty() {
@@ -1156,5 +1156,29 @@ mod tests {
             crate::core::config::Config::parse(include_str!("../../../config.example.toml"))
                 .unwrap();
         assert_eq!(config.ai.openai.service_tier, None);
+    }
+
+    #[test]
+    fn audio_parts_are_skipped_safely() {
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::Text("[Voice message]".into()),
+                Part::Audio(ModelFile {
+                    name: "voice-message.ogg".into(),
+                    mime: "audio/ogg".into(),
+                    data: b"OggS".to_vec(),
+                }),
+            ],
+        }];
+        let items = input_items(&turns, &[], true);
+        assert_eq!(
+            items,
+            vec![json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "[Voice message]"}]
+            })]
+        );
     }
 }
