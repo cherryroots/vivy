@@ -17,6 +17,8 @@ use crate::util::{count, shorten};
 /// The snooze buttons under a delivered reminder that add a fixed time: (label, minutes).
 /// "Pick a time…" comes after them. The labels are short so they fit one row on a phone.
 const SNOOZES: [(&str, i64); 2] = [("10 min", 10), ("1 hour", 60)];
+/// Discord's maximum message length in Unicode characters.
+const MAX_MESSAGE_CHARS: usize = 2000;
 
 /// Every button, menu and modal this feature makes. The ID text is built and parsed only
 /// here.
@@ -77,6 +79,7 @@ pub fn confirmation(
     zone_hint: bool,
     images: usize,
     skipped: &[String],
+    hit_storage_limit: bool,
 ) -> String {
     let mut text = match repeat {
         Some(repeat) => format!(
@@ -99,10 +102,24 @@ pub fn confirmation(
         });
     }
     if !skipped.is_empty() {
-        text.push_str(&format!(
-            "\n-# Couldn't save {}, so the reminder will link to your message instead.",
-            skipped.join(", ")
-        ));
+        let prefix = "\n-# Couldn't save ";
+        let suffix = if hit_storage_limit {
+            " (reminders store up to 25 MiB of images), so the reminder will link to your message instead."
+        } else {
+            ", so the reminder will link to your message instead."
+        };
+        let used = text.chars().count();
+        let overhead = prefix.chars().count() + suffix.chars().count();
+        let room = MAX_MESSAGE_CHARS.saturating_sub(used + overhead);
+        if room >= 10 {
+            let names = shorten(&skipped.join(", "), room);
+            text.push_str(&format!("{prefix}{names}{suffix}"));
+        } else {
+            let fallback = format!("{prefix}{}{suffix}", count(skipped.len(), "image"));
+            if used + fallback.chars().count() <= MAX_MESSAGE_CHARS {
+                text.push_str(&fallback);
+            }
+        }
     }
     text
 }
@@ -224,9 +241,11 @@ pub fn list_message(
         return (text, Vec::new());
     }
 
-    let shown = &reminders[..reminders.len().min(25)];
+    let total = reminders.len();
+    let max_options = total.min(25);
     text.push_str("**Your reminders**\n");
-    for (n, reminder) in shown.iter().enumerate() {
+    let mut shown_count = 0;
+    for (n, reminder) in reminders[..max_options].iter().enumerate() {
         let images = match reminder.image_count {
             0 => String::new(),
             1 => " (1 image)".to_string(),
@@ -237,16 +256,32 @@ pub fn list_message(
             None => String::new(),
         };
         // The day and time too, not only "in 3 days".
-        text.push_str(&format!(
+        let line = format!(
             "{}. <t:{}:R> (<t:{}:f>){repeat}: {}{images}\n",
             n + 1,
             reminder.fire_at,
             reminder.fire_at,
             shorten(&reminder.message, 60)
-        ));
+        );
+        // Reserve room for the truncation footer if more reminders remain after this row.
+        let footer_len = if n + 1 < total {
+            format!("-# Showing the first {} of {total}.", n + 1)
+                .chars()
+                .count()
+        } else {
+            0
+        };
+        if shown_count > 0
+            && text.chars().count() + line.chars().count() + footer_len > MAX_MESSAGE_CHARS
+        {
+            break;
+        }
+        text.push_str(&line);
+        shown_count += 1;
     }
-    if reminders.len() > shown.len() {
-        text.push_str(&format!("-# Showing the first 25 of {}.", reminders.len()));
+    let shown = &reminders[..shown_count];
+    if shown.len() < total {
+        text.push_str(&format!("-# Showing the first {} of {total}.", shown.len()));
     }
 
     let options = shown
@@ -408,5 +443,61 @@ mod tests {
         }
         assert_eq!(Action::parse("snooze:x:10"), None);
         assert_eq!(Action::parse("explode"), None);
+    }
+
+    #[test]
+    fn list_message_stays_within_discord_limit_and_syncs_menu() {
+        let reminders: Vec<Summary> = (1..=25)
+            .map(|id| Summary {
+                id,
+                message: "a".repeat(80),
+                fire_at: 1_800_000_000 + id * 60,
+                image_count: 2,
+                repeat: Some("every wednesday at 10:00 America/Argentina/Buenos_Aires".into()),
+            })
+            .collect();
+        let (text, rows) = list_message(&reminders, Some("✅ Reminder deleted."), Tz::UTC);
+        assert!(
+            text.chars().count() <= MAX_MESSAGE_CHARS,
+            "got {} chars",
+            text.chars().count()
+        );
+        let json = serde_json::to_value(&rows).unwrap();
+        let options = json[0]["components"][0]["options"].as_array().unwrap();
+        let shown = options.len();
+        assert!(shown > 0 && shown < 25, "expected truncation, got {shown}");
+        assert!(
+            text.ends_with(&format!("-# Showing the first {shown} of 25.")),
+            "{text}"
+        );
+        assert_eq!(options[0]["value"], "1");
+        assert_eq!(options[shown - 1]["value"], shown.to_string());
+    }
+
+    #[test]
+    fn confirmation_caps_long_skipped_lists() {
+        let long_message = "m".repeat(1500);
+        let skipped: Vec<String> = (1..=20)
+            .map(|i| format!("very_long_filename_{i:02}_{}.png", "x".repeat(40)))
+            .collect();
+        let text = confirmation(
+            1_800_000_000,
+            &long_message,
+            Some("every monday at 9:00"),
+            true,
+            1,
+            &skipped,
+            true,
+        );
+        assert!(
+            text.chars().count() <= MAX_MESSAGE_CHARS,
+            "got {} chars",
+            text.chars().count()
+        );
+        assert!(text.contains("25 MiB"), "{text}");
+        assert!(
+            text.ends_with("so the reminder will link to your message instead."),
+            "{text}"
+        );
     }
 }

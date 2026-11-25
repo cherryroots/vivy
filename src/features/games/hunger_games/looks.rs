@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::util::discord::{GuildId, UserId, avatar_url, get_member, member_avatar_url};
 use tokio::sync::OnceCell;
-use tokio::task::JoinHandle;
+use tokio::task::{AbortHandle, JoinHandle, JoinSet};
 use tracing::{debug, info, warn};
 
 use super::game::{self, Game};
@@ -61,15 +61,23 @@ pub struct Looks {
 #[derive(Clone)]
 pub struct Shared {
     task: Arc<std::sync::Mutex<Option<JoinHandle<Looks>>>>,
+    abort: AbortHandle,
     looks: Arc<OnceCell<Looks>>,
 }
 
 impl Shared {
     pub fn new(task: JoinHandle<Looks>) -> Shared {
+        let abort = task.abort_handle();
         Shared {
             task: Arc::new(std::sync::Mutex::new(Some(task))),
+            abort,
             looks: Arc::default(),
         }
+    }
+
+    /// Cancels the background task if it is still running.
+    pub fn abort(&self) {
+        self.abort.abort();
     }
 
     /// The looks, waiting for them the first time. A call that failed described nothing.
@@ -94,24 +102,32 @@ pub async fn describe(
     tributes: Vec<(u64, String)>,
     areas: Vec<Option<String>>,
 ) -> Looks {
-    // The profile pictures download side by side.
-    let downloads: Vec<_> = tributes
-        .iter()
-        .map(|&(id, _)| tokio::spawn(face(bot.clone(), guild, UserId::new(id))))
-        .collect();
+    // The profile pictures download side by side; a JoinSet cancels them if this task is aborted.
+    let mut downloads = JoinSet::new();
+    for (i, &(id, _)) in tributes.iter().enumerate() {
+        let bot = bot.clone();
+        downloads.spawn(async move { (i, face(bot, guild, UserId::new(id)).await) });
+    }
+    let mut faces: Vec<Option<anyhow::Result<ModelImage>>> =
+        (0..tributes.len()).map(|_| None).collect();
+    while let Some(joined) = downloads.join_next().await {
+        if let Ok((i, result)) = joined {
+            faces[i] = Some(result);
+        }
+    }
     let mut parts = Vec::new();
-    for (i, ((_, name), download)) in tributes.iter().zip(downloads).enumerate() {
+    for (i, ((_, name), download)) in tributes.iter().zip(faces).enumerate() {
         let tag = Game::tag(i);
-        match download.await {
-            Ok(Ok(face)) => {
+        match download {
+            Some(Ok(face)) => {
                 parts.push(Part::Text(format!("{tag}, named {name}:")));
                 parts.push(Part::Image(face));
             }
-            Ok(Err(err)) => {
+            Some(Err(err)) => {
                 debug!("couldn't load a tribute's profile picture: {err:#}");
                 parts.push(Part::Text(format!("{tag}, named {name}: no picture.")));
             }
-            Err(_) => parts.push(Part::Text(format!("{tag}, named {name}: no picture."))),
+            None => parts.push(Part::Text(format!("{tag}, named {name}: no picture."))),
         }
     }
     let request = ChatRequest {

@@ -15,6 +15,8 @@ pub const ROOT: &str = "/memories";
 pub const MAX_FILE: usize = 8 * 1024;
 /// The most a whole folder can hold, in bytes.
 pub const MAX_FOLDER: usize = 256 * 1024;
+/// The most files a folder can hold.
+pub const MAX_FILES: usize = 500;
 /// The longest path, in characters.
 const MAX_PATH: usize = 200;
 
@@ -339,9 +341,21 @@ fn rename(folder: &mut Folder, old: &str, new: &str) -> Result<String, String> {
         folder.insert(new.to_string(), content);
     } else {
         let inside: Vec<String> = files_in(folder, old).cloned().collect();
-        for file in inside {
+        let moved: Vec<(String, String)> = inside
+            .into_iter()
+            .map(|file| {
+                let target = format!("{new}{}", &file[old.len()..]);
+                if target.chars().count() > MAX_PATH {
+                    return Err(format!(
+                        "Error: Renaming {old} to {new} would make {target} too long ({MAX_PATH} characters at most)."
+                    ));
+                }
+                Ok((file, target))
+            })
+            .collect::<Result<_, _>>()?;
+        for (file, target) in moved {
             let content = folder.remove(&file).unwrap_or_default();
-            folder.insert(format!("{new}{}", &file[old.len()..]), content);
+            folder.insert(target, content);
         }
     }
     Ok(format!("Successfully renamed {old} to {new}"))
@@ -365,6 +379,12 @@ pub fn check_limits(before: &Folder, after: &Folder) -> Result<(), String> {
             "Error: The memory folder is full ({} of {}). Delete or shorten files that are no longer useful first.",
             human_size(old),
             human_size(MAX_FOLDER)
+        ));
+    }
+    if after.len() > MAX_FILES && after.len() > before.len() {
+        return Err(format!(
+            "Error: The memory folder has too many files ({} of {MAX_FILES}). Delete or merge files first.",
+            before.len()
         ));
     }
     Ok(())
@@ -587,6 +607,13 @@ mod tests {
         assert!(rename(&mut f, "/memories/new", "/memories/new/inner").is_err());
         assert!(rename(&mut f, "/memories/missing", "/memories/x").is_err());
         assert!(rename(&mut f, ROOT, "/memories/x").is_err());
+
+        // Renaming a directory cannot push any child path past MAX_PATH.
+        let child = format!("/memories/a/{}", "x".repeat(170));
+        let mut long = folder(&[(&child, "hi")]);
+        let long_dir = format!("/memories/{}", "y".repeat(40));
+        assert!(rename(&mut long, "/memories/a", &long_dir).is_err());
+        assert!(long.contains_key(&child));
     }
 
     #[test]
@@ -612,5 +639,19 @@ mod tests {
         let mut less = full.clone();
         less.remove("/memories/0.md");
         assert!(check_limits(&full, &less).is_ok());
+
+        // File count cap: adding past MAX_FILES fails, editing or deleting still works.
+        let many: Folder = (0..MAX_FILES)
+            .map(|i| (format!("/memories/f{i}.md"), "a".to_string()))
+            .collect();
+        let mut extra = many.clone();
+        extra.insert("/memories/one_more.md".into(), "a".into());
+        assert!(check_limits(&many, &extra).is_err());
+        let mut edited = many.clone();
+        edited.insert("/memories/f0.md".into(), "bb".into());
+        assert!(check_limits(&many, &edited).is_ok());
+        let mut fewer = extra.clone();
+        fewer.remove("/memories/f0.md");
+        assert!(check_limits(&extra, &fewer).is_ok());
     }
 }
