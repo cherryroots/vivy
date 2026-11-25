@@ -32,12 +32,12 @@ pub fn parse_link(link: &str) -> Option<(Option<u64>, u64, u64)> {
     let ["channels", guild, channel, message] = parts.as_slice() else {
         return None;
     };
+    // Discord IDs are never 0, and twilight panics on an ID of 0.
     let guild = if *guild == "@me" {
         None
     } else {
-        Some(guild.parse().ok()?)
+        Some(guild.parse::<u64>().ok().filter(|id| *id != 0)?)
     };
-    // Discord IDs are never 0, and twilight panics on an ID of 0.
     let channel: u64 = channel.parse().ok().filter(|id| *id != 0)?;
     let message: u64 = message.parse().ok().filter(|id| *id != 0)?;
     Some((guild, channel, message))
@@ -169,13 +169,15 @@ mod tests {
         assert_eq!(parse_link("https://notdiscord.com/channels/1/2/3"), None);
         assert_eq!(parse_link("https://discord.com/channels/1/2"), None);
         assert_eq!(parse_link("https://discord.com/channels/1/0/0"), None);
+        assert_eq!(parse_link("https://discord.com/channels/0/1/2"), None);
     }
 
     #[test]
     fn finds_message_links() {
         let text = "look https://discord.com/channels/1/2/3 and <https://discord.com/channels/1/2/4>, \
                     [this](https://ptb.discord.com/channels/@me/5/6?x=\"y) https://discord.com/channels/1/2/3. \
-                    but not https://discord.com/channels/1/2 or https://example.com/channels/1/2/3";
+                    but not https://discord.com/channels/1/2 or https://discord.com/channels/0/1/2 \
+                    or https://example.com/channels/1/2/3";
         assert_eq!(
             find_message_links(text),
             [
