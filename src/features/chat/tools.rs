@@ -27,7 +27,7 @@ use crate::util::media::{self, ModelImage};
 // drawing opens links too. Re-exported so chat's files keep using them from here.
 pub(super) use crate::util::discord::message_link;
 pub(super) use crate::util::message_links::{
-    can_read, find_message_links, linked_message, parse_link,
+    can_read, find_message_links, linked_message, parse_link, why_not_readable,
 };
 use crate::util::people::{find_member, parse_user_id};
 use crate::util::shorten;
