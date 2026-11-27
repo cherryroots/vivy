@@ -14,14 +14,14 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::{Instrument as _, error, info, info_span, warn};
 
 use super::store;
 use crate::ai::{
     ChatRequest, Input, Part, Role, ToolCall, ToolDef, ToolReply, ToolRunner, Turn, complete,
 };
-use crate::core::{Asker, BotCtx, Result};
+use crate::core::{Asker, BotCtx, Result, user_error};
 use crate::util::discord::{EmojiId, GuildId};
 use crate::util::media::{self, Media, MediaKind};
 use crate::util::shorten;
@@ -33,6 +33,9 @@ const CHECK: Duration = Duration::from_secs(24 * 60 * 60);
 static FAILED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
 /// The most emoji `list_server_emoji` returns.
 const MAX_LISTED: usize = 250;
+/// The most emoji `describe_server_emoji` looks up in one call.
+const MAX_LOOKUP: usize = 10;
+pub const DESCRIBE_TOOL: &str = "describe_server_emoji";
 
 const SYSTEM: &str = "You describe Discord custom emoji. Answer with exactly two lines, no preamble:\n\
 SHORT: <3 to 6 word gloss of the vibe/meaning, no period>\n\
@@ -48,6 +51,24 @@ pub fn def() -> ToolDef {
     }
 }
 
+pub fn describe_def() -> ToolDef {
+    ToolDef {
+        name: DESCRIBE_TOOL,
+        description: "Looks up the full description of specific custom emoji in this server (1 to 10 names) so you can check what an emote actually shows and whether it truly fits.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "names": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "1 to 10 server emoji names (e.g. \"pensivesnail\" or \":pensivesnail:\")."
+                }
+            },
+            "required": ["names"]
+        }),
+    }
+}
+
 pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
     let Some(guild) = asker.guild else {
         return Ok("Direct messages have no server emoji.".to_string());
@@ -57,6 +78,82 @@ pub async fn list(ctx: &BotCtx, asker: &Asker) -> Result<String> {
         return Ok("This server has no custom emoji.".to_string());
     }
     Ok(lines.join("\n"))
+}
+
+pub async fn describe_one(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
+    let names = parse_lookup_names(&args["names"]).map_err(user_error)?;
+    let Some(guild) = asker.guild else {
+        return Ok("Direct messages have no server emoji.".to_string());
+    };
+    let emoji = server_emoji(ctx, guild);
+    let id = guild.get();
+    let described = ctx
+        .db
+        .call(move |conn| Ok(store::emoji_descriptions(conn, id)?))
+        .await?;
+    Ok(format_lookup_lines(&names, &emoji, &described).join("\n"))
+}
+
+/// Parses 1 to [`MAX_LOOKUP`] emoji names from a tool argument (list or single string),
+/// stripping surrounding `:name:` or `<:name:123>` markup and deduplicating case-insensitively.
+fn parse_lookup_names(value: &Value) -> std::result::Result<Vec<String>, String> {
+    let raw: Vec<&str> = match value {
+        Value::String(one) => vec![one.as_str()],
+        Value::Array(many) => many.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for name in raw.into_iter().filter_map(normalize_emoji_name) {
+        if !names.iter().any(|seen| seen.eq_ignore_ascii_case(&name)) {
+            names.push(name);
+        }
+    }
+    if names.is_empty() {
+        return Err("`names` is required.".to_string());
+    }
+    if names.len() > MAX_LOOKUP {
+        return Err(format!("At most {MAX_LOOKUP} emoji names in one call."));
+    }
+    Ok(names)
+}
+
+/// Extracts the bare emoji name from `"pog"`, `":pog:"`, `"<:pog:123>"`, or `"<a:pog:123>"`.
+fn normalize_emoji_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let inner = trimmed
+        .strip_prefix("<a:")
+        .or_else(|| trimmed.strip_prefix("<:"))
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or_else(|| trimmed.trim_matches(':'))
+        .trim();
+    if inner.is_empty() {
+        None
+    } else {
+        Some(inner.to_string())
+    }
+}
+
+/// Formats one result line per requested emoji name against the server's emoji and stored
+/// long descriptions.
+fn format_lookup_lines(
+    names: &[String],
+    emoji: &[Emoji],
+    described: &HashMap<u64, store::EmojiDescription>,
+) -> Vec<String> {
+    names
+        .iter()
+        .map(|wanted| {
+            let Some(found) = emoji.iter().find(|e| e.name.eq_ignore_ascii_case(wanted)) else {
+                return format!(":{wanted}: not found in this server.");
+            };
+            match described.get(&found.id.get()) {
+                Some(entry) if !entry.description.is_empty() => {
+                    format!("{found}: {}", entry.description)
+                }
+                _ => format!("{found}: (no description yet)"),
+            }
+        })
+        .collect()
 }
 
 /// The server's emoji for a chime-in reaction, in compact `:name: <short>` form (no
@@ -618,5 +715,60 @@ mod tests {
         assert_eq!(format_compact_line("pog", Some("   ")), ":pog:");
         assert_eq!(format_compact_line("pog", None), ":pog:");
         assert!(!format_compact_line("pog", Some("surprised hype")).contains("<:"));
+    }
+
+    #[test]
+    fn lookup_names_normalize_dedup_and_enforce_bounds() {
+        let names = parse_lookup_names(&json!([
+            " :pog: ",
+            "<:POG:123>",
+            "<a:dance:456>",
+            "  ",
+            "pensivesnail"
+        ]))
+        .unwrap();
+        assert_eq!(names, ["pog", "dance", "pensivesnail"]);
+        assert_eq!(parse_lookup_names(&json!(":pog:")).unwrap(), ["pog"]);
+        assert!(parse_lookup_names(&json!([])).is_err());
+        assert!(parse_lookup_names(&json!(["  ", "::"])).is_err());
+        let too_many: Vec<String> = (0..=MAX_LOOKUP).map(|i| format!("e{i}")).collect();
+        assert!(parse_lookup_names(&json!(too_many)).is_err());
+    }
+
+    #[test]
+    fn lookup_lines_match_case_insensitively_and_report_missing() {
+        let emoji = vec![
+            Emoji {
+                id: EmojiId::new(123),
+                name: "PensiveSnail".to_string(),
+                animated: false,
+            },
+            Emoji {
+                id: EmojiId::new(456),
+                name: "dance".to_string(),
+                animated: true,
+            },
+        ];
+        let mut described = HashMap::new();
+        described.insert(
+            123,
+            store::EmojiDescription {
+                description: "A sad, thoughtful snail used for reposts or mild regret.".into(),
+                short_description: "sad thoughtful snail".into(),
+            },
+        );
+        let lines = format_lookup_lines(
+            &["pensivesnail".into(), "dance".into(), "nope".into()],
+            &emoji,
+            &described,
+        );
+        assert_eq!(
+            lines,
+            [
+                "<:PensiveSnail:123>: A sad, thoughtful snail used for reposts or mild regret.",
+                "<a:dance:456>: (no description yet)",
+                ":nope: not found in this server.",
+            ]
+        );
     }
 }

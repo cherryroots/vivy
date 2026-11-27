@@ -47,29 +47,13 @@ const READ_MESSAGES: u16 = 15;
 /// Rounds of tool calls (saving to memory) before she has to decide.
 const MAX_ROUNDS: usize = 6;
 
-/// The tools she may use when nobody asked. An allow-list, so a new tool stays out until
-/// someone decides it's safe here. Left out: anything that acts for a person (reminders),
-/// and `list_channels`, which lists what one person can see, not everyone here.
-/// `get_message`, `search_messages` and `read_recent_messages` reach the channels chat may
-/// read (`tools::can_read`). `memory` is in: what she saves is her own decision.
-/// `tinyfish_search` and `tinyfish_fetch` only read the web, like the providers' own web
-/// tools, which chime-ins have too.
-const UNPROMPTED_TOOLS: &[&str] = &[
-    "get_current_time",
-    "get_channel_info",
-    "get_user_info",
-    "get_bot_owner",
-    "read_recent_messages",
-    "get_message",
-    "search_messages",
-    "get_pinned_messages",
-    "list_server_events",
-    "list_server_emoji",
-    "get_wheel_status",
-    "tinyfish_search",
-    "tinyfish_fetch",
-    "memory",
-];
+/// The lean set of tools she may use when nobody asked. Kept small so chime-ins stay
+/// cheap (no web search, no `tool_search` overhead):
+/// - `memory`: save lasting notes about the server, its people or herself.
+/// - `get_message`: open a linked message or inspect its attachments/pictures.
+/// - `describe_server_emoji`: check the full description of specific custom emoji before
+///   reacting, since the chime-in prompt only includes short glosses.
+const UNPROMPTED_TOOLS: &[&str] = &["memory", "get_message", emoji::DESCRIBE_TOOL];
 
 /// `[features.chat]` settings: reading along, and some limits on answers.
 #[derive(Debug, Clone, Deserialize)]
@@ -537,11 +521,14 @@ mod tests {
             def("get_message"),
             def("draw_picture"),
             def("list_server_emoji"),
+            def("describe_server_emoji"),
             def("react_to_message"),
+            def("search_messages"),
+            def("tinyfish_search"),
         ];
         let filtered = chime_tools(all);
         let names: Vec<&str> = filtered.iter().map(|t| t.name).collect();
-        assert_eq!(names, ["memory", "get_message", "list_server_emoji"]);
+        assert_eq!(names, ["memory", "get_message", "describe_server_emoji"]);
     }
 
     #[test]

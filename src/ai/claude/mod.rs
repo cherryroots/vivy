@@ -1129,8 +1129,8 @@ mod tests {
         assert!(body.get("container").is_none());
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
 
-        // Chime-ins skip code execution and its container, while keeping the main effort
-        // and web tools.
+        // Chime-ins skip web tools, code execution and its container, while keeping the
+        // main effort.
         let chat = job("chat", request().tools);
         let chime = job("chime", request().tools);
         assert_eq!(chat["system"], chime["system"]);
@@ -1142,7 +1142,7 @@ mod tests {
             .iter()
             .map(|t| t["name"].as_str().unwrap())
             .collect();
-        assert_eq!(chime_tools, ["web_search", "web_fetch", "get_current_time"]);
+        assert_eq!(chime_tools, ["get_current_time"]);
 
         // config.toml changes a job; what it leaves out keeps the built-in default, and
         // chat always uses the main model.
