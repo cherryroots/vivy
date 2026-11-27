@@ -142,10 +142,10 @@ On a hit, `read_and_react`:
 1. Reads the last 15 messages (`read_along`) into a `<recent_messages>` transcript, oldest first. Attachments are listed by file name and stickers by name (`format_message`).
 2. Shows her no pictures. #148 showed her the newest 3 people posted (shrunk to 512 px, about 350 tokens each), but they cost more than they were worth on every read, so #154 took them out again. She still sees each attachment's file name, and `get_message` shows a message's pictures when she wants to look.
 3. Builds the question: the transcript, then `READ_ALONG` (save what's lasting to memory) and what she may do this time (`allowed_instructions`: only read and answer `DONE`, or react with one emoji). Features' `chat_context` is added with `fresh = true`, with the `"Your faces (for set_mood …)"` line stripped (`strip_faces_context`) since chime-ins don't have `set_mood` (`<vivy_self>`, `<vivy_mood>`, `<memory_files>`, and `<asker_about>` stay).
-4. Runs it with `ai::complete` (the tool loop without Discord output: at most 6 rounds of tools, `MAX_ROUNDS`, then one round where she has to decide without them), the lean `CHIME_PROMPT` (`chime_prompt.md`), only the `UNPROMPTED_TOOLS` subset (`chime_tools`), and `job: "chime"` (which disables code execution and, on Gemini, runs on Gemini 4 Hydrogen without a starter interaction; see `ai.md`). `Runner` also enforces `UNPROMPTED_TOOLS`.
+4. Runs it with `ai::complete` (the tool loop without Discord output: at most 6 rounds of tools, `MAX_ROUNDS`, then one round where she has to decide without them), the lean `CHIME_PROMPT` (`chime_prompt.md`), only the 3-tool `UNPROMPTED_TOOLS` subset (`memory`, `get_message`, `describe_server_emoji` via `chime_tools` — below Gemini's `DEFER_FROM = 8` threshold so `tool_search` isn't sent either), and `job: "chime"` (which disables web tools and code execution and, on Gemini, runs on Gemini 4 Hydrogen without a starter interaction; see `ai.md`). `Runner` also enforces `UNPROMPTED_TOOLS`.
 5. Reads the answer with `reaction`: `REACT <emoji>` reacts to the last message; anything else (`PASS`, or a line she wrote anyway) posts nothing. On a read-only roll nothing is posted at all.
 
-Nobody asked, so she can only use `UNPROMPTED_TOOLS`, an allow-list: no reminders, no `list_channels` (it lists what one person can see). `get_message` and `search_messages` reach every channel `can_read` allows, as in answers. Tools run as the author of the last message, except `memory`, which runs as Vivy herself, so the memory change log names her.
+Nobody asked, so she can only use `UNPROMPTED_TOOLS` (`memory`, `get_message`, `describe_server_emoji`): `get_message` reaches every channel `can_read` allows, `describe_server_emoji` lets her check the full description of specific custom emoji before reacting, and `memory` runs as Vivy herself so the memory change log names her.
 
 A reaction is saved (`save`) as a question turn (the transcript, exactly as the model read it) and an answer turn holding a note (`(reacted 🐄 to RickyWL: "I Am One Of…")`, `reaction_note`), with no Discord message linked to it, so `look_back_at_answers` lists it as a chime-in. The question's author is the bot, so nobody can 🔁 it as if it were their answer. Before this she once denied a 🐄 her account had put on someone's message, since nothing she could look at showed it. Chime-in lines saved before #158 are still in the table and still show in `look_back_at_answers`.
 
@@ -194,6 +194,7 @@ Chat's own tools:
 | `get_pinned_messages` | `tools.rs` | The current channel's pins (at most 25), newest first, with links |
 | `list_server_events` | `tools.rs` | The server's upcoming and ongoing scheduled events |
 | `list_server_emoji` | `emoji.rs` | The server's custom emoji, with a description of each picture |
+| `describe_server_emoji` | `emoji.rs` | Looks up the full long description of 1 to 10 specific custom emoji by name so she can verify an emote's meaning before using it (in chime-ins too) |
 | `look_back_at_answers` | `look_back.rs` | Her own earlier answers, so she can see what really happened (see below) |
 | `create_poll` | `poll.rs` | Posts a real Discord poll in the channel, as its own message, when someone asks for one: a question (300 characters), 2 to 10 answers (55 characters each, each with an optional plain or server emoji), `hours` (1 to 768, default 24) and `multiple` (pick more than one). Twilight's `Poll` has an `expiry` but creating one takes a `duration`, so it's sent as JSON with `send_raw`; `payload` builds it and checks the limits (tested). Returns the poll's link. Not in chime-ins. Needs the Create Polls permission |
 | `react_to_message` | `react.rs` | Adds up to 3 emoji reactions (plain or the server's own) to the message she's answering, or to another message in the same server by its link (any channel `can_read` allows, or the same DM in a DM); `remove` takes her own back off |
@@ -251,8 +252,8 @@ A tool that posts its own message (like the voice tool) records it in `Asker::po
 | `migrations` | `store::MIGRATIONS` (six migrations, see below) |
 | `mention_prefixes` | `[""]`: every mention no other feature claimed |
 | `stats` | "Answers" (answer turns so far) for the status message |
-| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `look_back::def`, `react::def`, `poll::def` and `blocklist::def`) |
-| `run_tool` | Runs them: `list_server_emoji`, `look_back_at_answers`, `react_to_message`, `create_poll` and `ai_blocklist` directly, the rest through `tools::run` |
+| `tools` | Chat's tools (`tools::defs`, plus `avatar::def`, `emoji::def`, `emoji::describe_def`, `look_back::def`, `react::def`, `poll::def` and `blocklist::def`) |
+| `run_tool` | Runs them: `list_server_emoji`, `describe_server_emoji`, `look_back_at_answers`, `react_to_message`, `create_poll` and `ai_blocklist` directly, the rest through `tools::run` |
 | `run_tool_with_pictures` | `look_at_profile_picture` and `get_message`, which answer with pictures; every other tool goes to `run_tool`. Chat always calls this one, answers and chime-ins alike |
 | `tool_status` | A status line for each of them, like "🔍 Searching messages…" |
 | `start` | Reads the chime settings (so typos are warned about at startup), starts the emoji task |

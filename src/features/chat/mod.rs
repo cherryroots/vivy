@@ -111,6 +111,7 @@ impl Feature for Chat {
         let mut defs = tools::defs();
         defs.push(avatar::def());
         defs.push(emoji::def());
+        defs.push(emoji::describe_def());
         defs.push(look_back::def());
         defs.push(react::def());
         defs.push(poll::def());
@@ -131,6 +132,7 @@ impl Feature for Chat {
             "get_pinned_messages" => "📌 Reading the pins…",
             "list_server_events" => "📅 Checking the events…",
             "list_server_emoji" => "😀 Looking at the emoji…",
+            emoji::DESCRIBE_TOOL => "😀 Checking an emoji…",
             look_back::TOOL => "🪞 Looking back at what I did…",
             react::TOOL => "✨ Reacting…",
             poll::TOOL => "📊 Making a poll…",
@@ -148,6 +150,7 @@ impl Feature for Chat {
     ) -> Result<String> {
         match name {
             "list_server_emoji" => emoji::list(ctx, asker).await,
+            emoji::DESCRIBE_TOOL => emoji::describe_one(ctx, asker, args).await,
             look_back::TOOL => look_back::run(ctx, asker, args).await,
             react::TOOL => react::run(ctx, asker, args).await,
             poll::TOOL => poll::run(ctx, asker, args).await,

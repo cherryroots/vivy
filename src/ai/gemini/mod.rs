@@ -1263,7 +1263,7 @@ mod tests {
         // A mood check can wait: the flex tier, at half price. Chat answers can't.
         assert_eq!(body["service_tier"], "flex");
 
-        // Chime-ins and the cheap jobs take Hydrogen, and chime-ins have no code execution.
+        // Chime-ins and the cheap jobs take Hydrogen, with no web tools or code execution.
         for job in ["chime", "emoji", "translate", "curt"] {
             let cheap = ChatRequest {
                 job,
@@ -1275,7 +1275,10 @@ mod tests {
             };
             let body = gemini.request_body(&cheap, &[], true);
             assert_eq!(body["model"], CHEAP_MODEL);
-            assert!(!body["tools"].to_string().contains("code_execution"));
+            let tools_json = body["tools"].to_string();
+            assert!(!tools_json.contains("code_execution"));
+            assert!(!tools_json.contains("google_search"));
+            assert!(!tools_json.contains("url_context"));
         }
     }
 

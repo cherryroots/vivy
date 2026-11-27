@@ -358,7 +358,7 @@ impl Job {
     /// own settings and every tool. Chime-ins never run code execution (`code: false`), and
     /// on Gemini take the cheap model.
     /// Background jobs nobody waits on get only what they use:
-    /// - "chime": reading along and maybe reacting; no code execution;
+    /// - "chime": reading along and maybe reacting; no web search or code execution;
     /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
     ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
     /// - "catch_up", "explain", "translate": private answers from the Apps menu (chat's
@@ -377,7 +377,7 @@ impl Job {
             "chime" => Job {
                 model: None,
                 effort: None,
-                web: None,
+                web: off,
                 code: off,
                 batch: None,
             },
@@ -930,7 +930,7 @@ mod tests {
         let chime = Job::builtin("chime", Some("cheap-model"));
         assert_eq!(chime.code, Some(false));
         assert_eq!(chime.model, None);
-        assert_eq!(chime.web, None);
+        assert_eq!(chime.web, Some(false));
         assert_eq!(chime.effort, None);
         assert_eq!(chime.batch, None);
     }
