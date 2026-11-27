@@ -1,6 +1,6 @@
 //! What the AI costs this month, added up from the token counts each answer reports.
 //!
-//! There is one [`Spend`] per provider ("claude", "openai"), each with its own budget. The
+//! There is one [`Spend`] per provider ("claude", "openai", "gemini"), each with its own budget. The
 //! provider works out what a response cost (see `claude/price.rs` and `openai/price.rs`)
 //! and calls [`Spend::add`] with the job that asked for it ("chat", "diary", "drawing",
 //! ...). Months are calendar months in UTC. Two core tables keep the numbers, one row per
@@ -10,9 +10,10 @@
 //! - `ai_spend_jobs`: the estimate and the input tokens per job, for the status message's
 //!   cost per job and cache hit rate.
 //!
-//! These are list prices, so the numbers are an estimate. With an Admin API key,
-//! [`Spend::follow_bill`] reads what the company actually billed once an hour (see
-//! `claude/billing.rs` and `openai/billing.rs`) and puts that in place of the month's
+//! These are list prices, so the numbers are an estimate. With an Admin API key (for
+//! Gemini, a service account that reads the Cloud Billing export), [`Spend::follow_bill`]
+//! reads what the company actually billed once an hour (see `claude/billing.rs`,
+//! `openai/billing.rs` and `gemini/billing.rs`) and puts that in place of the month's
 //! total. Answers in between still add their estimate on top, until the next bill
 //! replaces it again. Without the key, or while the bill can't be read, the estimate is
 //! all there is.
@@ -35,10 +36,10 @@ const WARN_AT: [i64; 2] = [80, 100];
 /// How often the bill is read.
 const BILL_EVERY: Duration = Duration::from_secs(60 * 60);
 
-/// Reads a company's bill for this month, with an Admin API key.
+/// Reads a company's bill for this month, with an Admin API key or Gemini's billing export.
 #[async_trait]
 pub trait Bill: Send + Sync + 'static {
-    /// "Anthropic bill", "OpenAI bill": for the log and the timer on the status picture.
+    /// "Anthropic bill", "OpenAI bill", "Google Cloud bill": for the log and the timer on the status picture.
     fn name(&self) -> &'static str;
 
     /// USD billed from the start of `now`'s month (UTC) until now.
@@ -70,10 +71,11 @@ pub struct LastRead {
 /// Whether the bot reads the bill with an Admin API key, for the status message.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum AdminKey {
-    /// No `ANTHROPIC_ADMIN_KEY` / `OPENAI_ADMIN_KEY` in `.env`.
+    /// No `ANTHROPIC_ADMIN_KEY` / `OPENAI_ADMIN_KEY` / `GEMINI_BILLING_KEY_FILE` in `.env`.
     #[default]
     Off,
-    /// The key is set, but `billed_spend` under `[ai.claude]` / `[ai.openai]` is off.
+    /// The key is set, but `billed_spend` under `[ai.claude]` / `[ai.openai]` /
+    /// `[ai.gemini]` is off.
     Unused,
     /// The key is set; the first read hasn't finished yet.
     Starting,

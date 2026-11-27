@@ -81,11 +81,13 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         tasks.spawn(warm.run(timers.clone(), shutdown.clone()));
     }
     // With an Admin API key, a provider's spend comes from its real bill (see ai/spend.rs).
-    // Google has no Admin API for the bill, so Gemini's spend is always the estimate.
+    // Google has no Admin key: Gemini's bill is read from the Cloud Billing export in
+    // BigQuery, with a service account's key file.
     for spend in &ai.spends {
         let (var, billed) = match spend.provider() {
             "claude" => ("ANTHROPIC_ADMIN_KEY", config.ai.claude.billed_spend),
             "openai" => ("OPENAI_ADMIN_KEY", config.ai.openai.billed_spend),
+            "gemini" => ("GEMINI_BILLING_KEY_FILE", config.ai.gemini.billed_spend),
             _ => continue,
         };
         let Some(admin_key) = env_key(var) else {
@@ -93,20 +95,31 @@ async fn run(config: Config, log_queue: mpsc::Receiver<LogLine>) -> anyhow::Resu
         };
         if !billed {
             spend.set_admin_key(ai::AdminKey::Unused);
-        } else if spend.provider() == "claude" {
-            let billing = ai::claude::billing::Billing::new(web.clone(), admin_key);
-            tasks.spawn(
-                spend
-                    .clone()
-                    .follow_bill(billing, timers.clone(), shutdown.clone()),
-            );
-        } else {
-            let billing = ai::openai::billing::Billing::new(web.clone(), admin_key);
-            tasks.spawn(
-                spend
-                    .clone()
-                    .follow_bill(billing, timers.clone(), shutdown.clone()),
-            );
+            continue;
+        }
+        let (spend, timers, shutdown) = (spend.clone(), timers.clone(), shutdown.clone());
+        match spend.provider() {
+            "claude" => {
+                let billing = ai::claude::billing::Billing::new(web.clone(), admin_key);
+                tasks.spawn(spend.follow_bill(billing, timers, shutdown));
+            }
+            "openai" => {
+                let billing = ai::openai::billing::Billing::new(web.clone(), admin_key);
+                tasks.spawn(spend.follow_bill(billing, timers, shutdown));
+            }
+            _ => {
+                // The key file's path, and the export's table from config.toml.
+                let table = &config.ai.gemini.billing_table;
+                match ai::gemini::billing::Billing::new(web.clone(), &admin_key, table) {
+                    Ok(billing) => {
+                        tasks.spawn(spend.follow_bill(billing, timers, shutdown));
+                    }
+                    Err(err) => {
+                        warn!("can't read the Google Cloud bill, using the estimate: {err:#}");
+                        spend.set_admin_key(ai::AdminKey::Failing(format!("{err:#}")));
+                    }
+                }
+            }
         }
     }
 
