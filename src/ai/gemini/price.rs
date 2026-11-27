@@ -5,8 +5,8 @@
 //! price until the end of November 2026 and costs twice as much from December. Thinking
 //! tokens cost as much as output. Google Search costs $14 per 1000 searches, but the first 5000 a month are free; the estimate counts every search, so it
 //! runs a little high when there are few. The flex tier (`service_tier: "flex"`, for jobs
-//! that can wait) costs half on every token. Google keeps no Admin API for the bill, so the
-//! estimate is all there is.
+//! that can wait) costs half on every token. Google keeps no Admin API for the bill; with a service
+//! account, `billing.rs` reads the Cloud Billing export instead.
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;

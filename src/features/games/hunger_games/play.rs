@@ -12,12 +12,13 @@ use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use tokio::sync::Notify;
-use tokio::task::JoinHandle;
+use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::task::{JoinHandle, JoinSet};
 use tracing::{info, warn};
 use twilight_interactions::command::{CommandModel, CreateCommand};
+use twilight_model::application::interaction::InteractionDataResolved;
 
-use super::game::{self, FEWEST_FOR_TEAMS, Game, Kind, Reward, Round};
+use super::game::{self, Game, Kind, Reward, Round};
 use super::last_words::{self, LastWords};
 use super::pictures::{self, Easel};
 use super::{Settings, ui, writer};
@@ -26,7 +27,8 @@ use crate::ai::ChatProvider;
 use crate::core::{
     BotCtx, CommandCtx, ComponentInteraction, Respond, Response, Result, user_error,
 };
-use crate::features::games::who_said_it::sources::{self, From, Source};
+use crate::features::games::quotes::QuoteRules;
+use crate::features::games::sources::{self, From, Source};
 use crate::util::discord::{
     ChannelId, ChannelType, Draft, GuildId, Message, MessageId, Permissions, UserId, display_name,
     member_name, no_pings, start_typing,
@@ -78,13 +80,16 @@ struct Running {
     lobby: Mutex<Lobby>,
     /// Wakes the game's task: Start or Cancel in the Reaping.
     wake: Notify,
-    /// The vote for the coming Octagon's prize, while it's open.
-    vote: Mutex<Option<Vote>>,
+    /// The vote for the coming Octagon's prize, while it's open. An async mutex serializes
+    /// button updates with closing the vote so a late press can't overwrite the closed message.
+    vote: AsyncMutex<Option<Vote>>,
 }
 
-/// A vote for an Octagon's prize: when it closes (a Unix time), and each voter's pick.
-/// Anyone in the channel can vote, once, and change their vote until it closes.
+/// A vote for an Octagon's prize: which round it belongs to, when it closes (a Unix time),
+/// and each voter's pick. Anyone in the channel can vote, once, and change their vote until
+/// it closes.
 struct Vote {
+    round: usize,
     closes_at: i64,
     ballots: HashMap<u64, Reward>,
 }
@@ -112,10 +117,15 @@ fn winner(counts: &[(Reward, usize)]) -> (Reward, bool) {
     (won, top.len() > 1)
 }
 
+/// What a Reaping button or menu press answers with.
+enum LobbyReply {
+    Update(Box<Draft>),
+    Tell(&'static str),
+}
+
 impl Running {
-    /// The Reaping message as it is now.
-    fn lobby_message(&self) -> Draft {
-        let lobby = self.lobby.lock().unwrap();
+    /// Builds the Reaping message from a locked `Lobby`.
+    fn lobby_draft(&self, lobby: &Lobby) -> Draft {
         let picked: Vec<u64> = lobby.picked.iter().map(|(id, _)| *id).collect();
         let (embed, components) = ui::lobby(
             self.id,
@@ -127,6 +137,133 @@ impl Running {
             lobby.extras,
         );
         Draft::new().embed(embed).components(components)
+    }
+
+    /// Applies one Reaping action under a single `lobby` lock so a concurrent Start or Cancel
+    /// can't be overwritten with live buttons. Returns the reply and whether to wake `run`.
+    fn apply_lobby(
+        &self,
+        action: ui::Action,
+        user: UserId,
+        in_charge: bool,
+        volunteer_name: Option<String>,
+        picked: Option<Vec<(u64, String)>>,
+    ) -> (LobbyReply, bool) {
+        let mut lobby = self.lobby.lock().unwrap();
+        if lobby.state != State::Open {
+            return (LobbyReply::Tell("The Reaping is over."), false);
+        }
+        match action {
+            ui::Action::Pick => {
+                if !in_charge {
+                    return (
+                        LobbyReply::Tell(
+                            "Only the host picks tributes. Press **Volunteer** to enter yourself.",
+                        ),
+                        false,
+                    );
+                }
+                lobby.picked = picked.unwrap_or_default();
+                (
+                    LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                    false,
+                )
+            }
+            ui::Action::Volunteer => {
+                let me = user.get();
+                if let Some(at) = lobby.volunteers.iter().position(|(id, _)| *id == me) {
+                    lobby.volunteers.remove(at);
+                    (
+                        LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                        false,
+                    )
+                } else if lobby.picked.iter().any(|(id, _)| *id == me) {
+                    (
+                        LobbyReply::Tell("The host already picked you, so you're in."),
+                        false,
+                    )
+                } else if lobby.tributes(self.max).len() >= self.max {
+                    (LobbyReply::Tell("The arena is full."), false)
+                } else {
+                    let name = volunteer_name.unwrap_or_else(|| format!("Tribute {me}"));
+                    lobby.volunteers.push((me, name));
+                    (
+                        LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                        false,
+                    )
+                }
+            }
+            ui::Action::Memories => {
+                if !in_charge {
+                    return (
+                        LobbyReply::Tell("Only the host turns Vivy's memories on or off."),
+                        false,
+                    );
+                }
+                lobby.extras.memories = !lobby.extras.memories;
+                (
+                    LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                    false,
+                )
+            }
+            ui::Action::Pictures => {
+                if !in_charge {
+                    return (
+                        LobbyReply::Tell("Only the host turns Vivy's pictures on or off."),
+                        false,
+                    );
+                }
+                lobby.extras.pictures = !lobby.extras.pictures;
+                (
+                    LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                    false,
+                )
+            }
+            ui::Action::Teams => {
+                if !in_charge {
+                    return (
+                        LobbyReply::Tell("Only the host turns teams on or off."),
+                        false,
+                    );
+                }
+                lobby.extras.teams = !lobby.extras.teams;
+                (
+                    LobbyReply::Update(Box::new(self.lobby_draft(&lobby))),
+                    false,
+                )
+            }
+            ui::Action::Start | ui::Action::Cancel => {
+                if !in_charge {
+                    return (
+                        LobbyReply::Tell("Only the host can start or cancel the Games."),
+                        false,
+                    );
+                }
+                let start = action == ui::Action::Start;
+                let tributes = lobby.tributes(self.max);
+                if start && tributes.len() < 2 {
+                    return (
+                        LobbyReply::Tell("The Games need at least 2 tributes."),
+                        false,
+                    );
+                }
+                lobby.state = if start {
+                    State::Started
+                } else {
+                    State::Cancelled
+                };
+                let why = if start {
+                    "The Reaping is over. Let the Games begin!"
+                } else {
+                    "The host called off the Games."
+                };
+                let message = Draft::new()
+                    .embed(ui::lobby_closed(&tributes, why))
+                    .components(Vec::new());
+                (LobbyReply::Update(Box::new(message)), true)
+            }
+            ui::Action::Prize(_, _) => unreachable!("prize votes are handled before apply_lobby"),
+        }
     }
 }
 
@@ -155,12 +292,12 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
         .ok_or_else(|| user_error("The Hunger Games only work in a server."))?;
     let channel = ctx.channel_id();
     let bot = ctx.bot.clone();
-    // The who-said-it settings are for the quote reader (last words).
+    // The quote rules come from `[features.games.who_said_it]` (shared for last words).
     let crate::features::games::Settings {
-        who_said_it: quote_settings,
+        who_said_it,
         hunger_games: settings,
-        ..
     } = bot.config.feature("games")?;
+    let quote_rules = who_said_it.quote_rules();
     let provider = bot.ai.provider(settings.provider).or_else(|| bot.ai.chat());
     let provider = provider.ok_or_else(|| {
         user_error("The Hunger Games need an AI model to write them, and none is set up.")
@@ -181,7 +318,7 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
             extras: ui::Extras::default(),
         }),
         wake: Notify::new(),
-        vote: Mutex::new(None),
+        vote: AsyncMutex::new(None),
     });
     {
         let mut games = GAMES.lock().unwrap();
@@ -216,7 +353,7 @@ pub async fn hunger_games(ctx: &CommandCtx) -> Result<()> {
             provider,
             arena,
             sources,
-            quote_settings,
+            quote_rules,
         };
         run(&bot, setup, &running, lobby_message, &settings).await;
         drop(leave);
@@ -233,7 +370,7 @@ struct Setup {
     arena: Vec<Place>,
     /// Where last words are read from.
     sources: Vec<Source>,
-    quote_settings: crate::features::games::who_said_it::Settings,
+    quote_rules: QuoteRules,
 }
 
 /// A place in the arena: its channel's name and ID.
@@ -338,7 +475,7 @@ async fn run(
         provider,
         arena: mut links,
         sources,
-        quote_settings,
+        quote_rules,
     } = setup;
     // One place per tribute, the same ones all game, but at most `max_places` (by default
     // one ring of zones around the Octagon, so the map stays readable: Cherry's call).
@@ -350,13 +487,14 @@ async fn run(
     let arena: Vec<String> = links.iter().map(|(name, _)| name.clone()).collect();
     let ids: Vec<u64> = tributes.iter().map(|(id, _)| *id).collect();
     // Last words take a while to read, and aren't needed until the first cannons.
-    let words = bot.tasks.spawn(last_words::load(
+    // Wrapped in `Later` right away so any early exit aborts the background task.
+    let words = Later::Working(bot.tasks.spawn(last_words::load(
         bot.clone(),
         guild,
         sources,
-        quote_settings,
+        quote_rules,
         ids.clone(),
-    ));
+    )));
     // What each place is like, from her note about what the channels are for, worked out
     // while her notes about the tributes are read.
     let areas = async {
@@ -373,29 +511,34 @@ async fn run(
             vec![None; ids.len()]
         }
     };
-    let (areas, notes) = tokio::join!(areas, notes);
+    let (areas, notes) = tokio::select! {
+        () = bot.shutdown.cancelled() => return,
+        done = async { tokio::join!(areas, notes) } => done,
+    };
     // How the tributes look in her pictures, worked out while she writes the Scatter.
     // Nothing is drawn when the drawing tool isn't there, so then she isn't asked.
     let drawing = extras.pictures && pictures::can_draw(bot, guild, channel);
     let looks = drawing.then(|| {
-        bot.tasks.spawn(looks::describe(
+        looks::Shared::new(bot.tasks.spawn(looks::describe(
             bot.clone(),
             provider.clone(),
             guild,
             tributes.clone(),
             areas.clone(),
-        ))
+        )))
     });
+    let _looks_guard = LooksGuard(looks.clone());
     // Who killed whom in this server's earlier Games, for grudges.
     let (guild_id, past_ids) = (guild.get(), ids.clone());
-    let past = bot
-        .db
-        .call(move |conn| Ok(stats::grudges(conn, guild_id, &past_ids)?))
-        .await
-        .unwrap_or_else(|err| {
-            warn!("couldn't read the Hunger Games grudges: {err:#}");
-            Vec::new()
-        });
+    let past = tokio::select! {
+        () = bot.shutdown.cancelled() => return,
+        past = bot.db.call(move |conn| Ok(stats::grudges(conn, guild_id, &past_ids)?)) => {
+            past.unwrap_or_else(|err| {
+                warn!("couldn't read the Hunger Games grudges: {err:#}");
+                Vec::new()
+            })
+        }
+    };
     let auto = Duration::from_secs(settings.auto_advance_seconds.max(5));
     let mut game = Game::new(tributes);
     game.places = links.len();
@@ -438,13 +581,13 @@ async fn play(
     running: &Running,
     mut game: Game,
     mut writing: Writing,
-    words: JoinHandle<HashMap<u64, LastWords>>,
+    mut words: Later<HashMap<u64, LastWords>>,
     auto: Duration,
 ) {
     let channel = stage.channel;
     // Her Gamemaker line, out loud too.
     let speak = |line: String| voice::speak(bot, stage.guild, channel, stage.lobby, line);
-    let looks = writing.looks.take().map(looks::Shared::new);
+    let looks = writing.looks.take();
     let places = writing.arena.clone();
     let links = writing.links.clone();
     let easel = Easel {
@@ -558,28 +701,15 @@ async fn play(
             ))
         })
     };
-    let mut words = Later::Working(words);
-    let mut intro = format!(
-        "🎥 The cameras are rolling: **{} tributes** enter the arena. Vivy is writing the Scatter…",
-        game.tributes.len()
-    );
-    if let Some(teams) = ui::teams(&game) {
-        intro.push_str("\n\n");
-        intro.push_str(&teams);
-    } else if running.lobby.lock().unwrap().extras.teams {
-        intro.push_str(&format!(
-            "\n\n👥 Teams need {FEWEST_FOR_TEAMS} or more tributes, so it's every tribute for themselves."
-        ));
-    }
-    if let Some(grudges) = ui::grudges(&game) {
-        intro.push_str("\n\n");
-        intro.push_str(&grudges);
-    }
+    let teams_wanted = running.lobby.lock().unwrap().extras.teams;
     // `text`, not `say`: the teams and grudges in it name people without pinging them.
-    if let Err(err) = text(intro).send(&bot.http, channel).await {
-        warn!("couldn't post the Hunger Games intro: {err}");
+    for part in ui::intro(&game, teams_wanted) {
+        if let Err(err) = text(part).send(&bot.http, channel).await {
+            warn!("couldn't post the Hunger Games intro: {err}");
+        }
     }
-    let mut pending = None;
+    let mut pending = TaskGuard::empty();
+    let mut scatter_pictures = TaskGuard::empty();
     // The first round the next cannon message covers.
     let mut cannons_from = 0;
     while let Some(kind) = game.next_kind() {
@@ -645,7 +775,7 @@ async fn play(
             let (round, links) = (game.rounds[index].clone(), links.clone());
             let everyone = game.tributes.len();
             let weapons = game.weapons_drawn();
-            bot.tasks.spawn(async move {
+            scatter_pictures = TaskGuard::new(bot.tasks.spawn(async move {
                 let looks = looks.get().await;
                 let nothing = arena.len()..arena.len();
                 let map = looks::prompt(&arena, looks, &weapons, &prompt, everyone, nothing);
@@ -659,7 +789,7 @@ async fn play(
                 if let Some(reason) = missing {
                     no_picture(&ctx, easel.channel, &told, reason).await;
                 }
-            });
+            }));
         }
         if over {
             // The fallen since the last cannons, the loser of the showdown among them.
@@ -709,36 +839,28 @@ async fn play(
         // to (Cherry's call).
         if let Some(next @ Kind::Octagon(_)) = game.next_kind() {
             let voting = auto * 2 / 3;
-            match prize_vote(bot, channel, running, voting).await {
+            match prize_vote(bot, channel, running, game.rounds.len(), voting).await {
                 Some(prize) => game.prize = Some(prize),
                 None => return,
             }
-            pending = Some(write(&game, next));
+            pending = TaskGuard::new(write(&game, next));
             tokio::select! {
-                () = bot.shutdown.cancelled() => {
-                    if let Some(writing) = pending.take() {
-                        writing.abort();
-                    }
-                    return;
-                }
+                () = bot.shutdown.cancelled() => return,
                 () = tokio::time::sleep(auto - voting) => {}
             }
             continue;
         }
         // She writes (and draws) the next round while people read this one.
         if let Some(next) = game.next_kind() {
-            pending = Some(write(&game, next));
+            pending = TaskGuard::new(write(&game, next));
         }
         tokio::select! {
-            () = bot.shutdown.cancelled() => {
-                if let Some(writing) = pending.take() {
-                    writing.abort();
-                }
-                return;
-            }
+            () = bot.shutdown.cancelled() => return,
             () = tokio::time::sleep(auto) => {}
         }
     }
+    // Keep `scatter_pictures` alive until `play` exits; dropping it aborts any in-flight draw.
+    drop(scatter_pictures);
 }
 
 /// Runs the vote for the coming Octagon's prize for `open`, with a countdown, then shows
@@ -747,15 +869,17 @@ async fn prize_vote(
     bot: &BotCtx,
     channel: ChannelId,
     running: &Running,
+    round: usize,
     open: Duration,
 ) -> Option<Reward> {
     let closes_at = Utc::now().timestamp() + open.as_secs() as i64;
     let vote = Vote {
+        round,
         closes_at,
         ballots: HashMap::new(),
     };
-    let (content, components) = ui::prize_vote(running.id, &vote.counts(), closes_at);
-    *running.vote.lock().unwrap() = Some(vote);
+    let (content, components) = ui::prize_vote(running.id, round, &vote.counts(), closes_at);
+    *running.vote.lock().await = Some(vote);
     let posted = text(content)
         .components(components)
         .send(&bot.http, channel)
@@ -764,16 +888,14 @@ async fn prize_vote(
         warn!("couldn't post the Octagon prize vote: {err}");
     }
     tokio::select! {
-        () = bot.shutdown.cancelled() => return None,
+        () = bot.shutdown.cancelled() => {
+            *running.vote.lock().await = None;
+            return None;
+        }
         () = tokio::time::sleep(open) => {}
     }
-    let counts = running
-        .vote
-        .lock()
-        .unwrap()
-        .take()
-        .map(|v| v.counts())
-        .unwrap_or_default();
+    let mut slot = running.vote.lock().await;
+    let counts = slot.take().map(|v| v.counts()).unwrap_or_default();
     let (won, random) = winner(&counts);
     info!(prize = won.name(), random, "Octagon prize voted");
     if let Ok(message) = posted {
@@ -785,6 +907,7 @@ async fn prize_vote(
             warn!("couldn't close the Octagon prize vote: {err}");
         }
     }
+    drop(slot);
     Some(won)
 }
 
@@ -823,27 +946,32 @@ fn close_ups(
 }
 
 /// Draws each prompt in its style, side by side, and returns the pictures in order, with
-/// why one couldn't be drawn, when one couldn't.
+/// why one couldn't be drawn, when one couldn't. Uses a [`JoinSet`] so dropping or aborting
+/// this future cancels any in-flight drawing tasks right away.
 async fn draw_all(
     ctx: &BotCtx,
     easel: Easel,
     prompts: Vec<(String, &'static str)>,
 ) -> (Vec<ModelImage>, Option<&'static str>) {
-    let tasks: Vec<_> = prompts
-        .into_iter()
-        .map(|(prompt, style)| {
-            let ctx = ctx.clone();
-            ctx.tasks
-                .clone()
-                .spawn(async move { pictures::draw(&ctx, easel, &prompt, style).await })
-        })
-        .collect();
+    let total = prompts.len();
+    let mut set = JoinSet::new();
+    for (index, (prompt, style)) in prompts.into_iter().enumerate() {
+        let ctx = ctx.clone();
+        set.spawn(async move { (index, pictures::draw(&ctx, easel, &prompt, style).await) });
+    }
+    let mut results: Vec<Option<std::result::Result<ModelImage, &'static str>>> =
+        (0..total).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        if let Ok((index, result)) = joined {
+            results[index] = Some(result);
+        }
+    }
     let (mut drawn, mut missing) = (Vec::new(), None);
-    for task in tasks {
-        match task.await {
-            Ok(Ok(picture)) => drawn.push(picture),
-            Ok(Err(reason)) => missing = missing.or(Some(reason)),
-            Err(_) => missing = missing.or(Some("the drawing failed")),
+    for result in results {
+        match result {
+            Some(Ok(picture)) => drawn.push(picture),
+            Some(Err(reason)) => missing = missing.or(Some(reason)),
+            None => missing = missing.or(Some("the drawing failed")),
         }
     }
     (drawn, missing)
@@ -923,14 +1051,58 @@ struct Writing {
     notes: Arc<Vec<Option<String>>>,
     /// How each tribute looks, being described, when pictures are on: then she writes
     /// picture prompts, and they're drawn.
-    looks: Option<JoinHandle<looks::Looks>>,
+    looks: Option<looks::Shared>,
+}
+
+/// Aborts a spawned task when dropped, unless taken out first.
+struct TaskGuard<T>(Option<JoinHandle<T>>);
+
+impl<T> TaskGuard<T> {
+    fn empty() -> Self {
+        Self(None)
+    }
+
+    fn new(task: JoinHandle<T>) -> Self {
+        Self(Some(task))
+    }
+
+    fn take(&mut self) -> Option<JoinHandle<T>> {
+        self.0.take()
+    }
+}
+
+impl<T> Drop for TaskGuard<T> {
+    fn drop(&mut self) {
+        if let Some(task) = self.0.take() {
+            task.abort();
+        }
+    }
+}
+
+/// Aborts the shared `looks` task when the game exits.
+struct LooksGuard(Option<looks::Shared>);
+
+impl Drop for LooksGuard {
+    fn drop(&mut self) {
+        if let Some(looks) = &self.0 {
+            looks.abort();
+        }
+    }
 }
 
 /// Something a background task is still working out, like the last words, then what it
-/// found.
+/// found. Dropping it while still working aborts the task.
 enum Later<T> {
     Working(JoinHandle<T>),
     Done(T),
+}
+
+impl<T> Drop for Later<T> {
+    fn drop(&mut self) {
+        if let Later::Working(task) = self {
+            task.abort();
+        }
+    }
 }
 
 impl<T: Default> Later<T> {
@@ -963,9 +1135,10 @@ async fn post_cannons(
         .iter()
         .map(|t| (t.id, t.kills, words.get(&t.id).cloned()))
         .collect();
-    let message = text(ui::cannons(title, &fallen));
-    if let Err(err) = message.send(&bot.http, channel).await {
-        warn!("couldn't post the Hunger Games cannons: {err}");
+    for part in ui::cannons(title, &fallen) {
+        if let Err(err) = text(part).send(&bot.http, channel).await {
+            warn!("couldn't post the Hunger Games cannons: {err}");
+        }
     }
 }
 
@@ -982,7 +1155,39 @@ async fn called_off(bot: &BotCtx, channel: ChannelId) {
     }
 }
 
-/// A press in the Reaping.
+/// Turns the user select menu's `values` and optional `resolved` data into `(id, name)`
+/// pairs, leaving out bots and capping at `max`. Clearing all picks sends `values: []` and
+/// `resolved: None`, which returns an empty list so `lobby.picked` clears cleanly.
+fn resolved_picks(
+    values: &[String],
+    resolved: Option<&InteractionDataResolved>,
+    max: usize,
+) -> Vec<(u64, String)> {
+    values
+        .iter()
+        .filter_map(|id| id.parse::<u64>().ok().filter(|&id| id > 0))
+        .map(UserId::new)
+        .filter(|id| {
+            !resolved
+                .and_then(|r| r.users.get(id))
+                .is_some_and(|u| u.bot)
+        })
+        .map(|id| {
+            let name = resolved
+                .and_then(|r| r.members.get(&id).and_then(|m| m.nick.clone()))
+                .or_else(|| {
+                    resolved
+                        .and_then(|r| r.users.get(&id))
+                        .map(|u| display_name(u).to_string())
+                })
+                .unwrap_or_else(|| format!("Tribute {id}"));
+            (id.get(), name)
+        })
+        .take(max)
+        .collect()
+}
+
+/// A press in the Reaping or an Octagon prize vote.
 pub async fn on_component(
     bot: &BotCtx,
     interaction: &ComponentInteraction,
@@ -1004,12 +1209,17 @@ pub async fn on_component(
     let in_charge = user == running.host || bot.is_admin(user);
 
     // A vote for the Octagon's prize, during the game.
-    if let ui::Action::Prize(reward) = action {
-        let shown = running.vote.lock().unwrap().as_mut().map(|vote| {
-            vote.ballots.insert(user.get(), reward);
-            ui::prize_vote(running.id, &vote.counts(), vote.closes_at)
-        });
+    if let ui::Action::Prize(round, reward) = action {
+        let mut slot = running.vote.lock().await;
+        let shown = slot
+            .as_mut()
+            .filter(|vote| vote.round == round)
+            .map(|vote| {
+                vote.ballots.insert(user.get(), reward);
+                ui::prize_vote(running.id, vote.round, &vote.counts(), vote.closes_at)
+            });
         let Some((content, components)) = shown else {
+            drop(slot);
             return tell(bot, interaction, "This vote is over.").await;
         };
         let message = Draft::new()
@@ -1022,139 +1232,31 @@ pub async fn on_component(
         return Ok(());
     }
 
-    if running.lobby.lock().unwrap().state != State::Open {
-        return tell(bot, interaction, "The Reaping is over.").await;
+    let volunteer_name = (action == ui::Action::Volunteer).then(|| {
+        let nick = interaction.member.as_ref().and_then(|m| m.nick.as_deref());
+        member_name(nick, &interaction.user).to_string()
+    });
+    let picked = (action == ui::Action::Pick).then(|| {
+        resolved_picks(
+            &interaction.values,
+            interaction.resolved.as_ref(),
+            running.max,
+        )
+    });
+    let (reply, wake) = running.apply_lobby(action, user, in_charge, volunteer_name, picked);
+    if wake {
+        running.wake.notify_one();
     }
-    match action {
-        ui::Action::Pick => {
-            if !in_charge {
-                return tell(
-                    bot,
-                    interaction,
-                    "Only the host picks tributes. Press **Volunteer** to enter yourself.",
-                )
-                .await;
-            }
-            let Some(resolved) = &interaction.resolved else {
-                return Ok(());
-            };
-            let picked: Vec<(u64, String)> = interaction
-                .values
-                .iter()
-                .filter_map(|id| id.parse::<u64>().ok().filter(|&id| id > 0))
-                .map(UserId::new)
-                .filter(|id| !resolved.users.get(id).is_some_and(|u| u.bot))
-                .map(|id| {
-                    let name = resolved
-                        .members
-                        .get(&id)
-                        .and_then(|m| m.nick.clone())
-                        .or_else(|| resolved.users.get(&id).map(|u| display_name(u).to_string()))
-                        .unwrap_or_else(|| format!("Tribute {id}"));
-                    (id.get(), name)
-                })
-                .take(running.max)
-                .collect();
-            running.lobby.lock().unwrap().picked = picked;
-        }
-        ui::Action::Volunteer => {
-            let nick = interaction.member.as_ref().and_then(|m| m.nick.as_deref());
-            let name = member_name(nick, &interaction.user).to_string();
-            let refusal = {
-                let mut lobby = running.lobby.lock().unwrap();
-                let me = user.get();
-                if let Some(at) = lobby.volunteers.iter().position(|(id, _)| *id == me) {
-                    lobby.volunteers.remove(at);
-                    None
-                } else if lobby.picked.iter().any(|(id, _)| *id == me) {
-                    Some("The host already picked you, so you're in.")
-                } else if lobby.tributes(running.max).len() >= running.max {
-                    Some("The arena is full.")
-                } else {
-                    lobby.volunteers.push((me, name));
-                    None
-                }
-            };
-            if let Some(refusal) = refusal {
-                return tell(bot, interaction, refusal).await;
-            }
-        }
-        ui::Action::Memories => {
-            if !in_charge {
-                return tell(
-                    bot,
-                    interaction,
-                    "Only the host turns Vivy's memories on or off.",
-                )
-                .await;
-            }
-            let mut lobby = running.lobby.lock().unwrap();
-            lobby.extras.memories = !lobby.extras.memories;
-        }
-        ui::Action::Pictures => {
-            if !in_charge {
-                return tell(
-                    bot,
-                    interaction,
-                    "Only the host turns Vivy's pictures on or off.",
-                )
-                .await;
-            }
-            let mut lobby = running.lobby.lock().unwrap();
-            lobby.extras.pictures = !lobby.extras.pictures;
-        }
-        ui::Action::Teams => {
-            if !in_charge {
-                return tell(bot, interaction, "Only the host turns teams on or off.").await;
-            }
-            let mut lobby = running.lobby.lock().unwrap();
-            lobby.extras.teams = !lobby.extras.teams;
-        }
-        // Handled above, during the game.
-        ui::Action::Prize(_) => return Ok(()),
-        ui::Action::Start | ui::Action::Cancel => {
-            if !in_charge {
-                return tell(
-                    bot,
-                    interaction,
-                    "Only the host can start or cancel the Games.",
-                )
-                .await;
-            }
-            let start = action == ui::Action::Start;
-            let tributes = {
-                let mut lobby = running.lobby.lock().unwrap();
-                let tributes = lobby.tributes(running.max);
-                if !start || tributes.len() >= 2 {
-                    lobby.state = if start {
-                        State::Started
-                    } else {
-                        State::Cancelled
-                    };
-                }
-                tributes
-            };
-            if start && tributes.len() < 2 {
-                return tell(bot, interaction, "The Games need at least 2 tributes.").await;
-            }
-            running.wake.notify_one();
-            let why = if start {
-                "The Reaping is over. Let the Games begin!"
-            } else {
-                "The host called off the Games."
-            };
-            let message = Draft::new()
-                .embed(ui::lobby_closed(&tributes, why))
-                .components(Vec::new());
+    match reply {
+        LobbyReply::Update(message) => {
             interaction
-                .create_response(bot, Response::UpdateMessage(message))
+                .create_response(bot, Response::UpdateMessage(*message))
                 .await?;
-            return Ok(());
+        }
+        LobbyReply::Tell(text) => {
+            tell(bot, interaction, text).await?;
         }
     }
-    interaction
-        .create_response(bot, Response::UpdateMessage(running.lobby_message()))
-        .await?;
     Ok(())
 }
 
@@ -1206,6 +1308,7 @@ mod tests {
     #[test]
     fn the_most_votes_win() {
         let mut vote = Vote {
+            round: 1,
             closes_at: 0,
             ballots: HashMap::new(),
         };
@@ -1225,5 +1328,144 @@ mod tests {
         let (won, random) = winner(&tie);
         assert!(random && won != Reward::Hunt);
         assert!(winner(&[(Reward::Weapon, 0), (Reward::Armour, 0), (Reward::Hunt, 0)]).1);
+    }
+
+    fn test_running(picked: Vec<(u64, String)>) -> Running {
+        Running {
+            id: 7,
+            host: UserId::new(1),
+            max: 24,
+            closes_at: 1_700_000_000,
+            lobby: Mutex::new(Lobby {
+                picked,
+                volunteers: Vec::new(),
+                state: State::Open,
+                extras: ui::Extras::default(),
+            }),
+            wake: Notify::new(),
+            vote: AsyncMutex::new(None),
+        }
+    }
+
+    #[test]
+    fn closed_lobby_rejects_concurrent_actions_and_never_restores_buttons() {
+        let running = test_running(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        let (reply, wake) =
+            running.apply_lobby(ui::Action::Start, UserId::new(1), true, None, None);
+        assert!(wake);
+        assert!(matches!(reply, LobbyReply::Update(_)));
+
+        // Every subsequent Reaping action sees the closed state and cannot restore live buttons.
+        for (action, in_charge) in [
+            (ui::Action::Volunteer, false),
+            (ui::Action::Memories, true),
+            (ui::Action::Pictures, true),
+            (ui::Action::Teams, true),
+            (ui::Action::Pick, true),
+            (ui::Action::Start, true),
+            (ui::Action::Cancel, true),
+        ] {
+            let (reply, wake) = running.apply_lobby(
+                action,
+                UserId::new(3),
+                in_charge,
+                Some("Fern".into()),
+                Some(Vec::new()),
+            );
+            assert!(!wake);
+            assert!(matches!(reply, LobbyReply::Tell("The Reaping is over.")));
+        }
+        let lobby = running.lobby.lock().unwrap();
+        assert_eq!(lobby.state, State::Started);
+        assert_eq!(lobby.picked.len(), 2);
+        assert!(lobby.volunteers.is_empty());
+        assert_eq!(lobby.extras, ui::Extras::default());
+    }
+
+    #[test]
+    fn clearing_all_picks_with_none_resolved_clears_lobby() {
+        let running = test_running(vec![(1, "Moss".into()), (2, "Ash".into())]);
+        let picked = resolved_picks(&[], None, running.max);
+        assert!(picked.is_empty());
+        let (reply, wake) =
+            running.apply_lobby(ui::Action::Pick, UserId::new(1), true, None, Some(picked));
+        assert!(!wake);
+        assert!(matches!(reply, LobbyReply::Update(_)));
+        assert!(running.lobby.lock().unwrap().picked.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prize_vote_rejects_stale_round_and_blocks_after_close() {
+        let running = test_running(Vec::new());
+        *running.vote.lock().await = Some(Vote {
+            round: 3,
+            closes_at: 1_700_000_000,
+            ballots: HashMap::new(),
+        });
+
+        // A button from an earlier Octagon (round 1) does not affect round 3's vote.
+        {
+            let mut slot = running.vote.lock().await;
+            let stale = slot.as_mut().filter(|v| v.round == 1);
+            assert!(stale.is_none());
+            let current = slot.as_mut().filter(|v| v.round == 3).unwrap();
+            current.ballots.insert(10, Reward::Armour);
+        }
+
+        // Closing takes the vote under the same async mutex; any press after sees None.
+        let closed = running.vote.lock().await.take().unwrap();
+        assert_eq!(closed.ballots.get(&10), Some(&Reward::Armour));
+        assert!(running.vote.lock().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn task_guards_and_join_set_abort_on_drop() {
+        struct Flag(Arc<AtomicBool>);
+        impl Drop for Flag {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let scatter_dropped = Arc::new(AtomicBool::new(false));
+        let words_dropped = Arc::new(AtomicBool::new(false));
+        let looks_dropped = Arc::new(AtomicBool::new(false));
+        let draw_dropped = Arc::new(AtomicBool::new(false));
+
+        let scatter_flag = Flag(scatter_dropped.clone());
+        let words_flag = Flag(words_dropped.clone());
+        let looks_flag = Flag(looks_dropped.clone());
+        let draw_flag = Flag(draw_dropped.clone());
+
+        let scatter = TaskGuard::new(tokio::spawn(async move {
+            let _flag = scatter_flag;
+            std::future::pending::<()>().await;
+        }));
+        let words: Later<HashMap<u64, LastWords>> = Later::Working(tokio::spawn(async move {
+            let _flag = words_flag;
+            std::future::pending().await
+        }));
+        let looks = looks::Shared::new(tokio::spawn(async move {
+            let _flag = looks_flag;
+            std::future::pending().await
+        }));
+        let looks_guard = LooksGuard(Some(looks));
+        let mut draw_set = JoinSet::new();
+        draw_set.spawn(async move {
+            let _flag = draw_flag;
+            std::future::pending::<()>().await;
+        });
+
+        // Yield once so all tasks start polling before we drop their guards.
+        tokio::task::yield_now().await;
+        drop((scatter, words, looks_guard, draw_set));
+        // Give the runtime a few polls to drop the aborted futures.
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(scatter_dropped.load(Ordering::SeqCst));
+        assert!(words_dropped.load(Ordering::SeqCst));
+        assert!(looks_dropped.load(Ordering::SeqCst));
+        assert!(draw_dropped.load(Ordering::SeqCst));
     }
 }

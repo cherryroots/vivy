@@ -46,6 +46,8 @@ pub const MIGRATIONS: &[&str] = &[
         value REAL NOT NULL,
         PRIMARY KEY (name, at)
     );",
+    // 3: speed up `WHERE at >= ?` and `DELETE ... WHERE at < ?` in `history.rs`.
+    "CREATE INDEX IF NOT EXISTS idx_control_panel_samples_at ON control_panel_samples (at);",
 ];
 
 /// Network failures in a row (one per update, so about a minute apart) before the status

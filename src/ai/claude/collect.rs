@@ -114,7 +114,7 @@ impl Collector {
                             events.push(ChatEvent::Progress(note.to_string()));
                         }
                     }
-                    "signature_delta" => block["signature"] = json!(text("signature")),
+                    "signature_delta" => append(block, "signature", text("signature")),
                     "citations_delta" => {
                         if !block["citations"].is_array() {
                             block["citations"] = json!([]);
@@ -280,9 +280,11 @@ impl Collector {
 }
 
 fn append(block: &mut Value, key: &str, text: &str) {
-    let mut joined = block[key].as_str().unwrap_or_default().to_string();
-    joined.push_str(text);
-    block[key] = json!(joined);
+    if let Some(Value::String(existing)) = block.get_mut(key) {
+        existing.push_str(text);
+    } else {
+        block[key] = Value::String(text.to_string());
+    }
 }
 
 /// Streamed tool arguments as JSON: nothing at all means no arguments.
@@ -673,5 +675,31 @@ mod tests {
             crate::ai::fallback::outage(&err),
             Some(crate::ai::fallback::Outage::Down)
         );
+    }
+
+    #[test]
+    fn split_signature_deltas_are_joined() {
+        let mut collector = Collector::default();
+        push_all(
+            &mut collector,
+            &[
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "first-"}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "second"}}),
+                json!({"type": "content_block_stop", "index": 0}),
+            ],
+        );
+        assert_eq!(collector.finish().content[0]["signature"], "first-second");
+    }
+
+    #[test]
+    fn append_mutates_existing_string_and_initializes_missing_fields() {
+        let mut block = json!({"type": "text", "text": "a"});
+        append(&mut block, "text", "b");
+        append(&mut block, "text", "c");
+        append(&mut block, "signature", "s1");
+        append(&mut block, "signature", "s2");
+        assert_eq!(block["text"], "abc");
+        assert_eq!(block["signature"], "s1s2");
     }
 }

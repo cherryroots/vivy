@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
 use super::collect::Usage;
-use super::{Sender, container_gone, messages, price, set_container};
+use super::{Sender, messages, price, set_container};
 use crate::ai::spend::{Spend, Used};
 use crate::core::Timers;
 use crate::core::db::Db;
@@ -123,12 +123,35 @@ impl State {
         save
     }
 
+    /// Records a ping that worked, unless chat moved to a different prompt while it was out.
+    fn record_ping(&mut self, key: &str, started: DateTime<Utc>, prefix_tokens: u64) {
+        if self.key != key {
+            return;
+        }
+        // Chat may have used the cache while the ping was out; keep the later time.
+        if self.last_use.is_none_or(|at| at < started) {
+            self.last_use = Some(started);
+        }
+        self.last_ping = Some(started);
+        self.prefix_tokens = prefix_tokens;
+    }
+
     /// When the next ping is due, or `None` when there's nothing to keep warm (no chat
-    /// since the start, or none for `stop_after`).
-    fn due(&self, after: TimeDelta, stop_after: TimeDelta) -> Option<DateTime<Utc>> {
+    /// since the start, the cache has already expired, or none for `stop_after`).
+    fn due(
+        &self,
+        now: DateTime<Utc>,
+        after: TimeDelta,
+        stop_after: TimeDelta,
+    ) -> Option<DateTime<Utc>> {
         self.ping.as_ref()?;
-        let at = self.last_use? + after;
-        (at <= self.last_chat? + stop_after).then_some(at)
+        let last_use = self.last_use?;
+        let stop_at = self.last_chat? + stop_after;
+        let at = last_use + after;
+        if at > stop_at || now > stop_at || now >= last_use + CACHE_LIFETIME {
+            return None;
+        }
+        Some(at)
     }
 }
 
@@ -162,6 +185,8 @@ fn ping_body(body: &Value) -> Value {
             ping[key] = value.clone();
         }
     }
+    // Pings don't run code, so they never need a channel's container ID (skills stay).
+    set_container(&mut ping, None);
     ping
 }
 
@@ -190,13 +215,12 @@ impl KeepWarm {
         }
     }
 
-    /// A request with `body` is about to be sent. Only requests that cache their prompt
-    /// for an hour (chat and chime-ins) count.
-    pub(super) async fn used(&self, body: &Value, job: &str) {
+    /// A request with `body` succeeded, having started at `now`. Only requests that cache
+    /// their prompt for an hour (chat and chime-ins) count.
+    pub(super) async fn used(&self, body: &Value, job: &str, now: DateTime<Utc>) {
         if body["system"][0]["cache_control"]["ttl"] != "1h" {
             return;
         }
-        let now = Utc::now();
         let save = self.state.lock().unwrap().chat(body, now, job == "chat");
         let Some(save) = save else {
             return;
@@ -222,11 +246,18 @@ impl KeepWarm {
         let mut failures = 0;
         loop {
             let now = Utc::now();
-            let due = self.state.lock().unwrap().due(self.after, self.stop_after);
+            let due = self
+                .state
+                .lock()
+                .unwrap()
+                .due(now, self.after, self.stop_after);
             let wait = match due {
                 Some(at) if at <= now => Duration::ZERO,
                 Some(at) => (at - now).to_std().unwrap_or_default(),
-                None => IDLE_CHECK,
+                None => {
+                    failures = 0;
+                    IDLE_CHECK
+                }
             };
             if !wait.is_zero() {
                 timer.next_at(due.unwrap_or(now + TimeDelta::minutes(5)));
@@ -262,36 +293,26 @@ impl KeepWarm {
 
     /// Sends one ping and counts it.
     async fn ping(&self) -> anyhow::Result<()> {
-        let Some(mut body) = self.state.lock().unwrap().ping.clone() else {
-            return Ok(());
+        let (body, key) = {
+            let state = self.state.lock().unwrap();
+            let Some(body) = state.ping.clone() else {
+                return Ok(());
+            };
+            (body, state.key.clone())
         };
         let started = Utc::now();
-        let mut result = self.sender.messages(&body).await;
-        // The container of the last chat expired; the ping doesn't need one.
-        if let Err(err) = &result
-            && body["container"].get("id").is_some()
-            && container_gone(err)
-        {
-            set_container(&mut body, None);
-            result = self.sender.messages(&body).await;
-        }
-        let answer: Value = result?.json().await?;
+        let answer: Value = self.sender.messages(&body).await?.json().await?;
         let usage = usage_of(&answer);
         let model = answer["model"]
             .as_str()
             .or(body["model"].as_str())
             .unwrap_or_default();
-        let usd = price::cost(&usage, model);
+        let usd = price::cost(&usage, model, false);
         let cold = usage.cache_write > 0;
-        {
-            let mut state = self.state.lock().unwrap();
-            // Chat may have used the cache while the ping was out; keep the later time.
-            if state.last_use.is_none_or(|at| at < started) {
-                state.last_use = Some(started);
-            }
-            state.last_ping = Some(started);
-            state.prefix_tokens = usage.cache_read + usage.cache_write;
-        }
+        self.state
+            .lock()
+            .unwrap()
+            .record_ping(&key, started, usage.cache_read + usage.cache_write);
         if cold {
             warn!(
                 "the chat cache had expired before the keep-warm ping ({} tokens written again); \
@@ -422,7 +443,12 @@ mod tests {
         assert_eq!(ping["messages"], json!([{"role": "user", "content": "."}]));
         assert_eq!(ping["system"], chat_body("Be nice.")["system"]);
         assert_eq!(ping["fallbacks"], "default");
-        assert_eq!(ping["container"]["id"], "c1");
+        assert!(ping["container"].get("id").is_none());
+        assert_eq!(ping["container"]["skills"], json!([{"skill_id": "pdf"}]));
+        // Without skills, stripping the container ID drops the container object too.
+        let mut id_only = chat_body("Be nice.");
+        id_only["container"] = json!({"id": "c1"});
+        assert!(ping_body(&id_only).get("container").is_none());
         // The ping reads the same cache entry as chat.
         assert_eq!(prefix_key(&ping), prefix_key(&chat_body("Be nice.")));
         assert_ne!(prefix_key(&ping), prefix_key(&chat_body("Be kind.")));
@@ -435,21 +461,59 @@ mod tests {
     #[test]
     fn pings_are_due_58_minutes_after_the_last_use() {
         let mut state = State::default();
-        assert_eq!(state.due(AFTER, STOP), None);
+        assert_eq!(state.due(at(0), AFTER, STOP), None);
         state.chat(&chat_body("Be nice."), at(0), true);
-        assert_eq!(state.due(AFTER, STOP), Some(at(58)));
+        assert_eq!(state.due(at(0), AFTER, STOP), Some(at(58)));
         // Chat at minute 30 pushes the ping back.
         state.chat(&chat_body("Be nice."), at(30), true);
-        assert_eq!(state.due(AFTER, STOP), Some(at(88)));
+        assert_eq!(state.due(at(30), AFTER, STOP), Some(at(88)));
         // A ping counts as a use too.
         state.last_use = Some(at(88));
-        assert_eq!(state.due(AFTER, STOP), Some(at(146)));
+        assert_eq!(state.due(at(88), AFTER, STOP), Some(at(146)));
         // It stops 36 hours after the last chat (minute 30): a ping due at minute 2158
         // still goes, one due at 2218 doesn't.
         state.last_use = Some(at(2100));
-        assert_eq!(state.due(AFTER, STOP), Some(at(2158)));
+        assert_eq!(state.due(at(2100), AFTER, STOP), Some(at(2158)));
         state.last_use = Some(at(2160));
-        assert_eq!(state.due(AFTER, STOP), None);
+        assert_eq!(state.due(at(2160), AFTER, STOP), None);
+    }
+
+    #[test]
+    fn failed_pings_stop_once_cold_or_past_stop_time() {
+        let mut state = State::default();
+        state.chat(&chat_body("Be nice."), at(0), true);
+        // One minute late (59m): still warm, worth retrying.
+        assert_eq!(state.due(at(59), AFTER, STOP), Some(at(58)));
+        // At 60m the cache is already cold: stop retrying instead of rewriting it.
+        assert_eq!(state.due(at(60), AFTER, STOP), None);
+
+        // Past the 36-hour stop time (minute 2160): stop retrying even if still under 60m
+        // since the last use.
+        state.last_use = Some(at(2102));
+        assert_eq!(state.due(at(2160), AFTER, STOP), Some(at(2160)));
+        assert_eq!(state.due(at(2161), AFTER, STOP), None);
+    }
+
+    #[test]
+    fn stale_ping_does_not_overwrite_a_newer_prompt_state() {
+        let mut state = State::default();
+        state.chat(&chat_body("Be nice."), at(0), true);
+        let old_key = state.key.clone();
+        // While the ping for `old_key` is in flight, chat switches to a new prompt.
+        state.chat(&chat_body("Be kind."), at(59), true);
+        state.record_ping(&old_key, at(58), 14_000);
+        assert_eq!(state.last_ping, None);
+        assert_eq!(state.prefix_tokens, 0);
+        assert_eq!(state.last_use, Some(at(59)));
+
+        // A ping for the current key updates state, keeping a newer `last_use`.
+        let new_key = state.key.clone();
+        state.record_ping(&new_key, at(58), 15_000);
+        assert_eq!(state.last_ping, Some(at(58)));
+        assert_eq!(state.prefix_tokens, 15_000);
+        assert_eq!(state.last_use, Some(at(59)));
+        state.record_ping(&new_key, at(117), 15_000);
+        assert_eq!(state.last_use, Some(at(117)));
     }
 
     #[test]
@@ -496,14 +560,14 @@ mod tests {
         let mut state = State::default();
         // Before any chat there's nothing to match.
         assert_eq!(state.chat(&chat_body("Be nice."), at(0), false), None);
-        assert_eq!(state.due(AFTER, STOP), None);
+        assert_eq!(state.due(at(0), AFTER, STOP), None);
         state.chat(&chat_body("Be nice."), at(0), true);
         // The same prompt and tools: it pushes the ping back.
         state.chat(&chat_body("Be nice."), at(20), false);
-        assert_eq!(state.due(AFTER, STOP), Some(at(78)));
+        assert_eq!(state.due(at(20), AFTER, STOP), Some(at(78)));
         // Another prompt: another cache entry, so it neither counts nor takes over.
         state.chat(&chat_body("Chime in."), at(40), false);
-        assert_eq!(state.due(AFTER, STOP), Some(at(78)));
+        assert_eq!(state.due(at(40), AFTER, STOP), Some(at(78)));
         assert_eq!(
             state.ping.as_ref().unwrap()["system"][0]["text"],
             "Be nice."
@@ -527,7 +591,7 @@ mod tests {
         assert_eq!(usage.cache_read, 14_000);
         assert_eq!(usage.cache_write, 0);
         // 14k read at $0.20 and 3 at $4.
-        let usd = price::cost(&usage, "claude-opus-5-5");
+        let usd = price::cost(&usage, "claude-opus-5-5", false);
         assert!((usd - 0.002_812).abs() < 1e-9, "{usd}");
     }
 

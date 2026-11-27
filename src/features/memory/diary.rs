@@ -62,7 +62,15 @@ pub async fn post_due(ctx: &BotCtx) -> Result<()> {
     // The targets, grouped by server.
     let mut servers: BTreeMap<GuildId, Vec<ChannelId>> = BTreeMap::new();
     for id in settings.diary_channels {
-        let channel = ChannelId::new(id);
+        let Some(channel) = valid_channel_id(id) else {
+            if should_warn(&mut WARNED.lock().unwrap(), id, now) {
+                warn!(
+                    channel = id,
+                    "can't post the diary there: channel ID 0 is not valid"
+                );
+            }
+            continue;
+        };
         match server_of(ctx, channel).await {
             Ok(guild) => servers.entry(guild).or_default().push(channel),
             Err(err) => {
@@ -182,6 +190,11 @@ fn should_warn(warned: &mut BTreeMap<u64, i64>, channel: u64, now: i64) -> bool 
         warned.insert(channel, now);
     }
     due
+}
+
+/// Turns a configured channel ID into a `ChannelId`, skipping `0` (which would panic).
+fn valid_channel_id(id: u64) -> Option<ChannelId> {
+    (id != 0).then(|| ChannelId::new(id))
 }
 
 /// The server a channel or thread is in.
@@ -397,5 +410,11 @@ mod tests {
         assert!(settings.diary_channels.is_empty());
         let set: Settings = toml::from_str("diary_channels = [1, 2]").unwrap();
         assert_eq!(set.diary_channels, vec![1, 2]);
+    }
+
+    #[test]
+    fn skips_zero_diary_channel_id() {
+        assert_eq!(valid_channel_id(0), None);
+        assert_eq!(valid_channel_id(123), Some(ChannelId::new(123)));
     }
 }

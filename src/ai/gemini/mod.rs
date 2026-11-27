@@ -29,7 +29,7 @@ mod files;
 mod price;
 mod starter;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -113,6 +113,30 @@ impl Default for GeminiConfig {
     }
 }
 
+/// Most recent tool call IDs kept in [`CallNames`]: old answers' calls drop off the front
+/// instead of clearing the whole map, so concurrent in-flight tool calls keep their names.
+const MAX_CALL_NAMES: usize = 1000;
+
+/// Tool call names by call ID, bounded in insertion order (FIFO).
+#[derive(Default)]
+struct CallNames {
+    by_id: HashMap<String, String>,
+    order: VecDeque<String>,
+}
+
+impl CallNames {
+    fn insert(&mut self, id: String, name: String) {
+        if self.by_id.insert(id.clone(), name).is_none() {
+            self.order.push_back(id);
+            while self.by_id.len() > MAX_CALL_NAMES {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.by_id.remove(&oldest);
+                }
+            }
+        }
+    }
+}
+
 pub struct Gemini {
     http: reqwest::Client,
     key: String,
@@ -120,7 +144,7 @@ pub struct Gemini {
     files: Files,
     /// The name of each of the bot's tools Gemini called, by call ID: a tool's answer has
     /// to name the tool again, and the tool loop only keeps the ID.
-    call_names: Arc<Mutex<HashMap<String, String>>>,
+    call_names: Arc<Mutex<CallNames>>,
     /// Where what each interaction cost is added up; `None` in tests.
     spend: Option<Spend>,
     /// The stored interactions new conversations continue from (see `starter.rs`).
@@ -157,7 +181,7 @@ impl Gemini {
     ) -> anyhow::Result<(Value, reqwest::Response)> {
         let mut body = self.request_body(request, uploads, code);
         let new_conversation = body.get("previous_interaction_id").is_none();
-        let starter = if new_conversation && !request.tools.is_empty() {
+        let starter = if should_use_starter(request, new_conversation) {
             self.starter(&body).await
         } else {
             None
@@ -172,6 +196,7 @@ impl Gemini {
         if let Err(err) = &result
             && body["service_tier"] == "flex"
             && !is_not_found(err)
+            && super::fallback::retry_without_flex(err)
         {
             info!("Gemini's flex tier failed, asking on the standard tier: {err:#}");
             body.as_object_mut().unwrap().remove("service_tier");
@@ -233,7 +258,7 @@ impl Gemini {
             Input::Full(turns) => (turns, None),
             Input::After { continuation, new } => (new, Some(continuation)),
         };
-        let names = self.call_names.lock().unwrap().clone();
+        let names = self.call_names.lock().unwrap().by_id.clone();
         let input = input_steps(turns, uploads, &self.config, &names);
 
         let mut job = job_settings(&self.config.jobs, request.job, Some(CHEAP_MODEL));
@@ -346,6 +371,9 @@ impl Gemini {
             .flat_map(|t| &t.parts)
             .flat_map(|part| match part {
                 Part::Video(video) => vec![(video, video.mime.as_str())],
+                Part::Audio(audio) if audio.data.len() > MAX_INLINE_AUDIO_BYTES => {
+                    vec![(audio, audio.mime.as_str())]
+                }
                 Part::File(file) => document_mime(file)
                     .map(|mime| (file, mime))
                     .into_iter()
@@ -381,6 +409,12 @@ impl Gemini {
         }
         uploads
     }
+}
+
+/// Whether a request should create/continue a cached starter interaction.
+/// Chime-ins are spaced well over 5 minutes apart, so a chime starter would expire cold.
+fn should_use_starter(request: &ChatRequest, new_conversation: bool) -> bool {
+    new_conversation && !request.tools.is_empty() && request.job != "chime"
 }
 
 /// The thinking level `model` takes for `wanted`. Only Neon and Hydrogen think at "xhigh";
@@ -464,16 +498,16 @@ fn opened_block(opened: &ToolFile, uri: &str, config: &GeminiConfig) -> Option<V
     Some(block)
 }
 
-/// Whether the request's new turns hold a video, a YouTube link or a document. Gemini's
-/// code execution refuses those ("The mime type: application/pdf is not supported for
-/// code execution"), so such a request goes without it.
+/// Whether the request's new turns hold a video, a YouTube link, audio or a document.
+/// Gemini's code execution refuses those ("The mime type: application/pdf is not supported
+/// for code execution"), so such a request goes without it.
 fn has_video_or_document(request: &ChatRequest) -> bool {
     let turns = match &request.input {
         Input::Full(turns) => turns,
         Input::After { new, .. } => new,
     };
     turns.iter().flat_map(|t| &t.parts).any(|part| match part {
-        Part::Video(_) | Part::YouTube(_) => true,
+        Part::Video(_) | Part::YouTube(_) | Part::Audio(_) => true,
         Part::File(file) => document_mime(file).is_some(),
         Part::ToolResult { files, .. } => !files.is_empty(),
         _ => false,
@@ -498,6 +532,8 @@ fn refuses_code(err: &anyhow::Error) -> bool {
 
 /// The most of a text file that goes into the request, in bytes (about 25k tokens).
 const MAX_TEXT_FILE: usize = 100_000;
+/// Audio clips up to this size go inline as base64; larger ones are uploaded via the Files API.
+const MAX_INLINE_AUDIO_BYTES: usize = 10 * 1024 * 1024;
 
 /// A request with at least this many of the bot's tools defers them (`defer_tools`):
 /// chat and chime-ins, not the memory jobs with a few.
@@ -609,6 +645,24 @@ fn input_steps(
                         "type": "video",
                         "uri": link,
                         "processing": config.youtube_processing,
+                    })),
+                },
+                Part::Audio(audio) if audio.data.len() <= MAX_INLINE_AUDIO_BYTES => {
+                    content.push(json!({
+                        "type": "audio",
+                        "data": base64(&audio.data),
+                        "mime_type": audio.mime,
+                    }));
+                }
+                Part::Audio(audio) => match uploads.next().and_then(Option::as_ref) {
+                    Some(uri) => content.push(json!({
+                        "type": "audio",
+                        "uri": uri,
+                        "mime_type": audio.mime,
+                    })),
+                    None => content.push(json!({
+                        "type": "text",
+                        "text": format!("[the audio {}, which couldn't be loaded]", audio.name),
                     })),
                 },
                 Part::File(file) if document_mime(file).is_some() => match uploads
@@ -764,7 +818,7 @@ impl Collector {
             "thought_summary" => {
                 let text = delta["content"]["text"].as_str().unwrap_or_default();
                 self.summary.push_str(text);
-                step["summary"] = json!([{"type": "text", "text": self.summary}]);
+                append_summary(step, text);
                 if self.progress && !self.summary.trim().is_empty() {
                     vec![ChatEvent::Progress(self.summary.trim().to_string())]
                 } else {
@@ -807,7 +861,7 @@ impl Collector {
     }
 }
 
-/// Adds streamed text to a step's last text content.
+/// Adds streamed text to a step's last text content, mutating in place.
 fn append_text(step: &mut Value, text: &str) {
     if !step["content"].is_array() {
         step["content"] = json!([]);
@@ -815,10 +869,27 @@ fn append_text(step: &mut Value, text: &str) {
     let content = step["content"].as_array_mut().unwrap();
     match content.last_mut() {
         Some(last) if last["type"] == "text" => {
-            let joined = format!("{}{text}", last["text"].as_str().unwrap_or_default());
-            last["text"] = json!(joined);
+            if let Some(Value::String(existing)) = last.get_mut("text") {
+                existing.push_str(text);
+            } else {
+                last["text"] = Value::String(text.to_string());
+            }
         }
         _ => content.push(json!({"type": "text", "text": text})),
+    }
+}
+
+/// Adds streamed text to a thought step's summary, mutating in place.
+fn append_summary(step: &mut Value, text: &str) {
+    if let Some(first) = step
+        .get_mut("summary")
+        .and_then(Value::as_array_mut)
+        .and_then(|list| list.first_mut())
+        && let Some(Value::String(existing)) = first.get_mut("text")
+    {
+        existing.push_str(text);
+    } else {
+        step["summary"] = json!([{"type": "text", "text": text}]);
     }
 }
 
@@ -934,12 +1005,8 @@ fn stream_error(error: &Value) -> ApiError {
 }
 
 /// Keeps the name of each function call in `steps`, for its result in the next round.
-fn remember_names(names: &Mutex<HashMap<String, String>>, steps: &[Value]) {
+fn remember_names(names: &Mutex<CallNames>, steps: &[Value]) {
     let mut names = names.lock().unwrap();
-    // Old answers' calls aren't needed again; don't let the list grow.
-    if names.len() > 1000 {
-        names.clear();
-    }
     for call in tool_calls(steps) {
         names.insert(call.id, call.name);
     }
@@ -993,6 +1060,10 @@ impl ChatProvider for Gemini {
         true
     }
 
+    fn hears_audio(&self) -> bool {
+        true
+    }
+
     async fn stream(
         &self,
         request: ChatRequest,
@@ -1034,7 +1105,14 @@ impl ChatProvider for Gemini {
                         return;
                     }
                 };
-                for event in parser.push(&chunk) {
+                let events = match parser.push(&chunk) {
+                    Ok(events) => events,
+                    Err(err) => {
+                        let _ = sender.send(Err(err)).await;
+                        return;
+                    }
+                };
+                for event in events {
                     // The stream ends with `data: [DONE]`.
                     let Ok(data) = serde_json::from_str::<Value>(&event.data) else {
                         continue;
@@ -1194,7 +1272,7 @@ mod tests {
         // A mood check can wait: the flex tier, at half price. Chat answers can't.
         assert_eq!(body["service_tier"], "flex");
 
-        // Chime-ins and the cheap jobs take Hydrogen.
+        // Chime-ins and the cheap jobs take Hydrogen, and chime-ins have no code execution.
         for job in ["chime", "emoji", "translate", "curt"] {
             let cheap = ChatRequest {
                 job,
@@ -1204,8 +1282,34 @@ mod tests {
                 cache_key: String::new(),
                 answer_now: false,
             };
-            assert_eq!(gemini.request_body(&cheap, &[], true)["model"], CHEAP_MODEL);
+            let body = gemini.request_body(&cheap, &[], true);
+            assert_eq!(body["model"], CHEAP_MODEL);
+            assert!(!body["tools"].to_string().contains("code_execution"));
         }
+    }
+
+    #[test]
+    fn skips_starter_for_chime_job() {
+        let tool = ToolDef {
+            name: "memory",
+            description: "Memory.",
+            parameters: json!({"type": "object", "properties": {}}),
+        };
+        let make = |job: &'static str, tools: Vec<ToolDef>| ChatRequest {
+            system: "Vivy".into(),
+            input: Input::Full(Vec::new()),
+            tools,
+            cache_key: "discord:1".into(),
+            job,
+            answer_now: false,
+        };
+        assert!(should_use_starter(&make("chat", vec![tool.clone()]), true));
+        assert!(!should_use_starter(
+            &make("chat", vec![tool.clone()]),
+            false
+        ));
+        assert!(!should_use_starter(&make("chat", Vec::new()), true));
+        assert!(!should_use_starter(&make("chime", vec![tool]), true));
     }
 
     #[test]
@@ -1383,6 +1487,59 @@ mod tests {
         assert_eq!(thinking_level("gemini-4-hydrogen", "xhigh"), "xhigh");
         assert_eq!(thinking_level("gemini-4-argon", "xhigh"), "high");
         assert_eq!(thinking_level("gemini-4-argon", "low"), "low");
+    }
+
+    #[test]
+    fn audio_parts_inline_and_uploaded() {
+        let gemini = client();
+        assert!(gemini.hears_audio());
+
+        let small = ModelFile {
+            name: "voice-message.ogg".into(),
+            mime: "audio/ogg".into(),
+            data: b"OggS".to_vec(),
+        };
+        let big = ModelFile {
+            name: "long.ogg".into(),
+            mime: "audio/ogg".into(),
+            data: vec![0u8; MAX_INLINE_AUDIO_BYTES + 1],
+        };
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::Text("[Voice message]".into()),
+                Part::Audio(small.clone()),
+                Part::Audio(big.clone()),
+                Part::Audio(big),
+            ],
+        }];
+        let uploads = [Some("https://files/big-audio".to_string()), None];
+        let steps = input_steps(&turns, &uploads, &GeminiConfig::default(), &HashMap::new());
+        assert_eq!(
+            steps,
+            vec![json!({
+                "type": "user_input",
+                "content": [
+                    {"type": "text", "text": "[Voice message]"},
+                    {"type": "audio", "data": base64(b"OggS"), "mime_type": "audio/ogg"},
+                    {"type": "audio", "uri": "https://files/big-audio", "mime_type": "audio/ogg"},
+                    {"type": "text", "text": "[the audio long.ogg, which couldn't be loaded]"},
+                ]
+            })]
+        );
+
+        let request = ChatRequest {
+            system: String::new(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Audio(small)],
+            }]),
+            tools: Vec::new(),
+            cache_key: String::new(),
+            job: "chat",
+            answer_now: false,
+        };
+        assert!(has_video_or_document(&request));
     }
 
     /// Talks to the real API: a tool round with a PDF (so without code execution), then the
@@ -1818,5 +1975,93 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(outage(&err), Some(Outage::Down));
+    }
+
+    #[test]
+    fn remember_names_evicts_oldest_first() {
+        let names = Mutex::new(CallNames::default());
+        let steps: Vec<Value> = (0..MAX_CALL_NAMES + 5)
+            .map(|i| {
+                json!({
+                    "type": "function_call",
+                    "id": format!("call_{i}"),
+                    "name": format!("tool_{i}"),
+                    "arguments": {},
+                })
+            })
+            .collect();
+        remember_names(&names, &steps);
+
+        let guard = names.lock().unwrap();
+        assert_eq!(guard.by_id.len(), MAX_CALL_NAMES);
+        assert_eq!(guard.order.len(), MAX_CALL_NAMES);
+        // The oldest 5 were evicted.
+        for i in 0..5 {
+            assert!(!guard.by_id.contains_key(&format!("call_{i}")));
+        }
+        // The newest MAX_CALL_NAMES (including in-flight calls) stay.
+        for i in 5..MAX_CALL_NAMES + 5 {
+            assert_eq!(
+                guard.by_id.get(&format!("call_{i}")).map(String::as_str),
+                Some(format!("tool_{i}").as_str())
+            );
+        }
+        drop(guard);
+
+        // Re-inserting an existing call ID updates it without duplicating the queue or evicting.
+        remember_names(
+            &names,
+            &[json!({
+                "type": "function_call",
+                "id": "call_5",
+                "name": "tool_5_updated",
+                "arguments": {},
+            })],
+        );
+        let guard = names.lock().unwrap();
+        assert_eq!(guard.by_id.len(), MAX_CALL_NAMES);
+        assert_eq!(guard.order.len(), MAX_CALL_NAMES);
+        assert_eq!(
+            guard.by_id.get("call_5").map(String::as_str),
+            Some("tool_5_updated")
+        );
+    }
+
+    #[test]
+    fn thought_summary_and_text_deltas_append_in_place() {
+        let mut collector = Collector {
+            progress: true,
+            ..Collector::default()
+        };
+        let events = collect(
+            &mut collector,
+            &[
+                json!({"event_type": "step.start", "index": 0, "step": {"type": "thought"}}),
+                json!({"event_type": "step.delta", "index": 0, "delta": {"type": "thought_summary", "content": {"type": "text", "text": "Checking "}}}),
+                json!({"event_type": "step.delta", "index": 0, "delta": {"type": "thought_summary", "content": {"type": "text", "text": "more."}}}),
+                json!({"event_type": "step.start", "index": 1, "step": {"type": "model_output"}}),
+                json!({"event_type": "step.delta", "index": 1, "delta": {"type": "text", "text": "Hel"}}),
+                json!({"event_type": "step.delta", "index": 1, "delta": {"type": "text", "text": "lo!"}}),
+            ],
+        );
+        assert_eq!(
+            events,
+            [
+                ChatEvent::Activity(Activity::Thinking),
+                ChatEvent::Progress("Checking".into()),
+                ChatEvent::Progress("Checking more.".into()),
+                ChatEvent::Activity(Activity::Writing),
+                ChatEvent::TextDelta("Hel".into()),
+                ChatEvent::TextDelta("lo!".into()),
+            ]
+        );
+        assert_eq!(
+            collector.steps[0]["summary"],
+            json!([{"type": "text", "text": "Checking more."}])
+        );
+        assert_eq!(
+            collector.steps[1]["content"],
+            json!([{"type": "text", "text": "Hello!"}])
+        );
     }
 }

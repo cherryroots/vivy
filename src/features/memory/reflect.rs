@@ -159,12 +159,12 @@ async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
         .map(GuildId::new)
         .ok_or_else(|| anyhow::anyhow!("reflections are for servers"))?;
     let (folder, changes, files, spot) = {
-        let scope = scope.to_string();
+        let (scope, bot) = (scope.to_string(), ctx.bot_id.get());
         ctx.db
             .call(move |conn| {
                 Ok((
                     store::load(conn, &scope)?,
-                    store::changes_since_reflection(conn, &scope)?,
+                    store::changes_since_reflection(conn, &scope, bot)?,
                     store::sweep_files(conn, &scope)?,
                     store::sweep_spot(conn, &scope)?,
                 ))
@@ -223,7 +223,7 @@ async fn reflect(ctx: &BotCtx, scope: &str) -> Result<()> {
     }
 
     let request = ChatRequest {
-        system: system(face::instruction_for(ctx).as_deref()),
+        system: system(face::instruction_for(ctx).await.as_deref()),
         input: Input::Full(vec![Turn {
             role: Role::User,
             parts: vec![Part::Text(text)],
@@ -307,20 +307,27 @@ pub fn parse_status(mood: &str) -> Option<String> {
     mood_line(mood, "status").map(|status| shorten(&status, MAX_STATUS))
 }
 
+/// If `line` has the label `wanted` (forgiving list dashes and bold markers like
+/// `- **Mood**: ...`), returns the text after the colon.
+pub(super) fn labeled_line<'a>(line: &'a str, wanted: &str) -> Option<&'a str> {
+    let (label, rest) = line.split_once(':')?;
+    let label = label
+        .trim()
+        .trim_start_matches('-')
+        .trim()
+        .trim_matches('*')
+        .trim();
+    label.eq_ignore_ascii_case(wanted).then_some(rest)
+}
+
 /// A line of her mood file, like `thinking: ...`, without the label or quotes. Allows
-/// list dashes and bold labels.
+/// list dashes and bold labels, and skips empty lines so a later value still shows.
 pub fn mood_line(mood: &str, wanted: &str) -> Option<String> {
-    let line = mood.lines().find_map(|line| {
-        let (label, rest) = line.split_once(':')?;
-        let label = label
-            .trim()
-            .trim_start_matches('-')
-            .trim()
-            .trim_matches('*');
-        label.eq_ignore_ascii_case(wanted).then_some(rest)
-    })?;
-    let text = line.trim().trim_matches(['"', '`', '*']).trim();
-    (!text.is_empty()).then(|| text.to_string())
+    mood.lines().find_map(|line| {
+        let rest = labeled_line(line, wanted)?;
+        let text = rest.trim().trim_matches(['"', '`', '*']).trim();
+        (!text.is_empty()).then(|| text.to_string())
+    })
 }
 
 #[cfg(test)]
@@ -347,6 +354,15 @@ mod tests {
             Some("why soup".into())
         );
         assert_eq!(parse_status("status:   "), None);
+        // An empty formatted line doesn't hide a later filled line with the same label.
+        assert_eq!(
+            mood_line("- **Mood**:\nmood: happy now", "mood"),
+            Some("happy now".into())
+        );
+        assert_eq!(
+            mood_line("- **Mood**: \"\"\nmood: cheerful", "mood"),
+            Some("cheerful".into())
+        );
         let long = parse_status(&format!("status: {}", "a".repeat(300))).unwrap();
         assert!(long.chars().count() <= MAX_STATUS);
     }

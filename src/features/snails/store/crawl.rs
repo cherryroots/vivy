@@ -45,17 +45,26 @@ pub fn running_guilds(conn: &Connection) -> rusqlite::Result<Vec<u64>> {
 }
 
 /// The next channel to read: (channel, read messages older than this).
+#[cfg(test)]
 pub fn next_crawl_channel(
     conn: &Connection,
     guild: u64,
 ) -> rusqlite::Result<Option<(u64, Option<u64>)>> {
-    conn.query_row(
+    Ok(unfinished_crawl_channels(conn, guild)?.into_iter().next())
+}
+
+/// Every unfinished channel in a server's backfill, lowest channel ID first:
+/// `(channel_id, before_id)`.
+pub fn unfinished_crawl_channels(
+    conn: &Connection,
+    guild: u64,
+) -> rusqlite::Result<Vec<(u64, Option<u64>)>> {
+    conn.prepare(
         "SELECT channel_id, before_id FROM snail_crawl
-         WHERE guild_id = ?1 AND finished = 0 ORDER BY channel_id LIMIT 1",
-        [guild],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )
-    .optional()
+         WHERE guild_id = ?1 AND finished = 0 ORDER BY channel_id",
+    )?
+    .query_map([guild], |row| Ok((row.get(0)?, row.get(1)?)))?
+    .collect()
 }
 
 /// Records one page read from a channel.

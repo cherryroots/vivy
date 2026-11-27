@@ -48,7 +48,11 @@ pub async fn update_all(ctx: &BotCtx) {
     let hour = Utc::now().with_timezone(&mood::zone(ctx)).hour();
     let name = period(hour);
     let path = dir.join(format!("{name}.png"));
-    if !path.exists() {
+    let check = path.clone();
+    let exists = tokio::task::spawn_blocking(move || check.exists())
+        .await
+        .unwrap_or(false);
+    if !exists {
         return;
     }
     let moods = ctx

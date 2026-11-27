@@ -39,14 +39,14 @@ All under `src/features/tinyfish/`.
 
 ## Fetch
 
-1. She calls `tinyfish_fetch` with `urls` (1 to 3 links; a single string works too) and optionally `purpose` (what she's looking for).
+1. She calls `tinyfish_fetch` with `urls` (1 to 3 `http://` or `https://` links; a single string works too; other schemes like `file://` or `javascript:` are refused) and optionally `purpose` (what she's looking for).
 2. `POST https://api.fetch.tinyfish.ai` with `{"urls": [...], "format": "markdown", "purpose": ...}`, waiting at most 150 seconds. Most pages take 1 to 20 seconds; Reddit takes about 20, since TinyFish has to get past its JavaScript check. TinyFish gives up on one page after 110 seconds.
 3. The answer is `{"results": [...], "errors": [...]}`. A result has `url`, `final_url` (after redirects), `title`, `published_date` and `text` (the page as markdown). An error has `url`, `error` (a code like `page_not_found`, `bot_blocked`, `login_required`, `timeout`) and sometimes the site's HTTP `status`. One page failing doesn't fail the others.
 4. `format_pages` writes each page as `# Title`, its link, its date, and its text cut at `max_page_characters` (with a note when cut), then a `Couldn't read <url>: <code>` line for each failure.
 
 ## Errors
 
-An error answer from either API goes back to her as the tool's result ("TinyFish answered 429 Too Many Requests: ..."), so she can fix a bad argument or answer without it. 402 means the day's free requests are used up and the wallet is empty; 429 means too many a minute.
+An error answer from either API goes back to her as the tool's result ("TinyFish answered 429 Too Many Requests: ..."), so she can fix a bad argument or answer without it. 402 means the day's free requests are used up and the wallet is empty; 429 means too many a minute. Response bodies are capped at 2 MiB and HTTP or body-read errors are propagated instead of being swallowed.
 
 Nothing is stored and there are no stats: TinyFish's dashboard shows usage.
 

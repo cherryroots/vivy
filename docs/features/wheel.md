@@ -5,6 +5,7 @@ The movie wheel is a betting game for movie night. Admins put people (the "optio
 ## Using it
 
 - **`/wheel status [round] [season]`**: posts the status picture of a round (default: the current one) of a season (default: the one being played; seasons count from 1 per server). If the server has no game yet, this starts one. Past seasons are shown without buttons.
+- **`/wheel history [season]`**: posts a balance-over-time line chart (`wheel-history.png`) showing every player's balance from `Start` (0) through each resolved round of the season (default: the active or latest season). Available to everyone. If no rounds have resolved yet, replies with a short message instead of an empty chart.
 - **`/wheel add user [movie] [user2 movie2 … user5 movie5] [remove]`** (admins): puts up to five people on the wheel at once, each with the movie they picked (optional), or takes them off with `remove:true`. A movie for someone already on the wheel replaces theirs. A `movie2` without a `user2` is refused. The answer has a line per person, and a last line saying whether the server's wheel picture was redrawn (`actions::redraw_last`, which edits the newest status message, remembered in `wheel_status_messages`) or `/wheel status` is needed. `/wheel movie` ends the same way.
 - **`/wheel movie user [movie]`** (admins): sets or changes the movie someone on the wheel picked; leaving `movie` out clears it. It shows on the next status picture.
 - **`/wheel bet by on amount round`** (admins): sets a bet in any round of the current season by round number; `amount:0` removes it. This is for fixing mistakes, so it skips the betting rules.
@@ -24,9 +25,10 @@ All in `src/features/wheel/`, starting with the pure logic.
 | `store.rs` | The migrations and every SQL query, as synchronous `rusqlite` functions. `load_season` reads a season into the `ledger` structs. |
 | `ui.rs` | The custom IDs (the `Action` enum), the status buttons, the pick menus, the bet slip, the modals, the Help text and the name check. Builds messages from plain values; never calls Discord. |
 | `render.rs` | The round as a picture: `round_svg` writes SVG text, `round_png` turns it into a PNG with the shared helpers in `src/util/svg.rs`. An open round is drawn as two columns (`side_by_side`, using `Svg::group`). |
+| `graph.rs` | The season balance history line chart (`history_svg`, `history_png`): colorblind-friendly lines per player, Y-axis money gridlines, X-axis round labels (`Start`, `R1`, …), and a legend sorted by final balance. |
 | `names.rs` | Display names for the stored user IDs, with a cache. |
-| `actions.rs` | The handlers for buttons, menus and modals, and `status_message`, which builds a status picture with its buttons. |
-| `commands.rs` | `/wheel` and its five subcommands (`status`, `add`, `movie`, `bet`, `reset`): the enum `WheelCommand` has one variant per subcommand, each a struct with its options (`twilight-interactions`). Each subcommand function keeps its old name (`wheel_status`, `insert_bet`, …). |
+| `actions.rs` | The handlers for buttons, menus and modals, `status_message`, and `history_png` / auto-posting the final history chart when a season ends. |
+| `commands.rs` | `/wheel` and its six subcommands (`status`, `history`, `add`, `movie`, `bet`, `reset`): the enum `WheelCommand` has one variant per subcommand, each a struct with its options (`twilight-interactions`). Each subcommand function keeps its old name (`wheel_status`, `wheel_history`, `insert_bet`, …). |
 | `tools.rs` | The chat tool `get_wheel_status`. |
 | `sim.rs` | Simulated games that compare the payout rules. Test-only (`#[cfg(test)]`, an ignored test). |
 | `mod.rs` | The `Wheel` struct and its `Feature` implementation. |
@@ -49,10 +51,10 @@ All division is integer division, which truncates (rounds toward zero), as in Go
 
 - **Money**: a player's money in a round is what they had after the previous round, plus 100 if they claimed this round. Claiming works once per player per round.
 - **Bet percentage**: `bet * 100 / money` (0 when money is 0), where `bet` is the total of the player's bets this round.
-- **Tax**: if the bet percentage is under 10, the tax is `money * 3 * (10 - percent) / 100`. That is 3% of the money per missing percentage point, so up to 30% for no bet.
+- **Tax**: if the player has positive money and the bet percentage is under 10, the tax is `money * 3 * (10 - percent) / 100`. That is 3% of the money per missing percentage point, so up to 30% for no bet. A zero or negative balance (for example after an admin `/wheel bet` edit) is never taxed, so it can't produce a negative tax or drain a Pool pot.
 - **How many options**: a player may bet on at most half of the options left, rounded up (`max_bets`).
 - **How much**: `usable` is what a player can still bet this round. Classic: their money minus what they already bet. Pool: `(money * 50 + 99) / 100` (50% rounded up) minus what they already bet. Changing an existing bet frees its old amount first. A bet must be more than 0.
-- **Typed amounts**: `parse_amount` reads `50` or `25%`. A percentage is of the round's money, rounded up (`(money * percent + 99) / 100`), so `10%` always avoids the tax.
+- **Typed amounts**: `parse_amount` reads `50` or `25%`. A percentage is of the round's money, rounded up (`(money * percent + 99) / 100`, computed in `i128` so huge inputs can't overflow `i64`), so `10%` always avoids the tax.
 - **Every round before the latest counts as over**, as in voltgpt: tax and payouts of earlier rounds are applied even if a round never got a winner.
 
 Each season has **rules** (`Rules` in `ledger.rs`, stored as `classic` or `pool`):
@@ -64,18 +66,18 @@ Each season has **rules** (`Rules` in `ledger.rs`, stored as `classic` or `pool`
 
 **Why pool and the cap** (Cherry, 2026-10-09): with classic payouts, early rounds paid ×10 and more, and a lost claim cost nothing, so everyone bet everything every round. A simulation of 12-player games in `sim.rs` showed half of the all-in players ending broke without the 50% cap and none with it. Run it with `cargo test --release wheel::sim -- --ignored --nocapture`.
 
-`check_bet` applies all of this to a bet in the latest round and returns the amount or a message for the player. `outcomes` lists a resolved round's results line by line (won, lost, taxed, with before and after). `can_undo` says whether a winner can be undone.
+`check_bet` applies all of this to a bet in the latest round and returns the amount or a message for the player. `outcomes` lists a resolved round's results line by line (won, lost, taxed, with before and after). `can_undo` says whether a winner can be undone. `balance_history` returns each player's balance at Round 0 (0) and after every resolved round, using `ledger` so numbers match standings exactly. `is_season_over` checks whether every option on the wheel has won.
 
 ### One action, one transaction
 
-Every handler in `actions.rs` and `commands.rs` loads the season, checks the action and writes the change inside one database transaction, and only talks to Discord after it committed. Nothing about the game is kept in memory between actions, so there is no global game lock. Redrawing a status message after a change is the one thing done under a lock: one per server (`redraw_lock`), held while the season is read again, drawn and the message edited (`fresh_status`). When two people bet at once, the second redraw waits and shows both bets, so an older picture can't land last. When several are already waiting (ten claims at movie-night start), only the last one in the queue draws: each waiting redraw reads the season fresh, so it shows the earlier changes too, and the message doesn't flicker through ten pictures. Buttons carry the round's database ID, and `open_round` refuses any button whose round is no longer the open, latest round of the active season ("This message shows an older round. Tap below to update it."). So a button on an old message can never change a newer round. That error comes with a **View Current Round** button (`wheel:refresh`), which shows the current round on the status message the press was about.
+Every handler in `actions.rs` and `commands.rs` loads the season, checks the action and writes the change inside one database transaction, and only talks to Discord after it committed. `/wheel add`, `/wheel movie` and `/wheel bet` defer after input validation (just like `/wheel status`) so DB writes, uncached name lookups and picture redraws can't trip Discord's 3-second reply limit. Nothing about the game is kept in memory between actions, so there is no global game lock. Redrawing a status message after a change is the one thing done under a lock: one per status message (`redraw_lock`, pruned with `Weak` references once idle), held while the season is read again, drawn and the message edited (`fresh_status`). When two people bet at once on the same message, the second redraw waits and shows both bets, so an older picture can't land last. When several redraws for the same message and round are already waiting (ten claims at movie-night start), only the last one in the queue draws: each waiting redraw reads the season fresh, so it shows the earlier changes too, and the message doesn't flicker through ten pictures; redraws for different messages or different rounds never coalesce over each other. Buttons and bet modals carry the round's database ID, and `open_round` refuses any interaction whose round is no longer the open, latest round of the active season ("This message shows an older round. Tap below to update it."). So a button or modal from an old message can never change a newer round. That error comes with a **View Current Round** button (`wheel:refresh`) on both components and the bet amount modal, which shows the current round on the status message the interaction was about.
 
 ### Playing a round
 
 - **Claim** adds a claim and redraws the status message. A private follow-up says how much the player has this round and the smallest bet that avoids the tax.
 - **Bet** needs money above 0 (otherwise "Press Claim"). It opens a private menu of the options left, sorted by name. Discord fits 25 options in a menu, so a bigger wheel gets up to five menus (one per row), each placeholder naming the first and last name it holds, like "(Alice … Dana)"; past 125 the message says how many didn't fit. Remove bet and Winner work the same. Picking one opens the **bet slip**: a private message with the option's current payout and pot (pool) or multiplier (classic), the player's money, what they already bet and can still bet, their current bet on this option and what it would return now, and a tax hint. It has buttons for 10%, 25% and 50% of the round's money (classic: also 100%), each showing its amount. A button is disabled when that bet isn't allowed, and the button matching the current bet is green and disabled. Each click places the bet, redraws the slip and redraws the public status message. "Other amount…" opens a modal (`util::discord::Modal`, opened from the button) whose label shows the limit. Betting on the same option again changes that bet (`INSERT ... ON CONFLICT DO UPDATE`).
 - **Remove bet** opens a private menu of your bets in this round, each with its amount under the name; picking one deletes it.
-- **Winner** (admins) opens a menu of the options left. Picking one sets the winner and starts the next round. Nobody has to have bet. The public status message then shows the resolved round (a blurred spoiler), a new message with the new round's picture and buttons is posted under it ("Round 3 is over. Round 4 is open: claim and bet below.", `actions::post_status`), and `BotEvent::WheelRoundResolved` is published.
+- **Winner** (admins) opens a menu of the options left. Picking one sets the winner and starts the next round. Nobody has to have bet. The public status message then shows the resolved round (a blurred spoiler), a new message with the new round's picture and buttons is posted under it ("Round 3 is over. Round 4 is open: claim and bet below.", `actions::post_status`), and `BotEvent::WheelRoundResolved` is published. When that winner was the last option left on the wheel (`ledger::is_season_over`), Vivy also posts the season's final balance history chart (`wheel-history.png`) in the channel (best-effort; failures are logged).
 - **Undo Winner** (admins) is shown on a resolved round while it is the round before the latest and nobody has bet in the latest round yet. It deletes the latest round (with its claims) and reopens the resolved one. The check runs again on press.
 - **Change Name** opens a modal for the name the wheel shows for you: up to 32 characters, spaces collapsed, no `@`, `<`, `>`, backticks or control characters. An empty name goes back to your Discord name. The status message is redrawn.
 - **Help** sends the season's rules privately (`ui::help_text`). The chat tool includes the same text.
@@ -112,7 +114,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 | Method | What it does here |
 |---|---|
 | `name` | `"wheel"`: the config section, the custom ID prefix and the log label. |
-| `commands` | `/wheel status`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`. |
+| `commands` | `/wheel status`, `/wheel history`, `/wheel add`, `/wheel movie`, `/wheel bet`, `/wheel reset`. |
 | `migrations` | `store::MIGRATIONS`. |
 | `tools`, `run_tool` | `get_wheel_status`. |
 | `tool_status` | "🎡 Checking the wheel…" in chat's status line. |
@@ -123,7 +125,7 @@ Resolved rounds are uploaded as `SPOILER_round-<n>.png`, so Discord blurs them a
 
 Admin checks happen inside each admin command and button with `ctx.is_admin`, not in the dispatcher (whose refusal says the feature is turned off).
 
-It publishes `BotEvent::WheelRoundResolved { guild_id, round, winner }` when a winner is set; `round` is the round number, not its database ID. No feature listens to it yet.
+It publishes `BotEvent::WheelRoundResolved { guild_id, season, round, winner, winner_name, movie }` when a winner is set; `season` and `round` are their human-facing numbers (counting from 1), not database IDs. Memory listens to it to log watched movies into `/memories/server/movies-watched.md`.
 
 ## Custom IDs
 
@@ -196,4 +198,3 @@ voltgpt's running game was copied once from its database at the cutover, into th
 ## Ideas not built yet
 
 - A `/wheel_spin` command that picks the winner at random with an animation.
-- A balance history per player.

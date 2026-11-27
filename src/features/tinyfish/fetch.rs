@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use reqwest::Url;
 use serde_json::{Value, json};
 use tracing::info;
 
@@ -55,8 +56,24 @@ pub async fn run(ctx: &BotCtx, key: &str, settings: &Settings, args: &Value) -> 
     Ok(format_pages(&answer, settings.max_page_characters.max(500)))
 }
 
+/// Checks that `url` is a valid `http://` or `https://` link with a host, refusing schemes
+/// like `file://` or `javascript:`.
+fn validate_url(url: &str) -> Result<()> {
+    let parsed = Url::parse(url).map_err(|_| {
+        user_error(format!(
+            "invalid link {url:?}: only http:// and https:// links are allowed"
+        ))
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(user_error(format!(
+            "unsupported link {url:?}: only http:// and https:// links are allowed"
+        )));
+    }
+    Ok(())
+}
+
 /// The request body for one call: the links (at most [`MAX_URLS`]) and the purpose. Fails
-/// when there's no link.
+/// when there's no link or any link isn't `http://` or `https://`.
 fn fetch_body(args: &Value) -> Result<Value> {
     // A single link given as a string works too.
     let urls: Vec<&str> = match &args["urls"] {
@@ -81,6 +98,9 @@ fn fetch_body(args: &Value) -> Result<Value> {
             "that's {} links; read at most {MAX_URLS} at a time",
             urls.len()
         )));
+    }
+    for url in &urls {
+        validate_url(url)?;
     }
     let mut body = json!({"urls": urls, "format": "markdown"});
     if let Some(purpose) = args["purpose"]
@@ -147,6 +167,27 @@ mod tests {
             fetch_body(&json!({"urls": "https://a.example", "purpose": " prices "})).unwrap(),
             json!({"urls": ["https://a.example"], "format": "markdown", "purpose": "prices"})
         );
+    }
+
+    #[test]
+    fn body_allows_only_http_and_https_links() {
+        assert!(
+            fetch_body(&json!({"urls": ["http://a.example/page", "HTTPS://B.EXAMPLE"]})).is_ok()
+        );
+        for bad in [
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "ftp://example.com/file",
+            "data:text/plain,hello",
+            "not-a-url",
+            "http://",
+        ] {
+            let err = fetch_body(&json!({"urls": [bad]})).unwrap_err();
+            assert!(
+                err.to_string().contains("http:// and https://"),
+                "expected scheme error for {bad}, got: {err}"
+            );
+        }
     }
 
     #[test]

@@ -106,29 +106,54 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
             .await;
     }
 
-    // A recurring reminder queues its next time either way, so one failed delivery doesn't
-    // end the series.
+    // A recurring reminder queues its next time on delivery or after transient retries run
+    // out, so one bad day doesn't end the series — unless the channel is permanently gone or
+    // the reminder was cancelled/edited while HTTP was in flight.
     let next = next_time(&reminder, now);
     match sent {
         Ok(_) => {
             let fired = reminder.clone();
-            ctx.db
+            let updated = ctx
+                .db
                 .call(move |conn| {
                     let tx = conn.transaction()?;
-                    store::mark_sent(&tx, id, now)?;
-                    if let Some(next) = next {
+                    let updated = store::mark_sent(&tx, id, fired.fire_at, now)?;
+                    if updated && let Some(next) = next {
                         store::repeat(&tx, &fired, next)?;
                     }
                     tx.commit()?;
-                    Ok(())
+                    Ok(updated)
                 })
                 .await?;
-            info!(reminder = id, "reminder delivered");
+            if updated {
+                info!(reminder = id, "reminder delivered");
+            } else {
+                info!(
+                    reminder = id,
+                    "reminder delivered, but it was cancelled or edited in flight; not repeating"
+                );
+            }
             ctx.publish(BotEvent::ReminderFired {
                 reminder_id: id,
                 user_id: UserId::new(reminder.user_id),
                 channel_id: channel,
             });
+        }
+        Err(err) if permanent_error(&err) => {
+            error!(
+                reminder = id,
+                user = reminder.user_id,
+                channel = reminder.channel_id,
+                "dropping a reminder after a permanent Discord error ({err}). It said: {}",
+                reminder.message
+            );
+            let fire_at = reminder.fire_at;
+            ctx.db
+                .call(move |conn| {
+                    store::delete_pending_at(conn, id, fire_at)?;
+                    Ok(())
+                })
+                .await?;
         }
         Err(err) => {
             let attempts = reminder.attempts + 1;
@@ -144,9 +169,13 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
                 ctx.db
                     .call(move |conn| {
                         let tx = conn.transaction()?;
-                        store::delete(&tx, id)?;
-                        if let Some(next) = next {
-                            store::repeat(&tx, &fired, next)?;
+                        // Guard against cancel/edit races and move images to the next
+                        // occurrence before deleting the old row (ON DELETE CASCADE).
+                        if store::mark_sent(&tx, id, fired.fire_at, now)? {
+                            if let Some(next) = next {
+                                store::repeat(&tx, &fired, next)?;
+                            }
+                            store::delete(&tx, id)?;
                         }
                         tx.commit()?;
                         Ok(())
@@ -159,8 +188,9 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
                     channel = reminder.channel_id,
                     "couldn't send a reminder (attempt {attempts}), retrying <t:{next}:R>: {err}"
                 );
+                let fire_at = reminder.fire_at;
                 ctx.db
-                    .call(move |conn| Ok(store::mark_failed(conn, id, next)?))
+                    .call(move |conn| Ok(store::mark_failed(conn, id, fire_at, next)?))
                     .await?;
             }
         }
@@ -168,9 +198,9 @@ async fn deliver(ctx: &BotCtx, mut reminder: Reminder) -> Result<()> {
     Ok(())
 }
 
-/// When a recurring reminder comes up next: after the time it was due, or after `now` if
-/// the bot was offline past that. `None` for a one-off reminder (or a repeat that can't be
-/// read, which is logged).
+/// When a recurring reminder comes up next: anchored to `reminder.fire_at` for interval
+/// rules so late sends don't drift, and always strictly after `now`. `None` for a one-off
+/// reminder (or a repeat that can't be read, which is logged).
 fn next_time(reminder: &Reminder, now: i64) -> Option<i64> {
     let text = reminder.repeat.as_deref()?;
     let Some(repeat) = parse::parse_repeat(text) else {
@@ -181,8 +211,9 @@ fn next_time(reminder: &Reminder, now: i64) -> Option<i64> {
         return None;
     };
     // The saved text names its zone wherever it matters, so the home zone is never used.
-    let after = DateTime::from_timestamp(reminder.fire_at.max(now), 0)?;
-    match parse::next_repeat(&repeat, after, Tz::UTC) {
+    let scheduled = DateTime::from_timestamp(reminder.fire_at, 0)?;
+    let now_dt = DateTime::from_timestamp(now, 0)?;
+    match parse::next_repeat_after(&repeat, scheduled, now_dt, Tz::UTC) {
         Ok(next) => Some(next.timestamp()),
         Err(err) => {
             warn!(
@@ -198,6 +229,18 @@ fn next_time(reminder: &Reminder, now: i64) -> Option<i64> {
 /// 40005 ("Request entity too large"). Other errors, like a timeout, aren't the images' fault.
 fn too_big(err: &anyhow::Error) -> bool {
     error_status(err) == Some(413) || error_code(err) == Some(40005)
+}
+
+/// Whether a Discord API error code means this channel can never receive the reminder:
+/// 10003 Unknown Channel, 50001 Missing Access, 50013 Missing Permissions.
+fn is_permanent_code(code: u64) -> bool {
+    matches!(code, 10003 | 50001 | 50013)
+}
+
+/// Whether Discord said the channel is permanently unreachable, so retrying or repeating
+/// would just fail forever.
+fn permanent_error(err: &anyhow::Error) -> bool {
+    error_code(err).is_some_and(is_permanent_code)
 }
 
 /// How long to sleep when the next reminder is at `next`. At most an hour, so delivered
@@ -270,5 +313,55 @@ mod tests {
             total > 6 * 60 * 60,
             "retries should cover several hours, got {total}s"
         );
+    }
+
+    #[test]
+    fn interval_repeats_do_not_drift() {
+        let base = 1_771_837_200; // Monday 2026-02-23 09:00 UTC.
+        let mut reminder = Reminder {
+            id: 1,
+            user_id: 2,
+            channel_id: 3,
+            guild_id: None,
+            message: "water".into(),
+            fire_at: base,
+            created_at: 0,
+            attempts: 0,
+            source_message_id: None,
+            missing_images: 0,
+            images: Vec::new(),
+            repeat: Some("every 2 hours".into()),
+        };
+        let two_hours = 2 * 60 * 60;
+        // Delivered 5 minutes late: next one is still on the 2-hour grid, not 2h05m.
+        assert_eq!(next_time(&reminder, base + 5 * 60), Some(base + two_hours));
+        // Bot was offline for 4h05m: steps by 2-hour multiples to the next slot > now.
+        assert_eq!(
+            next_time(&reminder, base + 2 * two_hours + 5 * 60),
+            Some(base + 3 * two_hours)
+        );
+        // Exact multiple: strictly greater than now.
+        assert_eq!(
+            next_time(&reminder, base + two_hours),
+            Some(base + 2 * two_hours)
+        );
+
+        // Calendar interval ("every 1 day UTC"): stays anchored to 09:00 even if sent late.
+        reminder.repeat = Some("every 1 day UTC".into());
+        let day = 24 * 60 * 60;
+        assert_eq!(next_time(&reminder, base + 10 * 60), Some(base + day));
+        assert_eq!(
+            next_time(&reminder, base + 2 * day + 10 * 60),
+            Some(base + 3 * day)
+        );
+    }
+
+    #[test]
+    fn permanent_discord_error_codes() {
+        assert!(is_permanent_code(10003)); // Unknown Channel
+        assert!(is_permanent_code(50001)); // Missing Access
+        assert!(is_permanent_code(50013)); // Missing Permissions
+        assert!(!is_permanent_code(40005)); // Request Entity Too Large
+        assert!(!is_permanent_code(50007)); // Cannot send messages to this user
     }
 }

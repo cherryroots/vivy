@@ -49,6 +49,9 @@ pub enum Part {
     Video(ModelFile),
     /// A YouTube video by its link, for a provider that watches videos itself.
     YouTube(String),
+    /// Audio as it is (like a Discord voice message), for a provider that hears audio itself
+    /// ([`ChatProvider::hears_audio`]).
+    Audio(ModelFile),
     /// The answer to a [`ToolCall`], sent back to the model.
     ToolResult {
         call_id: String,
@@ -351,10 +354,11 @@ pub struct Job {
 }
 
 impl Job {
-    /// The built-in settings of a job, before config.toml. Chat answers and chime-ins use
-    /// the provider's own settings and every tool, so they share the prompt cache (on
-    /// Gemini, which caches little, chime-ins take the cheap model instead).
+    /// The built-in settings of a job, before config.toml. Chat answers use the provider's
+    /// own settings and every tool. Chime-ins never run code execution (`code: false`), and
+    /// on Gemini take the cheap model.
     /// Background jobs nobody waits on get only what they use:
+    /// - "chime": reading along and maybe reacting; no code execution;
     /// - "emoji": describing a server emoji is simple, so a cheap model at low effort
     ///   (Claude Haiku; `cheap_model` is the provider's cheap model, if it has one);
     /// - "catch_up", "explain", "translate": private answers from the Apps menu (chat's
@@ -370,6 +374,13 @@ impl Job {
     pub fn builtin(job: &str, cheap_model: Option<&str>) -> Job {
         let off = Some(false);
         match job {
+            "chime" => Job {
+                model: None,
+                effort: None,
+                web: None,
+                code: off,
+                batch: None,
+            },
             "emoji" => Job {
                 model: cheap_model.map(str::to_string),
                 effort: Some("low".to_string()),
@@ -499,6 +510,12 @@ pub trait ChatProvider: Send + Sync {
     /// Whether the model watches videos itself (Gemini). History then sends a posted video
     /// as [`Part::Video`] and YouTube links as [`Part::YouTube`], instead of frame grids.
     fn watches_video(&self) -> bool {
+        false
+    }
+
+    /// Whether the model hears audio itself (Gemini). History then sends voice messages as
+    /// [`Part::Audio`] instead of a note saying it can't listen to them.
+    fn hears_audio(&self) -> bool {
         false
     }
 
@@ -906,5 +923,15 @@ mod tests {
         // Answers saved before rounds were stored don't parse, and are skipped.
         assert_eq!(NativeRound::parse_list("[[{\"type\":\"message\"}]]"), None);
         assert_eq!(NativeRound::parse_list("not json"), None);
+    }
+
+    #[test]
+    fn chime_job_disables_code_execution() {
+        let chime = Job::builtin("chime", Some("cheap-model"));
+        assert_eq!(chime.code, Some(false));
+        assert_eq!(chime.model, None);
+        assert_eq!(chime.web, None);
+        assert_eq!(chime.effort, None);
+        assert_eq!(chime.batch, None);
     }
 }

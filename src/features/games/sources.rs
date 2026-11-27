@@ -42,7 +42,7 @@ pub fn pick(
         From::Here => Ok(vec![this]),
         From::Channel(channel) if channel.id == here => Ok(vec![this]),
         From::Channel(channel) => {
-            if !bot.allows("games", Some(guild), channel.id) {
+            if !bot.allows_with_parent("games", Some(guild), channel.id, thread_parent(&channel)) {
                 return Err(user_error(format!(
                     "Games are turned off in <#{}>.",
                     channel.id
@@ -82,6 +82,16 @@ pub fn pick(
             Ok(sources)
         }
     }
+}
+
+/// A thread's parent channel ID, or `None` for non-thread channels (whose `parent_id` is a
+/// category, not a parent channel for gating).
+fn thread_parent(channel: &Channel) -> Option<ChannelId> {
+    channel
+        .kind
+        .is_thread()
+        .then_some(channel.parent_id)
+        .flatten()
 }
 
 /// Whether everyone in the server can read `channel`'s history, and it isn't
@@ -181,5 +191,44 @@ mod tests {
             Permissions::READ_MESSAGE_HISTORY,
         )];
         assert!(!everyone_can_read(READ, &no_history, EVERYONE));
+    }
+
+    #[test]
+    fn thread_parent_enforces_games_gate_without_treating_categories_as_parents() {
+        let config = crate::Config::parse(
+            r#"
+            [features.games]
+            deny_channels = [10]
+            "#,
+        )
+        .unwrap();
+        let guild = Some(GuildId::new(1));
+        let make = |id: u64, kind: ChannelType, parent: Option<u64>| {
+            let mut channel: Channel = serde_json::from_value(serde_json::json!({
+                "id": id.to_string(),
+                "type": u8::from(kind),
+            }))
+            .unwrap();
+            channel.parent_id = parent.map(ChannelId::new);
+            channel
+        };
+
+        // An uncached/archived thread under a denied parent channel is blocked.
+        let thread = make(20, ChannelType::PublicThread, Some(10));
+        assert_eq!(thread_parent(&thread), Some(ChannelId::new(10)));
+        assert!(
+            !config
+                .gate("games")
+                .allows(guild, thread.id, thread_parent(&thread))
+        );
+
+        // A top-level text channel's `parent_id` is a category, not a thread parent.
+        let text = make(30, ChannelType::GuildText, Some(10));
+        assert_eq!(thread_parent(&text), None);
+        assert!(
+            config
+                .gate("games")
+                .allows(guild, text.id, thread_parent(&text))
+        );
     }
 }

@@ -15,7 +15,7 @@ By default, from the channel the game is played in. Two options of `/games whosa
 - `channel`: another channel or thread instead.
 - `whole_server`: every text and announcement channel, plus the one the game is played in. Each question says which channel its quote is from ("Said in #general, March 2025").
 
-The game is seen by everyone in the channel it's played in, so it never shows them messages they couldn't read already. Its own channel is always fine. Any other channel must be readable by everyone in the server (the @everyone role can view it and read its history, after the channel's overwrite for @everyone) and not age-restricted, and the feature must be allowed there (`deny_channels` keeps a channel out). Picking a channel that doesn't qualify says why; the whole server simply leaves those out. A thread counts as its parent channel. `sources.rs` holds these rules.
+The game is seen by everyone in the channel it's played in, so it never shows them messages they couldn't read already. Its own channel is always fine. Any other channel must be readable by everyone in the server (the @everyone role can view it and read its history, after the channel's overwrite for @everyone) and not age-restricted, and the feature must be allowed there (`deny_channels` keeps a channel out, including uncached or archived threads via their parent channel). Picking a channel that doesn't qualify says why; the whole server simply leaves those out. A thread counts as its parent channel. `sources.rs` holds these rules. Quote links always use the known server ID rather than the channel cache, so uncached archived threads never emit broken `@me` DM links.
 
 Each game reads 6 random moments (10 for the whole server, each in a random channel) of the last `lookback_days`, 100 messages each and nothing from the last hour. A channel the bot can't read is skipped. It keeps messages that make a good quote:
 
@@ -34,16 +34,16 @@ Under `[features.games.who_said_it]`, each explained in `config.example.toml`: `
 
 ## Files
 
-All under `src/features/games/who_said_it/`.
+Under `src/features/games/who_said_it/` (with shared `sources.rs` and `quotes.rs` in `src/features/games/`):
 
 | File | What it holds |
 |---|---|
 | `game.rs` | The rules, with the time each pick took passed in so the tests can play a whole game: picks (first press counts), closing a round and scoring it, standings, and `make_rounds`. Pure. |
-| `sources.rs` | Which channels quotes may come from: the game's own, or channels everyone can read (`everyone_can_read`, pure). |
-| `quotes.rs` | Reading the sources at random moments, `quote_text` (which messages make a quote), `clean` (Discord markup to text), and server nicknames for the people shown. |
+| `../sources.rs` | Shared with Hunger Games: which channels quotes may come from — the game's own, or channels everyone can read (`everyone_can_read`, pure). |
+| `../quotes.rs` | Shared with Hunger Games: `Person`, `Quote`, `QuoteRules`, reading sources at random moments, `quote_text`, `clean` (Discord markup to text), and server nicknames. |
 | `ui.rs` | The question, answer and score messages, and the button IDs (`games:who_said_it:pick:<game>:<round>:<person>`). Pure. |
-| `play.rs` | The `whosaidit` subcommand, the task that runs a game (post, wait, show the answer, pause, next), and button presses. Running games are kept in `GAMES` by channel, so a press finds its game. |
-| `mod.rs` | Its settings. |
+| `play.rs` | The `whosaidit` subcommand, the task that runs a game (post, wait, show the answer, pause, next — resetting the per-round `asked_at` timer before sending each question so fast answers on rounds 2+ keep their speed bonus), and button presses. Running games are kept in `GAMES` by channel, so a press finds its game. |
+| `mod.rs` | Its settings (`Settings::quote_rules` feeds the shared `games::quotes`). |
 
 ## Why not a Discord Activity
 
@@ -51,4 +51,4 @@ It started as an Activity (a game window inside Discord), but Discord only lets 
 
 ## The games feature
 
-`/games` is declared by the games feature (`src/features/games/mod.rs`), since Discord needs one command to hold the subcommands. Who said it? lives in `games/who_said_it/`, next to the second game, [the Hunger Games](hunger-games.md) in `games/hunger_games/`. The feature hands each button press to its game by the ID's second part (`games:who_said_it:...`, `games:hunger:...`). The Hunger Games use this game's `quotes.rs` and `sources.rs` for last words and the arena.
+`/games` is declared by the games feature (`src/features/games/mod.rs`), since Discord needs one command to hold the subcommands. Who said it? lives in `games/who_said_it/`, next to the second game, [the Hunger Games](hunger-games.md) in `games/hunger_games/`. The feature hands each button press to its game by the ID's second part (`games:who_said_it:...`, `games:hunger:...`). Shared channel rules (`sources.rs`), quote reading (`quotes.rs`), embed color (`COLOR`) and markdown escaping (`escape`) live directly in `games/`.

@@ -154,7 +154,16 @@ pub fn due(conn: &Connection, now: i64) -> rusqlite::Result<Vec<Reminder>> {
         .collect::<Result<Vec<_>, _>>()
 }
 
+/// Who owns reminder `id`, without loading its images.
+pub fn owner(conn: &Connection, id: i64) -> rusqlite::Result<Option<u64>> {
+    conn.query_row("SELECT user_id FROM reminders WHERE id = ?1", [id], |row| {
+        row.get(0)
+    })
+    .optional()
+}
+
 /// Any reminder by ID, sent or not.
+#[cfg(test)]
 pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Reminder>> {
     let reminder = conn
         .query_row(
@@ -174,17 +183,20 @@ pub fn get(conn: &Connection, id: i64) -> rusqlite::Result<Option<Reminder>> {
     }
 }
 
-pub fn mark_sent(conn: &Connection, id: i64, now: i64) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE reminders SET sent_at = ?2 WHERE id = ?1",
-        params![id, now],
+/// Marks a pending reminder as sent, only if it is still pending at `fire_at`
+/// (so cancelling or editing it while delivery was in flight wins).
+/// Returns whether the row was updated.
+pub fn mark_sent(conn: &Connection, id: i64, fire_at: i64, now: i64) -> rusqlite::Result<bool> {
+    let changed = conn.execute(
+        "UPDATE reminders SET sent_at = ?3 WHERE id = ?1 AND sent_at IS NULL AND fire_at = ?2",
+        params![id, fire_at, now],
     )?;
-    Ok(())
+    Ok(changed > 0)
 }
 
-/// Queues the next time of a recurring reminder: a copy of it (images and all) due at
-/// `fire_at`. The delivered one stays as it is, so its snooze buttons keep working.
-/// Call inside a transaction, like [`insert`]. Returns the new reminder's ID.
+/// Queues the next time of a recurring reminder due at `fire_at` and moves the delivered
+/// occurrence's `reminder_images` rows to the new ID instead of duplicating BLOBs on every
+/// firing. Call inside a transaction, like [`insert`]. Returns the new reminder's ID.
 pub fn repeat(conn: &Connection, reminder: &Reminder, fire_at: i64) -> rusqlite::Result<i64> {
     let next = NewReminder {
         user_id: reminder.user_id,
@@ -195,10 +207,15 @@ pub fn repeat(conn: &Connection, reminder: &Reminder, fire_at: i64) -> rusqlite:
         created_at: reminder.created_at,
         source_message_id: reminder.source_message_id,
         missing_images: reminder.missing_images,
-        images: reminder.images.clone(),
+        images: Vec::new(),
         repeat: reminder.repeat.clone(),
     };
-    insert(conn, &next)
+    let next_id = insert(conn, &next)?;
+    conn.execute(
+        "UPDATE reminder_images SET reminder_id = ?2 WHERE reminder_id = ?1",
+        params![reminder.id, next_id],
+    )?;
+    Ok(next_id)
 }
 
 /// Snoozes a delivered reminder of `user_id`: it becomes pending again, due at `fire_at`.
@@ -215,11 +232,18 @@ pub fn snooze(conn: &Connection, id: i64, user_id: u64, fire_at: i64) -> rusqlit
     Ok(changed > 0)
 }
 
-/// Records a failed send and when to try again.
-pub fn mark_failed(conn: &Connection, id: i64, next_try_at: i64) -> rusqlite::Result<()> {
+/// Records a failed send and when to try again, only if the reminder is still pending at
+/// `fire_at`.
+pub fn mark_failed(
+    conn: &Connection,
+    id: i64,
+    fire_at: i64,
+    next_try_at: i64,
+) -> rusqlite::Result<()> {
     conn.execute(
-        "UPDATE reminders SET attempts = attempts + 1, next_try_at = ?2 WHERE id = ?1",
-        params![id, next_try_at],
+        "UPDATE reminders SET attempts = attempts + 1, next_try_at = ?3
+         WHERE id = ?1 AND sent_at IS NULL AND fire_at = ?2",
+        params![id, fire_at, next_try_at],
     )?;
     Ok(())
 }
@@ -275,6 +299,16 @@ pub fn edit_pending(
 pub fn delete(conn: &Connection, id: i64) -> rusqlite::Result<()> {
     conn.execute("DELETE FROM reminders WHERE id = ?1", [id])?;
     Ok(())
+}
+
+/// Deletes a pending reminder outright (after a permanent error), only if it is still
+/// pending at `fire_at`. Returns whether a row was deleted.
+pub fn delete_pending_at(conn: &Connection, id: i64, fire_at: i64) -> rusqlite::Result<bool> {
+    let deleted = conn.execute(
+        "DELETE FROM reminders WHERE id = ?1 AND sent_at IS NULL AND fire_at = ?2",
+        params![id, fire_at],
+    )?;
+    Ok(deleted > 0)
 }
 
 /// Forgets reminders that were sent before `before`. They're only kept for the snooze
@@ -417,11 +451,11 @@ mod tests {
         assert_eq!(due(&conn, 150).unwrap().len(), 1);
 
         // A failed send moves it back and counts the attempt.
-        mark_failed(&conn, early, 300).unwrap();
+        mark_failed(&conn, early, 100, 300).unwrap();
         assert_eq!(next_try_at(&conn).unwrap(), Some(200));
         assert_eq!(stats(&conn).unwrap().failing, 1);
 
-        mark_sent(&conn, late, 200).unwrap();
+        assert!(mark_sent(&conn, late, 200, 200).unwrap());
         let due_now = due(&conn, 300).unwrap();
         assert_eq!(due_now.len(), 1);
         assert_eq!(due_now[0].attempts, 1);
@@ -437,7 +471,7 @@ mod tests {
         assert!(get(&conn, id).unwrap().is_none());
 
         let sent = add(&mut conn, &new(1, 100)).unwrap();
-        mark_sent(&conn, sent, 100).unwrap();
+        assert!(mark_sent(&conn, sent, 100, 100).unwrap());
         assert!(!delete_pending(&conn, sent, 1).unwrap());
     }
 
@@ -465,7 +499,7 @@ mod tests {
         assert_eq!(got.images, weekly.images);
 
         // A failing reminder with a new time: tried fresh at that time, with the new repeat.
-        mark_failed(&conn, id, 160).unwrap();
+        mark_failed(&conn, id, 100, 160).unwrap();
         let daily = Reschedule {
             fire_at: 500,
             repeat: Some("every day at 9:00 UTC".into()),
@@ -487,7 +521,7 @@ mod tests {
         assert_eq!(next_try_at(&conn).unwrap(), Some(400));
 
         // A delivered reminder can't be edited (snooze it instead).
-        mark_sent(&conn, id, 400).unwrap();
+        assert!(mark_sent(&conn, id, 400, 400).unwrap());
         assert!(!edit_pending(&conn, id, 1, Some("too late"), None).unwrap());
     }
 
@@ -497,7 +531,7 @@ mod tests {
         let id = add(&mut conn, &new(1, 100)).unwrap();
         // Not delivered yet, or someone else's: nothing to snooze.
         assert!(!snooze(&conn, id, 1, 500).unwrap());
-        mark_sent(&conn, id, 100).unwrap();
+        assert!(mark_sent(&conn, id, 100, 100).unwrap());
         assert!(!snooze(&conn, id, 2, 500).unwrap());
 
         assert!(snooze(&conn, id, 1, 500).unwrap());
@@ -507,30 +541,81 @@ mod tests {
     }
 
     #[test]
-    fn recurring_reminders_queue_a_copy() {
+    fn recurring_reminders_move_images_without_duplicating_blobs() {
         let mut conn = conn();
         let mut weekly = new(1, 100);
         weekly.repeat = Some("every monday at 9:00 UTC".into());
         weekly.images = vec![Image {
             filename: "a.png".into(),
-            data: vec![1],
+            data: vec![1, 2, 3],
         }];
         let id = add(&mut conn, &weekly).unwrap();
         let fired = get(&conn, id).unwrap().unwrap();
-        mark_sent(&conn, id, 100).unwrap();
+        assert!(mark_sent(&conn, id, 100, 100).unwrap());
         let next = repeat(&conn, &fired, 700).unwrap();
 
         let queued = get(&conn, next).unwrap().unwrap();
         assert_eq!(queued.fire_at, 700);
         assert_eq!(queued.images, fired.images);
         assert_eq!(queued.repeat, weekly.repeat);
+        // The BLOB rows moved to the next occurrence instead of being duplicated.
+        assert!(images(&conn, id).unwrap().is_empty());
+        let total_image_rows: i64 = conn
+            .query_row("SELECT count(*) FROM reminder_images", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total_image_rows, 1);
+
         let list = list_pending(&conn, 1).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].repeat, weekly.repeat);
+        assert_eq!(list[0].image_count, 1);
 
         // Snoozing the delivered one brings it back once, as a one-off.
         assert!(snooze(&conn, id, 1, 300).unwrap());
         assert_eq!(get(&conn, id).unwrap().unwrap().repeat, None);
+    }
+
+    #[test]
+    fn owner_lookup_is_metadata_only() {
+        let mut conn = conn();
+        let mut reminder = new(42, 100);
+        reminder.images = vec![Image {
+            filename: "big.png".into(),
+            data: vec![9; 1024],
+        }];
+        let id = add(&mut conn, &reminder).unwrap();
+        assert_eq!(owner(&conn, id).unwrap(), Some(42));
+        assert_eq!(owner(&conn, 9999).unwrap(), None);
+    }
+
+    #[test]
+    fn mark_sent_and_delete_pending_at_guard_cancel_and_edit_races() {
+        let mut conn = conn();
+        // Cancelled while delivery was in flight: mark_sent returns false.
+        let cancelled_id = add(&mut conn, &new(1, 100)).unwrap();
+        assert!(delete_pending(&conn, cancelled_id, 1).unwrap());
+        assert!(!mark_sent(&conn, cancelled_id, 100, 100).unwrap());
+        assert!(!delete_pending_at(&conn, cancelled_id, 100).unwrap());
+
+        // Edited to a new fire_at while delivery was in flight: mark_sent, mark_failed,
+        // and delete_pending_at with the old fire_at all leave the edited row untouched.
+        let edited_id = add(&mut conn, &new(1, 100)).unwrap();
+        let rescheduled = Reschedule {
+            fire_at: 500,
+            repeat: None,
+        };
+        assert!(edit_pending(&conn, edited_id, 1, None, Some(&rescheduled)).unwrap());
+        assert!(!mark_sent(&conn, edited_id, 100, 100).unwrap());
+        assert!(!delete_pending_at(&conn, edited_id, 100).unwrap());
+        mark_failed(&conn, edited_id, 100, 200).unwrap();
+        let got = get(&conn, edited_id).unwrap().unwrap();
+        assert_eq!(got.fire_at, 500);
+        assert_eq!(got.attempts, 0);
+        assert_eq!(next_try_at(&conn).unwrap(), Some(500));
+
+        // Matching fire_at deletes cleanly.
+        assert!(delete_pending_at(&conn, edited_id, 500).unwrap());
+        assert!(get(&conn, edited_id).unwrap().is_none());
     }
 
     #[test]
@@ -542,7 +627,7 @@ mod tests {
             data: vec![1],
         }];
         let id = add(&mut conn, &reminder).unwrap();
-        mark_sent(&conn, id, 100).unwrap();
+        assert!(mark_sent(&conn, id, 100, 100).unwrap());
         assert_eq!(purge_sent(&conn, 50).unwrap(), 0);
         assert_eq!(purge_sent(&conn, 150).unwrap(), 1);
         let images: i64 = conn

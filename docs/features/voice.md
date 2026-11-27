@@ -4,7 +4,7 @@ Vivy can answer with a real Discord voice message (the kind with a play button a
 
 ## Using it
 
-There are no commands. In chat, ask Vivy to say something out loud; the chat model decides when to use the `send_voice_message` tool.
+There are no commands. In chat, ask Vivy to say something out loud, or reply to one of her messages with a Discord voice message (or send her a voice message in a DM); the chat model decides when to use the `send_voice_message` tool, and replies in her own voice to incoming voice messages when voice is available (falling back to text if voice is unavailable or over quota).
 
 The tool is only offered when `ELEVENLABS_API_KEY` is set in `.env`, and only in normal chat answers (not in chime-ins, whose tool list is an allow-list in `src/features/chat/chime.rs` that leaves it out). Sending also needs `ffmpeg` installed and the Send Voice Messages permission in the channel.
 
@@ -34,14 +34,15 @@ The tool takes one argument, `script`: the spoken words, with ElevenLabs v4 audi
 ### Steps in `run_tool`
 
 1. Checks the key and that `voice_id` is set, and that the script isn't empty.
-2. Checks the limits (below). Past one, she gets an error telling her to say less or answer in text.
+2. Checks the limits (below) and reserves the script's characters in memory (with a `Drop` guard so errors or cancellations release them) so concurrent calls can't race past `monthly_characters` while ElevenLabs is running. Past a limit, she gets an error telling her to say less or answer in text.
 3. `speech::speak` sends `POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format=opus_48000_128` with the key in the `xi-api-key` header and a JSON body: `text`, `model_id` (from `model`, default `eleven_v4`), `voice_settings` with `stability` and `similarity_boost` (from `similarity`), and `language_code` when `language` is set. The request may take 90 seconds. An error shows ElevenLabs' status and the start of its answer.
-4. `audio::prepare` writes the audio to a temporary folder (some formats can't be read from a pipe) and runs ffmpeg twice, each with a 60 second limit:
+4. Immediately records the billed characters in `voice_messages` under a temporary ID and releases the in-memory reservation, so an ffmpeg or Discord upload failure still counts what ElevenLabs billed.
+5. `audio::prepare` writes the audio to a temporary folder (some formats can't be read from a pipe) and runs ffmpeg twice, each with a 60 second limit:
    - re-encodes it as mono OGG Opus, 48 kHz, 64 kbit/s;
    - decodes it to raw 16-bit samples at 8 kHz, which give the length in seconds and the waveform: one bar per tenth of a second (at most 256, at least 1), each the loudest sample in its slice, scaled so the loudest bar is 255.
-5. Posts the voice message (below).
-6. Adds it to `Asker::posted` with the text `[Voice message] <script>`, and records it in `voice_messages`.
-7. Returns a short text telling her the message is sent, and that it is her answer: no text after it, unless something can only be shown in writing (a link, code).
+6. Posts the voice message (below).
+7. Adds it to `Asker::posted` with the text `[Voice message] <script>`, and updates the `voice_messages` row with the real Discord message ID and audio length.
+8. Returns a short text telling her the message is sent, and that it is her answer: no text after it, unless something can only be shown in writing (a link, code).
 
 ### Posting a voice message
 

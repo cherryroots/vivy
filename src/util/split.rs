@@ -40,7 +40,7 @@ pub fn split_message(text: &str, max: usize) -> Vec<String> {
         let mut part = String::new();
         if let Some(language) = &open {
             let rest = chunk.trim_start_matches('\n');
-            if is_fence(first_line(rest)) {
+            if is_closing_fence(first_line(rest)) {
                 // The chunk starts by closing the block, which the previous part already did.
                 chunk = rest.split_once('\n').map_or("", |(_, after)| after);
                 open = None;
@@ -56,7 +56,7 @@ pub fn split_message(text: &str, max: usize) -> Vec<String> {
         // A chunk that ends right after an opening fence: leave the fence to the next part,
         // which opens the block anyway, instead of sending an empty block.
         let last_line = chunk.lines().last().unwrap_or("");
-        if close && is_fence(last_line) {
+        if close && opening_fence_language(last_line).is_some() {
             chunk = chunk[..chunk.len() - last_line.len()].trim_end();
             close = false;
         }
@@ -83,25 +83,41 @@ pub fn close_code_block(text: &str) -> String {
 /// Walks the lines of `chunk` and returns which code block, if any, is open at its end.
 fn fence_state_after(chunk: &str, mut open: Option<String>) -> Option<String> {
     for line in chunk.lines() {
-        if is_fence(line) {
-            open = match open {
-                Some(_) => None,
-                None => Some(
-                    line.trim_start()
-                        .trim_start_matches('`')
-                        .trim()
-                        .chars()
-                        .take(MAX_LANGUAGE)
-                        .collect(),
-                ),
-            };
+        match open {
+            Some(_) => {
+                if is_closing_fence(line) {
+                    open = None;
+                }
+            }
+            None => {
+                if let Some(language) = opening_fence_language(line) {
+                    open = Some(language);
+                }
+            }
         }
     }
     open
 }
 
-fn is_fence(line: &str) -> bool {
-    line.trim_start().starts_with("```")
+/// If `line` opens a fenced code block (3+ backticks with no backticks in the language),
+/// returns its language (trimmed, up to [`MAX_LANGUAGE`] characters). An inline code span
+/// like ```` ```code``` ```` has backticks after the opening ones, so it returns `None`.
+fn opening_fence_language(line: &str) -> Option<String> {
+    let rest = line
+        .trim_start()
+        .strip_prefix("```")?
+        .trim_start_matches('`');
+    if rest.contains('`') {
+        return None;
+    }
+    Some(rest.trim().chars().take(MAX_LANGUAGE).collect())
+}
+
+/// Whether `line` closes a fenced code block (3+ backticks and only whitespace after).
+fn is_closing_fence(line: &str) -> bool {
+    line.trim_start()
+        .strip_prefix("```")
+        .is_some_and(|rest| rest.trim_start_matches('`').trim().is_empty())
 }
 
 fn first_line(text: &str) -> &str {
@@ -192,5 +208,32 @@ mod tests {
             Some("js".into())
         );
         assert_eq!(fence_state_after("no code", None), None);
+    }
+
+    #[test]
+    fn inline_triple_backticks_are_not_code_fences() {
+        assert_eq!(fence_state_after("```code```", None), None);
+        assert_eq!(fence_state_after("```code``` and more", None), None);
+        assert_eq!(close_code_block("```code```"), "```code```");
+        // Inline triple-backticks inside a real code block don't close it early.
+        assert_eq!(
+            fence_state_after("```\n```code```\nstill inside", None),
+            Some(String::new())
+        );
+        assert_eq!(fence_state_after("```\n```code```\n```", None), None);
+
+        let text = format!("```inline```\n\n{}", "word ".repeat(60));
+        let parts = split_message(&text, 120);
+        assert!(parts.len() > 1);
+        assert!(
+            !parts[0].ends_with("\n```"),
+            "should not close an inline code span:\n{}",
+            parts[0]
+        );
+        assert!(
+            !parts[1].starts_with("```"),
+            "should not reopen an inline code span:\n{}",
+            parts[1]
+        );
     }
 }

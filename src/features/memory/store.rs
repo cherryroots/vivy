@@ -209,17 +209,23 @@ pub fn activity(conn: &Connection, since: i64) -> rusqlite::Result<(i64, Option<
     )
 }
 
-/// The files changed since the last reflection, with who changed them and how often.
+/// The files changed by people since the last reflection, with who changed them and how
+/// often. Excludes the bot's own edits (including the previous reflection's edits) and
+/// `mood.md` updates (shown up front anyway), matching [`due_reflections`].
 pub fn changes_since_reflection(
     conn: &Connection,
     scope: &str,
+    bot: u64,
 ) -> rusqlite::Result<Vec<(String, u64, i64)>> {
     let mut stmt = conn.prepare(
         "SELECT path, user_id, count(*) FROM memory_changes
-         WHERE scope = ?1 AND at > coalesce((SELECT at FROM memory_reflections WHERE scope = ?1), 0)
+         WHERE scope = ?1 AND user_id != ?2 AND path != '/memories/vivy/mood.md'
+           AND at > coalesce((SELECT at FROM memory_reflections WHERE scope = ?1), 0)
          GROUP BY path, user_id ORDER BY path",
     )?;
-    let rows = stmt.query_map([scope], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    let rows = stmt.query_map(params![scope, bot], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?;
     rows.collect()
 }
 
@@ -471,13 +477,13 @@ mod tests {
             vec!["server:1"]
         );
         assert_eq!(
-            changes_since_reflection(&conn, "server:1").unwrap(),
+            changes_since_reflection(&conn, "server:1", 5).unwrap(),
             vec![("/memories/a.md".to_string(), 7, 1)]
         );
 
         set_reflected(&conn, "server:1", 200).unwrap();
         assert!(
-            changes_since_reflection(&conn, "server:1")
+            changes_since_reflection(&conn, "server:1", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -487,12 +493,18 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        // Her own changes (bot id 5) don't make it due either.
+        // Her own changes (bot id 5) don't make it due either, and stay out of the next
+        // reflection's change list so they don't eat its 12K budget or skew the sweep.
         let mut mine = one.clone();
         mine.insert("/memories/vivy/notes.md".into(), "likes soup".into());
         save(&conn, "server:1", &one, &mine, 5, 250).unwrap();
         assert!(
             due_reflections(&conn, 200 + day, day, 5)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            changes_since_reflection(&conn, "server:1", 5)
                 .unwrap()
                 .is_empty()
         );
@@ -506,6 +518,11 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        assert!(
+            changes_since_reflection(&conn, "server:1", 5)
+                .unwrap()
+                .is_empty()
+        );
         // A change, but less than a day after the last reflection: not yet.
         let mut two = mine.clone();
         two.insert("/memories/b.md".into(), "y".into());
@@ -514,6 +531,11 @@ mod tests {
         assert_eq!(
             due_reflections(&conn, 200 + day, day, 5).unwrap(),
             vec!["server:1"]
+        );
+        // Only the person's non-mood edit appears in the next reflection's change list.
+        assert_eq!(
+            changes_since_reflection(&conn, "server:1", 5).unwrap(),
+            vec![("/memories/b.md".to_string(), 7, 1)]
         );
     }
 

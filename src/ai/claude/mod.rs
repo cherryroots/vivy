@@ -54,7 +54,7 @@ use super::sse::SseParser;
 use super::{
     ChatEvent, ChatProvider, ChatRequest, Done, GeneratedFile, Input, Job, Part, Turn, job_settings,
 };
-use crate::util::media::ModelImage;
+use crate::util::media::{ModelImage, decode_bounded};
 
 pub(crate) const API: &str = "https://api.anthropic.com/v1";
 pub(crate) const VERSION: &str = "2023-06-01";
@@ -396,7 +396,9 @@ impl Claude {
                 .collect();
             body["container"] = json!({"skills": skills});
         }
-        if let Some(id) = self.containers.lock().unwrap().get(&request.cache_key) {
+        if run.code
+            && let Some(id) = self.containers.lock().unwrap().get(&request.cache_key)
+        {
             set_container(&mut body, Some(id));
         }
         body
@@ -611,7 +613,7 @@ async fn shrink_image(data: Vec<u8>) -> Option<ModelImage> {
         return None;
     }
     tokio::task::spawn_blocking(move || {
-        let image = image::load_from_memory(&data).ok()?;
+        let image = decode_bounded(&data).ok()?;
         let fits = image.width() <= MAX_IMAGE_SIDE && image.height() <= MAX_IMAGE_SIDE;
         // `resize` fills the bounds, so a picture that's only too many bytes would grow;
         // that one is just saved again as JPEG, which is smaller.
@@ -688,6 +690,24 @@ fn container_gone(err: &anyhow::Error) -> bool {
     })
 }
 
+/// What a failed Claude Messages request needs to drop before retrying: an expired code
+/// execution container, missing uploads, or both when they expired together.
+fn recovery_needed(
+    err: &anyhow::Error,
+    has_container: bool,
+    uploaded: &HashMap<ContentKey, String>,
+    retried_container: bool,
+    retried_files: bool,
+) -> (bool, Option<Vec<String>>) {
+    let drop_container = !retried_container && has_container && container_gone(err);
+    let gone_files = if !retried_files {
+        missing_files(err, uploaded)
+    } else {
+        None
+    };
+    (drop_container, gone_files)
+}
+
 #[async_trait]
 impl ChatProvider for Claude {
     fn name(&self) -> &'static str {
@@ -714,8 +734,6 @@ impl ChatProvider for Claude {
         };
         let (mut body, uploaded) = self.prepare(&request, turns).await;
         let sender = self.sender();
-        // Before sending: the cache's hour counts from the start of the request.
-        self.warm.used(&body, request.job).await;
         if self.batched(request.job) {
             let wait = Duration::from_secs(u64::from(self.config.batch_wait_minutes) * 60);
             match batch::send(&sender, &body, wait).await {
@@ -728,27 +746,42 @@ impl ChatProvider for Claude {
                 ),
             }
         }
+        let mut started = Utc::now();
         let mut result = sender.messages(&body).await;
-        // Uploads expire, and can be deleted; upload those files again.
-        if let Err(err) = &result
-            && let Some(gone) = missing_files(err, &uploaded)
-        {
-            info!("{} Claude uploads are gone, uploading again", gone.len());
-            self.uploads.forget(&gone).await;
-            (body, _) = self.prepare(&request, turns).await;
-            result = sender.messages(&body).await;
-        }
-        // Containers expire; start a new one.
-        if let Err(err) = &result
-            && body["container"].get("id").is_some()
-            && container_gone(err)
-        {
-            info!("the code execution container expired, starting a new one");
-            self.containers.lock().unwrap().remove(&request.cache_key);
-            set_container(&mut body, None);
+        // Containers and uploads both expire; check container_gone before/alongside
+        // missing_files so when both expire together, `prepare` doesn't re-attach the
+        // stale container ID.
+        let mut retried_container = false;
+        let mut retried_files = false;
+        while let Err(err) = &result {
+            let (drop_container, gone_files) = recovery_needed(
+                err,
+                body["container"].get("id").is_some(),
+                &uploaded,
+                retried_container,
+                retried_files,
+            );
+            if !drop_container && gone_files.is_none() {
+                break;
+            }
+            if drop_container {
+                info!("the code execution container expired, starting a new one");
+                self.containers.lock().unwrap().remove(&request.cache_key);
+                set_container(&mut body, None);
+                retried_container = true;
+            }
+            if let Some(gone) = gone_files {
+                info!("{} Claude uploads are gone, uploading again", gone.len());
+                self.uploads.forget(&gone).await;
+                (body, _) = self.prepare(&request, turns).await;
+                retried_files = true;
+            }
+            started = Utc::now();
             result = sender.messages(&body).await;
         }
         let response = result?;
+        // Only once the request worked, using when it started (the cache's hour counts from then).
+        self.warm.used(&body, request.job, started).await;
         Ok(self.answer(sender, &request, body, Answer::Stream(response)))
     }
 
@@ -894,7 +927,7 @@ async fn read_response(
         let Some(chunk) = chunk else {
             bail!("Claude's stream ended before the answer did");
         };
-        for event in parser.push(&chunk) {
+        for event in parser.push(&chunk)? {
             let data: Value =
                 serde_json::from_str(&event.data).context("Claude sent invalid JSON")?;
             for chat_event in collector.push(&data)? {
@@ -946,9 +979,9 @@ async fn add_spend(
     if let Some((spend, job)) = spend {
         let model = collector.model.as_deref();
         let model = model.or(body["model"].as_str()).unwrap_or_default();
-        let usd = price::cost(&usage, model);
+        let usd = price::cost(&usage, model, batched);
         let used = Used {
-            usd: if batched { usd / 2.0 } else { usd },
+            usd,
             input: usage.input,
             cache_read: usage.cache_read,
             cache_write: usage.cache_write,
@@ -1096,12 +1129,20 @@ mod tests {
         assert!(body.get("container").is_none());
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
 
-        // Chime-ins send what chat sends, so they share its cache.
+        // Chime-ins skip code execution and its container, while keeping the main effort
+        // and web tools.
         let chat = job("chat", request().tools);
         let chime = job("chime", request().tools);
         assert_eq!(chat["system"], chime["system"]);
-        assert_eq!(chat["tools"], chime["tools"]);
         assert_eq!(chat["output_config"], chime["output_config"]);
+        assert!(chime.get("container").is_none());
+        let chime_tools: Vec<&str> = chime["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(chime_tools, ["web_search", "web_fetch", "get_current_time"]);
 
         // config.toml changes a job; what it leaves out keeps the built-in default, and
         // chat always uses the main model.
@@ -1266,5 +1307,81 @@ mod tests {
         });
         assert!(!container_gone(&other));
         assert!(!container_gone(&anyhow::anyhow!("container")));
+    }
+
+    #[test]
+    fn non_code_jobs_never_attach_a_cached_container() {
+        let claude = client(ClaudeConfig::default());
+        claude
+            .containers
+            .lock()
+            .unwrap()
+            .insert("discord:1".into(), "container_1".into());
+        // Chat uses code execution and gets the cached container.
+        let chat = body_of(&claude, &request(), Vec::new());
+        assert_eq!(chat["container"]["id"], "container_1");
+        // Reflection has code disabled and must not attach the cached container ID.
+        let reflection = ChatRequest {
+            job: "reflection",
+            ..request()
+        };
+        assert!(
+            body_of(&claude, &reflection, Vec::new())
+                .get("container")
+                .is_none()
+        );
+
+        // Same when code_execution is turned off in config.
+        let no_code = client(ClaudeConfig {
+            code_execution: false,
+            ..ClaudeConfig::default()
+        });
+        no_code
+            .containers
+            .lock()
+            .unwrap()
+            .insert("discord:1".into(), "container_1".into());
+        assert!(
+            body_of(&no_code, &request(), Vec::new())
+                .get("container")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn recovery_drops_container_alongside_missing_files() {
+        let error = |message: &str| {
+            anyhow::Error::new(ApiError {
+                provider: "claude",
+                status: reqwest::StatusCode::BAD_REQUEST,
+                message: message.into(),
+            })
+        };
+        let uploaded = HashMap::from([(ContentKey::of(&[1]), "file_a".to_string())]);
+
+        // Both container and file expired in the same error: both are dropped at once.
+        let both = error("Container container_1 has expired and file file_a not found");
+        assert_eq!(
+            recovery_needed(&both, true, &uploaded, false, false),
+            (true, Some(vec!["file_a".into()]))
+        );
+
+        // Container expires first, then the retry hits missing files: both recover in order.
+        let container_err = error("Container container_1 has expired");
+        assert_eq!(
+            recovery_needed(&container_err, true, &uploaded, false, false),
+            (true, None)
+        );
+        let file_err = error("File file_a not found");
+        assert_eq!(
+            recovery_needed(&file_err, false, &uploaded, true, false),
+            (false, Some(vec!["file_a".into()]))
+        );
+
+        // Neither is retried twice.
+        assert_eq!(
+            recovery_needed(&both, true, &uploaded, true, true),
+            (false, None)
+        );
     }
 }

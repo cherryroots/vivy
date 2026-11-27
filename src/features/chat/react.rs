@@ -2,17 +2,19 @@
 //! to a message besides writing back. Each is a plain emoji or one of the server's own (a
 //! bare name works too, see [`emoji::reaction_code`]), up to [`MAX_EMOJI`] in one call,
 //! added in order. By default they go on the message she's answering; a link picks another
-//! message in the same channel. With `remove` she takes her own reactions back off.
+//! message in the same server (anywhere chat is allowed, or this DM in a DM). With
+//! `remove` she takes her own reactions back off.
 //!
 //! Chime-ins don't get this tool: they react with `REACT` instead (see `chime.rs`).
 
 use serde_json::{Value, json};
+use tracing::info;
 
 use super::emoji;
-use super::tools::parse_link;
+use super::tools::{parse_link, why_not_readable};
 use crate::ai::ToolDef;
 use crate::core::{Asker, BotCtx, Result, user_error};
-use crate::util::discord::{MessageId, react, unreact};
+use crate::util::discord::{ChannelId, MessageId, react, unreact};
 
 pub const TOOL: &str = "react_to_message";
 
@@ -22,7 +24,7 @@ const MAX_EMOJI: usize = 3;
 pub fn def() -> ToolDef {
     ToolDef {
         name: TOOL,
-        description: "Adds emoji reactions to a message, like people do on Discord: to the message you're answering, or to another message in this channel by its link. Use it now and then when a reaction fits, as well as your answer in words, not instead of it. The reaction speaks for itself: never mention it in your words or progress notes (no \"I put a reaction on this\"). Each emoji can be a plain one (😂) or one of this server's own, written as its code from list_server_emoji (<:name:123>). Usually one is enough; up to 3 are added in order. Set remove to take your own reactions back off.",
+        description: "Adds emoji reactions to a message, like people do on Discord: to the message you're answering, or to another message in this server by its link (in a DM, only this DM). Use it now and then when a reaction fits, as well as your answer in words, not instead of it. The reaction speaks for itself: never mention it in your words or progress notes (no \"I put a reaction on this\"). Each emoji can be a plain one (😂) or one of this server's own, written as its code from list_server_emoji (<:name:123>). Usually one is enough; up to 3 are added in order. Set remove to take your own reactions back off.",
         parameters: json!({
             "type": "object",
             "properties": {
@@ -31,7 +33,7 @@ pub fn def() -> ToolDef {
                     "items": {"type": "string"},
                     "description": "The emoji, 1 to 3: each a plain one or a server emoji's code."
                 },
-                "link": {"type": "string", "description": "A link to the message to react to, in this channel. Default: the message you're answering."},
+                "link": {"type": "string", "description": "A link to the message to react to, in this server (or this DM). Default: the message you're answering."},
                 "remove": {"type": "boolean", "description": "true takes these reactions of yours off the message instead. Default false."}
             },
             "required": ["emoji"],
@@ -46,17 +48,17 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
         .as_str()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let message = match link {
-        None => asker.message,
+    let (channel, message) = match link {
+        None => (asker.channel, asker.message),
         Some(link) => {
-            let (_, channel, message) =
+            let (guild, channel, message) =
                 parse_link(link).ok_or_else(|| user_error("That isn't a Discord message link."))?;
-            if channel != asker.channel.get() {
-                return Err(user_error(
-                    "You can only react to messages in this channel.",
-                ));
+            let channel = ChannelId::new(channel);
+            if let Some(why) = why_not_readable(ctx, asker, guild, channel).await? {
+                info!(%channel, "not reacting to a linked message: {why}");
+                return Err(user_error(why));
             }
-            MessageId::new(message)
+            (channel, MessageId::new(message))
         }
     };
 
@@ -67,9 +69,9 @@ pub async fn run(ctx: &BotCtx, asker: &Asker, args: &Value) -> Result<String> {
     for picked in picked {
         let emoji = emoji::reaction_code(&picked, &codes);
         let result = if remove {
-            unreact(&ctx.http, asker.channel, message, &emoji).await
+            unreact(&ctx.http, channel, message, &emoji).await
         } else {
-            react(&ctx.http, asker.channel, message, &emoji).await
+            react(&ctx.http, channel, message, &emoji).await
         };
         if result.is_ok() {
             done += 1;

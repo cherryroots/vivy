@@ -15,11 +15,23 @@ RestartSec=5
 # Give the bot time to mark the status message offline on shutdown.
 TimeoutStopSec=20
 
-# Hardening: the bot only needs to write inside its own folder.
+# Hardening: the bot only needs to write inside its own folder (for vivy.db,
+# vivy.db-wal, vivy.db-shm, faces/, banners/) and its private /tmp (for
+# tempfile / ffmpeg). /opt/vivy/vivy and /opt/vivy/config.toml can stay
+# root:vivy read-only or vivy:vivy.
+UMask=0077
 NoNewPrivileges=true
+CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 ReadWritePaths=/opt/vivy
 
 [Install]

@@ -55,13 +55,16 @@ pub async fn complete(
     let mut completed = Completed::default();
     // One round more than `max_rounds`: the answer after the last round of tools.
     for round in 0..=max_rounds {
+        // Single-shot jobs with no bot tools (e.g. mood, emoji, hunger_games) don't need
+        // `tool_choice: none`, so built-in tools aren't unnecessarily disabled.
+        let answer_now = round == max_rounds && (max_rounds > 0 || !defs.is_empty());
         let request = ChatRequest {
             system: system.clone(),
             input: input.clone(),
             tools: defs.clone(),
             cache_key: cache_key.clone(),
             job,
-            answer_now: round == max_rounds,
+            answer_now,
         };
         let mut events = provider.stream(request).await?;
         completed.text.clear();
@@ -205,5 +208,70 @@ mod tests {
         // The first round's results are plain; the last round's say she answers next.
         assert_eq!(sent[1].1, "saved");
         assert!(sent[2].1.starts_with("saved\n\n(That was your last round"));
+    }
+
+    #[tokio::test]
+    async fn single_shot_without_bot_tools_leaves_answer_now_off() {
+        /// Records `answer_now` and returns a plain text answer without calling tools.
+        #[derive(Default)]
+        struct Plain {
+            answer_now: Mutex<Vec<bool>>,
+        }
+
+        #[async_trait]
+        impl ChatProvider for Plain {
+            fn name(&self) -> &'static str {
+                "plain"
+            }
+            fn model(&self) -> &str {
+                "m1"
+            }
+            async fn stream(
+                &self,
+                request: ChatRequest,
+            ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
+                self.answer_now.lock().unwrap().push(request.answer_now);
+                let (sender, receiver) = mpsc::channel(4);
+                sender.send(Ok(ChatEvent::TextDelta("ok".into()))).await?;
+                sender.send(Ok(ChatEvent::Done(Done::default()))).await?;
+                Ok(receiver)
+            }
+            async fn download_file(&self, _file: &GeneratedFile) -> anyhow::Result<Vec<u8>> {
+                unimplemented!()
+            }
+        }
+
+        let plain = Plain::default();
+        let no_tools = ChatRequest {
+            system: "system".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Text("hi".into())],
+            }]),
+            tools: Vec::new(),
+            cache_key: "test".into(),
+            job: "mood",
+            answer_now: false,
+        };
+        complete(&plain, no_tools, &Saved, 0).await.unwrap();
+
+        let with_tools = ChatRequest {
+            system: "system".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Text("hi".into())],
+            }]),
+            tools: vec![crate::ai::ToolDef {
+                name: "memory",
+                description: "Memory.",
+                parameters: serde_json::json!({"type": "object", "properties": {}}),
+            }],
+            cache_key: "test".into(),
+            job: "chime",
+            answer_now: false,
+        };
+        complete(&plain, with_tools, &Saved, 0).await.unwrap();
+
+        assert_eq!(*plain.answer_now.lock().unwrap(), [false, true]);
     }
 }

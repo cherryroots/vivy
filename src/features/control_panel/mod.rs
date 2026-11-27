@@ -20,7 +20,7 @@ use crate::core::{
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
-struct Settings {
+pub(super) struct Settings {
     /// Channel for the status message. Without one this feature does nothing.
     status_channel: Option<u64>,
     /// Seconds between refreshes. The old key name `status_interval_secs` still works.

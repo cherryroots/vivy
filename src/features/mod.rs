@@ -25,12 +25,51 @@ pub fn all() -> Vec<Arc<dyn Feature>> {
         Arc::new(control_panel::ControlPanel),
         Arc::new(memory::Memory),
         Arc::new(snails::Snails::default()),
-        Arc::new(voice::Voice),
-        Arc::new(drawing::Drawing),
+        Arc::new(voice::Voice::default()),
+        Arc::new(drawing::Drawing::default()),
         Arc::new(games::Games),
         Arc::new(tinyfish::TinyFish),
         Arc::new(chat::Chat::default()),
     ]
+}
+
+/// Deserializes every feature's `[features.<name>]` settings so unknown keys are recorded
+/// on `config`. Used by the whole-repo config smoke test in `main.rs`.
+#[cfg(test)]
+pub fn check_all_settings(config: &crate::core::config::Config) -> anyhow::Result<()> {
+    #[derive(Default, serde::Deserialize)]
+    struct GateOnly {}
+
+    let checked = [
+        "chat",
+        "control_panel",
+        "drawing",
+        "games",
+        "memory",
+        "reminders",
+        "snails",
+        "tinyfish",
+        "voice",
+        "wheel",
+    ];
+    let mut actual: Vec<&str> = all().iter().map(|f| f.name()).collect();
+    actual.sort();
+    assert_eq!(
+        actual, checked,
+        "update features::check_all_settings when adding or removing a feature"
+    );
+
+    config.feature::<chat::chime::Settings>("chat")?;
+    config.feature::<control_panel::Settings>("control_panel")?;
+    config.feature::<drawing::Settings>("drawing")?;
+    config.feature::<games::Settings>("games")?;
+    memory::check_settings(config)?;
+    config.feature::<GateOnly>("reminders")?;
+    config.feature::<snails::Settings>("snails")?;
+    config.feature::<tinyfish::Settings>("tinyfish")?;
+    config.feature::<voice::Settings>("voice")?;
+    config.feature::<GateOnly>("wheel")?;
+    Ok(())
 }
 
 #[cfg(test)]

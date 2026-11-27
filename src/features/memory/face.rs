@@ -6,7 +6,7 @@
 //! Without `faces_dir` (or with an empty folder) nothing here happens, and the reflection
 //! isn't asked for a face.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -96,30 +96,52 @@ pub(super) fn dir(ctx: &BotCtx) -> Option<PathBuf> {
     settings.faces_dir.map(PathBuf::from)
 }
 
-/// The faces she can pick from: the names of the PNGs in `dir`, sorted.
-pub fn names_in(dir: &Path) -> Vec<String> {
+/// The faces in `dir`: lowercased stem -> actual file path on disk, so mixed-case PNGs
+/// (`Happy.png`, `sleepy.PNG`) work on case-sensitive filesystems too.
+pub fn files_in(dir: &Path) -> BTreeMap<String, PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return BTreeMap::new();
     };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let png = path
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
-            png.then(|| path.file_stem()?.to_str().map(str::to_lowercase))
-                .flatten()
-        })
-        .collect();
-    names.sort();
-    names.dedup();
-    names
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    let mut files = BTreeMap::new();
+    for path in paths {
+        let png = path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"));
+        if !png {
+            continue;
+        }
+        if let Some(name) = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(str::to_lowercase)
+        {
+            files.entry(name).or_insert(path);
+        }
+    }
+    files
+}
+
+/// [`files_in`] off the async worker threads.
+async fn files_in_async(dir: PathBuf) -> BTreeMap<String, PathBuf> {
+    tokio::task::spawn_blocking(move || files_in(&dir))
+        .await
+        .unwrap_or_default()
+}
+
+/// The faces she can pick from: the names of the PNGs in `dir`, sorted.
+#[cfg(test)]
+fn names_in(dir: &Path) -> Vec<String> {
+    files_in(dir).into_keys().collect()
 }
 
 /// The faces she can pick from, or none without a faces folder.
-pub fn names(ctx: &BotCtx) -> Vec<String> {
-    dir(ctx).map(|dir| names_in(&dir)).unwrap_or_default()
+pub async fn names(ctx: &BotCtx) -> Vec<String> {
+    match dir(ctx) {
+        Some(dir) => files_in_async(dir).await.into_keys().collect(),
+        None => Vec::new(),
+    }
 }
 
 /// The lines added to the mood instructions (reflection and mood checks): a `face:` line
@@ -137,8 +159,8 @@ pub fn instruction(names: &[String], emoji: bool) -> Option<String> {
 }
 
 /// [`instruction`] for the current settings.
-pub fn instruction_for(ctx: &BotCtx) -> Option<String> {
-    instruction(&names(ctx), name::enabled(ctx))
+pub async fn instruction_for(ctx: &BotCtx) -> Option<String> {
+    instruction(&names(ctx).await, name::enabled(ctx))
 }
 
 /// The `face:` line of her mood file, if it names one of `names`.
@@ -185,13 +207,16 @@ pub async fn update(ctx: &BotCtx, scope: &str, mood: &str) {
         return;
     };
     let mut wait = None;
-    if let Some(dir) = dir(ctx)
-        && let Some(face) = parse(mood, &names_in(&dir))
-    {
-        let path = dir.join(format!("{face}.png"));
-        match set_picture(ctx, guild, Slot::Avatar, path, &face).await {
-            Ok(left) => wait = left,
-            Err(err) => warn!(%guild, face, "changing her face: {err:#}"),
+    if let Some(dir) = dir(ctx) {
+        let files = files_in_async(dir).await;
+        let names: Vec<String> = files.keys().cloned().collect();
+        if let Some(face) = parse(mood, &names)
+            && let Some(path) = files.get(&face).cloned()
+        {
+            match set_picture(ctx, guild, Slot::Avatar, path, &face).await {
+                Ok(left) => wait = left,
+                Err(err) => warn!(%guild, face, "changing her face: {err:#}"),
+            }
         }
     }
     match name::update(ctx, guild, mood).await {
@@ -327,7 +352,7 @@ pub async fn set_picture(
 /// face picked before the pictures were there or a nickname just turned on. Servers that
 /// already show them are skipped, so this costs nothing most of the time.
 pub async fn sync_all(ctx: &BotCtx) {
-    if names(ctx).is_empty() && !name::enabled(ctx) {
+    if names(ctx).await.is_empty() && !name::enabled(ctx) {
         return;
     }
     let moods = ctx
@@ -359,13 +384,15 @@ static PANEL_FACE: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// The face for the control panel, as a small PNG in a `data:` URL, from her newest mood.
 pub async fn panel_picture(ctx: &BotCtx, mood: &str) -> Option<String> {
     let dir = dir(ctx)?;
-    let face = parse(mood, &names_in(&dir))?;
+    let files = files_in_async(dir).await;
+    let names: Vec<String> = files.keys().cloned().collect();
+    let face = parse(mood, &names)?;
     if let Some((name, url)) = PANEL_FACE.lock().unwrap().as_ref()
         && *name == face
     {
         return Some(url.clone());
     }
-    let path = dir.join(format!("{face}.png"));
+    let path = files.get(&face)?.clone();
     let crop = crop(ctx);
     let png = tokio::task::spawn_blocking(move || load(&path, PANEL_SIZE, crop))
         .await
@@ -388,7 +415,21 @@ mod tests {
             std::fs::write(dir.path().join(file), b"").unwrap();
         }
         assert_eq!(names_in(dir.path()), ["happy", "sleepy"]);
+        let files = files_in(dir.path());
+        assert_eq!(files.get("happy"), Some(&dir.path().join("Happy.png")));
+        assert_eq!(files.get("sleepy"), Some(&dir.path().join("sleepy.PNG")));
         assert!(names_in(&dir.path().join("missing")).is_empty());
+    }
+
+    #[tokio::test]
+    async fn resolves_mixed_case_paths_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("Sleepy.PNG");
+        image::RgbaImage::new(32, 32).save(&actual).unwrap();
+        let files = files_in_async(dir.path().to_path_buf()).await;
+        assert_eq!(files.get("sleepy"), Some(&actual));
+        let png = load(&files["sleepy"], AVATAR_SIZE, None).unwrap();
+        assert!(!png.is_empty());
     }
 
     #[test]

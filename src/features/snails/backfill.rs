@@ -101,17 +101,19 @@ pub async fn snail_backfill(ctx: CommandCtx, args: SnailsBackfill) -> Result<()>
                 .to_string()
         }
         Action::Status => {
-            let (status, next, failures, dropped) = bot
+            let (status, unfinished, failures, dropped) = bot
                 .db
                 .call(move |conn| {
                     Ok((
                         store::crawl_status(conn, g)?,
-                        store::next_crawl_channel(conn, g)?,
+                        store::unfinished_crawl_channels(conn, g)?,
                         store::failures_by_host(conn, g)?,
                         store::dropped_by_host(conn, g)?,
                     ))
                 })
                 .await?;
+            let next =
+                next_allowed_channel(&unfinished, |ch| bot.allows("snails", Some(guild), ch));
             let mut text = describe(&status);
             if let (true, Some((channel, _))) = (status.running, next) {
                 text.push_str(&format!("\nReading <#{channel}> now."));
@@ -194,8 +196,8 @@ fn describe_failures(hosts: &[HostFailures]) -> String {
     text
 }
 
-/// Every channel and thread with messages: text, news, voice and stage chats, plus active
-/// and archived threads (forum posts are threads too).
+/// Every channel and thread with messages that `[features.snails]` allows: text, news,
+/// voice and stage chats, plus active and archived threads (forum posts are threads too).
 async fn list_channels(ctx: &BotCtx, guild: GuildId) -> Result<Vec<(u64, String)>> {
     let channels = ctx
         .http
@@ -204,6 +206,7 @@ async fn list_channels(ctx: &BotCtx, guild: GuildId) -> Result<Vec<(u64, String)
         .context("listing the server's channels")?
         .models()
         .await?;
+    let gate = ctx.gate("snails");
     let mut found = Vec::new();
     for channel in &channels {
         if matches!(
@@ -212,16 +215,29 @@ async fn list_channels(ctx: &BotCtx, guild: GuildId) -> Result<Vec<(u64, String)
                 | ChannelType::GuildAnnouncement
                 | ChannelType::GuildVoice
                 | ChannelType::GuildStageVoice
-        ) {
+        ) && ctx.allows_with_parent("snails", Some(guild), channel.id, None)
+        {
             found.push(thread_entry(channel));
         }
         if matches!(
             channel.kind,
             ChannelType::GuildText | ChannelType::GuildAnnouncement | ChannelType::GuildForum
-        ) {
+        ) && !gate.deny_channels.contains(&channel.id.get())
+        {
             for private in [false, true] {
                 match archived_threads(ctx, channel.id, private).await {
-                    Ok(threads) => found.extend(threads.iter().map(thread_entry)),
+                    Ok(threads) => {
+                        for thread in &threads {
+                            if ctx.allows_with_parent(
+                                "snails",
+                                Some(guild),
+                                thread.id,
+                                Some(channel.id),
+                            ) {
+                                found.push(thread_entry(thread));
+                            }
+                        }
+                    }
                     // Private archived threads need Manage Threads; without it they're skipped.
                     Err(err) => debug!(
                         "no archived threads for #{}: {err}",
@@ -238,10 +254,25 @@ async fn list_channels(ctx: &BotCtx, guild: GuildId) -> Result<Vec<(u64, String)
         .context("listing active threads")?
         .model()
         .await?;
-    found.extend(active.threads.iter().map(thread_entry));
+    for thread in &active.threads {
+        if ctx.allows_with_parent("snails", Some(guild), thread.id, thread.parent_id) {
+            found.push(thread_entry(thread));
+        }
+    }
     found.sort();
     found.dedup_by_key(|(id, _)| *id);
     Ok(found)
+}
+
+/// First unfinished crawl channel that `[features.snails]` still allows.
+fn next_allowed_channel(
+    unfinished: &[(u64, Option<u64>)],
+    allows: impl Fn(ChannelId) -> bool,
+) -> Option<(u64, Option<u64>)> {
+    unfinished
+        .iter()
+        .copied()
+        .find(|&(channel, _)| allows(ChannelId::new(channel)))
 }
 
 fn thread_entry(channel: &Channel) -> (u64, String) {
@@ -313,16 +344,20 @@ async fn crawl(ctx: &BotCtx, guild: GuildId) -> Result<()> {
             WORKERS.lock().unwrap().remove(&g);
             return Ok(());
         }
-        let (running, next) = ctx
+        let (running, unfinished) = ctx
             .db
             .call(move |conn| {
                 Ok((
                     store::is_running(conn, g)?,
-                    store::next_crawl_channel(conn, g)?,
+                    store::unfinished_crawl_channels(conn, g)?,
                 ))
             })
             .await?;
-        let next = if running { next } else { None };
+        let next = if running {
+            next_allowed_channel(&unfinished, |ch| ctx.allows("snails", Some(guild), ch))
+        } else {
+            None
+        };
         let Some((channel, before)) = next else {
             if running {
                 ctx.db
@@ -498,7 +533,7 @@ async fn catch_up_channel(
                 continue;
             }
             // Missed messages are new messages, so they're checked for snails too.
-            if let Err(err) = check::on_new_message(ctx, guild, msg).await {
+            if let Err(err) = check::on_new_message(ctx, guild, msg, None).await {
                 debug!(message = msg.id.get(), "couldn't index: {err:#}");
             }
         }
@@ -570,5 +605,25 @@ mod tests {
         assert!(text.contains("`pbs.twimg.com`: 3 (last error: HTTP"));
         assert!(text.contains("`cdn.discordapp.com`: 1 (last error: "));
         assert!(text.contains('…'));
+    }
+
+    #[test]
+    fn crawl_skips_denied_channels_and_threads() {
+        let config = crate::Config::parse(
+            r#"
+            [features.snails]
+            deny_channels = [10, 20]
+            "#,
+        )
+        .unwrap();
+        let gate = config.gate("snails");
+        let guild = Some(GuildId::new(1));
+        let unfinished = vec![(10, None), (21, Some(500)), (30, None)];
+        // Channel 10 is denied directly; thread 21's parent 20 is denied; 30 is allowed.
+        let next = next_allowed_channel(&unfinished, |ch| {
+            let parent = (ch.get() == 21).then_some(ChannelId::new(20));
+            gate.allows(guild, ch, parent)
+        });
+        assert_eq!(next, Some((30, None)));
     }
 }

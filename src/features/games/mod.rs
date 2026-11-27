@@ -5,15 +5,15 @@
 //! - `who_said_it/`: `/games whosaidit`, guessing who wrote old messages from the server
 //! - `hunger_games/`: `/games hungergames`, a battle royale between members that Vivy writes,
 //!   and `/games leaderboard`, its wins and kills
-//!
-//! - `herself.rs`: what a game needs to have her speak as herself (her memory notes)
+//! - `sources.rs`: which channels games may take quotes from
+//! - `quotes.rs`: reading channel history and cleaning messages into quotes
 //!
 //! Each game's buttons start with `games:<game>:`, and `on_component` hands a press to its
-//! game. The Hunger Games borrow who said it?'s quote reader and channel rules for last
-//! words and the arena.
+//! game.
 
-mod herself;
 mod hunger_games;
+mod quotes;
+mod sources;
 mod who_said_it;
 
 use async_trait::async_trait;
@@ -98,6 +98,24 @@ async fn run(ctx: CommandCtx) -> Result<()> {
     }
 }
 
+/// Vivy's teal, down the side of every game embed.
+const COLOR: u32 = 0x2bc4b4;
+
+/// A name with Discord's formatting characters escaped, so `_moss_` doesn't turn italic.
+fn escape(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if matches!(
+            c,
+            '*' | '_' | '~' | '`' | '|' | '>' | '#' | '[' | ']' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +130,11 @@ mod tests {
         assert_eq!(settings.hunger_games.max_tributes, 24);
         assert_eq!(settings.hunger_games.auto_advance_seconds, 45);
         assert_eq!(settings.hunger_games.lobby_minutes, 10);
+    }
+
+    #[test]
+    fn names_keep_their_underscores() {
+        assert_eq!(escape("_moss_"), "\\_moss\\_");
+        assert_eq!(escape("Cherry"), "Cherry");
     }
 }

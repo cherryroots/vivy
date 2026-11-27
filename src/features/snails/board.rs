@@ -16,7 +16,7 @@ use super::backfill::{SnailsBackfill, snail_backfill};
 use super::store::{self, RecentCatch};
 use crate::core::{Command, CommandCtx, Result, user_error};
 use crate::util::count;
-use crate::util::discord::{Draft, no_pings};
+use crate::util::discord::{ChannelId, Draft, GuildId, no_pings};
 
 /// How many people each list shows.
 const TOP: usize = 10;
@@ -93,10 +93,18 @@ async fn top(ctx: CommandCtx, guild: u64) -> Result<()> {
 pub struct SnailsRecent;
 
 async fn recent(ctx: CommandCtx, guild: u64) -> Result<()> {
+    let bot = ctx.bot.clone();
+    let guild_id = GuildId::new(guild);
     let catches = ctx
         .bot
         .db
-        .call(move |conn| Ok(store::recent_caught(conn, guild, RECENT)?))
+        .call(move |conn| {
+            Ok(store::recent_caught_matching(conn, guild, RECENT, |c| {
+                recent_catch_allowed(c, |ch| {
+                    bot.allows("snails", Some(guild_id), ChannelId::new(ch))
+                })
+            })?)
+        })
         .await?;
     if catches.is_empty() {
         ctx.say("🐌 No snails caught here yet.").await?;
@@ -110,6 +118,12 @@ async fn recent(ctx: CommandCtx, guild: u64) -> Result<()> {
         .build();
     ctx.send(Draft::new().embed(embed)).await?;
     Ok(())
+}
+
+/// Whether a caught snail may be shown by `/snails recent`: both its own channel and the
+/// original post's channel (when known) must be allowed by `[features.snails]`.
+fn recent_catch_allowed(catch: &RecentCatch, allows: impl Fn(u64) -> bool) -> bool {
+    catch.channel.is_none_or(&allows) && catch.original.is_none_or(|(ch, _)| allows(ch))
 }
 
 #[derive(CommandModel, CreateCommand)]
@@ -258,5 +272,44 @@ mod tests {
         };
         let text = recent_list(u64::MAX, &vec![big; RECENT]);
         assert!(text.chars().count() < 4096, "{}", text.chars().count());
+    }
+
+    #[test]
+    fn recent_hides_denied_channels() {
+        let config = crate::Config::parse(
+            r#"
+            [features.snails]
+            deny_channels = [20]
+            "#,
+        )
+        .unwrap();
+        let gate = config.gate("snails");
+        let allows = |ch| gate.allows(Some(GuildId::new(1)), ChannelId::new(ch), None);
+
+        let allowed = RecentCatch {
+            message: 1,
+            channel: Some(10),
+            author: 7,
+            at: 100,
+            original: Some((11, 2)),
+        };
+        let denied_msg = RecentCatch {
+            channel: Some(20),
+            ..allowed.clone()
+        };
+        let denied_orig = RecentCatch {
+            original: Some((20, 2)),
+            ..allowed.clone()
+        };
+        let deleted_msg = RecentCatch {
+            channel: None,
+            original: None,
+            ..allowed.clone()
+        };
+
+        assert!(recent_catch_allowed(&allowed, allows));
+        assert!(!recent_catch_allowed(&denied_msg, allows));
+        assert!(!recent_catch_allowed(&denied_orig, allows));
+        assert!(recent_catch_allowed(&deleted_msg, allows));
     }
 }

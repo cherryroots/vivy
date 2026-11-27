@@ -1,4 +1,4 @@
-//! `/wheel`, with `status` for everyone and `add`, `movie`, `bet` and `reset` for admins.
+//! `/wheel`, with `status` and `history` for everyone and `add`, `movie`, `bet` and `reset` for admins.
 //! The subcommands are the variants of [`WheelCommand`]; each has a struct with its options.
 
 use anyhow::Context as _;
@@ -7,8 +7,10 @@ use tracing::info;
 use twilight_interactions::command::{CommandModel, CreateCommand};
 use twilight_model::user::User;
 
-use super::actions::{Game, active_game, redraw_last, remember_status, status_message};
-use super::ledger::Bet;
+use super::actions::{
+    Game, active_game, history_png, redraw_last, remember_status, status_message,
+};
+use super::ledger::{self, Bet};
 use super::{names, store, ui};
 use crate::core::{Command, CommandCtx, Result, user_error};
 use crate::util::discord::{Draft, GuildId};
@@ -22,6 +24,8 @@ use crate::util::discord::{Draft, GuildId};
 pub enum WheelCommand {
     #[command(name = "status")]
     Status(WheelStatus),
+    #[command(name = "history")]
+    History(WheelHistory),
     #[command(name = "add")]
     Add(WheelAdd),
     #[command(name = "movie")]
@@ -39,6 +43,7 @@ pub fn wheel() -> Command {
 async fn run(ctx: CommandCtx) -> Result<()> {
     match ctx.parse::<WheelCommand>()? {
         WheelCommand::Status(args) => wheel_status(ctx, args).await,
+        WheelCommand::History(args) => wheel_history(ctx, args).await,
         // The admin commands answer privately.
         WheelCommand::Add(args) => wheel_add(ctx.ephemeral(), args).await,
         WheelCommand::Movie(args) => wheel_movie(ctx.ephemeral(), args).await,
@@ -106,6 +111,71 @@ async fn wheel_status(ctx: CommandCtx, args: WheelStatus) -> Result<()> {
         let sent = handle.message(&ctx).await?;
         remember_status(&ctx.bot, guild, sent.channel_id, sent.id).await;
     }
+    Ok(())
+}
+
+#[derive(CommandModel, CreateCommand)]
+#[command(name = "history", desc = "Balance history graph for a season")]
+pub struct WheelHistory {
+    /// Which season (default: the current or latest one)
+    #[command(min_value = 1)]
+    season: Option<i64>,
+}
+
+async fn wheel_history(ctx: CommandCtx, args: WheelHistory) -> Result<()> {
+    let WheelHistory { season } = args;
+    let guild = guild(&ctx)?;
+    // Looking up names and drawing the chart can take longer than Discord waits.
+    ctx.defer().await?;
+    let loaded = ctx
+        .bot
+        .db
+        .call(move |conn| {
+            let id = match season {
+                None => match store::active_season(conn, guild.get())? {
+                    Some(id) => id,
+                    None => store::seasons(conn, guild.get())?
+                        .last()
+                        .map(|s| s.id)
+                        .ok_or_else(|| {
+                            user_error(
+                                "There's no wheel history yet. Start a game with /wheel status.",
+                            )
+                        })?,
+                },
+                Some(number) => {
+                    let list = store::seasons(conn, guild.get())?;
+                    if list.is_empty() {
+                        return Err(user_error(
+                            "There's no wheel history yet. Start a game with /wheel status.",
+                        ));
+                    }
+                    usize::try_from(number - 1)
+                        .ok()
+                        .and_then(|n| list.get(n))
+                        .map(|s| s.id)
+                        .ok_or_else(|| {
+                            user_error(format!("This server has {} seasons.", list.len()))
+                        })?
+                }
+            };
+            Ok(store::load_season(conn, id)?)
+        })
+        .await?;
+
+    let history = ledger::balance_history(&loaded);
+    if history.rounds.is_empty() || history.players.is_empty() {
+        ctx.say(format!(
+            "Season {} has no resolved rounds yet. Check back after the first winner is picked!",
+            loaded.number
+        ))
+        .await?;
+        return Ok(());
+    }
+
+    let png = history_png(&ctx.bot, guild, &loaded).await?;
+    ctx.send(Draft::new().file("wheel-history.png", png))
+        .await?;
     Ok(())
 }
 
@@ -189,6 +259,8 @@ async fn wheel_add(ctx: CommandCtx, args: WheelAdd) -> Result<()> {
             added.push((user.id.get(), movie));
         }
     }
+    // Looking up names and redrawing the picture can take longer than Discord waits.
+    ctx.defer().await?;
     let now = Utc::now().timestamp();
     let list = added.clone();
     // Whether each user was changed (added or removed), in the same order.
@@ -257,6 +329,8 @@ async fn wheel_movie(ctx: CommandCtx, args: WheelMovie) -> Result<()> {
     require_admin(&ctx)?;
     let guild = guild(&ctx)?;
     let movie = ui::clean_movie(movie.as_deref().unwrap_or("")).map_err(user_error)?;
+    // Looking up names and redrawing the picture can take longer than Discord waits.
+    ctx.defer().await?;
     let id = user.id.get();
     let saved = movie.clone();
     let now = Utc::now().timestamp();
@@ -318,6 +392,8 @@ async fn insert_bet(ctx: CommandCtx, args: WheelBet) -> Result<()> {
     if !(0..=1_000_000_000).contains(&amount) {
         return Err(user_error("The amount must be from 0 to 1,000,000,000."));
     }
+    // Looking up uncached names can take longer than Discord waits.
+    ctx.defer().await?;
     let bet = Bet {
         by: by.id.get(),
         on: on.id.get(),
@@ -406,6 +482,6 @@ mod tests {
         let wheel = super::wheel().definition;
         let names: Vec<&str> = wheel.options.iter().map(|c| c.name.as_ref()).collect();
         assert_eq!(wheel.name, "wheel");
-        assert_eq!(names, ["status", "add", "movie", "bet", "reset"]);
+        assert_eq!(names, ["status", "history", "add", "movie", "bet", "reset"]);
     }
 }

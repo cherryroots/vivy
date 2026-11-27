@@ -416,7 +416,7 @@ async fn stream_answer(
             screen.status = Some(tool_status(&owners, &call.name, &call.args));
             screen.show(ctx).await?;
             let reply = tokio::select! {
-                reply = run_tool(ctx, asker, &owners, call) => reply,
+                reply = run_tool(ctx, asker, &tools, &owners, call) => reply,
                 () = cancel.cancelled() => return Ok(None),
             };
             screen.tool_files.extend(reply.files);
@@ -441,6 +441,14 @@ async fn stream_answer(
     Err(anyhow!(
         "the model kept calling tools ({max_rounds} rounds)"
     ))
+}
+
+/// Whether `send_voice_message` is available where `asker` is.
+pub(super) fn has_voice_tool(ctx: &BotCtx, asker: &Asker) -> bool {
+    ctx.features
+        .iter()
+        .filter(|f| ctx.allows(f.name(), asker.guild, asker.channel))
+        .any(|f| f.tools().iter().any(|t| t.name == "send_voice_message"))
 }
 
 /// The tools of every feature enabled where the asker is, and which feature owns each.
@@ -488,18 +496,46 @@ pub async fn context_for(ctx: &BotCtx, asker: &Asker, fresh: bool) -> Vec<String
     texts
 }
 
+/// Keeps only the fields declared in `tool.parameters["properties"]`, so a model call
+/// can't smuggle hidden internal arguments (like `draw_picture`'s `job`, `quality` or
+/// `post`, or `send_voice_message`'s `voice` or `reply`). Internal feature calls go
+/// straight to `Feature::run_tool` and aren't affected.
+pub(super) fn filter_tool_args(tool: &ToolDef, args: &serde_json::Value) -> serde_json::Value {
+    let Some(allowed) = tool
+        .parameters
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return serde_json::json!({});
+    };
+    let Some(given) = args.as_object() else {
+        return serde_json::json!({});
+    };
+    let filtered: serde_json::Map<String, serde_json::Value> = given
+        .iter()
+        .filter(|(key, _)| allowed.contains_key(*key))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    serde_json::Value::Object(filtered)
+}
+
 /// Runs one tool call. Whatever happens, the model gets text back: the result or the error.
 pub(super) async fn run_tool(
     ctx: &BotCtx,
     asker: &Asker,
+    tools: &[ToolDef],
     owners: &HashMap<&'static str, Arc<dyn Feature>>,
     call: &ToolCall,
 ) -> ToolReply {
     let Some(feature) = owners.get(call.name.as_str()) else {
         return format!("Error: there is no tool named {}.", call.name).into();
     };
+    let args = match tools.iter().find(|t| t.name == call.name) {
+        Some(def) => filter_tool_args(def, &call.args),
+        None => serde_json::json!({}),
+    };
     match feature
-        .run_tool_with_pictures(ctx, asker, &call.name, &call.args)
+        .run_tool_with_pictures(ctx, asker, &call.name, &args)
         .await
     {
         Ok(reply) => {
@@ -777,5 +813,57 @@ mod tests {
         );
         assert_eq!(link_files("no links", &files), "no links");
         assert_eq!(file_name("sandbox:/mnt/data/"), "file");
+    }
+
+    #[test]
+    fn filter_tool_args_drops_undeclared_internal_fields() {
+        let draw = ToolDef {
+            name: "draw_picture",
+            description: "",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string"},
+                    "shape": {"type": "string"}
+                }
+            }),
+        };
+        let smuggled = serde_json::json!({
+            "prompt": "a cat",
+            "shape": "square",
+            "job": "game_art",
+            "quality": "max",
+            "post": false,
+        });
+        assert_eq!(
+            filter_tool_args(&draw, &smuggled),
+            serde_json::json!({"prompt": "a cat", "shape": "square"})
+        );
+
+        let voice = ToolDef {
+            name: "send_voice_message",
+            description: "",
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "script": {"type": "string"}
+                }
+            }),
+        };
+        let smuggled_voice = serde_json::json!({
+            "script": "hello",
+            "voice": "gamemaker",
+            "reply": false,
+        });
+        assert_eq!(
+            filter_tool_args(&voice, &smuggled_voice),
+            serde_json::json!({"script": "hello"})
+        );
+
+        // Non-object args become an empty object.
+        assert_eq!(
+            filter_tool_args(&voice, &serde_json::json!("oops")),
+            serde_json::json!({})
+        );
     }
 }

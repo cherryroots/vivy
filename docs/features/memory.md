@@ -32,6 +32,7 @@ All under `src/features/memory/`.
 | `diary.rs` | The weekly diary. |
 | `sweep.rs` | The slice of older notes each reflection rereads, and the line saying where each came from. Pure. |
 | `check.rs` | `check_messages`, the reflection's read-only search of what people wrote, and `ReflectRunner`, its two tools. |
+| `movies.rs` | Listens for `BotEvent::WheelRoundResolved` and logs watched movies into `/memories/server/movies-watched.md`. |
 
 ## How it works
 
@@ -80,15 +81,14 @@ This is used instead of Anthropic's Skills API, which is workspace-wide (one ski
 `tool::run` picks the scope from the asker, then `tool::run_in`:
 
 1. Drops arguments the model filled with `null` or `[]`, and parses the rest into `folder::Command`. That is a Rust `enum` (a type with several named variants, each with its own fields); serde reads the `command` field to choose the variant.
-2. In one database transaction (so two answers editing the same file can't lose an edit), loads the folder, runs the command on a copy (`folder::run`), and checks the limits (`folder::check_limits`).
-3. If the command can write, saves only what changed (`store::save`) and commits. Every changed file also gets a row in `memory_changes` with who asked, the old text and the new text, so a wrong or mean note can be traced and undone by hand.
+2. For read-only `view`, loads the folder and runs the command directly without cloning or opening a write transaction. For writing commands, runs in one database transaction (so two answers editing the same file can't lose an edit): loads the folder, runs the command on a copy (`folder::run`), checks the limits (`folder::check_limits`), saves only what changed (`store::save`), and commits. Every changed file also gets a row in `memory_changes` with who asked, the old text and the new text, so a wrong or mean note can be traced and undone by hand.
 
 Mistakes (a missing file, text that appears twice, a path outside `/memories`) come back as text in the same words Claude's memory tool uses, so the model can fix its call.
 
 Rules from `folder.rs`:
 
-- Paths must start with `/memories`, at most 200 characters, with no empty, `.` or `..` parts, backslashes or control characters.
-- A file holds at most 8 KB, a folder at most 256 KB. A file already over the limit may stay as it is, and a command that only shrinks a full folder is allowed.
+- Paths must start with `/memories`, at most 200 characters, with no empty, `.` or `..` parts, backslashes or control characters. Renaming a directory checks that every moved child path stays within 200 characters.
+- A file holds at most 8 KB, a folder at most 256 KB and at most 500 files. A file already over the limit may stay as it is, and a command that only shrinks a full folder (or reduces the file count) is allowed.
 - `view` of a directory lists two levels deep with sizes (like `du -h`), hiding names that start with a dot. `view` of a file shows numbered lines, optionally a `view_range`. `view` with `paths` (instead of `path`) opens up to 10 files in one call and answers with each in turn (`tool::run_in`), so she doesn't spend a round per file.
 - `create` writes a whole file and overwrites one that exists. `str_replace` needs the old text to appear exactly once; without `new_str` it deletes it. `insert` adds lines after `insert_line` (0 is the top). `delete` and `rename` work on files and whole directories, never on `/memories` itself.
 
@@ -104,7 +104,7 @@ Rules from `folder.rs`:
 
 ### The mood file
 
-`/memories/vivy/mood.md` (`reflect::MOOD_FILE`) has four lines: `mood:` (how she feels and why), `status:` (a short line for her Discord status), `thinking:` (two or three things on her mind) and `wondering:` (things she'd like to find out). When faces are on there is also `face:`, and when the nickname is on, `emoji:`. `reflect::mood_line` reads a line by its label and forgives list dashes, bold labels and quotes, since models format it loosely.
+`/memories/vivy/mood.md` (`reflect::MOOD_FILE`) has four lines: `mood:` (how she feels and why), `status:` (a short line for her Discord status), `thinking:` (two or three things on her mind) and `wondering:` (things she'd like to find out). When faces are on there is also `face:`, and when the nickname is on, `emoji:`. `reflect::mood_line` reads a line by its label, forgives list dashes, bold labels and quotes, and skips empty lines so an empty label never hides a later value.
 
 After any mood change (reflection, mood check or `set_mood`), `reflect::apply_mood` sets:
 
@@ -115,7 +115,7 @@ The control panel shows the newest mood file in a "<bot name>'s mind" box: Mood,
 
 ### Daily reflection
 
-`reflect.rs`. Each hour the loop asks `store::due_reflections` for server folders that changed since their last reflection, at most once a day each (`memory_reflections`). Changes by Vivy herself don't count (or every reflection would make the next one due), and neither do changes to `mood.md` (mood checks rewrite it several times a day, and a quiet server shouldn't reflect for that alone). DMs never reflect.
+`reflect.rs`. Each hour the loop asks `store::due_reflections` for server folders that changed since their last reflection, at most once a day each (`memory_reflections`). Changes by Vivy herself don't count (or every reflection would make the next one due), and neither do changes to `mood.md` (mood checks rewrite it several times a day, and a quiet server shouldn't reflect for that alone). `store::changes_since_reflection` applies the same filter so yesterday's reflection edits and daily `mood.md` updates don't eat the 12K change budget or skew the sweep. DMs never reflect.
 
 Vivy gets her self notes, a `view` of `/memories`, the list of files changed since the last reflection (by whom, how often), and the text of those files (`diary::render_changes`, the same limits as the diary), so she only views a file when she needs more of it. She also gets a slice of older notes (see [The sweep](#the-sweep)). She has the `memory` tool (run by `FolderRunner` as herself) and `check_messages` (below), up to 25 rounds in all, and her own small system prompt: merge duplicates, fix contradictions (a person's own word wins), delete stale or trivial notes and task logs, keep files short, then update `/memories/vivy/` (under 2K, skills not counted), write or improve skills, and last rewrite `mood.md`. When faces or the nickname are on, the prompt also asks for the `face:` and `emoji:` lines.
 
@@ -137,7 +137,7 @@ This is the idea Anthropic's memory research calls dreaming: going over memory o
 
 ### `check_messages` in reflections
 
-`check.rs`. A read-only tool only the reflection has. With `from` (a user id), `query` (words) or both, it runs Discord's message search (`util::search`) in that server and answers with up to 10 messages, newest first: date, name, user id, channel and the text (cut to 300 characters). The prompt tells her to use it when a note that matters seems doubtful (two notes disagree, an old note, someone else's word about a person), and that what people wrote wins over her notes.
+`check.rs`. A read-only tool only the reflection has. With `from` (a numeric user id or mention; invalid non-empty values return an error), `query` (words) or both, it runs Discord's message search (`util::search`) in that server and answers with up to 10 messages, newest first: date, name, user id, channel and the text (cut to 300 characters). The prompt tells her to use it when a note that matters seems doubtful (two notes disagree, an old note, someone else's word about a person), and that what people wrote wins over her notes.
 
 - Results keep to the channels chat may read (`[features.chat]` gating, a thread counting as its parent, looked up from Discord since archived threads aren't cached), and never age-restricted channels. Same rule as chat's `search_messages` (#149).
 - At most 8 searches per reflection; after that it says to decide from the notes she has. Each search adds a round, so this caps what it can cost.
@@ -150,11 +150,11 @@ One short call with no tools: Vivy gets the local time in `timezone` (like "It's
 
 ### `set_mood` in conversations
 
-`set_mood.rs`. In a server conversation, Vivy can change her mood when something there really moves her. The tool rewrites the `mood:` and `status:` lines of that server's `mood.md`, and `face:` and `emoji:` when given, keeping the other lines. The change is logged under the person she was talking to. Then `apply_mood` sets her status, face and nickname. A face must be one of the listed names, and an emoji must pass `name::clean`; otherwise she gets an error to fix. In DMs it refuses: her mood belongs to a server.
+`set_mood.rs`. In a server conversation, Vivy can change her mood when something there really moves her. The tool rewrites the `mood:` and `status:` lines of that server's `mood.md`, and `face:` and `emoji:` when given, keeping the other lines (and replacing empty formatted lines like `- **Mood**:` in place). It enforces `folder::check_limits`, logs the change under the person she was talking to, and bumps `memory_mood_checks` so a timed mood check doesn't overwrite it right away. Then `apply_mood` sets her status, face and nickname. A face must be one of the listed names, and an emoji must pass `name::clean`; otherwise she gets an error to fix. In DMs it refuses: her mood belongs to a server.
 
 ### Faces
 
-`face.rs`. `faces_dir` holds one PNG per mood (`happy.png`, `sleepy.png`, ...). The file names, lowercased, are the face names. When there are any, the reflection and mood checks ask for a `face:` line naming one, and `set_mood` takes one.
+`face.rs`. `faces_dir` holds one PNG per mood (`happy.png`, `sleepy.png`, ...). The lowercased file stems are the face names, mapped to their actual paths on disk so mixed-case PNGs (`Happy.png`, `sleepy.PNG`) work on Linux; directory scans run in `spawn_blocking`. When there are any, the reflection and mood checks ask for a `face:` line naming one, and `set_mood` takes one.
 
 `face::set_picture` sets a picture on her server profile:
 
@@ -170,11 +170,11 @@ At start, `face::sync_all` brings each server's face and nickname in step with i
 
 ### Banners
 
-`banner.rs`. `banners_dir` holds `morning.png`, `day.png`, `evening.png` and `night.png`. Every hour the loop picks the one for the local hour in `timezone` (5 to 10 morning, 11 to 16 day, 17 to 21 evening, else night) and sets it in every server that has a mood file, through `face::set_picture` with the slot "banner", not cropped, scaled to fit 1500 px. Since the name is compared first, most hours send nothing. A banner held back by the 10 minute gap just waits for the next hour.
+`banner.rs`. `banners_dir` holds `morning.png`, `day.png`, `evening.png` and `night.png`. Every hour the loop picks the one for the local hour in `timezone` (5 to 10 morning, 11 to 16 day, 17 to 21 evening, else night), checks if it exists in `spawn_blocking`, and sets it in every server that has a mood file, through `face::set_picture` with the slot "banner", not cropped, scaled to fit 1500 px. Since the name is compared first, most hours send nothing. A banner held back by the 10 minute gap just waits for the next hour.
 
 ### Weekly diary
 
-`diary.rs`. With `diary_channels` set, the loop posts a diary entry once a week. Targets can be channels or threads. They are grouped by server: one entry per server, written once and posted to every target there, due a week after the last post to any of them (`memory_diaries`). A target added later joins the next entry.
+`diary.rs`. With `diary_channels` set, the loop posts a diary entry once a week. Targets can be channels or threads (`0` IDs are skipped with a warning). They are grouped by server: one entry per server, written once and posted to every target there, due a week after the last post to any of them (`memory_diaries`). A target added later joins the next entry.
 
 She gets her self notes, a `view` of `/memories`, and the text of the files changed that week (each cut to 1500 characters, 12000 in all). She may use the `memory` tool (as herself, up to 10 rounds) to update her own notes, and follows `/memories/vivy/skills/diary.md` if it exists. She writes a short first-person entry (under 1500 characters), posted with no pings. A week where only she changed anything (mood checks, reflections) gets no entry: `store::people_changed_since` looks for a change by someone else, not to `mood.md`.
 
@@ -182,6 +182,15 @@ She gets her self notes, a `view` of `/memories`, and the text of the files chan
 - If writing fails, it isn't saved as posted and tries again 3 hours later.
 - An entry that was written but couldn't be posted anywhere is kept in memory and posted on the next try, instead of asking the model again (unless it's more than a week old). If the bot has no access to any target, it tries daily and warns once. Posting to at least one target counts as posted.
 - A channel that can't be found is warned about once a week.
+
+### Watched movies from the wheel
+
+`movies.rs`. When the movie wheel resolves a round, it publishes `BotEvent::WheelRoundResolved`. Memory listens in `on_bot_event`, checks that `memory` is allowed in that server (`ctx.gate("memory").allows_guild(guild_id)`), and writes a line to `/memories/server/movies-watched.md` inside one SQLite transaction (creating the file with `# Watched movies (movie wheel)` on the first round, logged under the bot's user ID so it doesn't trigger a reflection on its own):
+
+- With a movie: `- YYYY-MM-DD: **<movie>** (picked by <winner_name>, S<season> R<round>)`
+- Without a movie: `- YYYY-MM-DD: <winner_name> won the wheel (S<season> R<round>)`
+
+If an entry for `S<season> R<round>` already exists (for example after Undo Winner), it is replaced in place rather than duplicated. If appending would push the file past `folder::MAX_FILE` (8 KB), the oldest `- ...` entries are trimmed from the top first.
 
 ### Keeping the change log small
 
@@ -198,6 +207,8 @@ The hourly loop deletes rows in `memory_changes` older than 90 days (`store::pru
 
 - `name`: "memory".
 - `commands`: `/memory`.
+- `on_component`: `/memory forget` confirm/cancel buttons (`memory:forget:<user>` / `memory:keep:<user>`).
+- `on_bot_event`: logs `BotEvent::WheelRoundResolved` into `/memories/server/movies-watched.md` (`movies::record`).
 - `migrations`: `store::MIGRATIONS`.
 - `tools` and `run_tool`: `memory` and `set_mood`; `run_tool` sends `set_mood` to `set_mood::run` and everything else to `tool::run`.
 - `tool_status`: "📝 Remembering…" for `memory` ("📖 Checking my notes…" when it only views a file), "💭 Thinking…" for `set_mood` in chat's status line.
@@ -253,6 +264,7 @@ The paths the `memory` tool's description suggests:
 ├── server/
 │   ├── channels.md         what each channel is for
 │   ├── culture.md          in-jokes, running gags, norms
+│   ├── movies-watched.md   resolved movie wheel rounds (logged automatically)
 │   └── events.md, games.md, ... as they come up
 └── vivy/                   Vivy's own, only she decides
     ├── personality.md      character, tone, humor

@@ -109,7 +109,7 @@ impl Default for OpenAiConfig {
             model: "gpt-6.1-sol".to_string(),
             reasoning_effort: "medium".to_string(),
             verbosity: "low".to_string(),
-            service_tier: Some("fast".to_string()),
+            service_tier: None,
             monthly_budget: 25.0,
             billed_spend: true,
             show_cache_hits: true,
@@ -162,7 +162,9 @@ impl OpenAi {
             Input::Full(turns) => turns,
             Input::After { new, .. } => new,
         };
-        let input = input_items(turns, uploads);
+        let job = job_settings(&self.config.jobs, request.job, None);
+        let code = job.code.unwrap_or(true);
+        let input = input_items(turns, uploads, code);
         let previous = match &request.input {
             Input::Full(_) => None,
             Input::After { continuation, .. } => Some(continuation),
@@ -186,12 +188,11 @@ impl OpenAi {
         if !file_ids.is_empty() {
             container["file_ids"] = json!(file_ids);
         }
-        let job = job_settings(&self.config.jobs, request.job, None);
         let mut tools = Vec::new();
         if job.web.unwrap_or(true) {
             tools.push(json!({"type": "web_search"}));
         }
-        if job.code.unwrap_or(true) {
+        if code {
             tools.push(json!({"type": "code_interpreter", "container": container}));
         }
         tools.extend(request.tools.iter().map(|tool| {
@@ -306,7 +307,7 @@ impl OpenAi {
         let mut uploads = Vec::new();
         for part in turns.iter().flat_map(|t| &t.parts) {
             let upload = match part {
-                Part::File(file) if is_readable(file) || fits_sandbox(file) => {
+                Part::File(file) if is_readable(file) || (code && fits_sandbox(file)) => {
                     self.try_upload(file).await
                 }
                 Part::Image(image) if code => match picture_file(image) {
@@ -345,10 +346,16 @@ fn picture_file(image: &ModelImage) -> Option<ModelFile> {
 
 /// How one attached file is sent: the file to read, and a note saying where it is.
 /// `readable_bytes` counts the `input_file` bytes so far, to stay under OpenAI's limit.
-fn file_content(file: &ModelFile, upload: Option<&str>, readable_bytes: &mut usize) -> Vec<Value> {
+fn file_content(
+    file: &ModelFile,
+    upload: Option<&str>,
+    code: bool,
+    readable_bytes: &mut usize,
+) -> Vec<Value> {
     let name = &file.name;
+    let in_sandbox = code && fits_sandbox(file);
     let Some(file_id) = upload else {
-        let text = if is_readable(file) || fits_sandbox(file) {
+        let text = if is_readable(file) || in_sandbox {
             format!("[{name} is attached, but it couldn't be uploaded]")
         } else {
             format!("[{name} is attached, but you can't open this kind of file here]")
@@ -360,7 +367,7 @@ fn file_content(file: &ModelFile, upload: Option<&str>, readable_bytes: &mut usi
         *readable_bytes += file.data.len();
         content.push(json!({"type": "input_file", "file_id": file_id}));
     }
-    if fits_sandbox(file) {
+    if in_sandbox {
         content.push(json!({
             "type": "input_text",
             "text": format!("[{name} is in the code interpreter's /mnt/data folder]"),
@@ -371,7 +378,7 @@ fn file_content(file: &ModelFile, upload: Option<&str>, readable_bytes: &mut usi
 
 /// Turns become the API's input items. Tool results are items of their own. `uploads` is
 /// what [`OpenAi::upload_files`] returned for the same turns.
-fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
+fn input_items(turns: &[Turn], uploads: &[Option<String>], code: bool) -> Vec<Value> {
     let mut uploads = uploads.iter();
     let mut readable_bytes = 0;
     let mut items = Vec::new();
@@ -403,7 +410,7 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                 }
                 (Part::File(file), _) => {
                     let upload = uploads.next().and_then(|id| id.as_deref());
-                    content.extend(file_content(file, upload, &mut readable_bytes));
+                    content.extend(file_content(file, upload, code, &mut readable_bytes));
                 }
                 (
                     // Files only go to a provider that opens them (Gemini).
@@ -421,8 +428,8 @@ fn input_items(turns: &[Turn], uploads: &[Option<String>]) -> Vec<Value> {
                 })),
                 // OpenAI remembers its own answers; the turn's text is enough.
                 (Part::Native { .. }, _) => {}
-                // OpenAI reads videos as frame grids; these are only made for Gemini.
-                (Part::Video(_) | Part::YouTube(_), _) => {}
+                // OpenAI reads videos as frame grids and can't hear audio; these are only made for Gemini.
+                (Part::Video(_) | Part::YouTube(_) | Part::Audio(_), _) => {}
             }
         }
         if !content.is_empty() {
@@ -485,8 +492,11 @@ fn parse_event(event: &SseEvent) -> anyhow::Result<Option<ChatEvent>> {
 }
 
 /// Reads the finished response: its ID, the tools it wants run, and the files it made.
+/// Incomplete responses (for example cut off at the output limit) skip `function_call`s
+/// so truncated tool calls aren't executed.
 fn parse_done(response: &Value) -> Done {
     let output = response["output"].as_array().cloned().unwrap_or_default();
+    let complete = response["status"].as_str() != Some("incomplete");
     let mut done = Done {
         continuation: response["id"].as_str().map(str::to_string),
         native: Value::Array(output.clone()),
@@ -494,7 +504,7 @@ fn parse_done(response: &Value) -> Done {
     };
     for item in &output {
         match item["type"].as_str() {
-            Some("function_call") => {
+            Some("function_call") if complete && item["status"].as_str() != Some("incomplete") => {
                 let arguments = item["arguments"].as_str().unwrap_or("{}");
                 done.tool_calls.push(ToolCall {
                     id: item["call_id"].as_str().unwrap_or_default().to_string(),
@@ -569,6 +579,24 @@ async fn add_spend(spend: &Spend, job: &'static str, event: &SseEvent, tier: Opt
     spend.add(job, used).await;
 }
 
+/// Drops `"service_tier"` from `body` when a flex request failed with an error worth
+/// retrying on the standard tier, returning `true` if the caller should retry.
+fn fallback_from_flex(body: &mut Value, err: &anyhow::Error) -> bool {
+    if body["service_tier"] == "flex" && super::fallback::retry_without_flex(err) {
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("service_tier");
+        }
+        true
+    } else {
+        false
+    }
+}
+
+/// The service tier actually sent in `body` (`None` after a flex-to-standard fallback).
+fn sent_tier(body: &Value) -> Option<String> {
+    body["service_tier"].as_str().map(str::to_string)
+}
+
 #[async_trait]
 impl ChatProvider for OpenAi {
     fn name(&self) -> &'static str {
@@ -584,22 +612,21 @@ impl ChatProvider for OpenAi {
         request: ChatRequest,
     ) -> anyhow::Result<mpsc::Receiver<anyhow::Result<ChatEvent>>> {
         let uploads = self.upload_files(&request).await;
-        let body = self.request_body(&request, &uploads);
+        let mut body = self.request_body(&request, &uploads);
         let mut response = match self.responses(&body).await {
             // Flex has no room right now (or doesn't take this model): the normal tier.
             // Info, not a warning: if that fails too, the job's own warning says so.
-            Err(err) if body["service_tier"] == "flex" => {
+            Err(err) if fallback_from_flex(&mut body, &err) => {
                 info!("OpenAI's flex tier failed, asking on the default tier: {err:#}");
-                let mut default = body.clone();
-                default.as_object_mut().unwrap().remove("service_tier");
-                self.responses(&default).await?
+                self.responses(&body).await?
             }
             result => result?,
         };
 
         let (sender, receiver) = mpsc::channel(64);
         let spend = self.spend.clone().map(|spend| (spend, request.job));
-        let tier = self.tier(request.job);
+        // Price using the tier that actually answered (None if flex fell back to standard).
+        let tier = sent_tier(&body);
         tokio::spawn(async move {
             let mut parser = SseParser::default();
             loop {
@@ -614,7 +641,14 @@ impl ChatProvider for OpenAi {
                         return;
                     }
                 };
-                for event in parser.push(&chunk) {
+                let events = match parser.push(&chunk) {
+                    Ok(events) => events,
+                    Err(err) => {
+                        let _ = sender.send(Err(err)).await;
+                        return;
+                    }
+                };
+                for event in events {
                     let parsed = parse_event(&event);
                     if let (Ok(Some(ChatEvent::Done(_))), Some((spend, job))) = (&parsed, &spend) {
                         add_spend(spend, job, &event, tier.as_deref()).await;
@@ -749,8 +783,20 @@ mod tests {
         let body = client().request_body(&request, &[]);
         assert_eq!(body["previous_response_id"], "resp_1");
         assert_eq!(body["instructions"], "Be nice.");
-        assert_eq!(body["service_tier"], "fast");
+        assert!(body.get("service_tier").is_none());
         assert_eq!(body["prompt_cache_key"], "vivy:chat");
+
+        let fast = OpenAi::new(
+            reqwest::Client::new(),
+            "key".into(),
+            None,
+            OpenAiConfig {
+                service_tier: Some("fast".into()),
+                ..OpenAiConfig::default()
+            },
+            None,
+        );
+        assert_eq!(fast.request_body(&request, &[])["service_tier"], "fast");
         assert_eq!(
             body["input"],
             json!([
@@ -975,5 +1021,164 @@ mod tests {
             }]
         );
         assert_eq!(done.native.as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn incomplete_response_drops_truncated_function_calls() {
+        let response = json!({
+            "id": "resp_inc",
+            "status": "incomplete",
+            "output": [
+                {"type": "function_call", "call_id": "call_1", "name": "memory", "arguments": "{\"path\": \"/mem"},
+                {"type": "message", "content": [{"type": "output_text", "text": "partial"}]},
+            ],
+        });
+        let done = parse_done(&response);
+        assert_eq!(done.continuation.as_deref(), Some("resp_inc"));
+        assert!(done.tool_calls.is_empty());
+
+        // An individual incomplete function_call item is also skipped.
+        let item_incomplete = json!({
+            "id": "resp_part",
+            "status": "completed",
+            "output": [
+                {"type": "function_call", "status": "incomplete", "call_id": "call_1", "name": "memory", "arguments": "{"},
+                {"type": "function_call", "status": "completed", "call_id": "call_2", "name": "get_time", "arguments": "{}"},
+            ],
+        });
+        let done = parse_done(&item_incomplete);
+        assert_eq!(done.tool_calls.len(), 1);
+        assert_eq!(done.tool_calls[0].id, "call_2");
+    }
+
+    #[tokio::test]
+    async fn non_code_job_skips_uploading_sandbox_only_files() {
+        let zip = ModelFile {
+            name: "data.zip".into(),
+            mime: "application/zip".into(),
+            data: b"zipbytes".to_vec(),
+        };
+        let pdf = ModelFile {
+            name: "report.pdf".into(),
+            mime: "application/pdf".into(),
+            data: b"pdfbytes".to_vec(),
+        };
+        // Mood has code = false; uploading data.zip would fail against the invalid base URL
+        // if attempted, so returning [None] without error proves no upload ran.
+        let openai = OpenAi::new(
+            reqwest::Client::new(),
+            "key".into(),
+            Some("http://127.0.0.1:1"),
+            OpenAiConfig::default(),
+            None,
+        );
+        let request = ChatRequest {
+            system: String::new(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::File(zip.clone())],
+            }]),
+            tools: Vec::new(),
+            cache_key: String::new(),
+            job: "mood",
+            answer_now: false,
+        };
+        assert_eq!(openai.upload_files(&request).await, vec![None]);
+
+        // And with code = false, file_content does not claim /mnt/data or upload failure
+        // for sandbox-only files.
+        let mut bytes = 0;
+        assert_eq!(
+            file_content(&zip, None, false, &mut bytes),
+            vec![
+                json!({"type": "input_text", "text": "[data.zip is attached, but you can't open this kind of file here]"})
+            ]
+        );
+        assert_eq!(
+            file_content(&pdf, Some("file-1"), false, &mut bytes),
+            vec![json!({"type": "input_file", "file_id": "file-1"})]
+        );
+    }
+
+    #[test]
+    fn flex_fallback_prices_at_standard_and_skips_auth_or_credit_retry() {
+        let error = |status: u16, message: &str| -> anyhow::Error {
+            ApiError {
+                provider: "openai",
+                status: reqwest::StatusCode::from_u16(status).unwrap(),
+                message: message.into(),
+            }
+            .into()
+        };
+        let mood = ChatRequest {
+            system: "Be brief.".into(),
+            input: Input::Full(vec![Turn {
+                role: Role::User,
+                parts: vec![Part::Text("hi".into())],
+            }]),
+            tools: Vec::new(),
+            cache_key: "test".into(),
+            job: "mood",
+            answer_now: false,
+        };
+        let mut body = client().request_body(&mood, &[]);
+        assert_eq!(sent_tier(&body).as_deref(), Some("flex"));
+
+        // Auth and out-of-credit errors must not fall back from flex to standard.
+        assert!(!fallback_from_flex(
+            &mut body,
+            &error(401, "invalid api key")
+        ));
+        assert!(!fallback_from_flex(&mut body, &error(403, "forbidden")));
+        assert!(!fallback_from_flex(
+            &mut body,
+            &error(429, "You exceeded your current quota")
+        ));
+        assert_eq!(sent_tier(&body).as_deref(), Some("flex"));
+
+        // Transient flex failure drops service_tier so spend is priced at standard (full) rate.
+        assert!(fallback_from_flex(&mut body, &error(503, "high demand")));
+        assert_eq!(sent_tier(&body), None);
+        let response = json!({
+            "id": "resp_1",
+            "model": "gpt-6.1-sol",
+            "usage": {"input_tokens": 1_000_000, "output_tokens": 0},
+            "output": [],
+        });
+        let used = price::chat_cost(&response, sent_tier(&body).as_deref());
+        assert!((used.usd - 2.0).abs() < 1e-9, "usd={}", used.usd);
+    }
+
+    #[test]
+    fn example_config_leaves_service_tier_unset() {
+        assert_eq!(OpenAiConfig::default().service_tier, None);
+        let config =
+            crate::core::config::Config::parse(include_str!("../../../config.example.toml"))
+                .unwrap();
+        assert_eq!(config.ai.openai.service_tier, None);
+    }
+
+    #[test]
+    fn audio_parts_are_skipped_safely() {
+        let turns = vec![Turn {
+            role: Role::User,
+            parts: vec![
+                Part::Text("[Voice message]".into()),
+                Part::Audio(ModelFile {
+                    name: "voice-message.ogg".into(),
+                    mime: "audio/ogg".into(),
+                    data: b"OggS".to_vec(),
+                }),
+            ],
+        }];
+        let items = input_items(&turns, &[], true);
+        assert_eq!(
+            items,
+            vec![json!({
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "[Voice message]"}]
+            })]
+        );
     }
 }

@@ -78,13 +78,22 @@ pub async fn send(sender: &Sender, body: &Value, wait: Duration) -> anyhow::Resu
     let url = batch["results_url"]
         .as_str()
         .context("the batch has no results")?;
-    let response = sender
-        .http
-        .get(url)
-        .header("x-api-key", &sender.key)
-        .header("anthropic-version", super::VERSION)
-        .send()
-        .await?;
+    check_results_url(url)?;
+    let request = || {
+        sender
+            .http
+            .get(url)
+            .header("x-api-key", &sender.key)
+            .header("anthropic-version", super::VERSION)
+    };
+    let response = super::api::send_retrying(
+        "Claude",
+        request,
+        &[429, 500, 502, 503, 529],
+        &super::RETRY_WAITS,
+    )
+    .await
+    .context("downloading the batch's result failed")?;
     if !response.status().is_success() {
         let status = response.status();
         let text = response.text().await.unwrap_or_default();
@@ -96,6 +105,17 @@ pub async fn send(sender: &Sender, body: &Value, wait: Duration) -> anyhow::Resu
     let text = response.text().await?;
     let line = text.lines().next().context("the batch's result is empty")?;
     result_message(serde_json::from_str(line).context("the batch's result isn't JSON")?)
+}
+
+/// Checks that `url` points at Anthropic's API before sending our API key to it.
+fn check_results_url(url: &str) -> anyhow::Result<()> {
+    if url
+        .strip_prefix(super::API)
+        .is_some_and(|rest| rest.starts_with('/'))
+    {
+        return Ok(());
+    }
+    bail!("unexpected batch results URL: {url}");
 }
 
 /// The message in one line of a batch's results, or why there is none.
@@ -224,6 +244,18 @@ mod tests {
         assert!(format!("{:#}", result_message(failed).unwrap_err()).contains("bad"));
         let expired = json!({"custom_id": "vivy", "result": {"type": "expired"}});
         assert!(format!("{:#}", result_message(expired).unwrap_err()).contains("expired"));
+    }
+
+    #[test]
+    fn results_url_must_be_on_anthropics_api() {
+        assert!(
+            check_results_url("https://api.anthropic.com/v1/messages/batches/b1/results").is_ok()
+        );
+        assert!(check_results_url("https://evil.example/v1/messages/batches/b1/results").is_err());
+        assert!(check_results_url("https://api.anthropic.com/v1.evil.example/results").is_err());
+        assert!(
+            check_results_url("http://api.anthropic.com/v1/messages/batches/b1/results").is_err()
+        );
     }
 
     /// Talks to the real API: a reflection-like job on Haiku that calls a tool, run with

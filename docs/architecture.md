@@ -37,7 +37,7 @@ All of this is in `src/main.rs`, top to bottom:
 5. **AI.** `ai_from_env` builds the chat provider that `provider` under `[ai]` names, plus the `fallback` one, from the keys in `.env`, and every other provider with a key there, for features that pick their own (the Hunger Games on OpenAI). Gemini's HTTP client waits up to 15 minutes for a slow answer, since it can think that long without sending anything. With `ANTHROPIC_ADMIN_KEY`, `OPENAI_ADMIN_KEY` or `GEMINI_BILLING_KEY_FILE`, a task starts that reads that company's bill hourly; when Claude chats, another keeps its prompt cache warm.
 6. **Commands.** Every feature's slash commands are collected, each tagged with its feature's name (`FeatureCommand`), so the gate check knows whose command it is.
 7. **Connect.** Twilight's `Http` client asks Discord who the bot is and who owns it. The gateway connections ("shards", one per 2500 servers, so one for Vivy) are made with the intents the bot needs; Message Content and Presences are privileged and must be turned on in the Developer Portal (without them Discord closes the connection with code 4014). The `BotCtx` is built and the log channel poster starts. Then one task per shard reads its events (`run_shard`): the cache sees each event first, then the dispatcher. On the first Ready, `on_first_ready` registers the slash commands globally (and clears voltgpt's old per-server ones), starts delivering bot events, and calls `start` on every enabled feature. Then the 🟢 Started line goes to the log channel.
-8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels the `shutdown` token. Background tasks see it and stop, and the bot waits up to 10 seconds for them and for event handlers still running (the control panel uses that time to show OFFLINE).
+8. **Shutdown.** Ctrl+C or SIGTERM (`systemctl stop`) cancels `shutdown` and closes the gateway first (giving shard tasks up to 2 seconds to exit cleanly so no new events arrive during draining). Then `tasks.close()` and `tasks.wait()` give background tasks and in-flight handlers up to 10 seconds to finish (the control panel uses that time to show OFFLINE). Finally, the Discord log poster's own shutdown token is cancelled so shutdown notices and any drain warnings are flushed to the log channel. When no `log_channel` is configured, `log_queue` is dropped at startup so log lines aren't buffered in memory.
 
 ## The `Feature` trait
 
@@ -103,21 +103,22 @@ Which feature uses which hook:
 
 | Hook | chat | reminders | wheel | memory | snails | voice | drawing | control_panel | games | tinyfish |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `commands` | | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
-| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | |
+| `commands` | ✓ | ✓ | ✓ | ✓ | ✓ | | | | ✓ | |
+| `migrations` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | |
 | `mention_prefixes` | `""` | `remind me`, ... | | | | | | | | |
 | `tools` / `run_tool` / `tool_status` | ✓ | ✓ | ✓ | ✓ | | ✓ | ✓ | | | ✓ |
 | `chat_context` | | | | ✓ | | | | | | |
 | `stats` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | | | |
-| `panels` | ✓ | | | ✓ | | | | | | |
+| `panels` | | | | ✓ | | | | | | |
 | `start` | ✓ | ✓ | ✓ | ✓ | ✓ | | | ✓ | | |
-| `on_mention` | ✓ | ✓ | | | | | | |
-| `on_message` | ✓ | | | | ✓ | | | |
-| `on_reaction_add` | ✓ | | | | | | | |
-| `on_message_edit` | | | | | ✓ | | | |
-| `on_messages_deleted` | | | | | ✓ | | | |
-| `on_component` | | ✓ | ✓ | | | | | | ✓ | |
-| `on_modal` | | ✓ | ✓ | | | | | |
+| `on_mention` | ✓ | ✓ | | | | | | | | |
+| `on_message` | ✓ | | | | ✓ | | | | | |
+| `on_reaction_add` | ✓ | | | | | | | | | |
+| `on_message_edit` | | | | | ✓ | | | | | |
+| `on_messages_deleted` | | | | | ✓ | | | | | |
+| `on_component` | | ✓ | ✓ | ✓ | | | | ✓ | ✓ | |
+| `on_modal` | | ✓ | ✓ | | | | | | | |
+| `on_bot_event` | | | | ✓ | | | | | | |
 
 ## How events reach features
 
@@ -134,7 +135,7 @@ The dispatcher (`src/core/dispatcher.rs`) gets every Discord event from the shar
 | A slash command | The feature that declared it runs it, only where that feature is allowed (elsewhere the user is told it's turned off). An autocomplete request is gated the same way (returning no choices where the feature is turned off) before reaching the command's suggester. |
 | A `BotEvent` | Every enabled feature's `on_bot_event` (see "How features talk to each other"). |
 
-**Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot. The tasks are spawned on `ctx.tasks`, so at shutdown the bot waits for them (within the same 10 seconds) instead of cutting off an answer or a database write halfway.
+**Every handler runs in its own tokio task** (`dispatcher::run`), inside a tracing span that names the feature, server, channel, user and message. Even one-off component/modal replies (stale buttons or turned-off features) are spawned on `ctx.tasks` so the shard loop never awaits HTTP. A slow handler never holds up the others, and a panic only ends that one task (the panic hook logs it). In voltgpt a panic in a handler crashed the whole bot. The tasks are spawned on `ctx.tasks`, so at shutdown the bot waits for them (within the same 10 seconds) instead of cutting off an answer or a database write halfway.
 
 **Errors.** Handlers return `anyhow::Result`. When one fails, the dispatcher logs the error with its whole chain of causes and tells the user something: a reply for a message, a private (ephemeral) message for a button or command. Most errors become "Something went wrong. The error was logged." An error made with `user_error("...")` (`src/core/errors.rs`) is meant for the user and is shown as written, without an error in the log.
 
@@ -219,7 +220,7 @@ Inside the closure everything is ordinary synchronous Rust, and the connection i
 
 **Migrations** (`db::migrate`). Each feature returns a list of SQL strings from `migrations()`; entry `n` is version `n + 1`. The `schema_migrations` table remembers the newest version that ran per owner (`core`, `claude`, or a feature name), so each runs once, in a transaction. **Never edit a migration that has shipped**: add a new one to the end of the list. Each feature's tables start with its name (`reminders`, `wheel_bets`, `chat_turns`, `snail_links`).
 
-Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` belongs to the `claude` owner.
+Core tables, shared by everyone: `user_settings` (per-user timezone, read through `core::settings`), `bot_settings` (settings for the whole bot, so far owner mode, also through `core::settings`), `ai_spend` and `ai_spend_jobs` (see [ai.md](ai.md)). `claude_uploads` and `claude_keep_warm` belong to Claude's migration owners.
 
 For tests, `db::test_connection(owner, migrations)` gives an in-memory database with the core tables and one feature's tables.
 
@@ -247,7 +248,7 @@ Since features never import each other, the core gives them four ways to work to
 
 - **Chat tools.** A feature lists functions in `tools()` and runs them in `run_tool`. Chat offers the model the tools of every feature allowed in that channel and sends each call back to the feature that owns it. A tool runs as the person who asked (`Asker`: user, server, channel, message), so it only sees what they can see and only changes their own things. A tool's error goes back to the model as the result, so it can fix its call. Example: reminders offers `create_reminder`; memory offers `memory` and `set_mood`; voice offers `send_voice_message`; drawing offers `draw_picture`; tinyfish offers `tinyfish_search` and `tinyfish_fetch`.
 - **Chat context.** `chat_context` returns a few lines chat saves with the newest question. Memory uses it for the list of memory files and Vivy's mood. All features' texts go in one `<context>` block just before the question (`history::context_block`): reference first and question last is what Claude's and Gemini's guides advise, and the tag marks it as the bot's, not a person's. It sits in the question, not the system prompt, so the system prompt and earlier turns stay the same and the prompt cache keeps working.
-- **Bot events.** `ctx.publish(BotEvent::...)` sends an event to every feature's `on_bot_event` (`src/core/events.rs`, a `tokio::sync::broadcast` channel). Reminders publishes `ReminderFired` and the wheel `WheelRoundResolved`. No feature listens yet; they're there for the next one that needs them.
+- **Bot events.** `ctx.publish(BotEvent::...)` sends an event to every feature's `on_bot_event` (`src/core/events.rs`, a `tokio::sync::broadcast` channel). Reminders publishes `ReminderFired` (no listener yet) and the wheel publishes `WheelRoundResolved`, which memory listens to in order to log watched movies into `/memories/server/movies-watched.md`.
 - **The status picture.** `stats` and `panels` let each feature add its own numbers and text to the control panel without the control panel knowing about it. See [control-panel.md](features/control-panel.md).
 
 ## Logging
@@ -263,16 +264,16 @@ Since features never import each other, the core gives them four ways to work to
 
 | File | What it gives |
 |---|---|
-| `split.rs` | `split_message`: long text into Discord-sized parts, cut at Markdown boundaries by the `text-splitter` crate, never inside an emoji, with code blocks closed and reopened across parts |
+| `split.rs` | `split_message`: long text into Discord-sized parts, cut at Markdown boundaries by the `text-splitter` crate, never inside an emoji, with code blocks closed and reopened across parts (without mistaking inline triple-backticks like ```` ```code``` ```` for an unclosed fence) |
 | `reply.rs` | `LiveReply`: a reply that can span several messages and change over time. `show(parts)` edits, sends or deletes messages until Discord matches. Chat streams answers through it. |
-| `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download and turn into images a model reads), `preview_links` (the links Discord may preview: not `<link>` ones) and `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network; `png_link` turns a Discord profile picture link into a PNG of a given size; `load_still` downloads a picture from a plain link (its type read from its bytes, a GIF's first frame) |
-| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames. At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. A GIF ffmpeg can't read falls back to its first frame, decoded by `media.rs`. |
+| `media.rs` | `find_media` (pictures and videos in attachments, embeds and links), `find_files` (other attachments), `load_for_model` (download, validate image bytes, and turn into images a model reads), `decode_bounded` (image decoding with 8192×8192 and 128 MiB limits, shared with Claude image shrinking and snails), `preview_links` (the links Discord may preview: not `<link>` ones) and `with_previews` (wait for late link previews), and `safe_client` / `check_url`, which refuse local and private addresses so a link can't reach the server's own network; `png_link` turns a Discord profile picture link into a PNG of a given size; `load_still` downloads a picture from a plain link (its type read from its bytes, including HEIC/HEIF/AVIF, a GIF's first frame) |
+| `frames.rs` | `frame_grids`: one ffmpeg run turns a GIF or video into a few grid pictures of its frames, and `to_png` converts still formats like HEIC/AVIF/BMP/TIFF to PNG (capped at 4096 px per side without upscaling). At most 2 files go through ffmpeg at once (`MAX_RUNS`); the rest wait their turn. A GIF ffmpeg can't read falls back to its first frame, decoded by `media.rs`. |
 | `svg.rs` | Drawing pictures as SVG and turning them into PNG with `resvg`, with the Inter font built in, plus the parts both pictures draw, like the rounded `pill` label. The wheel and the status picture use it. |
 | `discord.rs` | The Discord helpers every feature uses: `Draft` (see above), `send_raw`, `get_messages` with `Page::Newest`/`Before`/`After`, `get_message`, `get_member`, `get_channel`, `react` (takes `"👍"` or `"<:name:id>"`), `start_typing` (keeps typing until dropped), buttons, menus, modals, `message_link`, `created_at` (an ID's time), `error_code`/`error_status` (Discord's error code or HTTP status from an error), and `test_message` for tests |
 | `message_links.rs` | Discord message links: `parse_link`, `find_message_links`, `can_read` (which channels Vivy may read for an asker: this DM, or any channel of the asker's server that `[features.chat]` gating doesn't turn off, whether or not the asker can see it) and `linked_message` (the message a link points to, if `can_read` allows it). Chat (`get_message`, links in a question, search, `look_back`) and drawing use them. |
-| `search.rs` | `search`: Discord's message search (`GET /guilds/{id}/messages/search`, which Twilight doesn't have yet) with every filter of the API in `Search` (content and slop, channels, authors and author types, mentions, roles, @everyone, replies, pinned, has, embed types and providers, link sites, attachment names and extensions, min/max ID, sort, limit, offset, NSFW; chat's tool offers all but slop, @everyone, and embed types and providers, to keep its description short, and always includes NSFW channels). It waits and tries again on 202 (still indexing) and 429 (too fast). `snowflake_at` turns a time into a message ID. The results cover everything the bot can read, so callers filter them. Chat's `search_messages` and the Hunger Games' last words use it. |
+| `search.rs` | `search`: Discord's message search (`GET /guilds/{id}/messages/search`, which Twilight doesn't have yet) with every filter of the API in `Search` (content and slop, channels, authors and author types, mentions, roles, @everyone, replies, pinned, has, embed types and providers, link sites, attachment names and extensions, min/max ID, sort, limit, offset, NSFW; chat's tool offers all but slop, @everyone, and embed types and providers, to keep its description short, and always includes NSFW channels). It waits and tries again on 202 (still indexing) and 429 (too fast), honouring JSON `retry_after` and the `Retry-After` header without sleeping after the final failed attempt, fails on invalid 200 JSON instead of returning empty results, and fills in `guild_id` on returned messages. `snowflake_at` turns a time into a message ID. The results cover everything the bot can read, so callers filter them. Chat's `search_messages` and the Hunger Games' last words use it. |
 | `http.rs` | `client_builder`: the user agent and timeouts every HTTP client starts from |
-| `text.rs` | Text from text-file attachments and embeds, for chat |
+| `text.rs` | Text from text-file attachments and embeds, plus XML trust-boundary tag escaping (`break_boundary_tags`) and one-line label sanitization (`sanitize_label`) for chat |
 | `mod.rs` | `shorten`: cut text to a number of characters, ending in "…"; `env_key`: a key from `.env`, `None` when missing or empty; `month_start`: where this month's limits start counting |
 
 ## Importing from voltgpt
@@ -322,7 +323,7 @@ Nothing else changes: the dispatcher, chat and the control panel find it through
 
 ## Testing
 
-`cargo test` runs every test; none needs Discord or an API key. Pure functions have unit tests next to them (`#[cfg(test)] mod tests` at the bottom of a file). Store functions are tested on `db::test_connection`. One test is `#[ignore]`d because it's a simulation rather than a check: `wheel::sim::compare_rules`, run it with `cargo test compare_rules -- --ignored --nocapture`. `cargo clippy` and `cargo fmt` keep the style.
+`cargo test` runs every test; none needs Discord or an API key. Pure functions have unit tests next to them (`#[cfg(test)] mod tests` at the bottom of a file). Store functions are tested on `db::test_connection`. Whole-repo smoke tests in `src/main.rs` check `config.example.toml` against every feature's `Settings` struct (zero unknown keys or warnings) and apply all owners' migrations (`core`, `claude`, `claude_keep_warm`, and every feature) onto one in-memory SQLite database. One test is `#[ignore]`d because it's a simulation rather than a check: `wheel::sim::compare_rules`, run it with `cargo test compare_rules -- --ignored --nocapture`. `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` keep the style; `.github/workflows/ci.yml` runs formatting, clippy, and tests on pushes and pull requests to `main`.
 
 ## Where to start reading
 
